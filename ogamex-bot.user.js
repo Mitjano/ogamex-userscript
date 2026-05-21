@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.0
-// @description  Asteroid Mining & Expedition automation for OGameX (multi-universe)
+// @version      2.9.1
+// @description  Asteroid Mining & Expedition automation for OGameX (multi-universe, distance-aware scan)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -59,13 +59,14 @@
       enabled: false,
       minersPerMission: 0, // 0 = send all available
       scanIntervalMin: 45, // minutes between range re-scans (asteroids move after each series)
-      maxFlightMinutes: 20, // safety cap (whole galaxy ≈ 15min from base 6:71)
+      maxFlightMinutes: 30, // safety cap on one-way flight time; ranges beyond this are skipped
       // Ship types to use for asteroid mining, tried in order.
       // OGameX requires ASTEROID_MINER — only this ship type is allowed for asteroid missions.
       minerShipTypes: ["ASTEROID_MINER"],
       // Base planet from which miners ALWAYS launch. Set to null to fall back
-      // to min-over-all-planets behavior.
-      minerBase: { galaxy: 6, system: 71, position: 9 },
+      // to min-over-all-planets behavior. Per-host storage means each universe
+      // remembers its own base independently (set via UI or saved config).
+      minerBase: { galaxy: 3, system: 269, position: 8 },
     },
     expeditions: {
       enabled: false,
@@ -610,12 +611,18 @@
       return { found: false };
     },
 
-    // ── Build scan queue: all systems in all ranges, sorted ascending ──
-    // Whole galaxy is within ~15min flight from base 6:71, so no flight
-    // filter is applied here — dispatch-time check is the hard safety.
-    // Sort is always ascending by galaxy+system so the scan walks systems
-    // from low to high, regardless of where the base planet sits.
-    buildScanQueue(ranges) {
+    // ── Build scan queue: all systems in all ranges, sorted by distance ──
+    // v2.9.1: scan order = closest-to-base first. With 5 active ranges
+    // spread across the galaxy, scanning ascending-by-system can spend
+    // minutes walking a range 200+ systems from base before discovering
+    // an asteroid right next door. Asteroids have a TTL (game-side) and
+    // miner flight is one-way 1-25min depending on distance, so every
+    // second wasted on far ranges first costs us catches.
+    //
+    // Filters out systems whose estimated one-way flight exceeds
+    // maxFlightMinutes (no point queueing what we can't dispatch).
+    // Same-galaxy systems always sort before cross-galaxy.
+    buildScanQueue(ranges, base = null, maxFlightMinutes = null) {
       const seen = new Set();
       const queue = [];
       for (const range of ranges) {
@@ -623,10 +630,28 @@
           const key = `${range.galaxy}:${s}`;
           if (seen.has(key)) continue;
           seen.add(key);
+
+          if (base && maxFlightMinutes != null && range.galaxy === base.galaxy) {
+            const dist = Math.abs(s - base.system);
+            if (AsteroidScanner.estimateFlightMinutes(dist) > maxFlightMinutes) {
+              continue;
+            }
+          }
           queue.push({ galaxy: range.galaxy, system: s });
         }
       }
-      queue.sort((a, b) => a.galaxy - b.galaxy || a.system - b.system);
+
+      if (base) {
+        queue.sort((a, b) => {
+          const aSame = a.galaxy === base.galaxy;
+          const bSame = b.galaxy === base.galaxy;
+          if (aSame !== bSame) return aSame ? -1 : 1;
+          if (a.galaxy !== b.galaxy) return a.galaxy - b.galaxy;
+          return Math.abs(a.system - base.system) - Math.abs(b.system - base.system);
+        });
+      } else {
+        queue.sort((a, b) => a.galaxy - b.galaxy || a.system - b.system);
+      }
       return queue;
     },
 
@@ -1014,20 +1039,25 @@
       if (!base) {
         log("No minerBase configured — dispatch will fail until one is set", "warn");
       }
+      const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
 
-      // Build scan queue — all systems in all ranges, sorted ascending
-      const queue = AsteroidScanner.buildScanQueue(ranges);
+      // Build scan queue — all systems in all ranges, closest to base first
+      const queue = AsteroidScanner.buildScanQueue(ranges, base, maxFlight);
       if (queue.length === 0) {
-        log("Empty scan queue — no systems in returned ranges", "error");
+        log("Empty scan queue — no systems in returned ranges (or all beyond maxFlight)", "error");
         return;
       }
 
       const first = queue[0];
-      const preview = queue.slice(0, 5)
-        .map(q => `[${q.galaxy}:${q.system}]`)
-        .join(", ");
+      const formatPreview = q => {
+        if (!base || q.galaxy !== base.galaxy) return `[${q.galaxy}:${q.system}]`;
+        const dist = Math.abs(q.system - base.system);
+        return `[${q.galaxy}:${q.system}] (Δ${dist}, ~${AsteroidScanner.estimateFlightMinutes(dist)}min)`;
+      };
+      const preview = queue.slice(0, 5).map(formatPreview).join(", ");
+      const baseTag = base ? `from [${base.galaxy}:${base.system}:${base.position}]` : "(no base)";
       log(
-        `Scan queue: ${queue.length} systems across ${ranges.length} ranges (ascending). ` +
+        `Scan queue: ${queue.length} systems across ${ranges.length} ranges, closest-first ${baseTag}. ` +
         `First: ${preview}`,
         "asteroid"
       );
@@ -1115,7 +1145,9 @@
 
         if (!currentInAny) {
           // Ranges shifted, current is stale — drop history, restart fresh.
-          const fullQueue = AsteroidScanner.buildScanQueue(freshRanges);
+          const baseCfg = CONFIG.asteroidMining.minerBase;
+          const maxFlightCfg = CONFIG.asteroidMining.maxFlightMinutes;
+          const fullQueue = AsteroidScanner.buildScanQueue(freshRanges, baseCfg, maxFlightCfg);
           scanState.ranges = freshRanges;
           scanState.scannedSystems = [];
           scanState.scannedCount = 0;
@@ -1134,10 +1166,12 @@
           return;
         }
 
-        // Current still valid — rebuild queue so new (often lower) ranges get
+        // Current still valid — rebuild queue so new (often closer) ranges get
         // scanned immediately after we finish this system.
+        const baseCfg = CONFIG.asteroidMining.minerBase;
+        const maxFlightCfg = CONFIG.asteroidMining.maxFlightMinutes;
         const scannedSet = new Set((scanState.scannedSystems || []).map(s => `${s.galaxy}:${s.system}`));
-        const freshQueue = AsteroidScanner.buildScanQueue(freshRanges)
+        const freshQueue = AsteroidScanner.buildScanQueue(freshRanges, baseCfg, maxFlightCfg)
           .filter(q => !scannedSet.has(`${q.galaxy}:${q.system}`));
         const currentKey = `${current.galaxy}:${current.system}`;
         const rest = freshQueue.filter(q => `${q.galaxy}:${q.system}` !== currentKey);
