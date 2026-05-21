@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.4
-// @description  Asteroid Mining automation for OGameX (multi-universe, TTL-aware dispatch)
+// @version      2.9.5
+// @description  Asteroid Mining automation for OGameX (multi-universe, TTL-aware dispatch with 5min safety margin)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -1263,14 +1263,17 @@
 
         // v2.9.3: TTL vs flight-time check — if asteroid would vanish
         // before fleet arrives, DO NOT dispatch (burns deuter on a doomed
-        // mission). Buffer 60s so we don't dispatch on a knife edge.
+        // mission). v2.9.5: bumped buffer 60s→300s after a real-world
+        // burn where v2.9.3 estimated 7min for Δ=58 but actual was 15min.
+        // 5min margin absorbs formula error + ~30s dispatch UI overhead
+        // + TTL countdown elapsed during the 3-step fleet flow.
         const baseForCheck = CONFIG.asteroidMining.minerBase;
         if (result.ttlSeconds != null && baseForCheck) {
           const sameGal = baseForCheck.galaxy === current.galaxy;
           const dist = sameGal ? Math.abs(baseForCheck.system - current.system) : Infinity;
           const estMin = sameGal ? AsteroidScanner.estimateFlightMinutes(dist) : Infinity;
           const estSec = estMin * 60;
-          const ARRIVAL_BUFFER_SEC = 60;
+          const ARRIVAL_BUFFER_SEC = 300;
           if (!Number.isFinite(estSec) || estSec + ARRIVAL_BUFFER_SEC > result.ttlSeconds) {
             log(
               `SKIP [${current.galaxy}:${current.system}:17] — flight ~${estMin}min (${estSec}s) ` +
@@ -1374,8 +1377,8 @@
         const elapsedSec = Math.floor((Date.now() - asteroid.foundAt) / 1000);
         const remainingTtl = asteroid.ttlSeconds - elapsedSec;
         const estSec = estMinutes * 60;
-        if (estSec + 60 > remainingTtl) {
-          log(`SKIP ${asteroid.label} — flight ~${estMinutes}min (${estSec}s) + 60s buffer > remaining TTL ${remainingTtl}s (orig ${asteroid.ttlSeconds}s, elapsed ${elapsedSec}s)`, "warn");
+        if (estSec + 300 > remainingTtl) {
+          log(`SKIP ${asteroid.label} — flight ~${estMinutes}min (${estSec}s) + 300s buffer > remaining TTL ${remainingTtl}s (orig ${asteroid.ttlSeconds}s, elapsed ${elapsedSec}s)`, "warn");
           DispatchedAsteroids.add(asteroid.galaxy, asteroid.system);
           const updated = ScanState.load();
           if (updated) { updated.foundAsteroid = null; ScanState.save(updated); }
@@ -2348,8 +2351,8 @@
               const dist = sameGal ? Math.abs(baseForCheck.system - system) : Infinity;
               const estMin = sameGal ? AsteroidScanner.estimateFlightMinutes(dist) : Infinity;
               const estSec = estMin * 60;
-              if (!Number.isFinite(estSec) || estSec + 60 > result.ttlSeconds) {
-                log(`SKIP manual dispatch — flight ~${estMin}min (${estSec}s) > TTL ${result.ttlSeconds}s`, "warn");
+              if (!Number.isFinite(estSec) || estSec + 300 > result.ttlSeconds) {
+                log(`SKIP manual dispatch — flight ~${estMin}min (${estSec}s) + 300s buffer > TTL ${result.ttlSeconds}s`, "warn");
                 DispatchedAsteroids.add(galaxy, system);
                 return;
               }
