@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.3
+// @version      2.9.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, TTL-aware dispatch)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -706,16 +706,19 @@
       return { planet: closest, distance: minDist };
     },
 
-    // Calibrated for ASTEROID_MINER on athena (2026-05-21): distance 217
-    // sys (3:269 → 3:52) took ~23min one-way per fleet timer log. That's
-    // ~9.4 sys/min — round down to 9 to stay conservative (better to
-    // skip a borderline asteroid than to dispatch fleet that arrives
-    // after TTL expires).
+    // ASTEROID_MINER flight time has a large fixed overhead (~10min warmup
+    // + base flight) plus a small linear distance component. Single-rate
+    // formulas are very wrong at small distances — v2.9.3 used /9 which
+    // gave 2min for Δ=13 when reality is ~11min, leaving zero safety
+    // margin on short-TTL asteroids.
     //
-    // Pre-2.9.3 used /29 calibrated against cargo/scout ships, which made
-    // estimates 3x too fast and burned deuter on impossible dispatches.
+    // Two-point calibration on athena (2026-05-21):
+    //   Δ=13  sys (3:269 → 3:256) → ~11min one-way (countdown 10m49s ×2)
+    //   Δ=217 sys (3:269 → 3:52)  → ~24min one-way (countdown 23m54s ×2)
+    // Linear fit: time_min ≈ 10.5 + 0.064 × distance. Round up + floor at
+    // 11 so we never under-estimate even for adjacent systems.
     estimateFlightMinutes(systemDistance) {
-      return Math.max(1, Math.ceil(systemDistance / 9));
+      return Math.max(11, Math.ceil(11 + systemDistance / 15));
     },
   };
 
