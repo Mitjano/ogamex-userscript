@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.6
+// @version      2.9.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -122,6 +122,20 @@
         GM_setValue(MIGRATION_KEY, "1");
         saveConfig(merged);
         console.log("[OGameX v2.9.3] migration: minerBase reset to", merged.asteroidMining.minerBase, "scan state cleared");
+      }
+
+      // v2.9.7 migration: prior to v2.9.6, TTL-skips were adding systems
+      // to the 1h DispatchedAsteroids cooldown despite no fleet ever
+      // being sent. Result: respawned asteroids in those slots were
+      // skipped for the next hour with "already dispatched" log. v2.9.6
+      // fixed the code, but users still have a corrupted set from the
+      // old behavior. One-shot clear so the bot can pick up live
+      // asteroids in previously-poisoned coords immediately.
+      const MIGRATION_V297 = "ogamex_migration_v297_done";
+      if (GM_getValue(MIGRATION_V297, "0") !== "1") {
+        GM_setValue("ogamex_dispatched_asteroids", "[]");
+        GM_setValue(MIGRATION_V297, "1");
+        console.log("[OGameX v2.9.7] migration: DispatchedAsteroids cleared (stale TTL-skip entries from pre-v2.9.6)");
       }
       return merged;
     } catch {
