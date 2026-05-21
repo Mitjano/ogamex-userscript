@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.2
-// @description  Asteroid Mining automation for OGameX (multi-universe, distance-aware scan)
+// @version      2.9.3
+// @description  Asteroid Mining automation for OGameX (multi-universe, TTL-aware dispatch)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -106,6 +106,23 @@
       // that had expeditions.enabled=true doesn't keep running with no UI
       // to turn it off.
       if (merged.expeditions) merged.expeditions.enabled = false;
+
+      // v2.9.3 migration: v2.9.0 default minerBase was 6:71:9 (old nexus
+      // playthrough). Athena users got that saved in their host-scoped
+      // storage on first toggle, then v2.9.1+ bumped the default to
+      // 3:269:8 but deepMerge kept the stale saved value. Result: bot
+      // sorted "closest-first" against the WRONG galaxy and dispatched
+      // fleets that arrived after the asteroid TTL. One-shot reset.
+      const MIGRATION_KEY = "ogamex_migration_v293_done";
+      if (GM_getValue(MIGRATION_KEY, "0") !== "1") {
+        merged.asteroidMining.minerBase = { ...DEFAULT_CONFIG.asteroidMining.minerBase };
+        // Stale scan queue was built against the wrong base — drop it so
+        // the next scan rebuilds with the correct base.
+        GM_setValue("ogamex_scan_state", null);
+        GM_setValue(MIGRATION_KEY, "1");
+        saveConfig(merged);
+        console.log("[OGameX v2.9.3] migration: minerBase reset to", merged.asteroidMining.minerBase, "scan state cleared");
+      }
       return merged;
     } catch {
       return { ...DEFAULT_CONFIG };
@@ -539,7 +556,11 @@
     },
 
     // ── Stage 2: Check position 17 in LIVE DOM (current galaxy page) ──
-    // Returns: { found: true, fleetUrl: "/fleet?x=6&y=84&z=17&mission=12" } or { found: false }
+    // Returns: { found: true, fleetUrl: "/fleet?x=6&y=84&z=17&mission=12",
+    //            ttlSeconds: 353 } or { found: false }
+    // ttlSeconds comes from data-asteroid-disappear (game's own countdown).
+    // Caller MUST compare it against estimated flight time before dispatch
+    // — otherwise we burn deuter on asteroids that vanish mid-flight.
     checkCurrentPageForAsteroid() {
       const items = document.querySelectorAll(".galaxy-item");
       const totalRows = items.length;
@@ -569,37 +590,52 @@
           return { found: false };
         }
 
+        // Helper: read TTL seconds from any data-asteroid-disappear elem,
+        // fall back to parsing (MM:SS) from row text. Returns null if neither.
+        const parseTtlSeconds = () => {
+          const el = item.querySelector("[data-asteroid-disappear]");
+          if (el) {
+            const n = parseInt(el.getAttribute("data-asteroid-disappear") || "", 10);
+            if (Number.isFinite(n) && n > 0) return n;
+          }
+          const txt = (item.textContent || "").replace(/\s+/g, " ").trim();
+          const m = txt.match(/\((\d{1,2}):(\d{2})\)/);
+          if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+          return null;
+        };
+
         // ── Method 1: a.btn-asteroid or mission=12 link (direct fleet URL) ──
         const asteroidLink = item.querySelector("a.btn-asteroid, a[href*='mission=12']");
         if (asteroidLink) {
           const href = asteroidLink.getAttribute("href") || "";
-          const timer = item.querySelector("[data-asteroid-disappear]");
-          const timeLeft = timer?.textContent?.trim() || "?";
-          log(`ASTEROID FOUND! Fleet URL: ${href} | Timer: ${timeLeft}`, "success");
-          return { found: true, fleetUrl: href };
+          const ttlSeconds = parseTtlSeconds();
+          log(`ASTEROID FOUND! Fleet URL: ${href} | TTL: ${ttlSeconds ?? "?"}s`, "success");
+          return { found: true, fleetUrl: href, ttlSeconds };
         }
 
         // ── Method 2: data-asteroid-disappear timer element ──
         const timerEl = item.querySelector("[data-asteroid-disappear]");
         if (timerEl) {
-          log(`ASTEROID FOUND (timer attr)! ${timerEl.textContent.trim()}`, "success");
+          const ttlSeconds = parseTtlSeconds();
+          log(`ASTEROID FOUND (timer attr)! TTL: ${ttlSeconds ?? "?"}s`, "success");
           const urlMatch = window.location.href.match(/[?&]x=(\d+).*?[?&]y=(\d+)/);
           const reconstructed = urlMatch
             ? `/fleet?x=${urlMatch[1]}&y=${urlMatch[2]}&z=17&mission=12`
             : null;
-          return { found: true, fleetUrl: reconstructed };
+          return { found: true, fleetUrl: reconstructed, ttlSeconds };
         }
 
         // ── Method 3: text-based — timer pattern (MM:SS) in row 17 ──
         const rowText = (item.textContent || "").replace(/\s+/g, " ").trim();
         const timerMatch = rowText.match(/\((\d{1,2}:\d{2})\)/);
         if (timerMatch) {
+          const ttlSeconds = parseTtlSeconds();
           const urlMatch = window.location.href.match(/[?&]x=(\d+).*?[?&]y=(\d+)/);
           const reconstructed = urlMatch
             ? `/fleet?x=${urlMatch[1]}&y=${urlMatch[2]}&z=17&mission=12`
             : null;
-          log(`ASTEROID FOUND (text timer)! Timer: ${timerMatch[1]}, url: ${reconstructed}`, "success");
-          return { found: true, fleetUrl: reconstructed };
+          log(`ASTEROID FOUND (text timer)! TTL: ${ttlSeconds ?? "?"}s, url: ${reconstructed}`, "success");
+          return { found: true, fleetUrl: reconstructed, ttlSeconds };
         }
 
         // No asteroid at position 17
@@ -670,10 +706,16 @@
       return { planet: closest, distance: minDist };
     },
 
-    // Calibrated against live game: distance 428 sys (6:71 → 6:499) ≈ 15min.
-    // Formula: ceil(distance / 29). Used only as sanity cap at dispatch time.
+    // Calibrated for ASTEROID_MINER on athena (2026-05-21): distance 217
+    // sys (3:269 → 3:52) took ~23min one-way per fleet timer log. That's
+    // ~9.4 sys/min — round down to 9 to stay conservative (better to
+    // skip a borderline asteroid than to dispatch fleet that arrives
+    // after TTL expires).
+    //
+    // Pre-2.9.3 used /29 calibrated against cargo/scout ships, which made
+    // estimates 3x too fast and burned deuter on impossible dispatches.
     estimateFlightMinutes(systemDistance) {
-      return Math.max(1, Math.ceil(systemDistance / 29));
+      return Math.max(1, Math.ceil(systemDistance / 9));
     },
   };
 
@@ -735,8 +777,15 @@
     },
 
     // Mark asteroid found (keep scan active so it resumes after dispatch)
-    markFound(state, galaxy, system) {
-      state.foundAsteroid = { galaxy, system, position: 17, label: `[${galaxy}:${system}:17]` };
+    markFound(state, galaxy, system, ttlSeconds = null) {
+      state.foundAsteroid = {
+        galaxy,
+        system,
+        position: 17,
+        label: `[${galaxy}:${system}:17]`,
+        ttlSeconds,
+        foundAt: Date.now(),
+      };
       // Don't set active=false — scan should resume after dispatch
       this.save(state);
     },
@@ -1208,6 +1257,40 @@
 
         // Asteroid found!
         log(`ASTEROID at [${current.galaxy}:${current.system}:17]!`, "success");
+
+        // v2.9.3: TTL vs flight-time check — if asteroid would vanish
+        // before fleet arrives, DO NOT dispatch (burns deuter on a doomed
+        // mission). Buffer 60s so we don't dispatch on a knife edge.
+        const baseForCheck = CONFIG.asteroidMining.minerBase;
+        if (result.ttlSeconds != null && baseForCheck) {
+          const sameGal = baseForCheck.galaxy === current.galaxy;
+          const dist = sameGal ? Math.abs(baseForCheck.system - current.system) : Infinity;
+          const estMin = sameGal ? AsteroidScanner.estimateFlightMinutes(dist) : Infinity;
+          const estSec = estMin * 60;
+          const ARRIVAL_BUFFER_SEC = 60;
+          if (!Number.isFinite(estSec) || estSec + ARRIVAL_BUFFER_SEC > result.ttlSeconds) {
+            log(
+              `SKIP [${current.galaxy}:${current.system}:17] — flight ~${estMin}min (${estSec}s) ` +
+              `+ ${ARRIVAL_BUFFER_SEC}s buffer > TTL ${result.ttlSeconds}s. Would vanish before arrival.`,
+              "warn"
+            );
+            // Mark dispatched so we don't keep re-finding it on subsequent
+            // scan passes within the 1h DispatchedAsteroids TTL.
+            DispatchedAsteroids.add(current.galaxy, current.system);
+            ScanState.advance(scanState);
+            const next = scanState.queue[0];
+            if (next) {
+              await AntiDetection.sleep(500 + Math.random() * 600);
+              scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "skip-far-asteroid next");
+            } else {
+              log("Scan complete — all ranges checked", "asteroid");
+              ScanState.clear();
+            }
+            return;
+          }
+          log(`OK to dispatch: flight ~${estMin}min (${estSec}s) < TTL ${result.ttlSeconds}s`, "asteroid");
+        }
+
         DispatchedAsteroids.add(current.galaxy, current.system);
 
         if (result.fleetUrl) {
@@ -1232,7 +1315,7 @@
 
         // No direct URL — use standard dispatch
         ScanState.advance(scanState); // keep scan going after dispatch
-        ScanState.markFound(ScanState.load(), current.galaxy, current.system);
+        ScanState.markFound(ScanState.load(), current.galaxy, current.system, result.ttlSeconds);
         await this.dispatchToFoundAsteroid(ScanState.load());
         return;
       }
@@ -1280,6 +1363,21 @@
         log(`Asteroid ${asteroid.label} too far from base (~${estMinutes}min), skipping`, "asteroid");
         ScanState.clear();
         return;
+      }
+
+      // v2.9.3: TTL guard in case bot was reloaded between markFound and
+      // dispatch (foundAsteroid persists in scan state across page nav).
+      if (asteroid.ttlSeconds != null && asteroid.foundAt) {
+        const elapsedSec = Math.floor((Date.now() - asteroid.foundAt) / 1000);
+        const remainingTtl = asteroid.ttlSeconds - elapsedSec;
+        const estSec = estMinutes * 60;
+        if (estSec + 60 > remainingTtl) {
+          log(`SKIP ${asteroid.label} — flight ~${estMinutes}min (${estSec}s) + 60s buffer > remaining TTL ${remainingTtl}s (orig ${asteroid.ttlSeconds}s, elapsed ${elapsedSec}s)`, "warn");
+          DispatchedAsteroids.add(asteroid.galaxy, asteroid.system);
+          const updated = ScanState.load();
+          if (updated) { updated.foundAsteroid = null; ScanState.save(updated); }
+          return;
+        }
       }
 
       log(`Dispatching to ${asteroid.label} from base [${base.galaxy}:${base.system}:${base.position}] (~${estMinutes}min)`, "asteroid");
@@ -2234,12 +2332,26 @@
           updateStatusUI();
           // Dispatch fleet to the found asteroid
           if (result.fleetUrl) {
-            log(`Dispatching fleet via: ${result.fleetUrl}`, "asteroid");
             const url = window.location.href;
             const gMatch = url.match(/[?&]x=(\d+)/);
             const sMatch = url.match(/[?&]y=(\d+)/);
             const galaxy = gMatch ? parseInt(gMatch[1]) : 0;
             const system = sMatch ? parseInt(sMatch[1]) : 0;
+
+            // v2.9.3: TTL vs flight check (same guard as auto-dispatch).
+            const baseForCheck = CONFIG.asteroidMining.minerBase;
+            if (result.ttlSeconds != null && baseForCheck) {
+              const sameGal = baseForCheck.galaxy === galaxy;
+              const dist = sameGal ? Math.abs(baseForCheck.system - system) : Infinity;
+              const estMin = sameGal ? AsteroidScanner.estimateFlightMinutes(dist) : Infinity;
+              const estSec = estMin * 60;
+              if (!Number.isFinite(estSec) || estSec + 60 > result.ttlSeconds) {
+                log(`SKIP manual dispatch — flight ~${estMin}min (${estSec}s) > TTL ${result.ttlSeconds}s`, "warn");
+                DispatchedAsteroids.add(galaxy, system);
+                return;
+              }
+            }
+            log(`Dispatching fleet via: ${result.fleetUrl}`, "asteroid");
             DispatchedAsteroids.add(galaxy, system);
             GM_setValue("pending_mission", JSON.stringify({
               type: "asteroid_mining_direct",
