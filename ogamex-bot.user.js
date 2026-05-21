@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.5
-// @description  Asteroid Mining automation for OGameX (multi-universe, TTL-aware dispatch with 5min safety margin)
+// @version      2.9.6
+// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -1075,6 +1075,16 @@
       log("Starting asteroid scan...", "asteroid");
       updateStatusUI();
 
+      // v2.9.6: Clear stale scan state UPFRONT so concurrent scheduler ticks
+      // can't pick up the old state during the ~10s scanRangesFull() fetch
+      // and resume the old queue mid-flight. Without this, a manual "Scan
+      // Asteroids" click would start fetching new ranges, but a tick firing
+      // during the fetch would see the previous scanState (still active),
+      // call handleGalaxyScanStep, and continue the OLD scan from wherever
+      // it was — bypassing the fresh closest-first ordering we're trying to
+      // produce. Symptom: scan "starts in the middle" after a re-enable.
+      ScanState.clear();
+
       // NOTE: Do NOT clear DispatchedAsteroids here. Its own 1h TTL handles
       // expiry. Clearing on every scan caused double-dispatch when a new scan
       // started within the window (e.g. after a quick no-asteroid scan).
@@ -1280,9 +1290,13 @@
               `+ ${ARRIVAL_BUFFER_SEC}s buffer > TTL ${result.ttlSeconds}s. Would vanish before arrival.`,
               "warn"
             );
-            // Mark dispatched so we don't keep re-finding it on subsequent
-            // scan passes within the 1h DispatchedAsteroids TTL.
-            DispatchedAsteroids.add(current.galaxy, current.system);
+            // v2.9.6: Do NOT add to DispatchedAsteroids on a TTL skip. A
+            // short-TTL skip means we missed THIS asteroid instance — but the
+            // game spawns a fresh asteroid in the same range slot every
+            // ~5-15min, often at the same coords. Blocking the system for 1h
+            // means we miss N consecutive replacement asteroids with longer
+            // TTLs. DispatchedAsteroids is for double-dispatch prevention on
+            // an in-flight fleet; a no-op skip never sent a fleet.
             ScanState.advance(scanState);
             const next = scanState.queue[0];
             if (next) {
@@ -1379,7 +1393,8 @@
         const estSec = estMinutes * 60;
         if (estSec + 300 > remainingTtl) {
           log(`SKIP ${asteroid.label} — flight ~${estMinutes}min (${estSec}s) + 300s buffer > remaining TTL ${remainingTtl}s (orig ${asteroid.ttlSeconds}s, elapsed ${elapsedSec}s)`, "warn");
-          DispatchedAsteroids.add(asteroid.galaxy, asteroid.system);
+          // v2.9.6: skip-via-TTL does NOT add to DispatchedAsteroids — see
+          // explanation in handleGalaxyScanStep's TTL guard.
           const updated = ScanState.load();
           if (updated) { updated.foundAsteroid = null; ScanState.save(updated); }
           return;
@@ -2353,7 +2368,7 @@
               const estSec = estMin * 60;
               if (!Number.isFinite(estSec) || estSec + 300 > result.ttlSeconds) {
                 log(`SKIP manual dispatch — flight ~${estMin}min (${estSec}s) + 300s buffer > TTL ${result.ttlSeconds}s`, "warn");
-                DispatchedAsteroids.add(galaxy, system);
+                // v2.9.6: skip-via-TTL does NOT add to DispatchedAsteroids.
                 return;
               }
             }
