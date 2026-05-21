@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.1
-// @description  Asteroid Mining & Expedition automation for OGameX (multi-universe, distance-aware scan)
+// @version      2.9.2
+// @description  Asteroid Mining automation for OGameX (multi-universe, distance-aware scan)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -102,6 +102,10 @@
       const merged = saved ? deepMerge(DEFAULT_CONFIG, JSON.parse(saved)) : { ...DEFAULT_CONFIG };
       // antiDetection is code-controlled — never override from saved config
       merged.antiDetection = { ...DEFAULT_CONFIG.antiDetection };
+      // v2.9.2: Expeditions UI removed — force off so any old saved-state
+      // that had expeditions.enabled=true doesn't keep running with no UI
+      // to turn it off.
+      if (merged.expeditions) merged.expeditions.enabled = false;
       return merged;
     } catch {
       return { ...DEFAULT_CONFIG };
@@ -2044,8 +2048,8 @@
         #ogx-bot-panel {
           position: fixed;
           top: 10px;
-          right: 10px;
-          width: 320px;
+          left: 10px;
+          width: 260px;
           background: rgba(0, 10, 30, 0.92);
           border: 1px solid #1a5276;
           border-radius: 8px;
@@ -2161,14 +2165,6 @@
           <div class="status" id="ogx-asteroid-status">Idle</div>
         </div>
 
-        <div class="section ${CONFIG.expeditions.enabled ? "active" : "inactive"}" id="ogx-expo-section">
-          <div class="section-title">
-            <span>Expeditions</span>
-            <button class="mini-btn" id="ogx-expo-toggle">${CONFIG.expeditions.enabled ? "ON" : "OFF"}</button>
-          </div>
-          <div class="status" id="ogx-expo-status">Idle</div>
-        </div>
-
         <div class="section">
           <div class="section-title">
             <span>Anti-Detection</span>
@@ -2181,8 +2177,7 @@
           <div class="section-title">
             <span>Quick Actions</span>
           </div>
-          <button class="mini-btn" id="ogx-scan-now" style="margin-right:4px">Scan Asteroids</button>
-          <button class="mini-btn" id="ogx-send-expo">Send Expedition</button>
+          <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
         </div>
 
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
@@ -2229,16 +2224,6 @@
       log(`Asteroid mining ${CONFIG.asteroidMining.enabled ? "enabled" : "disabled"}`, "info");
     });
 
-    document.getElementById("ogx-expo-toggle").addEventListener("click", () => {
-      CONFIG.expeditions.enabled = !CONFIG.expeditions.enabled;
-      saveConfig(CONFIG);
-      const btn = document.getElementById("ogx-expo-toggle");
-      btn.textContent = CONFIG.expeditions.enabled ? "ON" : "OFF";
-      const section = document.getElementById("ogx-expo-section");
-      section.className = `section ${CONFIG.expeditions.enabled ? "active" : "inactive"}`;
-      log(`Expeditions ${CONFIG.expeditions.enabled ? "enabled" : "disabled"}`, "info");
-    });
-
     document.getElementById("ogx-scan-now").addEventListener("click", async () => {
       log("Manual scan triggered...", "asteroid");
       // If already on galaxy page, check current position 17 first
@@ -2274,10 +2259,6 @@
       }
       // Start full range scan → navigate through systems
       await AsteroidMiner.startNewScan();
-    });
-
-    document.getElementById("ogx-send-expo").addEventListener("click", () => {
-      ExpeditionManager.run();
     });
 
     document.getElementById("ogx-minimize").addEventListener("click", () => {
