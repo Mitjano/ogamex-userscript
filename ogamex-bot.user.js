@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.8
-// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin)
+// @version      2.9.9
+// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; maxFlight raised to 45 to cover full same-galaxy spread)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -59,7 +59,7 @@
       enabled: false,
       minersPerMission: 0, // 0 = send all available
       scanIntervalMin: 45, // minutes between range re-scans (asteroids move after each series)
-      maxFlightMinutes: 30, // safety cap on one-way flight time; ranges beyond this are skipped
+      maxFlightMinutes: 45, // safety cap on one-way flight time; ranges beyond this are skipped. Formula max(11, ceil(11+Δ/15)) hits 45min at Δ=499 (max same-galaxy distance), so 45 ensures every range the game reports gets scanned. Lower values silently drop far ranges and the bot keeps spinning on a few empty close ones.
       // Ship types to use for asteroid mining, tried in order.
       // OGameX requires ASTEROID_MINER — only this ship type is allowed for asteroid missions.
       minerShipTypes: ["ASTEROID_MINER"],
@@ -136,6 +136,29 @@
         GM_setValue("ogamex_dispatched_asteroids", "[]");
         GM_setValue(MIGRATION_V297, "1");
         console.log("[OGameX v2.9.7] migration: DispatchedAsteroids cleared (stale TTL-skip entries from pre-v2.9.6)");
+      }
+
+      // v2.9.9 migration: older saved configs had maxFlightMinutes as low as
+      // 20, which silently filtered out almost every range the game returned
+      // (same-galaxy distances of 130+ → flight ≥20min). Bot would queue 4
+      // empty systems near the cap, find nothing, sleep 45min, repeat forever
+      // with full miner fleets parked. Force-bump any saved value below the
+      // new default so existing users actually scan full ranges. Also clear
+      // the stale scan queue + cooldown so the next tick rebuilds against
+      // the new filter immediately instead of waiting out the old cooldown.
+      const MIGRATION_V299 = "ogamex_migration_v299_done";
+      if (GM_getValue(MIGRATION_V299, "0") !== "1") {
+        const defaultMaxFlight = DEFAULT_CONFIG.asteroidMining.maxFlightMinutes;
+        if (merged.asteroidMining.maxFlightMinutes < defaultMaxFlight) {
+          const old = merged.asteroidMining.maxFlightMinutes;
+          merged.asteroidMining.maxFlightMinutes = defaultMaxFlight;
+          saveConfig(merged);
+          console.log(`[OGameX v2.9.9] migration: maxFlightMinutes ${old} → ${defaultMaxFlight}min (was filtering most ranges)`);
+        }
+        GM_setValue("ogamex_scan_state", null);
+        GM_setValue("ogamex_scan_cooldown_until", "0");
+        GM_setValue(MIGRATION_V299, "1");
+        console.log("[OGameX v2.9.9] migration: scan state + cooldown cleared — next tick scans fresh");
       }
       return merged;
     } catch {
