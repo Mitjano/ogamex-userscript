@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.7
+// @version      2.9.8
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -677,9 +677,36 @@
     // maxFlightMinutes (no point queueing what we can't dispatch).
     // Same-galaxy systems always sort before cross-galaxy.
     buildScanQueue(ranges, base = null, maxFlightMinutes = null) {
+      // Sort ranges so the closest one (to base) is scanned first,
+      // but stay sequential ascending inside each range — otherwise we
+      // interleave systems across ranges when two ranges have overlapping
+      // distance bands (e.g. [185-209] and [331-355] from base 269).
+      const sortedRanges = [...ranges];
+      if (base) {
+        sortedRanges.sort((a, b) => {
+          const aSame = a.galaxy === base.galaxy;
+          const bSame = b.galaxy === base.galaxy;
+          if (aSame !== bSame) return aSame ? -1 : 1;
+          if (a.galaxy !== b.galaxy) return a.galaxy - b.galaxy;
+          const aDist = a.endSystem < base.system
+            ? base.system - a.endSystem
+            : a.startSystem > base.system
+              ? a.startSystem - base.system
+              : 0;
+          const bDist = b.endSystem < base.system
+            ? base.system - b.endSystem
+            : b.startSystem > base.system
+              ? b.startSystem - base.system
+              : 0;
+          return aDist - bDist;
+        });
+      } else {
+        sortedRanges.sort((a, b) => a.galaxy - b.galaxy || a.startSystem - b.startSystem);
+      }
+
       const seen = new Set();
       const queue = [];
-      for (const range of ranges) {
+      for (const range of sortedRanges) {
         for (let s = range.startSystem; s <= range.endSystem; s++) {
           const key = `${range.galaxy}:${s}`;
           if (seen.has(key)) continue;
@@ -693,18 +720,6 @@
           }
           queue.push({ galaxy: range.galaxy, system: s });
         }
-      }
-
-      if (base) {
-        queue.sort((a, b) => {
-          const aSame = a.galaxy === base.galaxy;
-          const bSame = b.galaxy === base.galaxy;
-          if (aSame !== bSame) return aSame ? -1 : 1;
-          if (a.galaxy !== b.galaxy) return a.galaxy - b.galaxy;
-          return Math.abs(a.system - base.system) - Math.abs(b.system - base.system);
-        });
-      } else {
-        queue.sort((a, b) => a.galaxy - b.galaxy || a.system - b.system);
       }
       return queue;
     },
