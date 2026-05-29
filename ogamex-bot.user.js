@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.4
+// @version      2.10.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -868,6 +868,33 @@
       // Don't set active=false — scan should resume after dispatch
       this.save(state);
     },
+
+    // v2.10.5: once an asteroid is found in a range, the rest of that range's
+    // systems are dead weight to scan (each hint range holds ~one asteroid).
+    // Drop the remaining queued systems that belong to the found asteroid's
+    // range(s) — BUT keep any system that ALSO falls inside a different range
+    // that hasn't been satisfied yet, so heavily-overlapping ranges (e.g.
+    // [310-330] / [311-331] / [317-337]) don't lose their own asteroids.
+    pruneFoundRange(state, galaxy, system) {
+      if (!state || !Array.isArray(state.ranges) || !Array.isArray(state.queue)) return 0;
+      const inRange = (r, g, s) => r.galaxy === g && s >= r.startSystem && s <= r.endSystem;
+      const containing = state.ranges.filter(r => inRange(r, galaxy, system));
+      if (containing.length === 0) return 0;
+      const others = state.ranges.filter(r => !containing.includes(r));
+      const before = state.queue.length;
+      state.queue = state.queue.filter(q => {
+        const inContaining = containing.some(r => inRange(r, q.galaxy, q.system));
+        if (!inContaining) return true;                       // unrelated system → keep
+        const inOther = others.some(r => inRange(r, q.galaxy, q.system));
+        return inOther;                                       // shared with another range → keep; else drop
+      });
+      const removed = before - state.queue.length;
+      if (removed > 0) {
+        state.scannedCount += removed; // count skipped systems so the X/Y progress stays sane
+        this.save(state);
+      }
+      return removed;
+    },
   };
 
   // ═══════════════════════════════════════════════════════════════
@@ -1550,6 +1577,9 @@
           log(`Direct dispatch via: ${result.fleetUrl}`, "asteroid");
           // Advance scan state (don't clear) so after dispatch bot resumes from next system
           ScanState.advance(scanState);
+          // v2.10.5: skip the rest of this asteroid's range — jump to the next range.
+          const skipped = ScanState.pruneFoundRange(scanState, current.galaxy, current.system);
+          if (skipped > 0) log(`Found asteroid in range — skipping ${skipped} remaining system(s) in it, jumping to next range.`, "asteroid");
           GM_setValue("pending_mission", JSON.stringify({
             type: "asteroid_mining_direct",
             fleetUrl: result.fleetUrl,
@@ -1567,6 +1597,7 @@
 
         // No direct URL — use standard dispatch
         ScanState.advance(scanState); // keep scan going after dispatch
+        ScanState.pruneFoundRange(scanState, current.galaxy, current.system); // v2.10.5: skip rest of range
         ScanState.markFound(ScanState.load(), current.galaxy, current.system, result.ttlSeconds);
         await this.dispatchToFoundAsteroid(ScanState.load());
         return;
