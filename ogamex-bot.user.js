@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.9.9
-// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; maxFlight raised to 45 to cover full same-galaxy spread)
+// @version      2.10.1
+// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -57,7 +57,25 @@
     enabled: false,
     asteroidMining: {
       enabled: false,
-      minersPerMission: 0, // 0 = send all available
+      minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
+                           // right-sizing has no data yet (no cargo + no yield estimate).
+      // ── v2.10.0: right-sizing + parallel dispatch ──
+      // The game caps how much one mission collects at the asteroid miner
+      // fleet's TOTAL cargo capacity, and an asteroid holds resources roughly
+      // proportional to your hourly production (≈ constant within a day). So
+      // sending 100% of miners every time wastes ships that just ride along
+      // empty. Right-sizing sends only ceil(expectedResources / cargoPerMiner
+      // × bufferFactor) miners, leaving the rest at home to fly PARALLEL
+      // missions to the other asteroids the game spawns (3–6/h).
+      parallelDispatch: true,       // keep mining with leftover miners instead of waiting for the full fleet to return
+      maxConcurrentMiningFleets: 0, // hard cap on simultaneous mining fleets; 0 = limited only by the game's fleet slots
+      minMinersPerMission: 1,       // never send fewer than this (also the floor for "miners left home" to bother going parallel)
+      cargoPerMiner: 0,             // cargo capacity of ONE asteroid miner; 0 = auto-learn from the fleet confirmation page
+      expectedResourcesPerAsteroid: 0, // expected resources per asteroid; 0 = auto-learn from mission reports (set manually to seed before learning)
+      bufferFactor: 1.15,           // over-provision factor vs the estimate (covers above-average asteroids)
+      yieldSampleSize: 20,          // rolling window of "resources found" reports used for the estimate
+      estimatePercentile: 85,       // size the fleet against this percentile of samples (not the mean) so big asteroids aren't under-served
+      learnFromReports: true,       // parse asteroid mining reports to learn expectedResources (see AsteroidYieldTracker)
       scanIntervalMin: 45, // minutes between range re-scans (asteroids move after each series)
       maxFlightMinutes: 45, // safety cap on one-way flight time; ranges beyond this are skipped. Formula max(11, ceil(11+Δ/15)) hits 45min at Δ=499 (max same-galaxy distance), so 45 ensures every range the game reports gets scanned. Lower values silently drop far ranges and the bot keeps spinning on a few empty close ones.
       // Ship types to use for asteroid mining, tried in order.
@@ -878,6 +896,158 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  ASTEROID YIELD TRACKER  (v2.10.0)
+  // ═══════════════════════════════════════════════════════════════
+  // Decides how many miners a single mission needs, instead of always
+  // sending 100%. Two learned inputs:
+  //
+  //   • cargoPerMiner  — capacity of ONE asteroid miner. Learned from the
+  //                      fleet confirmation page (total cargo shown there ÷
+  //                      miners selected). Overridable via config.cargoPerMiner.
+  //   • expectedResources — typical resources on an asteroid. Learned from the
+  //                      "resources found" mission reports (AsteroidYieldTracker
+  //                      .recordYield). We size against a high percentile of the
+  //                      sample window so above-average asteroids aren't
+  //                      under-served. Overridable via config.expectedResourcesPerAsteroid.
+  //
+  //   minersNeeded = clamp(ceil(expectedResources / cargoPerMiner × buffer),
+  //                        minMinersPerMission, ∞)
+  //
+  // If either input is unknown we return CONFIG.minersPerMission (0 = all),
+  // i.e. exactly the legacy behaviour until enough has been learned.
+  const AsteroidYieldTracker = {
+    SAMPLES_KEY: "ogamex_yield_samples",   // [{res, at}] resources-found reports
+    CARGO_KEY: "ogamex_cargo_per_miner",   // learned cargo capacity of one miner
+    SEEN_REPORTS_KEY: "ogamex_seen_reports", // dedupe report ids already counted
+
+    _loadSamples() {
+      try { return JSON.parse(GM_getValue(this.SAMPLES_KEY, "[]")); } catch { return []; }
+    },
+
+    // Record one "resources found" mission yield (sum of metal+crystal+deut).
+    recordYield(resources) {
+      if (!Number.isFinite(resources) || resources <= 0) return;
+      const max = CONFIG.asteroidMining.yieldSampleSize || 20;
+      const samples = this._loadSamples();
+      samples.push({ res: Math.round(resources), at: Date.now() });
+      while (samples.length > max) samples.shift();
+      GM_setValue(this.SAMPLES_KEY, JSON.stringify(samples));
+      log(`Yield sample recorded: ${Math.round(resources).toLocaleString()} (n=${samples.length}, est now ${this.expectedResources().toLocaleString()})`, "asteroid");
+    },
+
+    // Learn cargo-per-miner from the fleet confirmation page.
+    recordCargoPerMiner(totalCargo, minersSelected) {
+      if (!Number.isFinite(totalCargo) || totalCargo <= 0) return;
+      if (!Number.isFinite(minersSelected) || minersSelected <= 0) return;
+      const per = Math.round(totalCargo / minersSelected);
+      if (per <= 0) return;
+      GM_setValue(this.CARGO_KEY, String(per));
+      log(`Learned cargo/miner: ${per.toLocaleString()} (total ${totalCargo.toLocaleString()} ÷ ${minersSelected} miners)`, "fleet");
+    },
+
+    cargoPerMiner() {
+      const cfg = CONFIG.asteroidMining.cargoPerMiner || 0;
+      if (cfg > 0) return cfg;
+      return parseInt(GM_getValue(this.CARGO_KEY, "0")) || 0;
+    },
+
+    // High-percentile of the rolling sample window (fallback to config seed).
+    expectedResources() {
+      const cfg = CONFIG.asteroidMining.expectedResourcesPerAsteroid || 0;
+      const samples = this._loadSamples().map(s => s.res).filter(n => n > 0).sort((a, b) => a - b);
+      if (samples.length === 0) return cfg; // nothing learned yet → seed (or 0)
+      const p = Math.min(100, Math.max(1, CONFIG.asteroidMining.estimatePercentile || 85));
+      const idx = Math.min(samples.length - 1, Math.floor((p / 100) * samples.length));
+      const learned = samples[idx];
+      return Math.max(learned, cfg); // never below an explicit manual seed
+    },
+
+    // How many miners this mission should send. 0 = send all (legacy fallback).
+    minersNeeded() {
+      const am = CONFIG.asteroidMining;
+      const cargo = this.cargoPerMiner();
+      const est = this.expectedResources();
+      if (cargo > 0 && est > 0) {
+        const buf = am.bufferFactor || 1.15;
+        const n = Math.ceil((est / cargo) * buf);
+        return Math.max(am.minMinersPerMission || 1, n);
+      }
+      // Not enough learned yet → behave exactly like before.
+      return am.minersPerMission || 0;
+    },
+
+    // ── Engine A: parse asteroid mining reports to learn expectedResources ──
+    // ⚠️ SELECTORS UNVERIFIED on live OGameX. This runs only on message-like
+    // pages, is fully wrapped in try/catch, and never throws into the main
+    // flow. When it sees candidate report markup it dumps the raw HTML to the
+    // log so the exact selectors can be confirmed, then tightened. Until
+    // verified, set config.expectedResourcesPerAsteroid manually to enable
+    // right-sizing immediately.
+    scanReports() {
+      if (!CONFIG.asteroidMining.learnFromReports) return;
+      try {
+        const path = location.pathname.toLowerCase();
+        const looksLikeMessages = /message|communication|report|nachricht|wiadomo/.test(path) ||
+          /Asteroid\s*Mining/i.test(document.body.textContent || "");
+        if (!looksLikeMessages) return;
+
+        // Candidate report containers — try a few common message selectors.
+        const containers = document.querySelectorAll(
+          ".message, .msg, .messageContent, [data-message-id], .message_item, li.message, .communication-item"
+        );
+        if (containers.length === 0) return;
+
+        const seen = new Set(JSON.parse(GM_getValue(this.SEEN_REPORTS_KEY, "[]")));
+        let learned = 0, dumped = 0;
+
+        containers.forEach((c, i) => {
+          const text = (c.textContent || "").replace(/\s+/g, " ").trim();
+          if (!/asteroid/i.test(text)) return; // only asteroid mining reports
+
+          // Stable-ish id for dedupe: explicit id attr, else a hash of the text.
+          const id = c.getAttribute("data-message-id") || c.id ||
+            ("h" + Math.abs([...text].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) | 0, 7)));
+          if (seen.has(id)) return;
+
+          // Outcome detection. Empty / dark matter / container ⇒ 0 resources,
+          // but still mark seen so we don't reprocess. Resources ⇒ sum them.
+          const isEmpty = /(empty|nothing found|nichts|pusto|brak)/i.test(text);
+          const isDM = /dark\s*matter|dunkle\s*materie|ciemna\s*materia/i.test(text);
+          let resources = 0;
+          if (!isEmpty && !isDM) {
+            // Grab metal/crystal/deuterium amounts. Try labelled numbers first,
+            // then fall back to all grouped numbers near resource words.
+            const nums = [];
+            const re = /(?:metal|crystal|kristall|kryszta|deuterium|deuter)\D{0,12}?([\d.,\s]{2,})/gi;
+            let m;
+            while ((m = re.exec(text)) !== null) {
+              const v = parseInt((m[1] || "").replace(/[^\d]/g, ""), 10);
+              if (Number.isFinite(v) && v > 0) nums.push(v);
+            }
+            resources = nums.reduce((a, b) => a + b, 0);
+            // Diagnostics: if it's clearly an asteroid resources report but we
+            // parsed nothing, dump it so selectors/regex can be fixed.
+            if (resources === 0 && dumped < 3) {
+              log(`[REPORT?] asteroid report, 0 parsed — verify markup: ${text.substring(0, 240)}`, "warn");
+              dumped++;
+            }
+          }
+
+          seen.add(id);
+          if (resources > 0) { this.recordYield(resources); learned++; }
+        });
+
+        if (learned > 0 || seen.size) {
+          GM_setValue(this.SEEN_REPORTS_KEY, JSON.stringify([...seen].slice(-300)));
+        }
+        if (learned > 0) log(`Parsed ${learned} new asteroid report(s) for yield learning`, "asteroid");
+      } catch (err) {
+        log(`Report scan error (non-fatal): ${err.message}`, "warn");
+      }
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  FLEET DISPATCHER: Navigate fleet send pages
   // ═══════════════════════════════════════════════════════════════
 
@@ -1374,7 +1544,7 @@
             type: "asteroid_mining_direct",
             fleetUrl: result.fleetUrl,
             shipType: "ASTEROID_MINER",
-            quantity: CONFIG.asteroidMining.minersPerMission,
+            quantity: AsteroidYieldTracker.minersNeeded(), // right-sized (0 = all, until learned)
             step: "select_ships_direct",
             resumeScan: true, // flag: after dispatch, continue scanning
             timestamp: Date.now(),
@@ -1461,7 +1631,7 @@
         type: "asteroid_mining_direct",
         fleetUrl,
         shipType: "ASTEROID_MINER",
-        quantity: CONFIG.asteroidMining.minersPerMission,
+        quantity: AsteroidYieldTracker.minersNeeded(), // right-sized (0 = all, until learned)
         step: "select_ships_direct",
         resumeScan: true,
         timestamp: Date.now(),
@@ -1609,6 +1779,99 @@
     return null;
   }
 
+  // v2.10.1: how many miners were left at home after the most recent dispatch.
+  // Returns -1 when unknown/stale (no record, or older than a full round trip),
+  // which callers treat as "assume none home" — the safe default that keeps the
+  // bot from scanning when it has nothing to send. This is what makes parallel
+  // mode dormant until right-sizing actually leaves miners behind: a 100% send
+  // (minersNeeded=0, the pre-learning fallback) leaves 0 home → bot waits, just
+  // like the old serial behaviour.
+  function minersHomeAfterLastDispatch() {
+    let d = null;
+    try { d = JSON.parse(GM_getValue("ogamex_last_dispatch", "null")); } catch {}
+    if (!d || !Number.isFinite(d.available) || !Number.isFinite(d.toSend)) return -1;
+    const maxAgeMs = (CONFIG.asteroidMining.maxFlightMinutes * 2 + 10) * 60 * 1000;
+    if (!d.at || Date.now() - d.at > maxAgeMs) return -1; // stale — tells us nothing about now
+    return d.available - d.toSend;
+  }
+
+  // v2.10.1: set the scan-pause timer from the page header countdown (factored
+  // out so both the legacy serial path and the parallel "must wait" path share
+  // identical logic).
+  function setFleetReturnTimerFromHeader(headerText, storedReturnAt) {
+    const nextMatch = headerText.match(/Next:\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/);
+    if (nextMatch) {
+      const hours = nextMatch[1] ? parseInt(nextMatch[1]) : 0;
+      const minutes = parseInt(nextMatch[2]);
+      const seconds = parseInt(nextMatch[3]);
+      const countdownMs = (hours * 3600 + minutes * 60 + seconds) * 1000;
+      const isReturn = /Asteroid\s*Mining\s*\(R\)/i.test(headerText);
+      // (R) = return phase, countdown IS return time. Otherwise ×2 for round trip.
+      const returnAt = Date.now() + (isReturn ? countdownMs : countdownMs * 2) + 60000;
+      GM_setValue("ogamex_fleet_return_at", String(returnAt));
+      const newWait = Math.ceil((returnAt - Date.now()) / 60000);
+      log(`Asteroid fleet active! Timer set: ~${newWait}min (countdown ${hours}h${minutes}m${seconds}s${isReturn ? ' R' : ' ×2'})`, "asteroid");
+    } else if (storedReturnAt && storedReturnAt > Date.now()) {
+      const minLeft = Math.ceil((storedReturnAt - Date.now()) / 60000);
+      log(`Asteroid fleet active, can't parse countdown. Using stored timer (~${minLeft}min).`, "asteroid");
+    } else {
+      const fallbackMs = CONFIG.asteroidMining.maxFlightMinutes * 2 * 60 * 1000;
+      GM_setValue("ogamex_fleet_return_at", String(Date.now() + fallbackMs));
+      log(`Asteroid fleet active but no countdown found. Estimated ~${CONFIG.asteroidMining.maxFlightMinutes * 2}min wait.`, "asteroid");
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  PARALLEL DISPATCH DECISION  (v2.10.0)
+  // ═══════════════════════════════════════════════════════════════
+  // After a mining fleet is sent, decide whether to keep scanning (send the
+  // leftover miners to OTHER asteroids in parallel) or pause until a fleet
+  // returns. Returns true = keep scanning.
+  //
+  // The pause is implemented by setting ogamex_fleet_return_at, which every
+  // existing scan gate already honours — so parallel mode simply means "don't
+  // set that timer while we still have miners + a free fleet slot." When we DO
+  // pause we use the soonest return so a freed slot (and the miners aboard)
+  // gets reused as early as possible, not after the whole fleet is home.
+  function decideAfterMiningSend({ available, toSend, capturedFlightMs }) {
+    const am = CONFIG.asteroidMining;
+    const minersLeftHome = (Number.isFinite(available) && Number.isFinite(toSend)) ? available - toSend : 0;
+    const slots = GameState.getFleetSlots();
+    const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
+    const inflight = (parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0) + 1; // +1 = the one we just sent
+    GM_setValue("ogamex_inflight_fleets", String(inflight));
+    const maxConc = am.maxConcurrentMiningFleets || 0;
+    const concOk = maxConc <= 0 || inflight < maxConc;
+
+    const canParallel = am.parallelDispatch &&
+      minersLeftHome >= (am.minMinersPerMission || 1) &&
+      slotsFree > 0 && concOk;
+
+    if (canParallel) {
+      GM_setValue("ogamex_fleet_return_at", "0"); // don't gate scanning
+      log(`PARALLEL: sent ${toSend}, ~${minersLeftHome} miners still home, ${slotsFree} slot(s) free → keep scanning for more asteroids.`, "asteroid");
+      return true;
+    }
+
+    // Pause until the soonest fleet return.
+    let returnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0"));
+    if (!returnAt || returnAt < Date.now()) {
+      if (capturedFlightMs > 0) returnAt = Date.now() + capturedFlightMs * 2 + 60000;
+      else {
+        const parsed = parseFleetReturnTime();
+        returnAt = (parsed && parsed > Date.now()) ? parsed
+          : Date.now() + CONFIG.asteroidMining.maxFlightMinutes * 2 * 60 * 1000;
+      }
+      GM_setValue("ogamex_fleet_return_at", String(returnAt));
+    }
+    const reason = !am.parallelDispatch ? "parallel off"
+      : minersLeftHome < (am.minMinersPerMission || 1) ? "no miners left home"
+      : slotsFree <= 0 ? "fleet slots full"
+      : "concurrency cap reached";
+    log(`WAIT (${reason}): scan paused ~${Math.ceil((returnAt - Date.now()) / 60000)}min until a fleet returns.`, "asteroid");
+    return false;
+  }
+
   // ═══════════════════════════════════════════════════════════════
   //  MISSION FLOW HANDLER: Continue multi-page fleet dispatch
   // ═══════════════════════════════════════════════════════════════
@@ -1657,29 +1920,35 @@
 
         // Flight time captured in step 2, used by finishDispatch
         let capturedFlightMs = 0;
+        // v2.10.0: miner counts captured at step 1, read by finishDispatch to
+        // decide parallel-vs-wait. Also persisted to ogamex_last_dispatch so the
+        // fleetSendSuccessfully init handler (the usual post-send entry point)
+        // can make the same decision.
+        let dispatchInfo = { available: 0, toSend: 0 };
 
         // ── Helper: after dispatch, decide whether to resume scan or wait ──
-        // dispatchOk=true: fleet sent, all miners gone → stop scanning, wait for return
+        // dispatchOk=true: fleet sent → resume scanning if miners remain home
+        //   and a fleet slot is free (parallel), else wait for a fleet to return.
         // dispatchOk=false: dispatch failed → resume scan (try next asteroid)
         const finishDispatch = async (dispatchOk) => {
           GM_setValue("pending_mission", null);
           if (dispatchOk) {
-            // All miners sent — wait for fleet to return before scanning again
-            const returnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0"));
-            if (!returnAt || returnAt < Date.now()) {
-              // No return time set yet — use captured flight time or fallback
-              if (capturedFlightMs > 0) {
-                const rt = Date.now() + capturedFlightMs * 2 + 60000;
-                GM_setValue("ogamex_fleet_return_at", String(rt));
-                log(`All miners dispatched. Return in ~${Math.ceil((capturedFlightMs * 2 + 60000) / 60000)}min (from flight time)`, "asteroid");
+            // Decide parallel vs wait based on miners left home + free slots.
+            const goParallel = decideAfterMiningSend({
+              available: dispatchInfo.available,
+              toSend: dispatchInfo.toSend,
+              capturedFlightMs,
+            });
+            if (goParallel) {
+              const remainingScan = ScanState.load();
+              if (remainingScan?.active && remainingScan.queue?.length > 0) {
+                const next = remainingScan.queue[0];
+                await AntiDetection.shortDelay();
+                scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "parallel resume");
               } else {
-                const fallbackMs = CONFIG.asteroidMining.maxFlightMinutes * 2 * 60 * 1000;
-                GM_setValue("ogamex_fleet_return_at", String(Date.now() + fallbackMs));
-                log(`All miners dispatched. Estimated return in ~${CONFIG.asteroidMining.maxFlightMinutes * 2}min`, "asteroid");
+                ScanState.clear(); // queue exhausted — let scheduler start a fresh scan
               }
-            } else {
-              const minLeft = Math.ceil((returnAt - Date.now()) / 60000);
-              log(`All miners dispatched. Scan paused ~${minLeft}min until fleet returns.`, "asteroid");
+              return;
             }
             ScanState.clear();
             return;
@@ -1813,8 +2082,13 @@
           const shipItem = minerBtn.closest(".ship-item") || minerBtn.parentElement;
           const input = shipItem?.querySelector("input.numberFormatInput, input[type='text']");
           const available = parseInt(minerBtn.dataset?.shipQuantity || input?.getAttribute("max-ships") || "0");
-          // Send all available miners (0 = all)
+          // Right-sized send: mission.quantity comes from AsteroidYieldTracker
+          // .minersNeeded() (0 = all available, the legacy fallback).
           const toSend = mission.quantity > 0 ? Math.min(mission.quantity, available) : available;
+          // Record for the post-send parallel decision (both finishDispatch and
+          // the fleetSendSuccessfully init handler read ogamex_last_dispatch).
+          dispatchInfo = { available, toSend };
+          GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
 
           if (input && toSend > 0) {
             const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -1911,6 +2185,27 @@
         }
         log("Step 2 loaded (destination)", "fleet");
         dumpButtons("step2");
+
+        // ── v2.10.0: learn cargo-per-miner from the confirmation page ──
+        // OGameX shows the selected fleet's total cargo capacity here. Divide
+        // by the miners we selected to learn one miner's capacity, which feeds
+        // AsteroidYieldTracker.minersNeeded(). Only learn when we know how many
+        // we sent (dispatchInfo.toSend) and the user hasn't pinned it in config.
+        try {
+          if (!CONFIG.asteroidMining.cargoPerMiner && dispatchInfo.toSend > 0) {
+            const cargoText = document.body.textContent;
+            // "Cargo capacity: 1.234.567" / "Storage capacity" / "Ładowność"
+            const cm = cargoText.match(/(?:cargo|storage|capacity|ladun|ładun|frachtraum|laderaum)\D{0,20}?([\d][\d.,\s]{2,})/i);
+            if (cm) {
+              const totalCargo = parseInt((cm[1] || "").replace(/[^\d]/g, ""), 10);
+              if (Number.isFinite(totalCargo) && totalCargo > 0) {
+                AsteroidYieldTracker.recordCargoPerMiner(totalCargo, dispatchInfo.toSend);
+              }
+            } else {
+              log(`[CARGO?] couldn't parse cargo capacity on step 2 — verify markup to enable auto cargo learning`, "warn");
+            }
+          }
+        } catch (e) { log(`Cargo learn error (non-fatal): ${e.message}`, "warn"); }
 
         // ── Capture flight time from step 2 (shown before sending) ──
         const step2Text = document.body.textContent;
@@ -2334,6 +2629,7 @@
             <button class="mini-btn" id="ogx-asteroid-toggle">${CONFIG.asteroidMining.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-asteroid-status">Idle</div>
+          <div class="status" id="ogx-asteroid-sizing" style="font-size:10px;color:#f39c12;margin-top:3px;">Mode: — | miners/mission: — | cargo/miner: — | est. asteroid: —</div>
         </div>
 
         <div class="section">
@@ -2430,7 +2726,7 @@
               type: "asteroid_mining_direct",
               fleetUrl: result.fleetUrl,
               shipType: "ASTEROID_MINER",
-              quantity: CONFIG.asteroidMining.minersPerMission,
+              quantity: AsteroidYieldTracker.minersNeeded(), // right-sized (0 = all, until learned)
               step: "select_ships_direct",
               resumeScan: false,
               timestamp: Date.now(),
@@ -2533,6 +2829,21 @@
     }
 
     astStatus.textContent = text;
+
+    // v2.10.0: right-sizing / parallel status line
+    const sizing = document.getElementById("ogx-asteroid-sizing");
+    if (sizing) {
+      const am = CONFIG.asteroidMining;
+      const cargo = AsteroidYieldTracker.cargoPerMiner();
+      const est = AsteroidYieldTracker.expectedResources();
+      const need = AsteroidYieldTracker.minersNeeded();
+      const inflight = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+      const mode = am.parallelDispatch ? "parallel" : "serial";
+      const needStr = need > 0 ? `${need}` : "all";
+      const cargoStr = cargo > 0 ? cargo.toLocaleString() : "?";
+      const estStr = est > 0 ? est.toLocaleString() : "?";
+      sizing.textContent = `Mode: ${mode} | miners/mission: ${needStr} | cargo/miner: ${cargoStr} | est. asteroid: ${estStr} | in-flight: ${inflight}`;
+    }
   }
 
   function makeDraggable(element, handle) {
@@ -2585,6 +2896,12 @@
     // BEFORE our JS finishDispatch() can run, so pending_mission is never cleared.
     // Fix it here — immediately clear pending_mission and foundAsteroid so that
     // the scheduled handlePendingMission below is a no-op (won't attempt re-dispatch).
+    //
+    // v2.10.0: this is ALSO the usual place the parallel-vs-wait decision is
+    // made, because the browser navigates here before finishDispatch can run.
+    // parallelKeepScanning is read by the fleet-timer block below to avoid
+    // re-pausing the scan we just decided to continue.
+    let parallelKeepScanning = false;
     if (window.location.href.includes("fleetSendSuccessfully")) {
       GM_setValue("pending_mission", null);
       const afterDispatchState = ScanState.load();
@@ -2592,7 +2909,21 @@
         afterDispatchState.foundAsteroid = null;
         ScanState.save(afterDispatchState);
       }
-      log("Fleet sent — dispatch state cleaned up. Scan paused until fleet returns.", "asteroid");
+      const am = CONFIG.asteroidMining;
+      let lastDisp = null;
+      try { lastDisp = JSON.parse(GM_getValue("ogamex_last_dispatch", "null")); } catch {}
+      if (am.parallelDispatch && lastDisp) {
+        parallelKeepScanning = decideAfterMiningSend({
+          available: lastDisp.available,
+          toSend: lastDisp.toSend,
+          capturedFlightMs: 0,
+        });
+      }
+      if (parallelKeepScanning) {
+        log("Fleet sent — miners + slot remain → continuing scan for more asteroids (parallel).", "asteroid");
+      } else {
+        log("Fleet sent — dispatch state cleaned up. Scan paused until a fleet returns.", "asteroid");
+      }
     }
 
     // ── Cleanup stale data on startup ──
@@ -2619,30 +2950,33 @@
           log("No fleet movement — fleet already returned. Resetting timer.", "asteroid");
           GM_setValue("ogamex_fleet_return_at", "0");
         }
+        GM_setValue("ogamex_inflight_fleets", "0"); // everything home — reset parallel counter
       } else if (hasAsteroidFleet || (justSentFleet && storedReturnAt && storedReturnAt > Date.now())) {
-        // Asteroid fleet IS active — always (re)compute timer from page header
-        const nextMatch = headerText.match(/Next:\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/);
-        if (nextMatch) {
-          const hours = nextMatch[1] ? parseInt(nextMatch[1]) : 0;
-          const minutes = parseInt(nextMatch[2]);
-          const seconds = parseInt(nextMatch[3]);
-          const countdownMs = (hours * 3600 + minutes * 60 + seconds) * 1000;
-          const isReturn = /Asteroid\s*Mining\s*\(R\)/i.test(headerText);
-          // (R) = return phase, countdown IS return time. Otherwise ×2 for round trip.
-          const returnAt = Date.now() + (isReturn ? countdownMs : countdownMs * 2) + 60000;
-          GM_setValue("ogamex_fleet_return_at", String(returnAt));
-          const newWait = Math.ceil((returnAt - Date.now()) / 60000);
-          log(`Asteroid fleet active! Timer set: ~${newWait}min (countdown ${hours}h${minutes}m${seconds}s${isReturn ? ' R' : ' ×2'})`, "asteroid");
-        } else if (storedReturnAt && storedReturnAt > Date.now()) {
-          // Can't parse countdown, but we have a valid stored timer — keep it
-          const minLeft = Math.ceil((storedReturnAt - Date.now()) / 60000);
-          log(`Asteroid fleet active, can't parse countdown. Using stored timer (~${minLeft}min).`, "asteroid");
-        } else {
-          // Asteroid fleet active but no countdown and no timer — pessimistic fallback
-          const fallbackMs = CONFIG.asteroidMining.maxFlightMinutes * 2 * 60 * 1000;
-          GM_setValue("ogamex_fleet_return_at", String(Date.now() + fallbackMs));
-          log(`Asteroid fleet active but no countdown found. Estimated ~${CONFIG.asteroidMining.maxFlightMinutes * 2}min wait.`, "asteroid");
+        // ── Asteroid fleet IS in flight ──
+        // v2.10.1: in parallel mode an in-flight fleet is normal — keep scanning
+        // ONLY if we actually have miners at home AND a free fleet slot to send
+        // another mission. Otherwise (all miners out, or slots full) pause until
+        // a fleet returns, exactly like serial mode. Checking miners-at-home is
+        // what was missing in v2.10.0: with right-sizing still un-learned it
+        // sends 100% (0 home) yet kept scanning on free slots alone.
+        if (CONFIG.asteroidMining.parallelDispatch && !parallelKeepScanning) {
+          const minersHome = minersHomeAfterLastDispatch();
+          const slots = GameState.getFleetSlots();
+          const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
+          const minNeeded = CONFIG.asteroidMining.minMinersPerMission || 1;
+          if (slotsFree > 0 && minersHome >= minNeeded) {
+            GM_setValue("ogamex_fleet_return_at", "0"); // capacity + miners → keep scanning
+            log(`Asteroid fleet in flight, ~${minersHome} miners home + ${slotsFree} slot(s) free — parallel mode keeps scanning.`, "asteroid");
+          } else {
+            const why = minersHome < minNeeded ? `no miners home (${minersHome < 0 ? "unknown" : minersHome})` : "fleet slots full";
+            log(`Parallel: ${why} → wait for fleet return.`, "asteroid");
+            setFleetReturnTimerFromHeader(headerText, storedReturnAt);
+          }
+        } else if (!parallelKeepScanning) {
+          // Serial mode: always (re)compute the wait timer from the page header.
+          setFleetReturnTimerFromHeader(headerText, storedReturnAt);
         }
+        // parallelKeepScanning === true → decideAfterMiningSend already cleared the gate.
       } else if (storedReturnAt && storedReturnAt > Date.now()) {
         // Timer exists but no asteroid fleet visible — could be stale OR page just doesn't show it
         // Be conservative: only reset if there are NO fleets in flight at all
@@ -2654,6 +2988,10 @@
 
     createUI();
     updateStatusUI();
+
+    // v2.10.0: learn expected asteroid yield from mission reports (no-op unless
+    // we're on a message-like page; fully guarded).
+    AsteroidYieldTracker.scanReports();
 
     // Handle pending missions from previous page (fleet dispatch flow)
     setTimeout(handlePendingMission, 2000);
