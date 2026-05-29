@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.2
+// @version      2.10.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2985,22 +2985,28 @@
         GM_setValue("ogamex_inflight_fleets", "0"); // everything home — reset parallel counter
       } else if (hasAsteroidFleet || (justSentFleet && storedReturnAt && storedReturnAt > Date.now())) {
         // ── Asteroid fleet IS in flight ──
-        // v2.10.1: in parallel mode an in-flight fleet is normal — keep scanning
-        // ONLY if we actually have miners at home AND a free fleet slot to send
-        // another mission. Otherwise (all miners out, or slots full) pause until
-        // a fleet returns, exactly like serial mode. Checking miners-at-home is
-        // what was missing in v2.10.0: with right-sizing still un-learned it
-        // sends 100% (0 home) yet kept scanning on free slots alone.
+        // In parallel mode an in-flight fleet is normal — keep scanning as long
+        // as there's a free fleet slot AND we're not certain we're out of miners.
+        // v2.10.3: treat an UNKNOWN home count (no/stale dispatch record) as
+        // "probably have miners → scan and verify at dispatch", not as zero.
+        // Ground truth is the live ship count read on the fleet page at send
+        // time; if it really is 0 the dispatch fail-path sets the wait. Only a
+        // FRESH record proving <min miners home (e.g. right after a 100% send)
+        // pauses here. v2.10.1's "unknown == wait" wrongly blocked players who
+        // had miners home but no recent record.
         if (CONFIG.asteroidMining.parallelDispatch && !parallelKeepScanning) {
-          const minersHome = minersHomeAfterLastDispatch();
+          const minersHome = minersHomeAfterLastDispatch(); // -1 = unknown
+          const known = minersHome >= 0;
           const slots = GameState.getFleetSlots();
           const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
           const minNeeded = CONFIG.asteroidMining.minMinersPerMission || 1;
-          if (slotsFree > 0 && minersHome >= minNeeded) {
-            GM_setValue("ogamex_fleet_return_at", "0"); // capacity + miners → keep scanning
-            log(`Asteroid fleet in flight, ~${minersHome} miners home + ${slotsFree} slot(s) free — parallel mode keeps scanning.`, "asteroid");
+          const haveMiners = !known || minersHome >= minNeeded; // unknown → assume some
+          if (slotsFree > 0 && haveMiners) {
+            GM_setValue("ogamex_fleet_return_at", "0"); // capacity + (likely) miners → keep scanning
+            const homeStr = known ? `~${minersHome}` : "unknown→verify at dispatch";
+            log(`Asteroid fleet in flight, ${homeStr} miners home + ${slotsFree} slot(s) free — parallel keeps scanning.`, "asteroid");
           } else {
-            const why = minersHome < minNeeded ? `no miners home (${minersHome < 0 ? "unknown" : minersHome})` : "fleet slots full";
+            const why = !haveMiners ? `no miners home (${minersHome})` : "fleet slots full";
             log(`Parallel: ${why} → wait for fleet return.`, "asteroid");
             setFleetReturnTimerFromHeader(headerText, storedReturnAt);
           }
