@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.1
+// @version      2.10.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2630,6 +2630,21 @@
           </div>
           <div class="status" id="ogx-asteroid-status">Idle</div>
           <div class="status" id="ogx-asteroid-sizing" style="font-size:10px;color:#f39c12;margin-top:3px;">Mode: — | miners/mission: — | cargo/miner: — | est. asteroid: —</div>
+          <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Hard cap on miners sent per mission. 0 = all available (until learned). Set a number to stop sending 100% right now.">Miners / mission (0=all)</span>
+              <input id="ogx-cfg-miners" type="number" min="0" step="1" value="${CONFIG.asteroidMining.minersPerMission}" style="width:64px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Cargo capacity of ONE asteroid miner. 0 = auto-learn from the fleet page. Set it to enable smart sizing now.">Cargo / miner (0=auto)</span>
+              <input id="ogx-cfg-cargo" type="number" min="0" step="1" value="${CONFIG.asteroidMining.cargoPerMiner}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Typical resources on one asteroid (sum metal+crystal+deut, from your past mission reports). 0 = auto-learn. With this + cargo set, the bot sends only ceil(res/cargo×buffer) miners.">Est. asteroid res. (0=auto)</span>
+              <input id="ogx-cfg-est" type="number" min="0" step="1000" value="${CONFIG.asteroidMining.expectedResourcesPerAsteroid}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Set cargo + est → sends only what's needed. Or just set a miners cap.</div>
+          </div>
         </div>
 
         <div class="section">
@@ -2690,6 +2705,23 @@
       section.className = `section ${CONFIG.asteroidMining.enabled ? "active" : "inactive"}`;
       log(`Asteroid mining ${CONFIG.asteroidMining.enabled ? "enabled" : "disabled"}`, "info");
     });
+
+    // ── v2.10.2: live right-sizing config inputs ──
+    const bindCfgInput = (id, key, label) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        const v = Math.max(0, parseInt(el.value) || 0);
+        el.value = v;
+        CONFIG.asteroidMining[key] = v;
+        saveConfig(CONFIG);
+        log(`${label} set to ${v === 0 ? "auto/all" : v.toLocaleString()}`, "info");
+        updateStatusUI();
+      });
+    };
+    bindCfgInput("ogx-cfg-miners", "minersPerMission", "Miners/mission cap");
+    bindCfgInput("ogx-cfg-cargo", "cargoPerMiner", "Cargo/miner");
+    bindCfgInput("ogx-cfg-est", "expectedResourcesPerAsteroid", "Est. asteroid resources");
 
     document.getElementById("ogx-scan-now").addEventListener("click", async () => {
       log("Manual scan triggered...", "asteroid");
