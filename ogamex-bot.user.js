@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.3
+// @version      2.10.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -69,6 +69,12 @@
       // missions to the other asteroids the game spawns (3–6/h).
       parallelDispatch: true,       // keep mining with leftover miners instead of waiting for the full fleet to return
       maxConcurrentMiningFleets: 0, // hard cap on simultaneous mining fleets; 0 = limited only by the game's fleet slots
+      // User model (v2.10.4): "miners per flight" + "total miners to use" →
+      // the bot launches floor(total / perFlight) flights in parallel, then
+      // waits for returns. e.g. total 100000, perFlight 50000 → 2 flights.
+      // totalMinersToUse 0 = no budget cap (limited only by fleet slots).
+      // minersPerMission (per flight) 0 = send ALL available in a single wave.
+      totalMinersToUse: 0,          // budget of miners to commit across simultaneous flights; 0 = unlimited
       minMinersPerMission: 1,       // never send fewer than this (also the floor for "miners left home" to bother going parallel)
       cargoPerMiner: 0,             // cargo capacity of ONE asteroid miner; 0 = auto-learn from the fleet confirmation page
       expectedResourcesPerAsteroid: 0, // expected resources per asteroid; 0 = auto-learn from mission reports (set manually to seed before learning)
@@ -962,9 +968,14 @@
       return Math.max(learned, cfg); // never below an explicit manual seed
     },
 
-    // How many miners this mission should send. 0 = send all (legacy fallback).
+    // How many miners to send on ONE flight. 0 = send all available.
+    // Priority:
+    //   1. Explicit "miners per flight" (minersPerMission > 0) — manual control wins.
+    //   2. Auto right-sizing from cargo + expected resources (if both known).
+    //   3. 0 → send all (until anything is configured/learned).
     minersNeeded() {
       const am = CONFIG.asteroidMining;
+      if ((am.minersPerMission || 0) > 0) return am.minersPerMission; // explicit per-flight cap wins
       const cargo = this.cargoPerMiner();
       const est = this.expectedResources();
       if (cargo > 0 && est > 0) {
@@ -972,8 +983,7 @@
         const n = Math.ceil((est / cargo) * buf);
         return Math.max(am.minMinersPerMission || 1, n);
       }
-      // Not enough learned yet → behave exactly like before.
-      return am.minersPerMission || 0;
+      return 0; // send all
     },
 
     // ── Engine A: parse asteroid mining reports to learn expectedResources ──
@@ -1795,6 +1805,18 @@
     return d.available - d.toSend;
   }
 
+  // v2.10.4: max simultaneous mining flights. If the user set a miner budget
+  // ("total miners to use") and a per-flight size, the cap = floor(total/per)
+  // — e.g. 100000 / 50000 = 2 flights. Otherwise fall back to the explicit
+  // maxConcurrentMiningFleets (0 = no cap → limited only by game fleet slots).
+  function maxMiningFleets() {
+    const am = CONFIG.asteroidMining;
+    const total = am.totalMinersToUse || 0;
+    const per = am.minersPerMission || 0;
+    if (total > 0 && per > 0) return Math.max(1, Math.floor(total / per));
+    return am.maxConcurrentMiningFleets || 0;
+  }
+
   // v2.10.1: set the scan-pause timer from the page header countdown (factored
   // out so both the legacy serial path and the parallel "must wait" path share
   // identical logic).
@@ -1840,7 +1862,7 @@
     const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
     const inflight = (parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0) + 1; // +1 = the one we just sent
     GM_setValue("ogamex_inflight_fleets", String(inflight));
-    const maxConc = am.maxConcurrentMiningFleets || 0;
+    const maxConc = maxMiningFleets(); // floor(totalMinersToUse / perFlight), or maxConcurrentMiningFleets
     const concOk = maxConc <= 0 || inflight < maxConc;
 
     const canParallel = am.parallelDispatch &&
@@ -1867,7 +1889,7 @@
     const reason = !am.parallelDispatch ? "parallel off"
       : minersLeftHome < (am.minMinersPerMission || 1) ? "no miners left home"
       : slotsFree <= 0 ? "fleet slots full"
-      : "concurrency cap reached";
+      : `flight budget reached (${inflight}/${maxConc} flights)`;
     log(`WAIT (${reason}): scan paused ~${Math.ceil((returnAt - Date.now()) / 60000)}min until a fleet returns.`, "asteroid");
     return false;
   }
@@ -2632,8 +2654,12 @@
           <div class="status" id="ogx-asteroid-sizing" style="font-size:10px;color:#f39c12;margin-top:3px;">Mode: — | miners/mission: — | cargo/miner: — | est. asteroid: —</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Hard cap on miners sent per mission. 0 = all available (until learned). Set a number to stop sending 100% right now.">Miners / mission (0=all)</span>
-              <input id="ogx-cfg-miners" type="number" min="0" step="1" value="${CONFIG.asteroidMining.minersPerMission}" style="width:64px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+              <span title="How many miners to send on ONE flight. 0 = send all available in a single wave. This overrides the auto cargo/est formula.">Miners per flight (0=all)</span>
+              <input id="ogx-cfg-miners" type="number" min="0" step="1" value="${CONFIG.asteroidMining.minersPerMission}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Budget of miners to commit across simultaneous flights. The bot launches floor(total / per-flight) flights, then waits for returns. e.g. 100000 total / 50000 per = 2 flights. 0 = no limit (only fleet slots).">Total miners to use (0=∞)</span>
+              <input id="ogx-cfg-total" type="number" min="0" step="1" value="${CONFIG.asteroidMining.totalMinersToUse}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Cargo capacity of ONE asteroid miner. 0 = auto-learn from the fleet page. Set it to enable smart sizing now.">Cargo / miner (0=auto)</span>
@@ -2719,7 +2745,8 @@
         updateStatusUI();
       });
     };
-    bindCfgInput("ogx-cfg-miners", "minersPerMission", "Miners/mission cap");
+    bindCfgInput("ogx-cfg-miners", "minersPerMission", "Miners per flight");
+    bindCfgInput("ogx-cfg-total", "totalMinersToUse", "Total miners to use");
     bindCfgInput("ogx-cfg-cargo", "cargoPerMiner", "Cargo/miner");
     bindCfgInput("ogx-cfg-est", "expectedResourcesPerAsteroid", "Est. asteroid resources");
 
@@ -2870,11 +2897,13 @@
       const est = AsteroidYieldTracker.expectedResources();
       const need = AsteroidYieldTracker.minersNeeded();
       const inflight = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+      const maxFleets = maxMiningFleets();
       const mode = am.parallelDispatch ? "parallel" : "serial";
-      const needStr = need > 0 ? `${need}` : "all";
+      const needStr = need > 0 ? need.toLocaleString() : "all";
       const cargoStr = cargo > 0 ? cargo.toLocaleString() : "?";
       const estStr = est > 0 ? est.toLocaleString() : "?";
-      sizing.textContent = `Mode: ${mode} | miners/mission: ${needStr} | cargo/miner: ${cargoStr} | est. asteroid: ${estStr} | in-flight: ${inflight}`;
+      const flightsStr = maxFleets > 0 ? `${inflight}/${maxFleets}` : `${inflight}/∞`;
+      sizing.textContent = `Mode: ${mode} | per flight: ${needStr} | flights: ${flightsStr} | cargo/miner: ${cargoStr} | est: ${estStr}`;
     }
   }
 
@@ -3001,12 +3030,18 @@
           const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
           const minNeeded = CONFIG.asteroidMining.minMinersPerMission || 1;
           const haveMiners = !known || minersHome >= minNeeded; // unknown → assume some
-          if (slotsFree > 0 && haveMiners) {
-            GM_setValue("ogamex_fleet_return_at", "0"); // capacity + (likely) miners → keep scanning
+          const maxFleets = maxMiningFleets();
+          const inflight = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+          const budgetOk = maxFleets <= 0 || inflight < maxFleets;
+          if (slotsFree > 0 && haveMiners && budgetOk) {
+            GM_setValue("ogamex_fleet_return_at", "0"); // capacity + (likely) miners + budget → keep scanning
             const homeStr = known ? `~${minersHome}` : "unknown→verify at dispatch";
-            log(`Asteroid fleet in flight, ${homeStr} miners home + ${slotsFree} slot(s) free — parallel keeps scanning.`, "asteroid");
+            const budgetStr = maxFleets > 0 ? `, ${inflight}/${maxFleets} flights` : "";
+            log(`Asteroid fleet in flight, ${homeStr} miners home + ${slotsFree} slot(s) free${budgetStr} — parallel keeps scanning.`, "asteroid");
           } else {
-            const why = !haveMiners ? `no miners home (${minersHome})` : "fleet slots full";
+            const why = !budgetOk ? `flight budget reached (${inflight}/${maxFleets})`
+              : !haveMiners ? `no miners home (${minersHome})`
+              : "fleet slots full";
             log(`Parallel: ${why} → wait for fleet return.`, "asteroid");
             setFleetReturnTimerFromHeader(headerText, storedReturnAt);
           }
