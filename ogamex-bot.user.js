@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.7
+// @version      2.10.8
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1848,35 +1848,35 @@
     return am.maxConcurrentMiningFleets || 0;
   }
 
-  // v2.10.7: track in-flight asteroid fleets by their expected RETURN time so
-  // the flight-budget self-corrects as fleets land — one entry per dispatch.
-  // The old single counter (ogamex_inflight_fleets) only reset to 0 when ALL
-  // fleets were SIMULTANEOUSLY home ("No fleet movement"); with staggered
-  // fleets that moment rarely comes, so it stuck at max (e.g. 3/3) and the bot
-  // waited forever, never sending the next wave. Counting live ETAs frees a
-  // budget slot the moment each fleet's round trip elapses.
+  // v2.10.8: count in-flight fleets from the page's REAL fleet-status bar
+  // ("N Missions: M Own"), NOT an estimate. History:
+  //   - ≤v2.10.6: a counter that only reset to 0 when ALL fleets were home →
+  //     stuck at max with staggered fleets (waited forever).
+  //   - v2.10.7: estimated each fleet's return ETA and pruned on expiry — but
+  //     ETAs ran short (asteroid mining dwell + flight-time error), so a fleet
+  //     got pruned WHILE STILL IN FLIGHT → undercount → the bot freed the
+  //     budget early, scanned with fleets still out, and tried to dispatch a
+  //     4th fleet with too few miners (Send button disabled → dispatch failed).
+  // Ground truth is the live page. During the wait the bot sits on a
+  // fleet-status page (the "Type: Asteroid Mining" header is what triggers the
+  // wait), so "M Own" is reliably present and drops the instant a fleet lands.
+  // On a page WITHOUT the bar (e.g. galaxy scan) we keep the last stored count
+  // — conservative: never free the budget on a blind page.
   function inflightFleetCount() {
-    let arr = [];
-    try { arr = JSON.parse(GM_getValue("ogamex_inflight_returns", "[]")); } catch {}
-    if (!Array.isArray(arr)) arr = [];
-    const now = Date.now();
-    const live = arr.filter(t => Number.isFinite(t) && t > now);
-    if (live.length !== arr.length) GM_setValue("ogamex_inflight_returns", JSON.stringify(live));
-    return live.length;
-  }
-
-  function recordInflightFleet(returnAt) {
-    let arr = [];
-    try { arr = JSON.parse(GM_getValue("ogamex_inflight_returns", "[]")); } catch {}
-    if (!Array.isArray(arr)) arr = [];
-    const now = Date.now();
-    arr = arr.filter(t => Number.isFinite(t) && t > now);
-    if (Number.isFinite(returnAt) && returnAt > now) arr.push(returnAt);
-    GM_setValue("ogamex_inflight_returns", JSON.stringify(arr));
+    const m = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
+    const stored = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+    if (!m) return stored; // no fleet bar on this page → last known (conservative)
+    const own = parseInt(m[2]) || 0;
+    // Post-send race guard: the page may not yet list a fleet we dispatched in
+    // the last 30s, so don't let a stale-low read drop below what we just sent.
+    const sinceSend = Date.now() - (parseInt(GM_getValue("ogamex_last_dispatch_at", "0")) || 0);
+    const reconciled = (sinceSend < 30000 && own < stored) ? stored : own;
+    if (reconciled !== stored) GM_setValue("ogamex_inflight_fleets", String(reconciled));
+    return reconciled;
   }
 
   function clearInflightFleets() {
-    GM_setValue("ogamex_inflight_returns", "[]");
+    GM_setValue("ogamex_inflight_fleets", "0");
   }
 
   // v2.10.1: set the scan-pause timer from the page header countdown (factored
@@ -1922,21 +1922,14 @@
     const minersLeftHome = (Number.isFinite(available) && Number.isFinite(toSend)) ? available - toSend : 0;
     const slots = GameState.getFleetSlots();
     const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
-    // v2.10.7: record THIS fleet's expected return so the budget self-corrects
-    // as fleets land (was: a counter that only reset when ALL were home → stuck
-    // at max, never sent the next wave). Estimate the round trip from the
-    // captured flight time, else the live page countdown, else the max-flight
-    // fallback — same precedence as the pause path below.
-    let thisReturnAt;
-    if (capturedFlightMs > 0) {
-      thisReturnAt = Date.now() + capturedFlightMs * 2 + 60000;
-    } else {
-      const parsedRet = parseFleetReturnTime();
-      thisReturnAt = (parsedRet && parsedRet > Date.now()) ? parsedRet
-        : Date.now() + CONFIG.asteroidMining.maxFlightMinutes * 2 * 60 * 1000;
-    }
-    recordInflightFleet(thisReturnAt);
-    const inflight = inflightFleetCount(); // count of live ETAs incl. the one just recorded
+    // v2.10.8: we just sent a fleet — bump the stored floor by 1 and stamp the
+    // time, so inflightFleetCount()'s page-reconciliation race guard knows a
+    // fresh fleet may not appear in "M Own" for a few seconds. The real count
+    // then takes over from the live page as soon as it shows the new fleet.
+    const storedNow = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+    GM_setValue("ogamex_inflight_fleets", String(storedNow + 1));
+    GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
+    const inflight = inflightFleetCount(); // reconciles with the live "M Own" page bar
     const maxConc = maxMiningFleets(); // floor(totalMinersToUse / perFlight), or maxConcurrentMiningFleets
     const concOk = maxConc <= 0 || inflight < maxConc;
 
