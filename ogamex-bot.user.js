@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.8
+// @version      2.10.9
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -367,6 +367,16 @@
     NavRateLimiter.record();
     window.location.href = url;
     return true;
+  }
+
+  // v2.10.9: human-pace delay between galaxy-system scans. Was 250-650ms — a
+  // clear bot-tell (no human clicks through systems twice a second, and it
+  // meant ~124 galaxy page-loads per sweep at machine speed). 2-6s + the
+  // existing 10% jitter pause looks like a person checking nearby belts.
+  // Balances stealth vs throughput (owner choice 2026-06-08). The
+  // closest-range-first scan ORDER is unchanged — only the pacing.
+  function humanScanDelayMs() {
+    return 2000 + Math.random() * 4000;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1517,7 +1527,7 @@
           ScanState.advance(scanState);
           const next = scanState.queue[0];
           if (next) {
-            const scanDelay = 500 + Math.random() * 800;
+            const scanDelay = humanScanDelayMs();
             await AntiDetection.sleep(scanDelay);
             scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "skip-dispatched next");
           } else {
@@ -1559,7 +1569,7 @@
             ScanState.advance(scanState);
             const next = scanState.queue[0];
             if (next) {
-              await AntiDetection.sleep(500 + Math.random() * 600);
+              await AntiDetection.sleep(humanScanDelayMs());
               scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "skip-far-asteroid next");
             } else {
               log("Scan complete — all ranges checked", "asteroid");
@@ -1616,7 +1626,7 @@
       }
 
       // Navigate to next system
-      const scanDelay = 250 + Math.random() * 400;
+      const scanDelay = humanScanDelayMs();
       log(`Next: [${next.galaxy}:${next.system}] in ${Math.round(scanDelay)}ms...`, "asteroid");
       await AntiDetection.sleep(scanDelay);
       scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "next system");
