@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.6
+// @version      2.10.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1848,6 +1848,37 @@
     return am.maxConcurrentMiningFleets || 0;
   }
 
+  // v2.10.7: track in-flight asteroid fleets by their expected RETURN time so
+  // the flight-budget self-corrects as fleets land — one entry per dispatch.
+  // The old single counter (ogamex_inflight_fleets) only reset to 0 when ALL
+  // fleets were SIMULTANEOUSLY home ("No fleet movement"); with staggered
+  // fleets that moment rarely comes, so it stuck at max (e.g. 3/3) and the bot
+  // waited forever, never sending the next wave. Counting live ETAs frees a
+  // budget slot the moment each fleet's round trip elapses.
+  function inflightFleetCount() {
+    let arr = [];
+    try { arr = JSON.parse(GM_getValue("ogamex_inflight_returns", "[]")); } catch {}
+    if (!Array.isArray(arr)) arr = [];
+    const now = Date.now();
+    const live = arr.filter(t => Number.isFinite(t) && t > now);
+    if (live.length !== arr.length) GM_setValue("ogamex_inflight_returns", JSON.stringify(live));
+    return live.length;
+  }
+
+  function recordInflightFleet(returnAt) {
+    let arr = [];
+    try { arr = JSON.parse(GM_getValue("ogamex_inflight_returns", "[]")); } catch {}
+    if (!Array.isArray(arr)) arr = [];
+    const now = Date.now();
+    arr = arr.filter(t => Number.isFinite(t) && t > now);
+    if (Number.isFinite(returnAt) && returnAt > now) arr.push(returnAt);
+    GM_setValue("ogamex_inflight_returns", JSON.stringify(arr));
+  }
+
+  function clearInflightFleets() {
+    GM_setValue("ogamex_inflight_returns", "[]");
+  }
+
   // v2.10.1: set the scan-pause timer from the page header countdown (factored
   // out so both the legacy serial path and the parallel "must wait" path share
   // identical logic).
@@ -1891,8 +1922,21 @@
     const minersLeftHome = (Number.isFinite(available) && Number.isFinite(toSend)) ? available - toSend : 0;
     const slots = GameState.getFleetSlots();
     const slotsFree = slots.total > 0 ? slots.total - slots.used : 1;
-    const inflight = (parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0) + 1; // +1 = the one we just sent
-    GM_setValue("ogamex_inflight_fleets", String(inflight));
+    // v2.10.7: record THIS fleet's expected return so the budget self-corrects
+    // as fleets land (was: a counter that only reset when ALL were home → stuck
+    // at max, never sent the next wave). Estimate the round trip from the
+    // captured flight time, else the live page countdown, else the max-flight
+    // fallback — same precedence as the pause path below.
+    let thisReturnAt;
+    if (capturedFlightMs > 0) {
+      thisReturnAt = Date.now() + capturedFlightMs * 2 + 60000;
+    } else {
+      const parsedRet = parseFleetReturnTime();
+      thisReturnAt = (parsedRet && parsedRet > Date.now()) ? parsedRet
+        : Date.now() + CONFIG.asteroidMining.maxFlightMinutes * 2 * 60 * 1000;
+    }
+    recordInflightFleet(thisReturnAt);
+    const inflight = inflightFleetCount(); // count of live ETAs incl. the one just recorded
     const maxConc = maxMiningFleets(); // floor(totalMinersToUse / perFlight), or maxConcurrentMiningFleets
     const concOk = maxConc <= 0 || inflight < maxConc;
 
@@ -2927,7 +2971,7 @@
       const cargo = AsteroidYieldTracker.cargoPerMiner();
       const est = AsteroidYieldTracker.expectedResources();
       const need = AsteroidYieldTracker.minersNeeded();
-      const inflight = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+      const inflight = inflightFleetCount();
       const maxFleets = maxMiningFleets();
       const mode = am.parallelDispatch ? "parallel" : "serial";
       const needStr = need > 0 ? need.toLocaleString() : "all";
@@ -3060,7 +3104,8 @@
           log("No fleet movement — fleet already returned. Resetting timer.", "asteroid");
           GM_setValue("ogamex_fleet_return_at", "0");
         }
-        GM_setValue("ogamex_inflight_fleets", "0"); // everything home — reset parallel counter
+        clearInflightFleets(); // everything home — reset parallel budget (v2.10.7)
+        GM_setValue("ogamex_inflight_fleets", "0"); // legacy key — keep cleared for safety
       } else if (hasAsteroidFleet || (justSentFleet && storedReturnAt && storedReturnAt > Date.now())) {
         // ── Asteroid fleet IS in flight ──
         // In parallel mode an in-flight fleet is normal — keep scanning as long
@@ -3080,7 +3125,7 @@
           const minNeeded = CONFIG.asteroidMining.minMinersPerMission || 1;
           const haveMiners = !known || minersHome >= minNeeded; // unknown → assume some
           const maxFleets = maxMiningFleets();
-          const inflight = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+          const inflight = inflightFleetCount();
           const budgetOk = maxFleets <= 0 || inflight < maxFleets;
           if (slotsFree > 0 && haveMiners && budgetOk) {
             GM_setValue("ogamex_fleet_return_at", "0"); // capacity + (likely) miners + budget → keep scanning
