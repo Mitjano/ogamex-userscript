@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.5
+// @version      2.10.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3013,6 +3013,24 @@
       }
       if (parallelKeepScanning) {
         log("Fleet sent — miners + slot remain → continuing scan for more asteroids (parallel).", "asteroid");
+        // v2.10.6: actually RESUME the scan here. The browser lands on
+        // fleetSendSuccessfully (NOT galaxy), so the on-load galaxy-resume below
+        // (requires page==='galaxy') never fires. Previously the resume was left
+        // entirely to the scheduler's stranded-recovery, which is gated by
+        // timing/minersInFlight/dispatchInProgress and did NOT reliably catch
+        // this — so after a parallel dispatch the scan stalled in a
+        // "parallel keeps scanning" reload loop and the remaining (often
+        // multiple) asteroid ranges never got scanned. Navigate to the next
+        // queued system now, mirroring finishDispatch's "parallel resume".
+        const resumeState = ScanState.load();
+        const nextSys = resumeState?.active && resumeState.queue?.length ? resumeState.queue[0] : null;
+        if (nextSys) {
+          GM_setValue("ogamex_fleet_return_at", "0"); // parallel: keep scanning, don't wait
+          const delayMs = 1500 + Math.random() * 2000; // human-like pause before resuming
+          setTimeout(() => scanNavigate(`/galaxy?x=${nextSys.galaxy}&y=${nextSys.system}`, "parallel resume (post-send)"), delayMs);
+        } else {
+          ScanState.clear(); // queue exhausted → let scheduler cooldown / start a fresh scan
+        }
       } else {
         log("Fleet sent — dispatch state cleaned up. Scan paused until a fleet returns.", "asteroid");
       }
