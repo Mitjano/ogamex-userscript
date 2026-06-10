@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.9
+// @version      2.10.10
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -555,6 +555,26 @@
 
         const html = await response.text();
         log(`[DEBUG] AsteroidLocation HTML (${html.length}ch): ${html.substring(0, 200)}`, "info");
+
+        // v2.10.10: session-loss detection. When the game session expires
+        // (e.g. after the 45min no-asteroid cooldown idled with zero requests),
+        // this fetch follows the auth redirect and returns the LOGIN page with
+        // HTTP 200 — which parses as "0 ranges". Without this check the bot
+        // keeps polling forever, blind, and never finds another asteroid until
+        // a manual reload. A real page load restores the session (remember-me)
+        // or lands on /home where init() correctly stays off.
+        // Reload is rate-limited to 1/30min so an unexpected-but-valid empty
+        // response can't cause a reload loop.
+        if (response.redirected || !/galaxy-asteroid-modal|asteroid-modal-desc|playerAste/i.test(html)) {
+          log(`Range fetch returned a non-game page (redirected=${response.redirected}) — session expired / logged out?`, "error");
+          const lastSessionReload = parseInt(GM_getValue("ogamex_session_reload_at", "0"));
+          if (Date.now() - lastSessionReload > 30 * 60 * 1000) {
+            GM_setValue("ogamex_session_reload_at", String(Date.now()));
+            log("Reloading page to restore session...", "warn");
+            setTimeout(() => window.location.reload(), 2000 + Math.random() * 3000);
+          }
+          return [];
+        }
 
         // Parse pairs: [6:45:17] ? [6:85:17] → range {galaxy:6, start:45, end:85}
         const coords = [];
@@ -1325,7 +1345,7 @@
           const scanCooldownUntil = parseInt(GM_getValue("ogamex_scan_cooldown_until", "0"));
           if (scanCooldownUntil && Date.now() < scanCooldownUntil) {
             const waitMin = Math.ceil((scanCooldownUntil - Date.now()) / 60000);
-            log(`Scan cooldown: ${waitMin}min remaining (full scan found nothing)`, "delay");
+            log(`Scan cooldown: ${waitMin}min remaining (no asteroids last sweep)`, "delay");
             return;
           }
           if (scanCooldownUntil) GM_setValue("ogamex_scan_cooldown_until", "0");
@@ -1364,7 +1384,12 @@
       GM_setValue("ogamex_last_deep_fetch_at", String(Date.now()));
 
       if (ranges.length === 0) {
-        log(`Deep fetch returned no ranges — nothing to scan`, "asteroid");
+        // v2.10.10: short cooldown instead of retrying every tick. When the
+        // hint pool is genuinely empty, polling 3 AJAX calls per minute is
+        // bot-tell traffic for zero gain — a 10min re-check still picks up
+        // new ranges promptly.
+        log(`Deep fetch returned no ranges — no asteroid hints right now. Re-check in 10min.`, "asteroid");
+        GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + 10 * 60 * 1000));
         return;
       }
       log(`Collected ${ranges.length} unique ranges from deep fetch`, "asteroid");
@@ -1988,6 +2013,7 @@
       mission = JSON.parse(raw);
     } catch {
       GM_setValue("pending_mission", null);
+      _handlingMission = false; // v2.10.10: early return before the try/finally — don't leak the flag
       return;
     }
 
@@ -1995,6 +2021,7 @@
     if (Date.now() - mission.timestamp > 5 * 60 * 1000) {
       log("Pending mission expired, clearing", "warn");
       GM_setValue("pending_mission", null);
+      _handlingMission = false; // v2.10.10: same — a leaked flag made this fn a no-op until next reload
       return;
     }
 
@@ -2523,6 +2550,9 @@
   let schedulerTimer = null;
 
   async function schedulerTick() {
+    // v2.10.10: heartbeat for the watchdog — recorded before ANY early return
+    // so a disabled bot doesn't look "dead".
+    GM_setValue("ogamex_last_tick_at", String(Date.now()));
     if (!CONFIG.enabled) return;
 
     // Handle any pending multi-page mission first
@@ -2532,6 +2562,30 @@
     if (AntiDetection.isSleepTime()) {
       log("Night mode active - sleeping until " + CONFIG.antiDetection.sleepEndHour + ":00 UTC", "delay");
       return;
+    }
+
+    // v2.10.10 keepalive: guarantee a REAL page load at least every ~12min.
+    // After "scan complete — no asteroids" the bot used to sit 45min on one
+    // galaxy page with zero requests; the session could expire in that window
+    // and every later range-AJAX silently returned the login page (= blind
+    // bot, see scanRanges). A periodic reload keeps the session fresh AND
+    // resets any wedged in-page state (stuck flags, dead timer chains,
+    // browser tab throttling). During an active scan navigation happens every
+    // few seconds anyway, so this only fires during long waits/cooldowns.
+    {
+      const lastPageLoad = parseInt(GM_getValue("ogamex_last_pageload_at", "0"));
+      const pendingRaw = GM_getValue("pending_mission", null);
+      const hasPending = pendingRaw && pendingRaw !== "null";
+      if (!hasPending && lastPageLoad && Date.now() - lastPageLoad > 12 * 60 * 1000) {
+        log("Keepalive: no page load for >12min — reloading to keep session alive.", "info");
+        if (window.location.href.includes("fleetSendSuccessfully")) {
+          // Don't re-trigger the post-send handler with stale dispatch data
+          window.location.href = "/overview";
+        } else {
+          window.location.reload();
+        }
+        return;
+      }
     }
 
     // Run asteroid mining
@@ -3030,6 +3084,10 @@
     const SCRIPT_VERSION = (typeof GM_info !== "undefined" && GM_info?.script?.version) || "?";
     log(`OGameX Assistant v${SCRIPT_VERSION} loaded`, "info");
 
+    // v2.10.10: timestamp of the last real page load — read by the scheduler
+    // keepalive to detect long stretches with no navigation (session risk).
+    GM_setValue("ogamex_last_pageload_at", String(Date.now()));
+
     // ── Handle fleetSendSuccessfully page (race condition fix) ──
     // When "Send fleet" is clicked, OGameX navigates the browser to this URL
     // BEFORE our JS finishDispatch() can run, so pending_mission is never cleared.
@@ -3186,6 +3244,22 @@
     if (CONFIG.enabled) {
       startScheduler();
     }
+
+    // v2.10.10 watchdog: the scheduler is a chained setTimeout — if one tick
+    // ever throws an uncaught error (or the chain dies any other way), the
+    // bot goes permanently silent with NO log line, because during a cooldown
+    // nothing else ever reloads the page. This interval is independent of the
+    // chain and its callback is trivial, so it can't die the same way. Max
+    // legit tick gap is ~17min (15min jitter pause + 90s interval), so 25min
+    // of silence means the chain is dead → reload restarts everything.
+    setInterval(() => {
+      if (!CONFIG.enabled) return;
+      const lastTick = parseInt(GM_getValue("ogamex_last_tick_at", "0"));
+      if (lastTick && Date.now() - lastTick > 25 * 60 * 1000) {
+        log("Watchdog: no scheduler tick for >25min — scheduler chain dead. Reloading.", "warn");
+        window.location.reload();
+      }
+    }, 60 * 1000);
   }
 
   init();
