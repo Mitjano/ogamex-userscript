@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.13
+// @version      2.10.14
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2725,6 +2725,21 @@
         const minersInFlight = fleetReturnAt && Date.now() < fleetReturnAt;
         const pendingMission = GM_getValue("pending_mission", null);
         const dispatchInProgress = pendingMission && pendingMission !== "null";
+        // v2.10.14: un-wedge the dead state "active scan + empty queue + off the
+        // galaxy page". handleGalaxyScanStep (which finishes a sweep and sets the
+        // cooldown) only runs ON the galaxy page; the stranded-resume below needs
+        // a `next` system. So an exhausted queue reached while we're off-galaxy
+        // (e.g. a dispatch that hit the flight budget left us on overview/
+        // fleetSendSuccessfully without clearing ScanState) matches NEITHER this
+        // branch nor the !scanActive one — the scheduler idles silently and only
+        // the 12-min keepalive reload ticks, forever. Clearing the spent scan
+        // lets the next tick's !scanActive path start a fresh one (deep fetch →
+        // picks up current ranges & any new asteroids).
+        if (!next && !dispatchInProgress) {
+          log("Active scan but queue empty & off galaxy page — clearing spent scan so a fresh one can start.", "asteroid");
+          ScanState.clear();
+          return;
+        }
         if (next && !minersInFlight && !dispatchInProgress && !AntiDetection.isSleepTime()) {
           log(`Scan stranded off galaxy page. Resuming at [${next.galaxy}:${next.system}]`, "asteroid");
           await AntiDetection.shortDelay();
