@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.10
+// @version      2.10.11
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -219,6 +219,97 @@
     // Persist logs across page navigations
     GM_setValue(LOG_STORAGE_KEY, JSON.stringify(logEntries));
     updateLogUI();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  ERROR-PAGE RECOVERY  (v2.10.11)
+  //  OGameX occasionally serves its OWN "Error occurred / Page not
+  //  found" page (URL like /Error/NotFound?aspxerrorpath=/overview).
+  //  On it NONE of the game UI exists, so the bot would just sit idle
+  //  until the 25-min watchdog reload — long enough for in-flight
+  //  miners to be spotted and scrapped. Detect it on load and go
+  //  straight back into the game ("< Back to game"), with a backoff so
+  //  a sustained outage can't turn into a tight reload loop.
+  // ═══════════════════════════════════════════════════════════════
+  function isOGameXErrorPage() {
+    // URL signal: /Error/..., /Error/NotFound, or an ?aspxerrorpath= query.
+    if (/\/Error(\/|$)|NotFound|aspxerrorpath/i.test(window.location.pathname + window.location.search)) return true;
+    // Content signal (in case the URL ever differs): the modal shows both lines.
+    const t = document.body ? document.body.textContent : "";
+    return /Error occurred/i.test(t) && /Page not found/i.test(t);
+  }
+
+  function findBackToGameButton() {
+    const els = document.querySelectorAll("a, button, input[type=button], input[type=submit]");
+    for (const el of els) {
+      const txt = (el.textContent || el.value || "").trim();
+      if (/back to game/i.test(txt)) return el; // never matches "Back to lobby"
+    }
+    return null;
+  }
+
+  // Returns true if we ARE on the error page and recovery was scheduled —
+  // caller must then stop init() (we're navigating away).
+  function handleErrorPageIfPresent() {
+    if (!isOGameXErrorPage()) {
+      // On a real game page → reset the consecutive-error streak.
+      GM_setValue("ogamex_error_recover_streak", "0");
+      return false;
+    }
+
+    // ── backoff: count recoveries that happen <90s apart as a "streak" ──
+    const now = Date.now();
+    const lastAt = parseInt(GM_getValue("ogamex_error_recover_at", "0"));
+    let streak = parseInt(GM_getValue("ogamex_error_recover_streak", "0"));
+    streak = lastAt && now - lastAt < 90 * 1000 ? streak + 1 : 0;
+    GM_setValue("ogamex_error_recover_at", String(now));
+    GM_setValue("ogamex_error_recover_streak", String(streak));
+
+    // ── pick a recovery target ──
+    // First try to re-request the exact page OGameX failed on (aspxerrorpath).
+    // After a couple of fast repeats on that path, give up on it and use the
+    // page's generic "Back to game" instead (→ overview).
+    let specificTarget = null;
+    const m = window.location.search.match(/[?&]aspxerrorpath=([^&#]+)/i);
+    if (m && streak < 2) {
+      try {
+        const p = decodeURIComponent(m[1]);
+        // accept only same-origin relative game paths; never bounce back to
+        // an Error/ page or to login (/home).
+        if (/^\/[A-Za-z0-9]/.test(p) && !/^\/(Error|home)\b/i.test(p)) specificTarget = p;
+      } catch {}
+    }
+
+    // 0/1 → quick (~2-4s). Then exponential-ish, capped at 60s, so a sustained
+    // OGameX outage backs off instead of hammering the server in a loop.
+    const base = 2000 + Math.random() * 2000;
+    const backoff = streak <= 1 ? base : Math.min(60000, base + Math.pow(2, streak) * 1000);
+
+    log(`OGameX error page detected → recovering ${specificTarget ? "to " + specificTarget : "via < Back to game"} in ${Math.round(backoff / 1000)}s (streak ${streak}).`, "warn");
+
+    setTimeout(() => {
+      if (!isOGameXErrorPage()) return; // page changed under us — nothing to do
+      if (specificTarget) {
+        window.location.href = specificTarget;
+        return;
+      }
+      // Click the page's own "Back to game" — what a human would do.
+      const btn = findBackToGameButton();
+      if (btn) {
+        log("Clicking < Back to game.", "info");
+        if (btn.tagName === "A" && btn.href) {
+          window.location.href = btn.href; // use the real href (skips flaky JS handlers)
+        } else {
+          btn.click();
+          // safety net: if the click didn't navigate, force it.
+          setTimeout(() => { if (isOGameXErrorPage()) window.location.href = "/overview"; }, 5000);
+        }
+        return;
+      }
+      window.location.href = "/overview"; // last resort
+    }, backoff);
+
+    return true;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -3073,6 +3164,14 @@
     // Wait for page to be fully loaded
     if (document.readyState !== "complete") {
       window.addEventListener("load", init);
+      return;
+    }
+
+    // v2.10.11: OGameX served its own "Error occurred / Page not found" page?
+    // Recover (→ Back to game) BEFORE anything else and bail — leaving miners
+    // grounded here risks them being scrapped. Also resets the streak when
+    // we're on a normal game page.
+    if (handleErrorPageIfPresent()) {
       return;
     }
 
