@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.11
+// @version      2.10.12
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -82,7 +82,7 @@
       yieldSampleSize: 20,          // rolling window of "resources found" reports used for the estimate
       estimatePercentile: 85,       // size the fleet against this percentile of samples (not the mean) so big asteroids aren't under-served
       learnFromReports: true,       // parse asteroid mining reports to learn expectedResources (see AsteroidYieldTracker)
-      scanIntervalMin: 45, // minutes between range re-scans (asteroids move after each series)
+      scanIntervalMin: 15, // minutes between range re-scans when a sweep found nothing NEW. (v2.10.12: was 45 — OGameX refreshes asteroid hints far sooner, so a full set of fresh ranges sat ignored for up to 45min. The immediate-rescan-on-new-ranges path handles the common case; this is just the genuinely-nothing-new fallback.)
       maxFlightMinutes: 45, // safety cap on one-way flight time; ranges beyond this are skipped. Formula max(11, ceil(11+Δ/15)) hits 45min at Δ=499 (max same-galaxy distance), so 45 ensures every range the game reports gets scanned. Lower values silently drop far ranges and the bot keeps spinning on a few empty close ones.
       // Ship types to use for asteroid mining, tried in order.
       // OGameX requires ASTEROID_MINER — only this ship type is allowed for asteroid missions.
@@ -1541,6 +1541,33 @@
 
       const current = scanState.queue[0];
       if (!current) {
+        // ── Queue exhausted ── (v2.10.12)
+        // Before sleeping 45min, RE-FETCH ranges. OGameX refreshes its asteroid
+        // hints frequently, and by the time we finish sweeping one range a set
+        // of brand-new search areas is often already live (e.g. we mine the one
+        // asteroid in [3:416-436], the modal then shows [3:46-66] etc.). The
+        // per-step range-verify below only runs while the queue still has a
+        // `current` system, so a NATURALLY-exhausted queue used to skip it and
+        // drop straight into the long cooldown — ignoring those fresh ranges for
+        // 45min while miners sat home. Only fall back to the cooldown when the
+        // re-fetch shows nothing genuinely new to scan.
+        const sweptKeys = new Set((scanState.ranges || []).map(r => `${r.galaxy}:${r.startSystem}-${r.endSystem}`));
+        const freshRanges = await AsteroidScanner.scanRanges();
+        const newRanges = freshRanges.filter(r => !sweptKeys.has(`${r.galaxy}:${r.startSystem}-${r.endSystem}`));
+        if (newRanges.length > 0) {
+          const base = CONFIG.asteroidMining.minerBase;
+          const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
+          const queue = AsteroidScanner.buildScanQueue(freshRanges, base, maxFlight);
+          if (queue.length > 0) {
+            const freshLabels = freshRanges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
+            const newLabels = newRanges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
+            log(`Sweep done — ${newRanges.length} fresh range(s) appeared (${newLabels}) → rescanning now instead of 45min wait.`, "asteroid");
+            ScanState.start(freshRanges, queue);
+            const first = queue[0];
+            scanNavigate(`/galaxy?x=${first.galaxy}&y=${first.system}`, "fresh-range rescan");
+            return;
+          }
+        }
         const cooldownMin = CONFIG.asteroidMining.scanIntervalMin || 45;
         log(`Scan complete — no asteroids found. Waiting ${cooldownMin}min before next scan.`, "asteroid");
         ScanState.clear();
