@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.12
+// @version      2.10.13
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1552,7 +1552,10 @@
         // 45min while miners sat home. Only fall back to the cooldown when the
         // re-fetch shows nothing genuinely new to scan.
         const sweptKeys = new Set((scanState.ranges || []).map(r => `${r.galaxy}:${r.startSystem}-${r.endSystem}`));
-        const freshRanges = await AsteroidScanner.scanRanges();
+        // v2.10.13: deep fetch (not a single call) so we can't miss a fresh
+        // range if the endpoint ever returns a random subset. It self-limits
+        // via early-exit (~3 calls when the endpoint is deterministic).
+        const freshRanges = await AsteroidScanner.scanRangesFull(6);
         const newRanges = freshRanges.filter(r => !sweptKeys.has(`${r.galaxy}:${r.startSystem}-${r.endSystem}`));
         if (newRanges.length > 0) {
           const base = CONFIG.asteroidMining.minerBase;
