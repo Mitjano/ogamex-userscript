@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.14
+// @version      2.10.15
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -184,6 +184,17 @@
         GM_setValue(MIGRATION_V299, "1");
         console.log("[OGameX v2.9.9] migration: scan state + cooldown cleared — next tick scans fresh");
       }
+      // v2.10.15 migration: the no-asteroid cooldown is now SHORT whenever the
+      // game still shows hint ranges (asteroids respawn in them). Clear any
+      // stale long cooldown left by older versions so the new behavior takes
+      // effect on this load instead of after the old 45min finishes ticking.
+      const MIGRATION_V21015 = "ogamex_migration_v21015_done";
+      if (GM_getValue(MIGRATION_V21015, "0") !== "1") {
+        GM_setValue("ogamex_scan_cooldown_until", "0");
+        GM_setValue(MIGRATION_V21015, "1");
+        console.log("[OGameX v2.10.15] migration: stale scan cooldown cleared");
+      }
+
       return merged;
     } catch {
       return { ...DEFAULT_CONFIG };
@@ -195,6 +206,16 @@
   }
 
   let CONFIG = loadConfig();
+
+  // v2.10.15: how often to re-sweep hint ranges that are STILL live. OGameX
+  // keeps showing the same ranges for a long time and asteroids respawn inside
+  // them at position 17 over time, so a long idle cooldown there makes the bot
+  // miss them (user had to keep clicking "Scan Asteroids" by hand). Hardcoded
+  // on purpose — it bypasses the persisted scanIntervalMin, which is often a
+  // stale 45 baked into old saved configs that deepMerge keeps overriding the
+  // code default with. The long scanIntervalMin now only applies when there are
+  // no hint ranges at all.
+  const ACTIVE_RANGE_RECHECK_MIN = 5;
 
   // ═══════════════════════════════════════════════════════════════
   //  LOGGING
@@ -1571,8 +1592,12 @@
             return;
           }
         }
-        const cooldownMin = CONFIG.asteroidMining.scanIntervalMin || 45;
-        log(`Scan complete — no asteroids found. Waiting ${cooldownMin}min before next scan.`, "asteroid");
+        // No NEW ranges. If the game STILL shows hint ranges, asteroids respawn
+        // in them — re-sweep soon (short). Only back off long when there are no
+        // hints at all. (v2.10.15)
+        const rangesLive = freshRanges.length > 0;
+        const cooldownMin = rangesLive ? ACTIVE_RANGE_RECHECK_MIN : (CONFIG.asteroidMining.scanIntervalMin || 15);
+        log(`Sweep done — no new asteroids. ${rangesLive ? `Ranges still active → re-sweep in ${cooldownMin}min.` : `No hints → waiting ${cooldownMin}min.`}`, "asteroid");
         ScanState.clear();
         // Set a cooldown timer so scheduler doesn't restart immediately
         GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + cooldownMin * 60 * 1000));
@@ -1764,8 +1789,13 @@
       const next = scanState.queue[0]; // queue was shifted by advance
 
       if (!next) {
-        const cooldownMin = CONFIG.asteroidMining.scanIntervalMin || 45;
-        log(`Scan complete: ${scanState.scannedCount} systems checked, no asteroids. Cooldown ${cooldownMin}min.`, "asteroid");
+        // freshRanges (from the range-verify above) is guaranteed non-empty
+        // here — an empty result returns earlier ("no active ranges"). So the
+        // game still shows hint ranges and asteroids keep respawning in them:
+        // re-sweep soon instead of the long (often stale-45) cooldown that made
+        // the bot sit idle while asteroids were available. (v2.10.15)
+        const cooldownMin = ACTIVE_RANGE_RECHECK_MIN;
+        log(`Sweep done: ${scanState.scannedCount} systems checked, none live now. Ranges still active → re-sweep in ${cooldownMin}min.`, "asteroid");
         ScanState.clear();
         GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + cooldownMin * 60 * 1000));
         return;
