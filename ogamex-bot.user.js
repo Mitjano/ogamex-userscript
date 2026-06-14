@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.19
+// @version      2.10.20
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3288,8 +3288,15 @@
         const schedule = [2, 2, 4, 8, 15]; // minutes by attempt
         const minutes = schedule[Math.min(streak, schedule.length - 1)];
         const delayMs = (minutes + Math.random() * 0.5) * 60 * 1000;
-        log(`On login page while enabled — session dropped. Retrying /overview in ~${minutes}min (attempt ${streak + 1}).`, "warn");
-        setTimeout(() => { window.location.href = "/overview"; }, delayMs);
+        // v2.10.20: RELOAD the current login page — faithfully mimics the manual
+        // refresh that actually recovered (the remember-me cookie redirects
+        // /home → game). The old `href = "/overview"` was the trap: a deep game
+        // URL with an iffy session returns OGameX's ERROR page (not a login
+        // redirect), which fed the error → Back-to-game → login → retry loop
+        // forever. Reloading /home never touches /overview, so it can't trigger
+        // that error storm.
+        log(`On login page while enabled — session dropped. Reloading to re-auth (remember-me) in ~${minutes}min (attempt ${streak + 1}).`, "warn");
+        setTimeout(() => { window.location.reload(); }, delayMs);
       }
       return;
     }
