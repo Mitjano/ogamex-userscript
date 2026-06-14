@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.16
+// @version      2.10.17
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3250,8 +3250,22 @@
       return;
     }
 
-    // Only run on game pages (not login)
+    // Only run on game pages (not login). v2.10.17: but don't go fully dormant.
+    // A login page usually means a transient session drop — often right after an
+    // OGameX error storm, since the error-page recovery ("Back to game") can land
+    // here logged out. With no scheduler on /home there is NO keepalive and NO
+    // watchdog, so the bot used to sit DEAD for hours (seen: ~5h, miners grounded
+    // the whole time → exactly the scrapping risk we're guarding against). If the
+    // bot is enabled, gently retry a game URL on a long, jittered interval: a
+    // plain load re-auths via the remember-me cookie as soon as the session
+    // recovers. Long + randomized so a genuine manual logout isn't hammered, and
+    // the user can always toggle the bot OFF to stop it.
     if (window.location.pathname.includes("/home") || window.location.pathname === "/") {
+      if (CONFIG.enabled) {
+        const delayMs = (10 + Math.random() * 5) * 60 * 1000; // ~10-15min
+        log(`On login page while enabled — session likely dropped. Retrying /overview in ~${Math.round(delayMs / 60000)}min to restore it.`, "warn");
+        setTimeout(() => { window.location.href = "/overview"; }, delayMs);
+      }
       return;
     }
 
