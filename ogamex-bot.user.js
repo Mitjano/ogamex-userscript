@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.18
+// @version      2.10.19
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3273,8 +3273,22 @@
     // the user can always toggle the bot OFF to stop it.
     if (window.location.pathname.includes("/home") || window.location.pathname === "/") {
       if (CONFIG.enabled) {
-        const delayMs = (10 + Math.random() * 5) * 60 * 1000; // ~10-15min
-        log(`On login page while enabled — session likely dropped. Retrying /overview in ~${Math.round(delayMs / 60000)}min to restore it.`, "warn");
+        // v2.10.19: BACKOFF retry instead of a flat ~13min. Observed: athena
+        // (OGameX) error-storms for long stretches, and a flat 13min interval
+        // turned a recovery loop (error → Back to game → login → retry) into
+        // ~2h of dormancy. Retry fast at first so a transient blip recovers in
+        // ~2min, backing off only if the session is genuinely gone for a while
+        // (so we don't hammer a real logout). Streak resets after 20min away
+        // from the login page (i.e. a successful spell in-game).
+        const now = Date.now();
+        const lastAt = parseInt(GM_getValue("ogamex_login_retry_at", "0"));
+        let streak = (lastAt && now - lastAt < 20 * 60 * 1000) ? parseInt(GM_getValue("ogamex_login_retry_streak", "0")) + 1 : 0;
+        GM_setValue("ogamex_login_retry_at", String(now));
+        GM_setValue("ogamex_login_retry_streak", String(streak));
+        const schedule = [2, 2, 4, 8, 15]; // minutes by attempt
+        const minutes = schedule[Math.min(streak, schedule.length - 1)];
+        const delayMs = (minutes + Math.random() * 0.5) * 60 * 1000;
+        log(`On login page while enabled — session dropped. Retrying /overview in ~${minutes}min (attempt ${streak + 1}).`, "warn");
         setTimeout(() => { window.location.href = "/overview"; }, delayMs);
       }
       return;
