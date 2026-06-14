@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.17
+// @version      2.10.18
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1543,8 +1543,9 @@
 
     // ── Handle one galaxy scan step (we're on galaxy page) ──
     async handleGalaxyScanStep(scanState) {
-      // Wait for DOM to fully render — increased to ensure row 17 is visible
-      await AntiDetection.sleep(900 + Math.random() * 800);
+      // Wait for DOM to fully render — galaxy rows are server-rendered, so a
+      // short settle is enough (v2.10.18: trimmed from 0.9-1.7s).
+      await AntiDetection.sleep(500 + Math.random() * 600);
 
       // Check if fleet return time is set — if miners are in flight, stop scanning
       const fleetReturnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0"));
@@ -1629,14 +1630,23 @@
       //     immediately, not after 5-system delay).
       //   • If current no longer in any range → drop scannedSystems entirely
       //     and restart scan from the lowest system in the new ranges.
-      const freshRanges = await AsteroidScanner.scanRanges();
-      if (freshRanges.length === 0) {
+      // v2.10.18: throttle — re-fetching ALL ranges (an AJAX + its 2-7s
+      // anti-detection sleep) on EVERY system dominated scan time for marginal
+      // gain; ranges change once in many minutes, not every ~10s step. Verify
+      // only every Nth system (and on the very first, scannedCount 0). A mid-scan
+      // range change is caught within N systems, and the sweep-end re-fetch
+      // (v2.10.13/15) covers the rest. Also anti-ban POSITIVE: ~6× fewer AJAX.
+      const VERIFY_EVERY = 6;
+      const freshRanges = (scanState.scannedCount % VERIFY_EVERY) === 0
+        ? await AsteroidScanner.scanRanges()
+        : null;
+      if (freshRanges && freshRanges.length === 0) {
         log("Range verify: no active ranges — scan complete", "asteroid");
         ScanState.clear();
         return;
       }
-
-      const rangeKey = r => `${r.galaxy}:${r.startSystem}-${r.endSystem}`;
+      if (freshRanges) {
+        const rangeKey = r => `${r.galaxy}:${r.startSystem}-${r.endSystem}`;
       const freshKeys = new Set(freshRanges.map(rangeKey));
       const storedKeys = new Set((scanState.ranges || []).map(rangeKey));
       const rangesChanged = freshKeys.size !== storedKeys.size
@@ -1686,6 +1696,7 @@
         scanState.totalCount = scanState.scannedCount + scanState.queue.length;
         ScanState.save(scanState);
         log(`Range verify: ranges changed to ${freshLabels} — queue rebuilt (${scanState.queue.length} systems, current [${current.galaxy}:${current.system}] kept)`, "asteroid");
+        }
       }
 
       // Check position 17 in live DOM
@@ -3425,7 +3436,7 @@
     } else if (scanState?.active && GameState.getCurrentPage() === "galaxy" && CONFIG.enabled && CONFIG.asteroidMining.enabled) {
       log("Resuming galaxy scan...", "asteroid");
       // Delay to let the page fully render galaxy items
-      setTimeout(() => AsteroidMiner.run(), 3000 + Math.random() * 2000);
+      setTimeout(() => AsteroidMiner.run(), 1500 + Math.random() * 1000); // v2.10.18: trimmed (galaxy items are server-rendered, present on load)
     }
 
     // Auto-start scheduler if enabled
