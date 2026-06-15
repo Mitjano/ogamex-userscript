@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.20
+// @version      2.10.21
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -267,6 +267,37 @@
       if (/back to game/i.test(txt)) return el; // never matches "Back to lobby"
     }
     return null;
+  }
+
+  // v2.10.21: on the OGameX landing/lobby page (/ or /home) the user is still
+  // LOGGED IN — they just click a "Play / Enter game" button to re-enter (no
+  // password). Find that button so the bot can do the same instead of uselessly
+  // reloading the landing page. Conservative text match; never a logout/register.
+  function findGameEntryElement() {
+    const els = document.querySelectorAll("a, button, input[type=button], input[type=submit]");
+    const POS = /\b(play|graj|zagraj|enter\s*game|enter|wejd[zź]|wej[sś][cć]ie|do\s*gry|continue|kontynuuj|launch)\b/i;
+    const NEG = /log\s*out|wyloguj|logout|register|rejestr|sign\s*up|reset|forgot|password|has[lł]o|news|forum|wiki|discord/i;
+    for (const el of els) {
+      const txt = (el.textContent || el.value || "").trim();
+      const href = (el.getAttribute && el.getAttribute("href")) || "";
+      if (!txt && !href) continue;
+      if (NEG.test(txt) || NEG.test(href)) continue;
+      if (POS.test(txt)) return el;
+    }
+    return null;
+  }
+
+  // Dump every clickable on the current page to the persisted log (survives the
+  // page bail) — lets us see the exact landing-page buttons to target.
+  function logClickables(tag) {
+    const els = [...document.querySelectorAll("a, button, input[type=button], input[type=submit]")].slice(0, 60);
+    const desc = els.map(el => {
+      const t = (el.textContent || el.value || "").replace(/\s+/g, " ").trim().slice(0, 30);
+      const cls = el.className && typeof el.className === "string" ? "." + el.className.split(" ")[0] : "";
+      const href = (el.getAttribute && el.getAttribute("href")) || "-";
+      return `"${t}"[${el.tagName}${cls} href=${href}]`;
+    });
+    log(`[${tag}] ${els.length} clickables: ${desc.join(", ")}`, "warn");
   }
 
   // Returns true if we ARE on the error page and recovery was scheduled —
@@ -3261,42 +3292,42 @@
       return;
     }
 
-    // Only run on game pages (not login). v2.10.17: but don't go fully dormant.
-    // A login page usually means a transient session drop — often right after an
-    // OGameX error storm, since the error-page recovery ("Back to game") can land
-    // here logged out. With no scheduler on /home there is NO keepalive and NO
-    // watchdog, so the bot used to sit DEAD for hours (seen: ~5h, miners grounded
-    // the whole time → exactly the scrapping risk we're guarding against). If the
-    // bot is enabled, gently retry a game URL on a long, jittered interval: a
-    // plain load re-auths via the remember-me cookie as soon as the session
-    // recovers. Long + randomized so a genuine manual logout isn't hammered, and
-    // the user can always toggle the bot OFF to stop it.
+    // Only run on game pages — NOT the landing/lobby page (/ or /home). v2.10.21:
+    // the user is still LOGGED IN here (confirmed: no password, they just click a
+    // "Play / Enter game" button to re-enter and land on Overview). So the right
+    // recovery is to CLICK that button — NOT reload (the landing page just shows
+    // itself again; observed reloading it 10× over ~1.5h with zero progress) and
+    // NOT navigate to /overview cold (that returns OGameX's error page, feeding
+    // the error→Back-to-game→landing loop). We don't yet know the exact button,
+    // so dump all clickables to the (persisted) log AND try a text match.
     if (window.location.pathname.includes("/home") || window.location.pathname === "/") {
       if (CONFIG.enabled) {
-        // v2.10.19: BACKOFF retry instead of a flat ~13min. Observed: athena
-        // (OGameX) error-storms for long stretches, and a flat 13min interval
-        // turned a recovery loop (error → Back to game → login → retry) into
-        // ~2h of dormancy. Retry fast at first so a transient blip recovers in
-        // ~2min, backing off only if the session is genuinely gone for a while
-        // (so we don't hammer a real logout). Streak resets after 20min away
-        // from the login page (i.e. a successful spell in-game).
         const now = Date.now();
         const lastAt = parseInt(GM_getValue("ogamex_login_retry_at", "0"));
         let streak = (lastAt && now - lastAt < 20 * 60 * 1000) ? parseInt(GM_getValue("ogamex_login_retry_streak", "0")) + 1 : 0;
         GM_setValue("ogamex_login_retry_at", String(now));
         GM_setValue("ogamex_login_retry_streak", String(streak));
-        const schedule = [2, 2, 4, 8, 15]; // minutes by attempt
-        const minutes = schedule[Math.min(streak, schedule.length - 1)];
-        const delayMs = (minutes + Math.random() * 0.5) * 60 * 1000;
-        // v2.10.20: RELOAD the current login page — faithfully mimics the manual
-        // refresh that actually recovered (the remember-me cookie redirects
-        // /home → game). The old `href = "/overview"` was the trap: a deep game
-        // URL with an iffy session returns OGameX's ERROR page (not a login
-        // redirect), which fed the error → Back-to-game → login → retry loop
-        // forever. Reloading /home never touches /overview, so it can't trigger
-        // that error storm.
-        log(`On login page while enabled — session dropped. Reloading to re-auth (remember-me) in ~${minutes}min (attempt ${streak + 1}).`, "warn");
-        setTimeout(() => { window.location.reload(); }, delayMs);
+
+        logClickables("landing-page"); // diagnostic — shows the exact buttons to target
+
+        const entry = findGameEntryElement();
+        if (entry) {
+          const label = (entry.textContent || entry.value || "").replace(/\s+/g, " ").trim().slice(0, 40);
+          const delaySec = Math.min(60, 3 * Math.pow(2, Math.min(streak, 4))); // 3,6,12,24,48,60s — throttle if it keeps bouncing
+          log(`On landing page (still logged in) — clicking "${label}" to re-enter game in ~${Math.round(delaySec)}s (attempt ${streak + 1}).`, "warn");
+          setTimeout(() => {
+            const href = entry.getAttribute && entry.getAttribute("href");
+            if (entry.tagName === "A" && href && href !== "#") window.location.href = entry.href;
+            else entry.click();
+          }, delaySec * 1000);
+        } else {
+          // No obvious entry button found — fall back to a reload (and the dump
+          // above will tell us what to click next time). Backoff so we don't spin.
+          const schedule = [2, 2, 4, 8, 15];
+          const minutes = schedule[Math.min(streak, schedule.length - 1)];
+          log(`On landing page — no Play/Enter button matched; reloading in ~${minutes}min (attempt ${streak + 1}). Clickables logged above — send them so I can target the button.`, "warn");
+          setTimeout(() => { window.location.reload(); }, (minutes + Math.random() * 0.5) * 60 * 1000);
+        }
       }
       return;
     }
