@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.21
+// @version      2.10.22
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -285,6 +285,20 @@
       if (POS.test(txt)) return el;
     }
     return null;
+  }
+
+  // v2.10.22: are we INSIDE the logged-in game (vs the logged-out login/landing
+  // page)? OGameX's Overview tab lives at "/" or "/home" — the same paths the
+  // bot used to treat as "login → bail", so on Overview it never built its panel
+  // or started the scheduler (it only ran on /fleet, /galaxy, …). Detect in-game
+  // chrome (top resource bar + section menu); if present we're logged in and
+  // must run normally even on / or /home.
+  function isLoggedInGamePage() {
+    if (document.querySelector(".resource-item-metal, .resource-item-deuterium, #planetList, .smallplanet")) return true;
+    for (const a of document.querySelectorAll("a.text-item")) {
+      if (/^(galaxy|fleet|overview|resources|shipyard|research|defense)$/i.test((a.textContent || "").trim())) return true;
+    }
+    return false;
   }
 
   // Dump every clickable on the current page to the persisted log (survives the
@@ -3300,7 +3314,14 @@
     // NOT navigate to /overview cold (that returns OGameX's error page, feeding
     // the error→Back-to-game→landing loop). We don't yet know the exact button,
     // so dump all clickables to the (persisted) log AND try a text match.
-    if (window.location.pathname.includes("/home") || window.location.pathname === "/") {
+    // v2.10.22: only the LOGGED-OUT landing/login page is skipped. When logged
+    // in, "/" and "/home" are the game's Overview/home — fall through and run
+    // (build the panel, start the scheduler → it navigates to galaxy to scan).
+    // Without this the bot was invisible & idle on Overview, the very page the
+    // error-recovery lands on, so it never resumed until the user opened
+    // Fleet/Galaxy by hand.
+    const onLandingPath = window.location.pathname.includes("/home") || window.location.pathname === "/";
+    if (onLandingPath && !isLoggedInGamePage()) {
       if (CONFIG.enabled) {
         const now = Date.now();
         const lastAt = parseInt(GM_getValue("ogamex_login_retry_at", "0"));
@@ -3314,7 +3335,7 @@
         if (entry) {
           const label = (entry.textContent || entry.value || "").replace(/\s+/g, " ").trim().slice(0, 40);
           const delaySec = Math.min(60, 3 * Math.pow(2, Math.min(streak, 4))); // 3,6,12,24,48,60s — throttle if it keeps bouncing
-          log(`On landing page (still logged in) — clicking "${label}" to re-enter game in ~${Math.round(delaySec)}s (attempt ${streak + 1}).`, "warn");
+          log(`On login/landing page (no game UI) — clicking "${label}" to re-enter game in ~${Math.round(delaySec)}s (attempt ${streak + 1}).`, "warn");
           setTimeout(() => {
             const href = entry.getAttribute && entry.getAttribute("href");
             if (entry.tagName === "A" && href && href !== "#") window.location.href = entry.href;
