@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.2
+// @version      2.12.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1917,45 +1917,7 @@
 
       const current = scanState.queue[0];
       if (!current) {
-        // ── Queue exhausted ── (v2.10.12)
-        // Before sleeping 45min, RE-FETCH ranges. OGameX refreshes its asteroid
-        // hints frequently, and by the time we finish sweeping one range a set
-        // of brand-new search areas is often already live (e.g. we mine the one
-        // asteroid in [3:416-436], the modal then shows [3:46-66] etc.). The
-        // per-step range-verify below only runs while the queue still has a
-        // `current` system, so a NATURALLY-exhausted queue used to skip it and
-        // drop straight into the long cooldown — ignoring those fresh ranges for
-        // 45min while miners sat home. Only fall back to the cooldown when the
-        // re-fetch shows nothing genuinely new to scan.
-        const sweptKeys = new Set((scanState.ranges || []).map(r => `${r.galaxy}:${r.startSystem}-${r.endSystem}`));
-        // v2.10.13: deep fetch (not a single call) so we can't miss a fresh
-        // range if the endpoint ever returns a random subset. It self-limits
-        // via early-exit (~3 calls when the endpoint is deterministic).
-        const freshRanges = await AsteroidScanner.scanRangesFull(6);
-        const newRanges = freshRanges.filter(r => !sweptKeys.has(`${r.galaxy}:${r.startSystem}-${r.endSystem}`));
-        if (newRanges.length > 0) {
-          const base = CONFIG.asteroidMining.minerBase;
-          const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
-          const queue = AsteroidScanner.buildScanQueue(freshRanges, base, maxFlight);
-          if (queue.length > 0) {
-            const freshLabels = freshRanges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
-            const newLabels = newRanges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
-            log(`Sweep done — ${newRanges.length} fresh range(s) appeared (${newLabels}) → rescanning now instead of 45min wait.`, "asteroid");
-            ScanState.start(freshRanges, queue);
-            const first = queue[0];
-            scanNavigate(`/galaxy?x=${first.galaxy}&y=${first.system}`, "fresh-range rescan");
-            return;
-          }
-        }
-        // No NEW ranges. If the game STILL shows hint ranges, asteroids respawn
-        // in them — re-sweep soon (short). Only back off long when there are no
-        // hints at all. (v2.10.15)
-        const rangesLive = freshRanges.length > 0;
-        const cooldownMin = rangesLive ? ACTIVE_RANGE_RECHECK_MIN : (CONFIG.asteroidMining.scanIntervalMin || 15);
-        log(`Sweep done — no new asteroids. ${rangesLive ? `Ranges still active → re-sweep in ${cooldownMin}min.` : `No hints → waiting ${cooldownMin}min.`}`, "asteroid");
-        ScanState.clear();
-        // Set a cooldown timer so scheduler doesn't restart immediately
-        GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + cooldownMin * 60 * 1000));
+        await this.finishSweep(scanState);
         return;
       }
 
@@ -2170,15 +2132,16 @@
       const next = scanState.queue[0]; // queue was shifted by advance
 
       if (!next) {
-        // freshRanges (from the range-verify above) is guaranteed non-empty
-        // here — an empty result returns earlier ("no active ranges"). So the
-        // game still shows hint ranges and asteroids keep respawning in them:
-        // re-sweep soon instead of the long (often stale-45) cooldown that made
-        // the bot sit idle while asteroids were available. (v2.10.15)
-        const cooldownMin = ACTIVE_RANGE_RECHECK_MIN;
-        log(`Sweep done: ${scanState.scannedCount} systems checked, none live now. Ranges still active → re-sweep in ${cooldownMin}min.`, "asteroid");
-        ScanState.clear();
-        GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + cooldownMin * 60 * 1000));
+        // v2.12.3: THIS is where a sweep normally ends (last queued system just
+        // scanned) — and until now it set a flat cooldown with NO range
+        // re-fetch, logging "Ranges still active" from a snapshot up to
+        // VERIFY_EVERY systems old (the old comment claimed freshRanges was
+        // "guaranteed non-empty here" — false on 5 of 6 steps, where it's
+        // null). The v2.10.12 sweep-end re-fetch lived only in the
+        // queue-empty-at-entry branch above, which this path made unreachable:
+        // net effect was brand-new hint ranges staying invisible for a full
+        // cooldown (+ jitter). Funnel into the shared finishSweep instead.
+        await this.finishSweep(scanState);
         return;
       }
 
@@ -2187,6 +2150,42 @@
       log(`Next: [${next.galaxy}:${next.system}] in ${Math.round(scanDelay)}ms...`, "asteroid");
       await AntiDetection.sleep(scanDelay);
       scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "next system");
+    },
+
+    // ── Sweep finished (queue exhausted) — decide what happens next ──
+    // (v2.10.12, generalized in v2.12.3) OGameX rotates its asteroid hints
+    // frequently: by the time one sweep ends, a brand-new set of search areas
+    // is often already live. So on EVERY sweep end: deep-fetch the ranges,
+    // and if anything new appeared, rescan immediately instead of cooling
+    // down. Only when the re-fetch shows nothing new does the cooldown start
+    // — short when hint ranges are still live (asteroids respawn in them),
+    // long when the hint pool is empty. Deep fetch (not a single call) so a
+    // randomly-subsetted response can't hide a fresh range; it self-limits
+    // via early-exit (~3 calls when the endpoint is deterministic).
+    async finishSweep(scanState) {
+      const sweptKeys = new Set((scanState.ranges || []).map(r => `${r.galaxy}:${r.startSystem}-${r.endSystem}`));
+      const scannedCount = scanState.scannedCount || 0;
+      const freshRanges = await AsteroidScanner.scanRangesFull(6);
+      const newRanges = freshRanges.filter(r => !sweptKeys.has(`${r.galaxy}:${r.startSystem}-${r.endSystem}`));
+      if (newRanges.length > 0) {
+        const base = CONFIG.asteroidMining.minerBase;
+        const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
+        const queue = AsteroidScanner.buildScanQueue(freshRanges, base, maxFlight);
+        if (queue.length > 0) {
+          const newLabels = newRanges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
+          log(`Sweep done (${scannedCount} systems) — ${newRanges.length} fresh range(s) appeared (${newLabels}) → rescanning now instead of a cooldown wait.`, "asteroid");
+          ScanState.start(freshRanges, queue);
+          const first = queue[0];
+          scanNavigate(`/galaxy?x=${first.galaxy}&y=${first.system}`, "fresh-range rescan");
+          return;
+        }
+      }
+      const rangesLive = freshRanges.length > 0;
+      const cooldownMin = rangesLive ? ACTIVE_RANGE_RECHECK_MIN : (CONFIG.asteroidMining.scanIntervalMin || 15);
+      log(`Sweep done: ${scannedCount} systems checked, no new asteroids. ${rangesLive ? `Ranges still live (verified) → re-sweep in ${cooldownMin}min.` : `No hint ranges → waiting ${cooldownMin}min.`}`, "asteroid");
+      ScanState.clear();
+      // Cooldown timer so the scheduler doesn't restart immediately
+      GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + cooldownMin * 60 * 1000));
     },
 
     // ── Dispatch fleet to found asteroid ──
@@ -3112,8 +3111,20 @@
           dispatchInfo = { available, toSend };
           // ogamex_last_dispatch feeds the MINING parallel decision
           // (minersHomeAfterLastDispatch) — HC counts must not pollute it.
+          // v2.12.3: plausibility guard — dataset.shipQuantity has been seen
+          // parsing to ~1.9e9 ("~1901651389 miners home" in logs), which then
+          // poisons every parallel keep-scanning decision built on this record.
+          // Above the cap store nothing: minersHomeAfterLastDispatch returns
+          // "unknown", the designed fail-open path (keep scanning, verify with
+          // the live ship count at dispatch time).
           if (!mission.farm) {
-            GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
+            const AVAIL_SANITY_CAP = 10_000_000;
+            if (available <= AVAIL_SANITY_CAP) {
+              GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
+            } else {
+              GM_setValue("ogamex_last_dispatch", "null");
+              log(`Ship count sanity: available=${available} exceeds ${AVAIL_SANITY_CAP.toLocaleString()} — not recording (miners-home = unknown, verify at dispatch).`, "warn");
+            }
           }
 
           if (input && toSend > 0) {
@@ -3575,8 +3586,14 @@
     const scanState = ScanState.load();
     const scanActive = scanState?.active;
 
-    // Jitter — skip when scan is actively running (don't delay mid-scan)
-    if (!scanActive) await AntiDetection.jitter();
+    // Jitter — skip when scan is actively running (don't delay mid-scan).
+    // v2.12.3: also skip while the scan cooldown is ticking down. The cooldown
+    // already IS an idle pause; a jitter rolled during it humanized nothing
+    // (the bot was doing nothing anyway) and just pushed the next range check
+    // 5-15min past cooldown expiry — observed 10min cooldowns stretching to
+    // 20-25min of blindness while fresh hint ranges sat unscanned.
+    const scanCooldownActive = (parseInt(GM_getValue("ogamex_scan_cooldown_until", "0")) || 0) > Date.now();
+    if (!scanActive && !scanCooldownActive) await AntiDetection.jitter();
     if (CONFIG.asteroidMining.enabled && !AsteroidMiner.running) {
       // If a scan is active but we're not on the galaxy page (user navigated
       // away, or dispatch landed us elsewhere), resume by jumping to the next
