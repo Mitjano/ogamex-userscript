@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.24
+// @version      2.10.25
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1100,19 +1100,36 @@
 
   const DispatchedAsteroids = {
     KEY: "ogamex_dispatched_asteroids",
-    TTL: 60 * 60 * 1000, // 1 hour — asteroids move after each series
+    TTL: 60 * 60 * 1000, // fallback block when the fleet's arrival time is unknown
 
     _load() {
       try {
         const raw = GM_getValue(this.KEY, "[]");
-        // Filter out expired entries
-        return JSON.parse(raw).filter(e => Date.now() - e.at < this.TTL);
+        // v2.10.25: an entry expires at its releaseAt (fleet arrival + buffer)
+        // when known, else after the flat TTL. The game respawns asteroids in
+        // the same slots every ~5-15min, often at identical coords — a flat 1h
+        // block skipped several legitimately mineable respawns per hour. Once
+        // the fleet has ARRIVED the asteroid it flew to is consumed, so
+        // anything visible at those coords afterwards is a NEW instance.
+        return JSON.parse(raw).filter(e => Date.now() < (e.releaseAt || e.at + this.TTL));
       } catch { return []; }
     },
 
     add(galaxy, system) {
       const entries = this._load();
       entries.push({ coord: `${galaxy}:${system}`, at: Date.now() });
+      GM_setValue(this.KEY, JSON.stringify(entries));
+    },
+
+    // v2.10.25: set/tighten the expiry of the newest entry for these coords.
+    // Called at send-confirmation time, when the game's own flight-time display
+    // gives us the real arrival.
+    release(coordStr, releaseAt) {
+      if (!coordStr || !Number.isFinite(releaseAt)) return;
+      const entries = this._load();
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (entries[i].coord === coordStr) { entries[i].releaseAt = releaseAt; break; }
+      }
       GM_setValue(this.KEY, JSON.stringify(entries));
     },
 
@@ -1135,6 +1152,115 @@
     const g = url.match(/[?&](?:x|galaxy)=(\d+)/);
     const s = url.match(/[?&](?:y|system)=(\d+)/);
     return g && s ? `${g[1]}:${s[1]}` : null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  TAB LOCK  (v2.10.25) — exactly ONE tab runs the bot
+  // ═══════════════════════════════════════════════════════════════
+  // Incident 2026-07-20: three fleets to [3:373:17] launched 1s and 14s apart.
+  // A single tab physically cannot do that (one dispatch = 3 form steps with
+  // sleeps ≈8-12s + navigation) → several open game tabs were EACH running the
+  // scheduler and each picked up pending_mission. All GM_setValue-based guards
+  // are blind to this: Tampermonkey propagates GM storage to other tabs
+  // ASYNCHRONOUSLY (seconds), so the duplicate stamps raced. localStorage IS
+  // synchronous across same-origin tabs — the lock lives there. The tab id
+  // lives in sessionStorage so the leader keeps its identity across the many
+  // page navigations the bot performs.
+  const TabLock = {
+    LS_KEY: "ogx_active_tab_lock",
+    // 3min: background tabs get their timers throttled to ~1/min, so a
+    // backgrounded leader may only refresh once a minute — 45s staleness made
+    // leadership flap between tabs. A closed leader hands over within ≤3min.
+    STALE_MS: 3 * 60 * 1000,
+    HEARTBEAT_MS: 10 * 1000,  // independent interval keeps the lock fresh between 50-90s ticks
+    _id: null,
+
+    id() {
+      if (this._id) return this._id;
+      try {
+        this._id = sessionStorage.getItem("ogx_tab_id");
+        if (!this._id) {
+          this._id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+          sessionStorage.setItem("ogx_tab_id", this._id);
+        }
+      } catch { this._id = "t" + Math.floor(Math.random() * 1e9); }
+      return this._id;
+    },
+
+    _read() {
+      try { return JSON.parse(localStorage.getItem(this.LS_KEY) || "null"); } catch { return null; }
+    },
+
+    // True when THIS tab holds (or successfully claims) the lock. Claiming
+    // re-reads after write so a simultaneous write by another tab
+    // (last-write-wins) is detected instead of both tabs believing they lead.
+    isLeader() {
+      const now = Date.now();
+      const lock = this._read();
+      if (lock && lock.id !== this.id() && now - lock.at <= this.STALE_MS) return false;
+      try { localStorage.setItem(this.LS_KEY, JSON.stringify({ id: this.id(), at: now })); } catch { return true; }
+      const after = this._read();
+      return !after || after.id === this.id();
+    },
+  };
+  let _tabLockLogged = false;
+  function requireLeader(context) {
+    if (TabLock.isLeader()) return true;
+    if (!_tabLockLogged) {
+      _tabLockLogged = true;
+      log(`PAUSED — another tab is running the bot (${context}). This tab stays passive.`, "warn");
+    }
+    return false;
+  }
+
+  // v2.10.25: the last-sent duplicate stamp lives in BOTH GM storage (survives
+  // browser restart, per-universe prefixed) and localStorage (synchronous
+  // across tabs — GM propagates async between tabs, which is how the stamps
+  // raced). Read = newest of the two; write = both.
+  function readLastSent() {
+    let a = null, b = null;
+    try { a = JSON.parse(GM_getValue("ogamex_last_sent_target", "null")); } catch {}
+    try { b = JSON.parse(localStorage.getItem("ogx_last_sent_target") || "null"); } catch {}
+    if (a && b) return (a.at || 0) >= (b.at || 0) ? a : b;
+    return a || b;
+  }
+  function writeLastSent(v) {
+    const s = v ? JSON.stringify(v) : "null";
+    GM_setValue("ogamex_last_sent_target", s);
+    try {
+      if (v) localStorage.setItem("ogx_last_sent_target", s);
+      else localStorage.removeItem("ogx_last_sent_target");
+    } catch {}
+  }
+
+  // v2.10.25: server-truth duplicate check — storage guards are blind across
+  // browsers/machines and race across tabs; the game's own event list is the
+  // ground truth for "is a fleet already flying to these coords". Checks the
+  // current page's embedded events first (instant), then fetches a fresh event
+  // list. Fail-open: any fetch problem returns null (the storage guards still
+  // apply). NOTE: return flights FROM those coords also match — conservative,
+  // blocks a same-coords respawn only while a fleet is still on the books.
+  async function fleetAlreadyFlyingTo(coord) {
+    if (!coord) return null;
+    const needle = `[${coord}:17]`;
+    try {
+      // MUST exclude the bot's own panel: the persisted log contains lines
+      // like "ASTEROID at [3:373:17]!" — matching them would block every send.
+      const pageText = Array.from(document.body.children)
+        .filter(el => el.id !== "ogx-bot-panel")
+        .map(el => el.textContent || "")
+        .join(" ");
+      if (pageText.includes(needle)) return "page-events";
+    } catch {}
+    for (const url of ["/ajax/fleet/eventlist", "/ajax/fleet/eventbox"]) {
+      try {
+        const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!res.ok) continue;
+        const txt = await res.text();
+        if (txt.includes(needle)) return url;
+      } catch {}
+    }
+    return null;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -2246,6 +2372,10 @@
   let _handlingMission = false;
   async function handlePendingMission() {
     if (_handlingMission) return;
+    // v2.10.25: a non-leader tab must NEVER execute a pending mission — this
+    // was the exact mechanism of the triple-send (several tabs on the fleet
+    // page each resumed the same pending_mission within seconds).
+    if (!requireLeader("pending-mission")) return;
     const raw = GM_getValue("pending_mission", null);
     if (!raw) return;
     _handlingMission = true;
@@ -2301,18 +2431,33 @@
         const SEND_GUARD_MS = 10 * 60 * 1000;
         const missionCoord = coordsFromFleetUrl(mission.fleetUrl);
         try {
-          const lastSent = JSON.parse(GM_getValue("ogamex_last_sent_target", "null"));
+          const lastSent = readLastSent(); // v2.10.25: GM + localStorage, newest wins
           const sameTarget = lastSent && (
             (missionCoord && lastSent.coord && lastSent.coord === missionCoord) ||
             lastSent.url === mission.fleetUrl // fallback when coords unparseable
           );
-          if (sameTarget && Date.now() - lastSent.at < SEND_GUARD_MS) {
+          // v2.10.25: block until the fleet's ARRIVAL when known (stamped at
+          // send time from the game's own flight-time display) — after arrival
+          // the asteroid is consumed and a same-coords respawn is fair game.
+          // Fallback: flat 10min window.
+          const blockedUntil = lastSent ? (lastSent.releaseAt || lastSent.at + SEND_GUARD_MS) : 0;
+          if (sameTarget && Date.now() < blockedUntil) {
             const agoSec = Math.round((Date.now() - lastSent.at) / 1000);
             log(`DUPLICATE BLOCKED: already sent a fleet to [${missionCoord || mission.fleetUrl}] ${agoSec}s ago. Not sending again.`, "warn");
             GM_setValue("pending_mission", null);
             return; // inside the try — the finally resets _handlingMission
           }
         } catch {}
+
+        // v2.10.25: server-truth check — catches a fleet launched seconds ago
+        // by another tab, another browser or another machine, which no local
+        // storage guard can see.
+        const alreadyFlying = await fleetAlreadyFlyingTo(missionCoord);
+        if (alreadyFlying) {
+          log(`DUPLICATE BLOCKED (server events via ${alreadyFlying}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
+          GM_setValue("pending_mission", null);
+          return;
+        }
 
         log("Fleet page loaded (direct asteroid). Starting 3-step dispatch...", "fleet");
 
@@ -2715,7 +2860,16 @@
           // Stamp the target BEFORE clicking: the click often navigates away
           // instantly, so any code after it may never run. Marking intent first
           // means a replayed pending_mission hits the duplicate guard above.
-          GM_setValue("ogamex_last_sent_target", JSON.stringify({ url: mission.fleetUrl, coord: coordsFromFleetUrl(mission.fleetUrl), at: Date.now() }));
+          // v2.10.25: stamp BEFORE the click (navigation may kill everything
+          // after it), in BOTH storages. capturedFlightMs (game's own display,
+          // step 2) lets us block re-sends only until ARRIVAL + 2min buffer —
+          // after arrival the asteroid is consumed, so a respawn at the same
+          // coords is legitimately mineable (the flat 1h block skipped those).
+          {
+            const releaseAt = capturedFlightMs > 0 ? Date.now() + capturedFlightMs + 120000 : undefined;
+            writeLastSent({ url: mission.fleetUrl, coord: missionCoord, at: Date.now(), releaseAt });
+            if (missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
+          }
           sendBtn.click();
 
           await AntiDetection.sleep(3000);
@@ -2734,7 +2888,7 @@
             log(`DISPATCH FAILED! Error: ${errorMsg.textContent.trim().substring(0, 100)}`, "error");
             // No fleet actually left — drop the duplicate-guard stamp so a
             // genuine retry to these coords isn't blocked for the next 10min.
-            GM_setValue("ogamex_last_sent_target", "null");
+            writeLastSent(null);
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
             log("FLEET SENT! All miners dispatched!", "success");
@@ -2856,6 +3010,9 @@
     // so a disabled bot doesn't look "dead".
     GM_setValue("ogamex_last_tick_at", String(Date.now()));
     if (!CONFIG.enabled) return;
+
+    // v2.10.25: only the leader tab acts — every other tab is a passive viewer.
+    if (!requireLeader("scheduler")) return;
 
     // Handle any pending multi-page mission first
     await handlePendingMission();
@@ -3461,6 +3618,24 @@
     // v2.10.10: timestamp of the last real page load — read by the scheduler
     // keepalive to detect long stretches with no navigation (session risk).
     GM_setValue("ogamex_last_pageload_at", String(Date.now()));
+
+    // ── v2.10.25: non-leader tabs are passive viewers ──
+    // Everything below mutates SHARED state (pending_mission, scan state,
+    // fleet timers) — a second open game tab executing it was the root cause
+    // of the 3-fleets-to-one-asteroid incident. A passive tab still builds the
+    // panel and starts the (leader-gated) scheduler, so it takes over
+    // automatically within ~3min if the active tab closes.
+    if (!TabLock.isLeader()) {
+      log("Another tab is running the bot — this tab stays PASSIVE (will take over if the active tab closes).", "warn");
+      createUI();
+      updateStatusUI();
+      if (CONFIG.enabled) startScheduler();
+      return;
+    }
+    // Leader heartbeat, independent of the 50-90s scheduler cadence. When this
+    // tab owns the lock isLeader() refreshes it; when another fresh tab owns
+    // it, isLeader() is a read-only false — no write war.
+    setInterval(() => TabLock.isLeader(), TabLock.HEARTBEAT_MS);
 
     // ── Handle fleetSendSuccessfully page (race condition fix) ──
     // When "Send fleet" is clicked, OGameX navigates the browser to this URL
