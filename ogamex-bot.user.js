@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.27
+// @version      2.10.28
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3067,13 +3067,22 @@
   let schedulerTimer = null;
 
   async function schedulerTick() {
-    // v2.10.10: heartbeat for the watchdog — recorded before ANY early return
-    // so a disabled bot doesn't look "dead".
-    GM_setValue("ogamex_last_tick_at", String(Date.now()));
-    if (!CONFIG.enabled) return;
+    // v2.10.28: the watchdog heartbeat is stamped by the LEADER only (plus the
+    // disabled case, so a disabled bot doesn't look dead). A passive tab
+    // stamping it MASKED a dead leader: the leader's lock heartbeat (its own
+    // interval) kept it leader while its dead scheduler chain never acted, the
+    // passive tab kept last_tick_at fresh, and the 25min watchdog never fired
+    // in ANY tab — silently dead bot, forever. With leader-only stamping a
+    // dead leader chain lets the stamp go stale → every tab's watchdog reloads
+    // → re-init re-elects a working leader.
+    if (!CONFIG.enabled) {
+      GM_setValue("ogamex_last_tick_at", String(Date.now()));
+      return;
+    }
 
     // v2.10.25: only the leader tab acts — every other tab is a passive viewer.
     if (!requireLeader("scheduler")) return;
+    GM_setValue("ogamex_last_tick_at", String(Date.now()));
 
     // Handle any pending multi-page mission first
     await handlePendingMission();
