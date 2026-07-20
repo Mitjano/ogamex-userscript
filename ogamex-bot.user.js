@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.26
+// @version      2.10.27
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1137,6 +1137,11 @@
       return this._load().some(e => e.coord === `${galaxy}:${system}`);
     },
 
+    // v2.10.27: active entries with their expiry — for the panel.
+    entries() {
+      return this._load().map(e => ({ coord: e.coord, freeAt: e.releaseAt || e.at + this.TTL }));
+    },
+
     clear() {
       GM_setValue(this.KEY, "[]");
     },
@@ -1201,6 +1206,15 @@
       try { localStorage.setItem(this.LS_KEY, JSON.stringify({ id: this.id(), at: now })); } catch { return true; }
       const after = this._read();
       return !after || after.id === this.id();
+    },
+
+    // v2.10.27: READ-ONLY leadership peek for UI — never claims the lock
+    // (isLeader() writes, so calling it from a passive tab's status refresh
+    // would steal leadership).
+    peek() {
+      const lock = this._read();
+      if (!lock || Date.now() - lock.at > this.STALE_MS) return "unclaimed";
+      return lock.id === this.id() ? "leader" : "passive";
     },
   };
   let _tabLockLogged = false;
@@ -1358,19 +1372,26 @@
     // log so the exact selectors can be confirmed, then tightened. Until
     // verified, set config.expectedResourcesPerAsteroid manually to enable
     // right-sizing immediately.
-    scanReports() {
+    // v2.10.27: `root` lets the same parser run on the live page (default) or
+    // on a fetched-and-DOMParsed messages document (fetchReportsPeriodic).
+    scanReports(root = document, sourceLabel = "page") {
       if (!CONFIG.asteroidMining.learnFromReports) return;
       try {
-        const path = location.pathname.toLowerCase();
-        const looksLikeMessages = /message|communication|report|nachricht|wiadomo/.test(path) ||
-          /Asteroid\s*Mining/i.test(document.body.textContent || "");
-        if (!looksLikeMessages) return;
+        if (root === document) {
+          const path = location.pathname.toLowerCase();
+          const looksLikeMessages = /message|communication|report|nachricht|wiadomo/.test(path) ||
+            /Asteroid\s*Mining/i.test(document.body.textContent || "");
+          if (!looksLikeMessages) return;
+        }
 
         // Candidate report containers — try a few common message selectors.
-        const containers = document.querySelectorAll(
+        const containers = root.querySelectorAll(
           ".message, .msg, .messageContent, [data-message-id], .message_item, li.message, .communication-item"
         );
-        if (containers.length === 0) return;
+        if (containers.length === 0) {
+          if (root !== document) log(`Yield fetch (${sourceLabel}): no known message markup — selectors need tuning for this OGameX build.`, "warn");
+          return;
+        }
 
         const seen = new Set(JSON.parse(GM_getValue(this.SEEN_REPORTS_KEY, "[]")));
         let learned = 0, dumped = 0;
@@ -1415,9 +1436,34 @@
         if (learned > 0 || seen.size) {
           GM_setValue(this.SEEN_REPORTS_KEY, JSON.stringify([...seen].slice(-300)));
         }
-        if (learned > 0) log(`Parsed ${learned} new asteroid report(s) for yield learning`, "asteroid");
+        if (learned > 0) log(`Parsed ${learned} new asteroid report(s) for yield learning (${sourceLabel})`, "asteroid");
       } catch (err) {
         log(`Report scan error (non-fatal): ${err.message}`, "warn");
+      }
+    },
+
+    // ── Engine B (v2.10.27): FETCH the messages page periodically ──
+    // Root cause of "est: ?": Engine A only parses reports when the browser is
+    // ON a messages page — and the bot never navigates there, so it never
+    // learned anything. Leader-only (called from the gated scheduler tick),
+    // every 30min, fail-open. Endpoint guessed from OGameX's route shape; the
+    // no-markup warning above tells us if the selectors/URL need tuning.
+    FETCH_EVERY_MS: 30 * 60 * 1000,
+    async fetchReportsPeriodic() {
+      if (!CONFIG.asteroidMining.learnFromReports) return;
+      const last = parseInt(GM_getValue("ogamex_yield_fetch_at", "0")) || 0;
+      if (Date.now() - last < this.FETCH_EVERY_MS) return;
+      GM_setValue("ogamex_yield_fetch_at", String(Date.now()));
+      for (const url of ["/messages", "/ajax/messages"]) {
+        try {
+          const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          if (!res.ok) continue;
+          const html = await res.text();
+          if (res.redirected || /login|password/i.test(html.substring(0, 500))) continue; // session page, not messages
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          this.scanReports(doc, url);
+          return; // first endpoint that answered is enough
+        } catch {}
       }
     },
   };
@@ -3032,6 +3078,9 @@
     // Handle any pending multi-page mission first
     await handlePendingMission();
 
+    // v2.10.27: background yield learning (30min throttle inside, fail-open).
+    AsteroidYieldTracker.fetchReportsPeriodic().catch(() => {});
+
     // Sleep check
     if (AntiDetection.isSleepTime()) {
       log("Night mode active - sleeping until " + CONFIG.antiDetection.sleepEndHour + ":00 UTC", "delay");
@@ -3273,6 +3322,7 @@
           </div>
           <div class="status" id="ogx-asteroid-status">Idle</div>
           <div class="status" id="ogx-asteroid-sizing" style="font-size:10px;color:#f39c12;margin-top:3px;">Mode: — | miners/mission: — | cargo/miner: — | est. asteroid: —</div>
+          <div class="status" id="ogx-asteroid-locks" style="font-size:10px;color:#7f8c8d;margin-top:3px;" title="Which tab runs the bot + coords currently locked against re-dispatch (frees at fleet arrival, or after 1h if arrival unknown).">Tab: —</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="How many miners to send on ONE flight. 0 = send all available in a single wave. This overrides the auto cargo/est formula.">Miners per flight (0=all)</span>
@@ -3464,6 +3514,11 @@
 
     // Display persisted logs from previous page navigations
     updateLogUI();
+
+    // v2.10.27: keep the status lines fresh (lock countdowns, tab role) —
+    // runs in passive tabs too; peek() is read-only so this never steals
+    // leadership.
+    setInterval(updateStatusUI, 5000);
   }
 
   function escapeHTML(str) {
@@ -3532,6 +3587,20 @@
       const estStr = est > 0 ? est.toLocaleString() : "?";
       const flightsStr = maxFleets > 0 ? `${inflight}/${maxFleets}` : `${inflight}/∞`;
       sizing.textContent = `Mode: ${mode} | per flight: ${needStr} | flights: ${flightsStr} | cargo/miner: ${cargoStr} | est: ${estStr}`;
+    }
+
+    // v2.10.27: transparency line — which tab runs the bot + which coords are
+    // currently locked (and when each frees up). This is the view that would
+    // have shown today's duplicate incidents at a glance.
+    const locks = document.getElementById("ogx-asteroid-locks");
+    if (locks) {
+      const role = TabLock.peek(); // read-only — must NOT claim from a passive tab
+      const roleStr = role === "leader" ? "ACTIVE (this tab)" : role === "passive" ? "PASSIVE (other tab runs)" : "unclaimed";
+      const blocked = DispatchedAsteroids.entries()
+        .map(e => `[${e.coord}] ${Math.max(0, Math.ceil((e.freeAt - Date.now()) / 60000))}m`)
+        .join(", ");
+      locks.textContent = `Tab: ${roleStr}${blocked ? ` | locked: ${blocked}` : " | locked: none"}`;
+      locks.style.color = role === "passive" ? "#e67e22" : "#7f8c8d";
     }
   }
 
