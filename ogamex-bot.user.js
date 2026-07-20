@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.3
+// @version      2.12.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1713,6 +1713,23 @@
     },
   };
 
+  // v2.12.4: every "queue exhausted" exit must land in a cooldown. Several
+  // exits used to just clear ScanState, letting the very next tick start a
+  // brand-new scan of the SAME still-advertised range — observed live:
+  // dispatch to the only asteroid of a single range emptied the queue
+  // (pruneFoundRange skips the range remainder), the off-galaxy un-wedge
+  // path cleared the state, and the bot re-swept [3:36-56] seconds after
+  // finishing it, re-detecting the asteroid it had just dispatched to.
+  // Shared quiet exit: clear + short recheck cooldown. Deliberately NO range
+  // AJAX here — these exits fire right after a fleet send / dispatch failure
+  // or from arbitrary pages, where an extra fetch burst is bot-tell traffic;
+  // the post-cooldown startNewScan does the deep fetch anyway.
+  function endSweepWithCooldown(reason) {
+    ScanState.clear();
+    GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + ACTIVE_RANGE_RECHECK_MIN * 60 * 1000));
+    log(`${reason} — next range check in ${ACTIVE_RANGE_RECHECK_MIN}min.`, "asteroid");
+  }
+
   // ═══════════════════════════════════════════════════════════════
   //  ASTEROID MINER: Main asteroid mining logic
   // ═══════════════════════════════════════════════════════════════
@@ -2045,8 +2062,7 @@
             await AntiDetection.sleep(scanDelay);
             scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "skip-dispatched next");
           } else {
-            log("Scan complete — all ranges checked", "asteroid");
-            ScanState.clear();
+            await this.finishSweep(scanState); // v2.12.4: sweep end → verified cooldown, not instant restart
           }
           return;
         }
@@ -2086,8 +2102,7 @@
               await AntiDetection.sleep(humanScanDelayMs());
               scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "skip-far-asteroid next");
             } else {
-              log("Scan complete — all ranges checked", "asteroid");
-              ScanState.clear();
+              await this.finishSweep(scanState); // v2.12.4: sweep end → verified cooldown, not instant restart
             }
             return;
           }
@@ -2959,7 +2974,7 @@
                 await AntiDetection.shortDelay();
                 scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "parallel resume");
               } else {
-                ScanState.clear(); // queue exhausted — let scheduler start a fresh scan
+                endSweepWithCooldown("Queue exhausted after dispatch"); // v2.12.4
               }
               return;
             }
@@ -3016,8 +3031,7 @@
             await AntiDetection.shortDelay();
             scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "post-dispatch resume");
           } else {
-            log("Scan complete — all ranges checked", "asteroid");
-            ScanState.clear();
+            endSweepWithCooldown("Queue exhausted after failed dispatch"); // v2.12.4
           }
         };
 
@@ -3111,14 +3125,16 @@
           dispatchInfo = { available, toSend };
           // ogamex_last_dispatch feeds the MINING parallel decision
           // (minersHomeAfterLastDispatch) — HC counts must not pollute it.
-          // v2.12.3: plausibility guard — dataset.shipQuantity has been seen
-          // parsing to ~1.9e9 ("~1901651389 miners home" in logs), which then
-          // poisons every parallel keep-scanning decision built on this record.
-          // Above the cap store nothing: minersHomeAfterLastDispatch returns
-          // "unknown", the designed fail-open path (keep scanning, verify with
-          // the live ship count at dispatch time).
+          // v2.12.3 plausibility guard, recalibrated in v2.12.4: the 10M cap
+          // false-flagged this server's REAL fleet (5 201 651 389 miners is a
+          // genuine count on athena's inflated economy — confirmed against the
+          // fleet page's own ship list). The guard now only catches true parse
+          // garbage (e.g. concatenated digit runs), which lands far above any
+          // real count. Above the cap store nothing: minersHomeAfterLastDispatch
+          // returns "unknown", the designed fail-open path (keep scanning,
+          // verify with the live ship count at dispatch time).
           if (!mission.farm) {
-            const AVAIL_SANITY_CAP = 10_000_000;
+            const AVAIL_SANITY_CAP = 1_000_000_000_000; // 1e12
             if (available <= AVAIL_SANITY_CAP) {
               GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
             } else {
@@ -3615,8 +3631,12 @@
         // lets the next tick's !scanActive path start a fresh one (deep fetch →
         // picks up current ranges & any new asteroids).
         if (!next && !dispatchInProgress) {
-          log("Active scan but queue empty & off galaxy page — clearing spent scan so a fresh one can start.", "asteroid");
-          ScanState.clear();
+          // v2.12.4: this un-wedge used to clear WITHOUT a cooldown — after a
+          // dispatch that consumed the queue (pruneFoundRange on a single
+          // range) the very next tick re-swept the same still-advertised
+          // range from scratch. Quiet cooldown instead; startNewScan deep-
+          // fetches fresh ranges when it expires.
+          endSweepWithCooldown("Active scan but queue empty & off galaxy page");
           return;
         }
         if (next && !minersInFlight && !dispatchInProgress && !AntiDetection.isSleepTime()) {
@@ -4501,7 +4521,10 @@
           const delayMs = 1500 + Math.random() * 2000; // human-like pause before resuming
           setTimeout(() => scanNavigate(`/galaxy?x=${nextSys.galaxy}&y=${nextSys.system}`, "parallel resume (post-send)"), delayMs);
         } else {
-          ScanState.clear(); // queue exhausted → let scheduler cooldown / start a fresh scan
+          // v2.12.4: the comment used to SAY "let scheduler cooldown" but no
+          // cooldown was ever set — the next tick restarted a full sweep of
+          // the same range right after the fleet send. Set it for real.
+          endSweepWithCooldown("Queue exhausted after dispatch");
         }
       } else {
         log("Fleet sent — dispatch state cleaned up. Scan paused until a fleet returns.", "asteroid");
