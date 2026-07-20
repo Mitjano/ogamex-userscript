@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.25
+// @version      2.10.26
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1240,10 +1240,13 @@
   // list. Fail-open: any fetch problem returns null (the storage guards still
   // apply). NOTE: return flights FROM those coords also match — conservative,
   // blocks a same-coords respawn only while a fleet is still on the books.
-  async function fleetAlreadyFlyingTo(coord) {
+  async function fleetAlreadyFlyingTo(coord, { skipDom = false } = {}) {
     if (!coord) return null;
     const needle = `[${coord}:17]`;
-    try {
+    // skipDom: at fleet-form step 3 the page may render the CHOSEN target as
+    // text — matching our own about-to-be-sent target would block every send.
+    // The pre-click recheck therefore uses only the fresh server fetch.
+    if (!skipDom) try {
       // MUST exclude the bot's own panel: the persisted log contains lines
       // like "ASTEROID at [3:373:17]!" — matching them would block every send.
       const pageText = Array.from(document.body.children)
@@ -2860,6 +2863,18 @@
           // Stamp the target BEFORE clicking: the click often navigates away
           // instantly, so any code after it may never run. Marking intent first
           // means a replayed pending_mission hits the duplicate guard above.
+          // v2.10.26: LAST-SECOND server recheck. The first check ran at the
+          // start of the 3-step flow, ~10s ago — another machine/browser can
+          // have sent a fleet in that window. Fetch-only (skipDom — the step-3
+          // page may render our own chosen target as text).
+          const flyingNow = await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
+          if (flyingNow) {
+            log(`DUPLICATE BLOCKED (pre-click, server events via ${flyingNow}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
+            GM_setValue("pending_mission", null);
+            await finishDispatch(false); // sets the wait/return timer — that fleet is ours from elsewhere
+            return;
+          }
+
           // v2.10.25: stamp BEFORE the click (navigation may kill everything
           // after it), in BOTH storages. capturedFlightMs (game's own display,
           // step 2) lets us block re-sends only until ARRIVAL + 2min buffer —
