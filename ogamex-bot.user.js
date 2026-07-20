@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.0
+// @version      2.12.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3352,7 +3352,10 @@
           // coords is legitimately mineable (the flat 1h block skipped those).
           {
             const releaseAt = capturedFlightMs > 0 ? Date.now() + capturedFlightMs + 120000 : undefined;
-            writeLastSent({ url: mission.fleetUrl, coord: missionCoord, at: Date.now(), releaseAt });
+            // v2.12.1: `farm` flag lets fleetSendSuccessfully tell a late-nav
+            // farm send apart from a mining send even after pending_mission
+            // was already cleared by finishDispatch (slow-navigation race).
+            writeLastSent({ url: mission.fleetUrl, coord: missionCoord, at: Date.now(), releaseAt, farm: !!mission.farm });
             if (missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
           }
           sendBtn.click();
@@ -4433,7 +4436,14 @@
       const am = CONFIG.asteroidMining;
       let lastDisp = null;
       try { lastDisp = JSON.parse(GM_getValue("ogamex_last_dispatch", "null")); } catch {}
-      if (am.parallelDispatch && lastDisp) {
+      // v2.12.1: slow-navigation race — if finishDispatch of a FARM send
+      // already ran (cleared pending_mission) and the click-navigation landed
+      // here late, wasFarmSend is false but this was NOT a mining send.
+      // Running the mining decision would use STALE mining numbers and
+      // double-bump the in-flight counter. The send stamp carries the kind.
+      const lastSentInfo = readLastSent();
+      const recentFarmSend = !!(lastSentInfo?.farm && Date.now() - (lastSentInfo.at || 0) < 60000);
+      if (am.parallelDispatch && lastDisp && !recentFarmSend) {
         parallelKeepScanning = decideAfterMiningSend({
           available: lastDisp.available,
           toSend: lastDisp.toSend,
