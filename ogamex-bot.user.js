@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.23
+// @version      2.10.24
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1125,6 +1125,18 @@
     },
   };
 
+  // v2.10.24: extract target coords from ANY fleet-URL shape the bot produces.
+  // The same asteroid yields DIFFERENT url strings depending on how it was
+  // detected (game's raw href with galaxy=/system= vs our reconstructed
+  // /fleet?x=..&y=..), so every duplicate guard must compare COORDS, never
+  // string-equal URLs. Returns "g:s" or null.
+  function coordsFromFleetUrl(url) {
+    if (!url) return null;
+    const g = url.match(/[?&](?:x|galaxy)=(\d+)/);
+    const s = url.match(/[?&](?:y|system)=(\d+)/);
+    return g && s ? `${g[1]}:${s[1]}` : null;
+  }
+
   // ═══════════════════════════════════════════════════════════════
   //  ASTEROID YIELD TRACKER  (v2.10.0)
   // ═══════════════════════════════════════════════════════════════
@@ -1918,6 +1930,19 @@
 
       log(`Dispatching to ${asteroid.label} from base [${base.galaxy}:${base.system}:${base.position}] (~${estMinutes}min)`, "asteroid");
 
+      // v2.10.24: this fallback path never registered the coords — the ONLY
+      // dispatch initiation that didn't. In parallel mode the bot resumes
+      // scanning right after the send; the asteroid stays visible in the
+      // galaxy until collected, so the next sweep re-found it, has() said
+      // false, and a second (and third) fleet flew to the same coords.
+      if (DispatchedAsteroids.has(asteroid.galaxy, asteroid.system)) {
+        log(`Asteroid [${asteroid.galaxy}:${asteroid.system}:17] already dispatched, skipping (fallback path)`, "asteroid");
+        const updated2 = ScanState.load();
+        if (updated2) { updated2.foundAsteroid = null; ScanState.save(updated2); }
+        return;
+      }
+      DispatchedAsteroids.add(asteroid.galaxy, asteroid.system);
+
       // Use direct fleet URL with mission pre-set (same as asteroid link)
       const fleetUrl = `/fleet?x=${asteroid.galaxy}&y=${asteroid.system}&z=17&mission=12`;
       GM_setValue("pending_mission", JSON.stringify({
@@ -2260,20 +2285,30 @@
       // ── Direct asteroid mining: fleet URL has coords + mission pre-set ──
       // 3-step form on same page: Select ships → Confirm destination → Send fleet
       if (mission.step === "select_ships_direct" && page === "fleet") {
-        // ── v2.10.23: same-target send guard (defence in depth) ──
+        // ── v2.10.23/24: same-target send guard (defence in depth) ──
         // Nothing downstream re-checks DispatchedAsteroids, so ANY path that
         // replays a pending_mission (send succeeded but the browser never
         // reached fleetSendSuccessfully, so pending_mission was never cleared
         // and the next page load resumes it) dispatches a second fleet to the
-        // exact same coords. Refuse to send to a fleetUrl we just sent to.
-        // Window is short vs DispatchedAsteroids' 1h so a legitimately
-        // respawned asteroid at the same coords is still mineable later.
+        // exact same coords. Window is short vs DispatchedAsteroids' 1h so a
+        // legitimately respawned asteroid at the same coords is still mineable
+        // later.
+        // v2.10.24: compare COORDS, not url strings — the same asteroid gets a
+        // different fleetUrl per detection method (raw game href vs
+        // reconstructed /fleet?x=..&y=..), so url-equality let dupes through
+        // whenever two dispatch cycles detected it differently (observed
+        // 2026-07-20: 2-3 fleets to one asteroid, minutes apart).
         const SEND_GUARD_MS = 10 * 60 * 1000;
+        const missionCoord = coordsFromFleetUrl(mission.fleetUrl);
         try {
           const lastSent = JSON.parse(GM_getValue("ogamex_last_sent_target", "null"));
-          if (lastSent && lastSent.url === mission.fleetUrl && Date.now() - lastSent.at < SEND_GUARD_MS) {
+          const sameTarget = lastSent && (
+            (missionCoord && lastSent.coord && lastSent.coord === missionCoord) ||
+            lastSent.url === mission.fleetUrl // fallback when coords unparseable
+          );
+          if (sameTarget && Date.now() - lastSent.at < SEND_GUARD_MS) {
             const agoSec = Math.round((Date.now() - lastSent.at) / 1000);
-            log(`DUPLICATE BLOCKED: already sent a fleet to ${mission.fleetUrl} ${agoSec}s ago. Not sending again.`, "warn");
+            log(`DUPLICATE BLOCKED: already sent a fleet to [${missionCoord || mission.fleetUrl}] ${agoSec}s ago. Not sending again.`, "warn");
             GM_setValue("pending_mission", null);
             return; // inside the try — the finally resets _handlingMission
           }
@@ -2680,11 +2715,17 @@
           // Stamp the target BEFORE clicking: the click often navigates away
           // instantly, so any code after it may never run. Marking intent first
           // means a replayed pending_mission hits the duplicate guard above.
-          GM_setValue("ogamex_last_sent_target", JSON.stringify({ url: mission.fleetUrl, at: Date.now() }));
+          GM_setValue("ogamex_last_sent_target", JSON.stringify({ url: mission.fleetUrl, coord: coordsFromFleetUrl(mission.fleetUrl), at: Date.now() }));
           sendBtn.click();
 
           await AntiDetection.sleep(3000);
-          const errorMsg = document.querySelector(".error, .alert-danger, [class*='error']");
+          // v2.10.24: only a VISIBLE element with actual text counts as an
+          // error. `[class*='error']` also matches hidden/empty error
+          // containers baked into the page — a false positive here wiped the
+          // duplicate-guard stamp (line below) after every send, killing the
+          // guard exactly when it was needed.
+          const errorMsg = Array.from(document.querySelectorAll(".error, .alert-danger, [class*='error']"))
+            .find(el => el.offsetParent !== null && el.textContent.trim().length > 0);
           const successMsg = document.querySelector(".success, .alert-success, [class*='success']");
           const fleetMovement = document.body.textContent.includes("fleet movement") ||
                                 document.body.textContent.includes("Fleet movement");
@@ -3186,6 +3227,13 @@
                 // v2.9.6: skip-via-TTL does NOT add to DispatchedAsteroids.
                 return;
               }
+            }
+            // v2.10.24: manual path never checked the dedup store — a manual
+            // "Scan Asteroids" click while a fleet was already flying to these
+            // coords sent a duplicate.
+            if (DispatchedAsteroids.has(galaxy, system)) {
+              log(`Asteroid [${galaxy}:${system}:17] already dispatched — not sending again (manual)`, "warn");
+              return;
             }
             log(`Dispatching fleet via: ${result.fleetUrl}`, "asteroid");
             DispatchedAsteroids.add(galaxy, system);
