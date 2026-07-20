@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.11.1
+// @version      2.11.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2244,7 +2244,20 @@
         let st = FarmState.load();
 
         // Targets already collected → keep attacking before scanning further.
-        if (st?.active && st.targets?.length) { await this.dispatchNext(st); return; }
+        // v2.11.2: attacks are ONLY initiated from a galaxy page (human-like:
+        // player looks at the system, then attacks). Off-galaxy → go there.
+        if (st?.active && st.targets?.length) {
+          const pendingTargets = st.targets.filter(t => !FarmedTargets.has(t.coord));
+          if (!pendingTargets.length) { st.targets = []; FarmState.save(st); return; }
+          if (GameState.getCurrentPage() === "galaxy") {
+            await this.dispatchNext(st);
+          } else {
+            const t = pendingTargets[0];
+            await AntiDetection.shortDelay();
+            scanNavigate(`/galaxy?x=${t.galaxy}&y=${t.system}`, "farm back-to-galaxy");
+          }
+          return;
+        }
 
         if (st?.active) {
           if (GameState.getCurrentPage() === "galaxy") { await this.scanStep(st); return; }
@@ -2383,7 +2396,21 @@
       try {
         const st = FarmState.load();
         if (!st?.active) return;
-        await this.dispatchNext(st);
+        // v2.11.2 (human-like pacing): do NOT chain fleet-form → fleet-form.
+        // A real player goes back to the galaxy view of the system, hovers the
+        // next planet, and only then attacks — so when more targets are
+        // queued, navigate to their system's galaxy page first; the on-galaxy
+        // farm hook (init + scheduler) dispatches from there after a human
+        // dwell. Server-side this reads galaxy → fleet → galaxy → fleet, not
+        // a burst of bare fleet-form GETs.
+        const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord));
+        if (targets.length) {
+          const t = targets[0];
+          await AntiDetection.shortDelay();
+          scanNavigate(`/galaxy?x=${t.galaxy}&y=${t.system}`, "farm back-to-galaxy");
+          return;
+        }
+        await this.dispatchNext(st); // no targets left → resume sweep / finish
       } finally {
         this.running = false;
       }
