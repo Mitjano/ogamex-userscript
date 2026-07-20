@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.4
+// @version      2.12.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -776,33 +776,7 @@
           return [];
         }
 
-        // Parse pairs: [6:45:17] ? [6:85:17] → range {galaxy:6, start:45, end:85}
-        const coords = [];
-        const regex = /\[(\d+):(\d+):(\d+)\]/g;
-        let match;
-        while ((match = regex.exec(html)) !== null) {
-          coords.push({ galaxy: parseInt(match[1]), system: parseInt(match[2]) });
-        }
-
-        // Group into pairs (each consecutive pair = one range)
-        const rawRanges = [];
-        for (let i = 0; i + 1 < coords.length; i += 2) {
-          const a = coords[i], b = coords[i + 1];
-          if (a.galaxy === b.galaxy) {
-            rawRanges.push({
-              galaxy: a.galaxy,
-              startSystem: Math.min(a.system, b.system),
-              endSystem: Math.max(a.system, b.system),
-            });
-          }
-        }
-
-        // Do NOT merge overlapping ranges — each pair from the game is an
-        // independent search area. Merging loses information and can cause
-        // the bot to scan outside the intended boundaries.
-        // Sort by startSystem ascending for linear scanning.
-        rawRanges.sort((a, b) => a.galaxy - b.galaxy || a.startSystem - b.startSystem);
-        const ranges = rawRanges;
+        const ranges = AsteroidScanner.parseRangesFromHtml(html);
 
         if (ranges.length === 0) {
           log("No asteroid ranges found", "asteroid");
@@ -816,6 +790,76 @@
         log(`Asteroid range scan error: ${err.message}`, "error");
         return [];
       }
+    },
+
+    // ── Parse "[g:s:p] ? [g:s:p]" pairs into ranges ── (extracted v2.12.5)
+    // Each consecutive coordinate pair = one independent search area. Do NOT
+    // merge overlapping ranges — merging loses information and can cause the
+    // bot to scan outside the intended boundaries.
+    parseRangesFromHtml(html) {
+      const coords = [];
+      const regex = /\[(\d+):(\d+):(\d+)\]/g;
+      let match;
+      while ((match = regex.exec(html)) !== null) {
+        coords.push({ galaxy: parseInt(match[1]), system: parseInt(match[2]) });
+      }
+      const rawRanges = [];
+      for (let i = 0; i + 1 < coords.length; i += 2) {
+        const a = coords[i], b = coords[i + 1];
+        if (a.galaxy === b.galaxy) {
+          rawRanges.push({
+            galaxy: a.galaxy,
+            startSystem: Math.min(a.system, b.system),
+            endSystem: Math.max(a.system, b.system),
+          });
+        }
+      }
+      rawRanges.sort((a, b) => a.galaxy - b.galaxy || a.startSystem - b.startSystem);
+      return rawRanges;
+    },
+
+    // ── Stage 1c: click the game's OWN "Find asteroids" button ── (v2.12.5)
+    // Observed live (20:38): the bare Partial_AsteroidLocation GET returned
+    // "no signs of asteroids" 3× in a row, while a MANUAL click on the row-17
+    // button one minute later showed FIVE ranges. The button's click handler
+    // evidently does more than a bare read (fresh research roll / different
+    // request). Clicking the real button replicates exactly what the game —
+    // and a human player — does. Only available on a galaxy page where row 17
+    // shows the button (i.e. no asteroid currently occupies the belt).
+    async scanRangesViaButton() {
+      const btn = document.querySelector("span.x-find-asteroid, span.btn-asteroid-find");
+      if (!btn) return null; // not on a galaxy page / button not present
+      log("Bare range fetch came back empty — clicking the game's 'Find asteroids' button instead (human path).", "asteroid");
+      // Drop any stale modal so the poll below can't read a pre-click leftover
+      document.querySelectorAll(".galaxy-asteroid-modal").forEach(el => el.remove());
+      await AntiDetection.sleep(800 + Math.random() * 1200);
+      btn.click();
+      // Poll for the modal the game renders (up to ~6s)
+      let modal = null;
+      for (let i = 0; i < 12; i++) {
+        await AntiDetection.sleep(500);
+        modal = document.querySelector(".galaxy-asteroid-modal");
+        if (modal) break;
+      }
+      if (!modal) {
+        log("Find-asteroids modal did not appear within 6s — falling back to empty result.", "warn");
+        return [];
+      }
+      await AntiDetection.sleep(700 + Math.random() * 1000); // human reads the modal
+      const ranges = this.parseRangesFromHtml(modal.outerHTML);
+      // Close like a human: prefer a real close control, else drop the node.
+      // (Leftover DOM is harmless anyway — the next scan step is a full page load.)
+      const dialog = modal.closest("dialog, [class*='modal-wrap'], [class*='dialog'], [class*='popup']") || modal;
+      const closeBtn = dialog.querySelector("[class*='close'], button[aria-label='Close']")
+        || [...dialog.querySelectorAll("button, span, a")].find(el => /^[×✕x]$/i.test((el.textContent || "").trim()));
+      if (closeBtn) closeBtn.click(); else modal.remove();
+      if (ranges.length > 0) {
+        const labels = ranges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
+        log(`Button scan found ${ranges.length} asteroid ranges: ${labels}`, "asteroid");
+      } else {
+        log("Button scan: modal shows no ranges either — hint pool genuinely empty.", "asteroid");
+      }
+      return ranges;
     },
 
     // ── Stage 1b: Deep fetch — call scanRanges N times to build the authoritative
@@ -841,6 +885,13 @@
           break;
         }
         prevCount = allRanges.length;
+      }
+      // v2.12.5: empty result → try the game's own "Find asteroids" button
+      // (see scanRangesViaButton). The bare GET provably under-reports when
+      // the hint pool needs a fresh research roll.
+      if (allRanges.length === 0) {
+        const viaButton = await AsteroidScanner.scanRangesViaButton();
+        if (viaButton && viaButton.length > 0) return viaButton;
       }
       allRanges.sort((a, b) => a.galaxy - b.galaxy || a.startSystem - b.startSystem);
       return allRanges;
