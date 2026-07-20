@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.22
+// @version      2.10.23
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1065,9 +1065,19 @@
     pruneFoundRange(state, galaxy, system) {
       if (!state || !Array.isArray(state.ranges) || !Array.isArray(state.queue)) return 0;
       const inRange = (r, g, s) => r.galaxy === g && s >= r.startSystem && s <= r.endSystem;
-      const containing = state.ranges.filter(r => inRange(r, galaxy, system));
-      if (containing.length === 0) return 0;
-      const others = state.ranges.filter(r => !containing.includes(r));
+      const allContaining = state.ranges.filter(r => inRange(r, galaxy, system));
+      if (allContaining.length === 0) return 0;
+      // v2.10.23: hint ranges OVERLAP (e.g. [3:28-48] and [3:39-59] share
+      // 39-48). An asteroid found in the shared part belongs to only ONE of
+      // them — we cannot tell which, and the other range still holds its own
+      // asteroid a few systems away. Crediting the find to EVERY containing
+      // range pruned them all at once, so that second asteroid was never
+      // scanned and never mined. Credit the narrowest containing range only;
+      // every other range stays unsatisfied and keeps its systems queued.
+      const owner = allContaining.reduce((a, b) =>
+        (b.endSystem - b.startSystem) < (a.endSystem - a.startSystem) ? b : a);
+      const containing = [owner];
+      const others = state.ranges.filter(r => r !== owner);
       const before = state.queue.length;
       state.queue = state.queue.filter(q => {
         const inContaining = containing.some(r => inRange(r, q.galaxy, q.system));
@@ -2250,6 +2260,25 @@
       // ── Direct asteroid mining: fleet URL has coords + mission pre-set ──
       // 3-step form on same page: Select ships → Confirm destination → Send fleet
       if (mission.step === "select_ships_direct" && page === "fleet") {
+        // ── v2.10.23: same-target send guard (defence in depth) ──
+        // Nothing downstream re-checks DispatchedAsteroids, so ANY path that
+        // replays a pending_mission (send succeeded but the browser never
+        // reached fleetSendSuccessfully, so pending_mission was never cleared
+        // and the next page load resumes it) dispatches a second fleet to the
+        // exact same coords. Refuse to send to a fleetUrl we just sent to.
+        // Window is short vs DispatchedAsteroids' 1h so a legitimately
+        // respawned asteroid at the same coords is still mineable later.
+        const SEND_GUARD_MS = 10 * 60 * 1000;
+        try {
+          const lastSent = JSON.parse(GM_getValue("ogamex_last_sent_target", "null"));
+          if (lastSent && lastSent.url === mission.fleetUrl && Date.now() - lastSent.at < SEND_GUARD_MS) {
+            const agoSec = Math.round((Date.now() - lastSent.at) / 1000);
+            log(`DUPLICATE BLOCKED: already sent a fleet to ${mission.fleetUrl} ${agoSec}s ago. Not sending again.`, "warn");
+            GM_setValue("pending_mission", null);
+            return; // inside the try — the finally resets _handlingMission
+          }
+        } catch {}
+
         log("Fleet page loaded (direct asteroid). Starting 3-step dispatch...", "fleet");
 
         // Flight time captured in step 2, used by finishDispatch
@@ -2372,8 +2401,12 @@
             );
           }
           if (!btn) return false;
+          // v2.10.23: click ONCE. HTMLElement.click() already dispatches a
+          // bubbling click event and runs the default action, so the extra
+          // dispatchEvent(new MouseEvent("click")) that used to follow it fired
+          // every handler a SECOND time. On "Next" that could skip a wizard
+          // step; on "Send fleet" it launched a duplicate fleet (see step 3).
           btn.click();
-          btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
           log(`Clicked "${text}" (${btn.tagName}.${btn.className} id=${btn.id}) [${label}]`, "fleet");
           return true;
         };
@@ -2629,8 +2662,26 @@
         });
         if (sendBtn) {
           log(`Send btn: ${sendBtn.tagName}.${sendBtn.className} id=${sendBtn.id || "-"} href=${sendBtn.href || 'none'} text="${(sendBtn.textContent||"").trim().substring(0,50)}"`, "fleet");
+          // v2.10.23 — DOUBLE-SEND FIX. This used to be:
+          //     sendBtn.click();
+          //     sendBtn.dispatchEvent(new MouseEvent("click", {...}));
+          // Both lines run the button's handler, so every dispatch fired the
+          // fleet-send TWICE, milliseconds apart → two identical fleets to the
+          // SAME coords. The first mined the asteroid ("Resource Obtained"),
+          // the second arrived to nothing ("Asteroid Not Found") — 12 of 16
+          // missions on 2026-07-20 were such duplicates.
+          //
+          // The bug is as old as v2.9.0 but was MASKED while the bot sent 100%
+          // of miners per flight: the first send emptied the hangar, so the
+          // duplicate had no ships and died server-side. v2.10.0 right-sizing
+          // sends only part of the fleet, leaving miners home — so the second
+          // click started succeeding. Hence "it suddenly broke".
+          //
+          // Stamp the target BEFORE clicking: the click often navigates away
+          // instantly, so any code after it may never run. Marking intent first
+          // means a replayed pending_mission hits the duplicate guard above.
+          GM_setValue("ogamex_last_sent_target", JSON.stringify({ url: mission.fleetUrl, at: Date.now() }));
           sendBtn.click();
-          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
           await AntiDetection.sleep(3000);
           const errorMsg = document.querySelector(".error, .alert-danger, [class*='error']");
@@ -2640,6 +2691,9 @@
 
           if (errorMsg) {
             log(`DISPATCH FAILED! Error: ${errorMsg.textContent.trim().substring(0, 100)}`, "error");
+            // No fleet actually left — drop the duplicate-guard stamp so a
+            // genuine retry to these coords isn't blocked for the next 10min.
+            GM_setValue("ogamex_last_sent_target", "null");
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
             log("FLEET SENT! All miners dispatched!", "success");
