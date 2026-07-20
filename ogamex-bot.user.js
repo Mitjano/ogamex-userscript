@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.11.0
+// @version      2.11.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2375,10 +2375,18 @@
     },
 
     // Entry point after a farm fleet was sent (fleetSendSuccessfully / finishDispatch).
+    // Shares the `running` mutex with run() — a scheduler tick firing in the
+    // same window would otherwise interleave dispatchNext and drop a target.
     async afterSend() {
-      const st = FarmState.load();
-      if (!st?.active) return;
-      await this.dispatchNext(st);
+      if (this.running) return;
+      this.running = true;
+      try {
+        const st = FarmState.load();
+        if (!st?.active) return;
+        await this.dispatchNext(st);
+      } finally {
+        this.running = false;
+      }
     },
   };
 
@@ -2770,6 +2778,13 @@
           // hand control back to the farmer (next target / resume sweep);
           // a failed target stays on its FarmedTargets cooldown.
           if (mission.farm) {
+            if (dispatchOk) {
+              // Same in-flight bump as the fleetSendSuccessfully farm branch
+              // (this path runs when the click did NOT navigate away).
+              const storedNow2 = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+              GM_setValue("ogamex_inflight_fleets", String(storedNow2 + 1));
+              GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
+            }
             await InactiveFarmer.afterSend();
             return;
           }
@@ -2951,8 +2966,18 @@
             input.dispatchEvent(new Event("change", { bubbles: true }));
             log(`Selected ${toSend}/${available} Asteroid Miners (input: ${input.className})`, "fleet");
           } else {
-            log(`No Asteroid Miners available (found: ${available}, input: ${!!input})`, "error");
+            log(`No ${mission.farm ? "Heavy Cargo" : "Asteroid Miners"} available (found: ${available}, input: ${!!input})`, "error");
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            // v2.11.1: farm with 0 HC on the active planet would otherwise
+            // burn through the whole target queue (each retry stamps a target
+            // cooldown and navigates for nothing). Pause the sweep instead.
+            if (mission.farm) {
+              FarmState.clear();
+              GM_setValue("ogamex_farm_cooldown_until", String(Date.now() + 10 * 60 * 1000));
+              log("Farm: no Heavy Cargo on the active planet — sweep paused 10min.", "warn");
+              GM_setValue("pending_mission", null);
+              return;
+            }
             await finishDispatch(false);
             return;
           }
@@ -4165,6 +4190,13 @@
       } catch {}
       if (wasFarmSend) {
         GM_setValue("pending_mission", null);
+        // v2.11.1: bump the in-flight floor + stamp, exactly like the mining
+        // path (decideAfterMiningSend) does — the page may not list the fleet
+        // we sent seconds ago, and slotsFree() must not under-count near the
+        // cap (it would send one fleet more than the reserve allows).
+        const storedNow = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+        GM_setValue("ogamex_inflight_fleets", String(storedNow + 1));
+        GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
         log("Farm fleet sent — continuing with next target / sweep.", "success");
         setTimeout(() => { InactiveFarmer.afterSend().catch(() => {}); }, 1500 + Math.random() * 1500);
         // Skip the mining post-send logic entirely — but fall through to the
