@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.11.2
+// @version      2.12.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -109,6 +109,16 @@
       targetCooldownMin: 180,    // don't re-attack the same planet within this window
       slotReserve: 2,            // keep this many fleet slots free (manual play / mining)
     },
+    // ── v2.12.0: humanizer — behavioural anti-detection ──
+    humanizer: {
+      breaks: true,              // random "coffee breaks": full-bot pause
+      breakEveryMin: 35,         // after 35-65 min of activity…
+      breakEveryMax: 65,
+      breakLenMin: 5,            // …pause everything for 5-15 min
+      breakLenMax: 15,
+      maxAttacksPerDay: 0,       // farming: hard daily cap (0 = unlimited)
+      wanderChance: 7,           // % chance to detour via Overview between farm systems
+    },
     antiDetection: {
       minDelaySeconds: 30,
       maxDelaySeconds: 120,
@@ -135,8 +145,14 @@
     try {
       const saved = GM_getValue("ogamex_bot_config", null);
       const merged = saved ? deepMerge(DEFAULT_CONFIG, JSON.parse(saved)) : { ...DEFAULT_CONFIG };
-      // antiDetection is code-controlled — never override from saved config
+      // antiDetection is code-controlled — never override from saved config.
+      // v2.12.0 exception: the SLEEP WINDOW is user-configurable (UI inputs),
+      // so those two fields survive the reset.
+      const savedSleepStart = merged.antiDetection?.sleepStartHour;
+      const savedSleepEnd = merged.antiDetection?.sleepEndHour;
       merged.antiDetection = { ...DEFAULT_CONFIG.antiDetection };
+      if (Number.isFinite(savedSleepStart)) merged.antiDetection.sleepStartHour = savedSleepStart;
+      if (Number.isFinite(savedSleepEnd)) merged.antiDetection.sleepEndHour = savedSleepEnd;
       // v2.9.2: Expeditions UI removed — force off so any old saved-state
       // that had expeditions.enabled=true doesn't keep running with no UI
       // to turn it off.
@@ -427,11 +443,27 @@
     isSleepTime() {
       const { sleepStartHour, sleepEndHour } = CONFIG.antiDetection;
       if (sleepStartHour === sleepEndHour) return false; // disabled
-      const hour = new Date().getUTCHours();
-      if (sleepStartHour < sleepEndHour) {
-        return hour >= sleepStartHour && hour < sleepEndHour;
+      // v2.12.0: minute-granular with a DAILY ±20min jitter per boundary — a
+      // bot that goes quiet at exactly HH:00:00 every night is a fingerprint.
+      // Offsets are generated once per UTC day and persisted.
+      let jit = null;
+      const today = new Date().toISOString().slice(0, 10);
+      try { jit = JSON.parse(GM_getValue("ogamex_sleep_jitter", "null")); } catch {}
+      if (!jit || jit.date !== today) {
+        jit = {
+          date: today,
+          startOff: Math.round((Math.random() * 40) - 20), // ±20 min
+          endOff: Math.round((Math.random() * 40) - 20),
+        };
+        GM_setValue("ogamex_sleep_jitter", JSON.stringify(jit));
       }
-      return hour >= sleepStartHour || hour < sleepEndHour;
+      const nowMin = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      const norm = (m) => ((m % 1440) + 1440) % 1440;
+      const startMin = norm(sleepStartHour * 60 + jit.startOff);
+      const endMin = norm(sleepEndHour * 60 + jit.endOff);
+      if (startMin === endMin) return false;
+      if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+      return nowMin >= startMin || nowMin < endMin;
     },
 
     // Random jitter: occasionally do nothing for 5-15 minutes
@@ -1244,6 +1276,66 @@
     return false;
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  //  HUMANIZER  (v2.12.0) — behavioural anti-detection
+  // ═══════════════════════════════════════════════════════════════
+  // A bot that acts continuously for hours with metronome regularity is
+  // detectable regardless of per-action jitter. This layer adds the missing
+  // macro-patterns: random full pauses ("coffee breaks") and a hard daily
+  // attack cap for farming.
+  const Humanizer = {
+    _randMs(minMin, maxMin) { return (minMin + Math.random() * Math.max(0, maxMin - minMin)) * 60 * 1000; },
+
+    isOnBreak() {
+      const until = parseInt(GM_getValue("ogamex_break_until", "0")) || 0;
+      return Date.now() < until;
+    },
+    breakLeftMin() {
+      const until = parseInt(GM_getValue("ogamex_break_until", "0")) || 0;
+      return until > Date.now() ? Math.ceil((until - Date.now()) / 60000) : 0;
+    },
+
+    // Called once per scheduler tick. Returns true when a break just started.
+    // Never interrupts a dispatch in progress — the break waits for the next
+    // tick with no pending mission.
+    maybeStartBreak() {
+      const h = CONFIG.humanizer;
+      if (!h?.breaks) return false;
+      const now = Date.now();
+      let next = parseInt(GM_getValue("ogamex_next_break_at", "0")) || 0;
+      if (!next) {
+        GM_setValue("ogamex_next_break_at", String(now + this._randMs(h.breakEveryMin, h.breakEveryMax)));
+        return false;
+      }
+      if (now < next) return false;
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return false; // finish the send first
+      const lenMs = this._randMs(h.breakLenMin, h.breakLenMax);
+      GM_setValue("ogamex_break_until", String(now + lenMs));
+      GM_setValue("ogamex_next_break_at", String(now + lenMs + this._randMs(h.breakEveryMin, h.breakEveryMax)));
+      log(`Coffee break — pausing ALL bot activity for ~${Math.round(lenMs / 60000)}min (human pacing).`, "delay");
+      return true;
+    },
+
+    attacksToday() {
+      try {
+        const d = JSON.parse(GM_getValue("ogamex_attacks_today", "null"));
+        const today = new Date().toISOString().slice(0, 10);
+        return d?.date === today ? (d.count || 0) : 0;
+      } catch { return 0; }
+    },
+    recordAttack() {
+      const today = new Date().toISOString().slice(0, 10);
+      const c = this.attacksToday() + 1;
+      GM_setValue("ogamex_attacks_today", JSON.stringify({ date: today, count: c }));
+      return c;
+    },
+    attackLimitReached() {
+      const lim = CONFIG.humanizer?.maxAttacksPerDay || 0;
+      return lim > 0 && this.attacksToday() >= lim;
+    },
+  };
+
   // v2.10.25: the last-sent duplicate stamp lives in BOTH GM storage (survives
   // browser restart, per-universe prefixed) and localStorage (synchronous
   // across tabs — GM propagates async between tabs, which is how the stamps
@@ -1631,6 +1723,7 @@
     // ── Main entry: called on every page load and scheduler tick ──
     async run() {
       if (!CONFIG.asteroidMining.enabled || !CONFIG.enabled) return;
+      if (Humanizer.isOnBreak()) return; // v2.12.0: also covers init on-load hooks
       if (AntiDetection.isSleepTime()) {
         log("Sleep time - asteroid mining paused", "delay");
         return;
@@ -2235,6 +2328,15 @@
         return;
       }
       if (AntiDetection.isSleepTime()) return;
+      if (Humanizer.isOnBreak()) return; // v2.12.0: also covers init on-load hooks
+      if (Humanizer.attackLimitReached()) {
+        if (!this._limitLogged) {
+          this._limitLogged = true;
+          log(`Farm: daily attack limit reached (${Humanizer.attacksToday()}/${CONFIG.humanizer.maxAttacksPerDay}) — resting until tomorrow (UTC).`, "warn");
+        }
+        return;
+      }
+      this._limitLogged = false;
       if (this.running) return;
       this.running = true;
       try {
@@ -2314,6 +2416,18 @@
       if (st.targets.length) { await this.dispatchNext(st); return; }
       const next = st.queue[0];
       if (next) {
+        // v2.12.0 wander: occasionally detour via Overview — a human glances
+        // at resources between systems. The farm state machine self-heals
+        // (off-galaxy → back-to-galaxy) on the next tick, so the detour costs
+        // one natural-looking browse gap. Farming only — asteroid TTLs are
+        // too tight for detours.
+        const wander = (CONFIG.humanizer?.wanderChance || 0) / 100;
+        if (wander > 0 && Math.random() < wander) {
+          log("Farm: wandering via Overview (human-like detour).", "delay");
+          await AntiDetection.sleep(humanScanDelayMs());
+          scanNavigate("/overview", "farm wander");
+          return;
+        }
         await AntiDetection.sleep(humanScanDelayMs());
         scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "farm next");
       } else {
@@ -2811,6 +2925,7 @@
               const storedNow2 = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
               GM_setValue("ogamex_inflight_fleets", String(storedNow2 + 1));
               GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
+              Humanizer.recordAttack(); // v2.12.0: daily cap counter
             }
             await InactiveFarmer.afterSend();
             return;
@@ -3397,6 +3512,13 @@
     // Handle any pending multi-page mission first
     await handlePendingMission();
 
+    // v2.12.0: coffee breaks — full-bot pause with human macro-pacing.
+    if (Humanizer.isOnBreak()) {
+      log(`On break (~${Humanizer.breakLeftMin()}min left) — no activity.`, "delay");
+      return;
+    }
+    if (Humanizer.maybeStartBreak()) return;
+
     // v2.10.27: background yield learning (30min throttle inside, fail-open).
     AsteroidYieldTracker.fetchReportsPeriodic().catch(() => {});
 
@@ -3700,7 +3822,26 @@
             <span>Anti-Detection</span>
             <span class="status ${AntiDetection.isSleepTime() ? "off" : "on"}">${AntiDetection.isSleepTime() ? "SLEEP" : "ACTIVE"}</span>
           </div>
-          <div class="status">Delay: ${CONFIG.antiDetection.minDelaySeconds}-${CONFIG.antiDetection.maxDelaySeconds}s | Sleep: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 UTC</div>
+          <div class="status">Delay: ${CONFIG.antiDetection.minDelaySeconds}-${CONFIG.antiDetection.maxDelaySeconds}s | Sleep: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 UTC (±20min/day)</div>
+          <div class="status" id="ogx-humanizer-status" style="font-size:10px;color:#7f8c8d;margin-top:3px;">—</div>
+          <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Random full-bot pauses: after 35-65min of activity, everything stops for 5-15min — mimics a human stepping away.">Coffee breaks</span>
+              <button class="mini-btn" id="ogx-hum-breaks">${CONFIG.humanizer.breaks ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Hard cap of farm attacks per UTC day. 0 = unlimited. Volume is what admins see first.">Max attacks / day (0=∞)</span>
+              <input id="ogx-hum-maxatk" type="number" min="0" step="10" value="${CONFIG.humanizer.maxAttacksPerDay}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Night pause start hour (UTC). Same start and end = no night pause. Boundaries drift ±20min daily so the bot never sleeps at the exact same second.">Sleep start (UTC h)</span>
+              <input id="ogx-hum-sleepstart" type="number" min="0" max="23" step="1" value="${CONFIG.antiDetection.sleepStartHour}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Night pause end hour (UTC).">Sleep end (UTC h)</span>
+              <input id="ogx-hum-sleepend" type="number" min="0" max="23" step="1" value="${CONFIG.antiDetection.sleepEndHour}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+          </div>
         </div>
 
         <div class="section">
@@ -3796,6 +3937,41 @@
     bindFarmNum("ogx-farm-hc", "hcPerFlight", "Heavy Cargo / attack");
     bindFarmNum("ogx-farm-cooldown", "targetCooldownMin", "Target cooldown");
     bindFarmNum("ogx-farm-reserve", "slotReserve", "Slot reserve");
+    // v2.12.0: humanizer controls
+    {
+      const bBtn = document.getElementById("ogx-hum-breaks");
+      if (bBtn) bBtn.addEventListener("click", () => {
+        CONFIG.humanizer.breaks = !CONFIG.humanizer.breaks;
+        saveConfig(CONFIG);
+        bBtn.textContent = CONFIG.humanizer.breaks ? "ON" : "OFF";
+        if (!CONFIG.humanizer.breaks) GM_setValue("ogamex_break_until", "0"); // end an active break
+        log(`Coffee breaks ${CONFIG.humanizer.breaks ? "enabled" : "disabled"}`, "info");
+        updateStatusUI();
+      });
+      const mAtk = document.getElementById("ogx-hum-maxatk");
+      if (mAtk) mAtk.addEventListener("change", () => {
+        const v = Math.max(0, parseInt(mAtk.value) || 0);
+        mAtk.value = v;
+        CONFIG.humanizer.maxAttacksPerDay = v;
+        saveConfig(CONFIG);
+        log(`Max attacks/day set to ${v === 0 ? "unlimited" : v}`, "info");
+        updateStatusUI();
+      });
+      const bindSleep = (id, key) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener("change", () => {
+          const v = Math.min(23, Math.max(0, parseInt(el.value) || 0));
+          el.value = v;
+          CONFIG.antiDetection[key] = v;
+          saveConfig(CONFIG);
+          log(`Sleep window: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 UTC${CONFIG.antiDetection.sleepStartHour === CONFIG.antiDetection.sleepEndHour ? " (disabled)" : ""}`, "info");
+        });
+      };
+      bindSleep("ogx-hum-sleepstart", "sleepStartHour");
+      bindSleep("ogx-hum-sleepend", "sleepEndHour");
+    }
+
     {
       const el = document.getElementById("ogx-farm-ranges");
       if (el) el.addEventListener("change", () => {
@@ -4069,6 +4245,24 @@
       }
       farmStatus.textContent = ftext;
     }
+
+    // v2.12.0: humanizer status line
+    const humStatus = document.getElementById("ogx-humanizer-status");
+    if (humStatus) {
+      const parts = [];
+      if (Humanizer.isOnBreak()) {
+        parts.push(`ON BREAK — ${Humanizer.breakLeftMin()}min left`);
+      } else if (CONFIG.humanizer.breaks) {
+        const next = parseInt(GM_getValue("ogamex_next_break_at", "0")) || 0;
+        parts.push(next > Date.now() ? `next break in ~${Math.ceil((next - Date.now()) / 60000)}min` : "break due");
+      } else {
+        parts.push("breaks off");
+      }
+      const lim = CONFIG.humanizer.maxAttacksPerDay || 0;
+      parts.push(`attacks today: ${Humanizer.attacksToday()}${lim > 0 ? `/${lim}` : ""}`);
+      humStatus.textContent = parts.join(" | ");
+      humStatus.style.color = Humanizer.isOnBreak() ? "#e67e22" : "#7f8c8d";
+    }
   }
 
   function makeDraggable(element, handle) {
@@ -4224,7 +4418,8 @@
         const storedNow = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
         GM_setValue("ogamex_inflight_fleets", String(storedNow + 1));
         GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
-        log("Farm fleet sent — continuing with next target / sweep.", "success");
+        const atkToday = Humanizer.recordAttack(); // v2.12.0: daily cap counter
+        log(`Farm fleet sent (attack #${atkToday} today) — continuing with next target / sweep.`, "success");
         setTimeout(() => { InactiveFarmer.afterSend().catch(() => {}); }, 1500 + Math.random() * 1500);
         // Skip the mining post-send logic entirely — but fall through to the
         // rest of init (UI, scheduler) via this flag staying false.
