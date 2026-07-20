@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.10.28
+// @version      2.11.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -97,6 +97,17 @@
       fleetComposition: { HEAVY_CARGO: 50, PATHFINDER: 5 },
       holdingTimeHours: 1,
       maxConcurrent: 2, // max simultaneous expeditions
+    },
+    // ── v2.11.0: Inactive-player farming (event: reward per fleet sent) ──
+    // Scans user-given system ranges, attacks EVERY (i)/(I) inactive planet
+    // with Heavy Cargo (mission=8, direct fleet URL — same 3-step flow as
+    // asteroids). Mutually exclusive with asteroidMining (mining wins).
+    inactiveFarming: {
+      enabled: false,
+      hcPerFlight: 100,          // Heavy Cargo per attack (manual, like miners per flight)
+      ranges: "",                // e.g. "3:100-200, 3:250-300" — scanned system by system
+      targetCooldownMin: 180,    // don't re-attack the same planet within this window
+      slotReserve: 2,            // keep this many fleet slots free (manual play / mining)
     },
     antiDetection: {
       minDelaySeconds: 30,
@@ -1156,7 +1167,13 @@
     if (!url) return null;
     const g = url.match(/[?&](?:x|galaxy)=(\d+)/);
     const s = url.match(/[?&](?:y|system)=(\d+)/);
-    return g && s ? `${g[1]}:${s[1]}` : null;
+    // v2.11.0: include the position — inactive farming targets several
+    // positions in ONE system, and a 2-part coord would false-block them as
+    // duplicates of each other. `planet=` is the destination TYPE, not the
+    // position — never match it here.
+    const z = url.match(/[?&](?:z|position)=(\d+)/);
+    if (!g || !s) return null;
+    return z ? `${g[1]}:${s[1]}:${z[1]}` : `${g[1]}:${s[1]}`;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1256,7 +1273,9 @@
   // blocks a same-coords respawn only while a fleet is still on the books.
   async function fleetAlreadyFlyingTo(coord, { skipDom = false } = {}) {
     if (!coord) return null;
-    const needle = `[${coord}:17]`;
+    // 3-part coord ("g:s:z", v2.11.0) is used verbatim; legacy 2-part coords
+    // came only from asteroid URLs, whose position is always 17.
+    const needle = coord.split(":").length === 3 ? `[${coord}]` : `[${coord}:17]`;
     // skipDom: at fleet-form step 3 the page may render the CHOSEN target as
     // text — matching our own about-to-be-sent target would block every send.
     // The pre-click recheck therefore uses only the fresh server fetch.
@@ -2143,6 +2162,227 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  INACTIVE FARMER  (v2.11.0) — event farming of (i)/(I) players
+  // ═══════════════════════════════════════════════════════════════
+  // Sweeps user-configured system ranges ("3:100-200"), collects every planet
+  // whose player status is (i)/(I) — skipping (v)/(p)/(b) — and attacks each
+  // with Heavy Cargo via the direct fleet URL (…&z=P&planet=1&mission=8),
+  // reusing the guarded select_ships_direct 3-step machinery. Mutually
+  // exclusive with Asteroid Mining (mining wins; toggles auto-switch in UI).
+
+  // Per-target attack cooldown — full g:s:z coords (many targets per system).
+  const FarmedTargets = {
+    KEY: "ogamex_farmed_targets",
+    _ttlMs() { return Math.max(1, CONFIG.inactiveFarming.targetCooldownMin || 180) * 60 * 1000; },
+    _load() {
+      try { return JSON.parse(GM_getValue(this.KEY, "[]")).filter(e => Date.now() - e.at < this._ttlMs()); }
+      catch { return []; }
+    },
+    add(coord) {
+      const es = this._load();
+      es.push({ coord, at: Date.now() });
+      GM_setValue(this.KEY, JSON.stringify(es));
+    },
+    has(coord) { return this._load().some(e => e.coord === coord); },
+    count() { return this._load().length; },
+  };
+
+  const FarmState = {
+    KEY: "ogamex_farm_scan",
+    load() { try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; } },
+    save(s) { GM_setValue(this.KEY, JSON.stringify(s)); },
+    clear() { GM_setValue(this.KEY, "null"); },
+  };
+
+  const InactiveFarmer = {
+    running: false,
+    _pausedLogged: false,
+    SWEEP_COOLDOWN_MIN: 15, // pause between full sweeps of the ranges
+
+    parseRanges(str) {
+      const out = [];
+      String(str || "").split(",").forEach(part => {
+        const m = part.trim().match(/^(\d+)\s*:\s*(\d+)\s*-\s*(\d+)$/);
+        if (!m) return;
+        const g = parseInt(m[1]);
+        const a = Math.min(parseInt(m[2]), parseInt(m[3]));
+        const b = Math.max(parseInt(m[2]), parseInt(m[3]));
+        if (b - a <= 500) out.push({ galaxy: g, start: a, end: b });
+      });
+      return out;
+    },
+
+    cachedFleetTotal() { return parseInt(GM_getValue("ogamex_fleet_total_slots", "0")) || 0; },
+
+    // "Fleets: X/37" exists only on the fleet page — the total is cached from
+    // visits there (init). Everywhere else the live "M Own" missions bar
+    // (inflightFleetCount) tracks usage.
+    slotsFree() {
+      const total = this.cachedFleetTotal();
+      if (!total) return 1; // unknown yet → allow one dispatch; the fleet page visit caches it
+      const reserve = CONFIG.inactiveFarming.slotReserve || 0;
+      return Math.max(0, total - reserve - inflightFleetCount());
+    },
+
+    async run() {
+      const cfg = CONFIG.inactiveFarming;
+      if (!CONFIG.enabled || !cfg.enabled) return;
+      if (CONFIG.asteroidMining.enabled) {
+        if (!this._pausedLogged) {
+          this._pausedLogged = true;
+          log("Farming paused — Asteroid Mining is ON (modules are either/or).", "warn");
+        }
+        return;
+      }
+      if (AntiDetection.isSleepTime()) return;
+      if (this.running) return;
+      this.running = true;
+      try {
+        const pending = GM_getValue("pending_mission", null);
+        if (pending && pending !== "null") return; // a dispatch is mid-flight
+
+        let st = FarmState.load();
+
+        // Targets already collected → keep attacking before scanning further.
+        if (st?.active && st.targets?.length) { await this.dispatchNext(st); return; }
+
+        if (st?.active) {
+          if (GameState.getCurrentPage() === "galaxy") { await this.scanStep(st); return; }
+          const next = st.queue?.[0];
+          if (next) {
+            await AntiDetection.shortDelay();
+            scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "farm resume");
+          } else {
+            this.finishSweep(st);
+          }
+          return;
+        }
+
+        // No active sweep → start one (unless cooling down).
+        const cool = parseInt(GM_getValue("ogamex_farm_cooldown_until", "0")) || 0;
+        if (Date.now() < cool) return;
+        const ranges = this.parseRanges(cfg.ranges);
+        if (!ranges.length) return; // nothing configured — status line explains
+        const queue = [];
+        ranges.forEach(r => { for (let s = r.start; s <= r.end; s++) queue.push({ galaxy: r.galaxy, system: s }); });
+        st = { active: true, queue, scannedCount: 0, totalCount: queue.length, targets: [] };
+        FarmState.save(st);
+        log(`Farm sweep started: ${queue.length} systems (${cfg.ranges})`, "success");
+        await AntiDetection.shortDelay();
+        scanNavigate(`/galaxy?x=${queue[0].galaxy}&y=${queue[0].system}`, "farm start");
+      } finally {
+        this.running = false;
+      }
+    },
+
+    finishSweep(st) {
+      log(`Farm sweep done: ${st?.scannedCount ?? "?"} systems checked. Next sweep in ${this.SWEEP_COOLDOWN_MIN}min.`, "info");
+      FarmState.clear();
+      GM_setValue("ogamex_farm_cooldown_until", String(Date.now() + this.SWEEP_COOLDOWN_MIN * 60 * 1000));
+    },
+
+    async scanStep(st) {
+      const cur = st.queue?.[0];
+      if (!cur) { this.finishSweep(st); return; }
+      // Make sure the page we're reading IS the queued system.
+      const url = window.location.href;
+      const gx = url.match(/[?&]x=(\d+)/);
+      const sy = url.match(/[?&]y=(\d+)/);
+      if (!gx || parseInt(gx[1]) !== cur.galaxy || !sy || parseInt(sy[1]) !== cur.system) {
+        scanNavigate(`/galaxy?x=${cur.galaxy}&y=${cur.system}`, "farm align");
+        return;
+      }
+      const found = this.collectTargets(cur.galaxy, cur.system);
+      st.queue.shift();
+      st.scannedCount++;
+      st.targets = (st.targets || []).concat(found);
+      FarmState.save(st);
+      if (found.length) log(`Farm: ${found.length} inactive target(s) at [${cur.galaxy}:${cur.system}]: ${found.map(t => t.coord).join(", ")}`, "success");
+      if (st.targets.length) { await this.dispatchNext(st); return; }
+      const next = st.queue[0];
+      if (next) {
+        await AntiDetection.sleep(humanScanDelayMs());
+        scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "farm next");
+      } else {
+        this.finishSweep(st);
+      }
+    },
+
+    // Parse the CURRENT galaxy page for attackable inactive planets.
+    // Status letters from the legend: s strong, n weak, v vacation,
+    // p protection, b banned, i 7d-inactive, I 28d-inactive. Case matters.
+    collectTargets(galaxy, system) {
+      const out = [];
+      document.querySelectorAll(".galaxy-item").forEach(item => {
+        const idx = item.querySelector(".planet-index");
+        if (!idx) return;
+        const pos = parseInt(idx.textContent.trim());
+        if (!Number.isFinite(pos) || pos < 1 || pos > 15) return; // 16/17 = deep space/asteroid
+        const text = (item.textContent || "").replace(/\s+/g, " ");
+        const statuses = [...text.matchAll(/\(\s*([sinvpbI])\s*\)/g)].map(m => m[1]);
+        const inactive = statuses.includes("i") || statuses.includes("I");
+        const blocked = statuses.includes("v") || statuses.includes("p") || statuses.includes("b");
+        if (!inactive || blocked) return;
+        const coord = `${galaxy}:${system}:${pos}`;
+        if (FarmedTargets.has(coord)) return;
+        // One-time DOM dump of the first matched row — verifies the status
+        // parsing against this OGameX build's real markup.
+        if (GM_getValue("ogamex_farm_row_dumped", "0") !== "1") {
+          GM_setValue("ogamex_farm_row_dumped", "1");
+          log(`[FARM DOM] first target row: ${item.innerHTML.replace(/\s+/g, " ").substring(0, 400)}`, "info");
+        }
+        out.push({ coord, galaxy, system, position: pos });
+      });
+      return out;
+    },
+
+    async dispatchNext(st) {
+      if (this.slotsFree() <= 0) {
+        log(`Farm: fleet slots exhausted (reserve ${CONFIG.inactiveFarming.slotReserve}) — waiting for returns; ${st.targets?.length ?? 0} target(s) queued.`, "warn");
+        return; // scheduler retries; targets persist in FarmState
+      }
+      const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord));
+      const t = targets.shift();
+      st.targets = targets;
+      FarmState.save(st);
+      if (!t) {
+        const next = st.queue?.[0];
+        if (next) {
+          await AntiDetection.shortDelay();
+          scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "farm continue");
+        } else {
+          this.finishSweep(st);
+        }
+        return;
+      }
+      FarmedTargets.add(t.coord); // stamp at initiation, same as asteroids
+      const hc = Math.max(1, CONFIG.inactiveFarming.hcPerFlight || 1);
+      const fleetUrl = `/fleet?x=${t.galaxy}&y=${t.system}&z=${t.position}&planet=1&mission=8`;
+      log(`FARM ATTACK → [${t.coord}] with ${hc} Heavy Cargo`, "success");
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "inactive_farm_direct",
+        farm: true,
+        fleetUrl,
+        shipType: "HEAVY_CARGO",
+        quantity: hc,
+        step: "select_ships_direct",
+        resumeScan: false,
+        timestamp: Date.now(),
+      }));
+      RateLimiter.record();
+      await AntiDetection.shortDelay();
+      window.location.href = fleetUrl;
+    },
+
+    // Entry point after a farm fleet was sent (fleetSendSuccessfully / finishDispatch).
+    async afterSend() {
+      const st = FarmState.load();
+      if (!st?.active) return;
+      await this.dispatchNext(st);
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  EXPEDITION MANAGER: Auto-send expeditions
   // ═══════════════════════════════════════════════════════════════
 
@@ -2524,6 +2764,15 @@
         // dispatchOk=false: dispatch failed → resume scan (try next asteroid)
         const finishDispatch = async (dispatchOk) => {
           GM_setValue("pending_mission", null);
+          // ── v2.11.0: farm missions manage their own state — the mining
+          // wait/return timers below must stay untouched (they'd pause the
+          // asteroid scanner over an HC attack). Success AND failure both just
+          // hand control back to the farmer (next target / resume sweep);
+          // a failed target stays on its FarmedTargets cooldown.
+          if (mission.farm) {
+            await InactiveFarmer.afterSend();
+            return;
+          }
           if (dispatchOk) {
             // Decide parallel vs wait based on miners left home + free slots.
             const goParallel = decideAfterMiningSend({
@@ -2660,11 +2909,15 @@
         log(`Ships on page: ${shipDump || "NONE"}`, "fleet");
         dumpButtons("step1-before");
 
-        // Find miner ship: try configured types first, then fall back to ASTEROID/MINER naming
-        const shipTypesToTry = [
-          ...(CONFIG.asteroidMining.minerShipTypes || []),
-          "ASTEROID_MINER", "ASTEROID", "MINER"
-        ];
+        // Find the ship to send. Farm missions name their ship explicitly
+        // (HEAVY_CARGO); asteroid missions try configured types first, then
+        // fall back to ASTEROID/MINER naming.
+        const shipTypesToTry = mission.farm
+          ? [mission.shipType]
+          : [
+              ...(CONFIG.asteroidMining.minerShipTypes || []),
+              "ASTEROID_MINER", "ASTEROID", "MINER"
+            ];
         let minerBtn = null;
         for (const shipType of shipTypesToTry) {
           minerBtn = document.querySelector(`[data-ship-type="${shipType}"]`) ||
@@ -2684,7 +2937,11 @@
           // Record for the post-send parallel decision (both finishDispatch and
           // the fleetSendSuccessfully init handler read ogamex_last_dispatch).
           dispatchInfo = { available, toSend };
-          GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
+          // ogamex_last_dispatch feeds the MINING parallel decision
+          // (minersHomeAfterLastDispatch) — HC counts must not pollute it.
+          if (!mission.farm) {
+            GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
+          }
 
           if (input && toSend > 0) {
             const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -2959,7 +3216,8 @@
             dispatchOk = true;
 
             // Use captured flight time from step 2 (actual asteroid mining flight time)
-            if (capturedFlightMs > 0) {
+            // (v2.11.0: farm sends don't pause anything — no return timer.)
+            if (capturedFlightMs > 0 && !mission.farm) {
               // Round trip = flight time * 2, add 1 min buffer for processing
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
@@ -2986,8 +3244,8 @@
             GM_setValue("ogamex_tried_planets", "[]");
             GM_setValue("ogamex_last_switched_planet", "");
             dispatchOk = true; // assume success if no error
-            // Still use captured flight time if available
-            if (capturedFlightMs > 0) {
+            // Still use captured flight time if available (not for farm sends)
+            if (capturedFlightMs > 0 && !mission.farm) {
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               log(`Estimated return in ~${Math.ceil((capturedFlightMs * 2 + 60000) / 60000)}min`, "fleet");
@@ -3169,6 +3427,11 @@
       } else if (!scanActive) {
         await AsteroidMiner.run();
       }
+    }
+
+    // v2.11.0: inactive farming (no-ops when disabled or when mining is ON)
+    if (CONFIG.inactiveFarming?.enabled && !InactiveFarmer.running) {
+      await InactiveFarmer.run();
     }
 
     // Run expeditions if due
@@ -3353,6 +3616,33 @@
           </div>
         </div>
 
+        <div class="section ${CONFIG.inactiveFarming.enabled ? "active" : "inactive"}" id="ogx-farm-section">
+          <div class="section-title">
+            <span>Inactive Farming</span>
+            <button class="mini-btn" id="ogx-farm-toggle">${CONFIG.inactiveFarming.enabled ? "ON" : "OFF"}</button>
+          </div>
+          <div class="status" id="ogx-farm-status">Idle</div>
+          <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Heavy Cargo sent per attack on one inactive planet.">Heavy Cargo / attack</span>
+              <input id="ogx-farm-hc" type="number" min="1" step="1" value="${CONFIG.inactiveFarming.hcPerFlight}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="System ranges to sweep, comma-separated. Example: 3:100-200, 3:250-300. Every (i)/(I) inactive planet found is attacked; (v)/(p)/(b) skipped.">Ranges</span>
+              <input id="ogx-farm-ranges" type="text" placeholder="3:100-200" value="${escapeHTML(CONFIG.inactiveFarming.ranges || "")}" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Don't re-attack the same planet within this many minutes.">Target cooldown (min)</span>
+              <input id="ogx-farm-cooldown" type="number" min="1" step="10" value="${CONFIG.inactiveFarming.targetCooldownMin}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Keep this many fleet slots unused (for mining / manual play). Limit shown on the Fleet page as 'Fleets: X/37'.">Slot reserve</span>
+              <input id="ogx-farm-reserve" type="number" min="0" step="1" value="${CONFIG.inactiveFarming.slotReserve}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Attacks every (i)/(I) player in the ranges with Heavy Cargo (event farming). Either/or with Asteroid Mining.</div>
+          </div>
+        </div>
+
         <div class="section">
           <div class="section-title">
             <span>Anti-Detection</span>
@@ -3402,15 +3692,70 @@
       }
     });
 
+    // v2.11.0: mining and farming are either/or — turning one ON turns the
+    // other OFF (both button + section repainted).
+    const paintModuleToggles = () => {
+      const aBtn = document.getElementById("ogx-asteroid-toggle");
+      const aSec = document.getElementById("ogx-asteroid-section");
+      if (aBtn) aBtn.textContent = CONFIG.asteroidMining.enabled ? "ON" : "OFF";
+      if (aSec) aSec.className = `section ${CONFIG.asteroidMining.enabled ? "active" : "inactive"}`;
+      const fBtn = document.getElementById("ogx-farm-toggle");
+      const fSec = document.getElementById("ogx-farm-section");
+      if (fBtn) fBtn.textContent = CONFIG.inactiveFarming.enabled ? "ON" : "OFF";
+      if (fSec) fSec.className = `section ${CONFIG.inactiveFarming.enabled ? "active" : "inactive"}`;
+    };
+
     document.getElementById("ogx-asteroid-toggle").addEventListener("click", () => {
       CONFIG.asteroidMining.enabled = !CONFIG.asteroidMining.enabled;
+      if (CONFIG.asteroidMining.enabled && CONFIG.inactiveFarming.enabled) {
+        CONFIG.inactiveFarming.enabled = false;
+        log("Inactive farming disabled (mining turned on — modules are either/or)", "info");
+      }
       saveConfig(CONFIG);
-      const btn = document.getElementById("ogx-asteroid-toggle");
-      btn.textContent = CONFIG.asteroidMining.enabled ? "ON" : "OFF";
-      const section = document.getElementById("ogx-asteroid-section");
-      section.className = `section ${CONFIG.asteroidMining.enabled ? "active" : "inactive"}`;
+      paintModuleToggles();
       log(`Asteroid mining ${CONFIG.asteroidMining.enabled ? "enabled" : "disabled"}`, "info");
     });
+
+    document.getElementById("ogx-farm-toggle").addEventListener("click", () => {
+      CONFIG.inactiveFarming.enabled = !CONFIG.inactiveFarming.enabled;
+      if (CONFIG.inactiveFarming.enabled && CONFIG.asteroidMining.enabled) {
+        CONFIG.asteroidMining.enabled = false;
+        log("Asteroid mining disabled (farming turned on — modules are either/or)", "info");
+      }
+      saveConfig(CONFIG);
+      paintModuleToggles();
+      log(`Inactive farming ${CONFIG.inactiveFarming.enabled ? "enabled" : "disabled"}`, "info");
+      updateStatusUI();
+    });
+
+    // Farming config inputs (numeric + the free-text ranges field)
+    const bindFarmNum = (id, key, label) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        const v = Math.max(0, parseInt(el.value) || 0);
+        el.value = v;
+        CONFIG.inactiveFarming[key] = v;
+        saveConfig(CONFIG);
+        log(`${label} set to ${v.toLocaleString()}`, "info");
+        updateStatusUI();
+      });
+    };
+    bindFarmNum("ogx-farm-hc", "hcPerFlight", "Heavy Cargo / attack");
+    bindFarmNum("ogx-farm-cooldown", "targetCooldownMin", "Target cooldown");
+    bindFarmNum("ogx-farm-reserve", "slotReserve", "Slot reserve");
+    {
+      const el = document.getElementById("ogx-farm-ranges");
+      if (el) el.addEventListener("change", () => {
+        CONFIG.inactiveFarming.ranges = el.value.trim();
+        saveConfig(CONFIG);
+        const parsed = InactiveFarmer.parseRanges(CONFIG.inactiveFarming.ranges);
+        log(`Farm ranges set: "${CONFIG.inactiveFarming.ranges}" → ${parsed.length} valid range(s), ${parsed.reduce((a, r) => a + r.end - r.start + 1, 0)} systems`, parsed.length ? "info" : "warn");
+        FarmState.clear(); // ranges changed → restart sweep from scratch
+        GM_setValue("ogamex_farm_cooldown_until", "0");
+        updateStatusUI();
+      });
+    }
 
     // ── v2.10.2: live right-sizing config inputs ──
     const bindCfgInput = (id, key, label) => {
@@ -3524,6 +3869,39 @@
     // Display persisted logs from previous page navigations
     updateLogUI();
 
+    // ── v2.11.0 accordion: section titles collapse their body ──
+    // With two modules + anti-detection + quick actions + log the panel got
+    // crowded; click a title to fold a section (ON/OFF buttons still work —
+    // clicks on buttons don't toggle). Collapsed set persists across pages.
+    try {
+      const collapsed = new Set(JSON.parse(GM_getValue("ogx_ui_collapsed", "[]")));
+      panel.querySelectorAll(".section").forEach(sec => {
+        const title = sec.querySelector(".section-title");
+        if (!title) return;
+        const name = (title.querySelector("span")?.textContent || "").trim();
+        if (!name) return;
+        title.style.cursor = "pointer";
+        const chev = document.createElement("span");
+        chev.textContent = collapsed.has(name) ? "▸" : "▾";
+        chev.style.cssText = "margin-right:6px;font-size:10px;color:#7f8c8d;";
+        title.insertBefore(chev, title.firstChild);
+        const apply = () => {
+          const fold = collapsed.has(name);
+          chev.textContent = fold ? "▸" : "▾";
+          Array.from(sec.children).forEach(ch => {
+            if (ch !== title) ch.style.display = fold ? "none" : "";
+          });
+        };
+        apply();
+        title.addEventListener("click", (e) => {
+          if (e.target.closest("button, input")) return; // toggles/inputs keep working
+          if (collapsed.has(name)) collapsed.delete(name); else collapsed.add(name);
+          GM_setValue("ogx_ui_collapsed", JSON.stringify([...collapsed]));
+          apply();
+        });
+      });
+    } catch {}
+
     // v2.10.27: keep the status lines fresh (lock countdowns, tab role) —
     // runs in passive tabs too; peek() is read-only so this never steals
     // leadership.
@@ -3610,6 +3988,34 @@
         .join(", ");
       locks.textContent = `Tab: ${roleStr}${blocked ? ` | locked: ${blocked}` : " | locked: none"}`;
       locks.style.color = role === "passive" ? "#e67e22" : "#7f8c8d";
+    }
+
+    // v2.11.0: inactive-farming status line
+    const farmStatus = document.getElementById("ogx-farm-status");
+    if (farmStatus) {
+      const cfg = CONFIG.inactiveFarming;
+      let ftext = "Idle";
+      if (!cfg.enabled) {
+        ftext = "Off";
+      } else if (CONFIG.asteroidMining.enabled) {
+        ftext = "PAUSED — Asteroid Mining is ON (either/or)";
+      } else if (!InactiveFarmer.parseRanges(cfg.ranges).length) {
+        ftext = "No valid ranges — set e.g. 3:100-200";
+      } else {
+        const st = FarmState.load();
+        const free = InactiveFarmer.slotsFree();
+        const totalSlots = InactiveFarmer.cachedFleetTotal() || "?";
+        if (st?.active) {
+          ftext = `Sweep ${st.scannedCount}/${st.totalCount} | targets queued: ${st.targets?.length ?? 0} | slots free: ${free}/${totalSlots} | attacked (cooldown): ${FarmedTargets.count()}`;
+        } else {
+          const cool = parseInt(GM_getValue("ogamex_farm_cooldown_until", "0")) || 0;
+          const coolMin = cool > Date.now() ? Math.ceil((cool - Date.now()) / 60000) : 0;
+          ftext = coolMin > 0
+            ? `Sweep done — next in ~${coolMin}min | attacked (cooldown): ${FarmedTargets.count()}`
+            : `Ready — sweep starts on next tick | slots free: ${free}/${totalSlots}`;
+        }
+      }
+      farmStatus.textContent = ftext;
     }
   }
 
@@ -3730,6 +4136,13 @@
     // it, isLeader() is a read-only false — no write war.
     setInterval(() => TabLock.isLeader(), TabLock.HEARTBEAT_MS);
 
+    // v2.11.0: cache the fleet-slot TOTAL ("Fleets: X/37") — visible only on
+    // the fleet page; the farmer's slot budget needs it on galaxy pages.
+    {
+      const ftm = document.body.textContent.match(/Fleets:\s*\d+\s*\/\s*(\d+)/);
+      if (ftm) GM_setValue("ogamex_fleet_total_slots", ftm[1]);
+    }
+
     // ── Handle fleetSendSuccessfully page (race condition fix) ──
     // When "Send fleet" is clicked, OGameX navigates the browser to this URL
     // BEFORE our JS finishDispatch() can run, so pending_mission is never cleared.
@@ -3742,6 +4155,21 @@
     // re-pausing the scan we just decided to continue.
     let parallelKeepScanning = false;
     if (window.location.href.includes("fleetSendSuccessfully")) {
+      // v2.11.0: was this a FARM send? The browser navigated here before
+      // finishDispatch could run, so pending_mission still carries the type.
+      // Farm sends must NOT run the mining parallel-decision below.
+      let wasFarmSend = false;
+      try {
+        const pm = JSON.parse(GM_getValue("pending_mission", "null"));
+        wasFarmSend = !!pm?.farm;
+      } catch {}
+      if (wasFarmSend) {
+        GM_setValue("pending_mission", null);
+        log("Farm fleet sent — continuing with next target / sweep.", "success");
+        setTimeout(() => { InactiveFarmer.afterSend().catch(() => {}); }, 1500 + Math.random() * 1500);
+        // Skip the mining post-send logic entirely — but fall through to the
+        // rest of init (UI, scheduler) via this flag staying false.
+      } else {
       GM_setValue("pending_mission", null);
       const afterDispatchState = ScanState.load();
       if (afterDispatchState) {
@@ -3781,6 +4209,7 @@
       } else {
         log("Fleet sent — dispatch state cleaned up. Scan paused until a fleet returns.", "asteroid");
       }
+      } // end !wasFarmSend (v2.11.0)
     }
 
     // ── Cleanup stale data on startup ──
@@ -3880,6 +4309,11 @@
       log("Resuming galaxy scan...", "asteroid");
       // Delay to let the page fully render galaxy items
       setTimeout(() => AsteroidMiner.run(), 1500 + Math.random() * 1000); // v2.10.18: trimmed (galaxy items are server-rendered, present on load)
+    } else if (CONFIG.enabled && CONFIG.inactiveFarming?.enabled && !CONFIG.asteroidMining.enabled
+               && FarmState.load()?.active && GameState.getCurrentPage() === "galaxy") {
+      // v2.11.0: farm sweep continues on galaxy page load (mirror of the
+      // asteroid resume above; farmer no-ops if a pending_mission exists).
+      setTimeout(() => { InactiveFarmer.run().catch(() => {}); }, 1500 + Math.random() * 1000);
     }
 
     // Auto-start scheduler if enabled
