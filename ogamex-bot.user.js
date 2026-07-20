@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.1
+// @version      2.12.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2045,8 +2045,24 @@
           .filter(q => !scannedSet.has(`${q.galaxy}:${q.system}`));
         const currentKey = `${current.galaxy}:${current.system}`;
         const rest = freshQueue.filter(q => `${q.galaxy}:${q.system}` !== currentKey);
+        // v2.12.2: RANGE-COHERENT rebuild. freshQueue is distance-sorted, so a
+        // rebuild used to hoist the CLOSEST range's unscanned systems to the
+        // front — observed: scanning [3:181] → rebuild → jump to [3:346], and
+        // earlier [3:416] → [3:336]. Ping-ponging 80+ systems in seconds is a
+        // bot fingerprint (a human finishes the range they're browsing). Keep
+        // the remaining systems of the CURRENT range first, then the rest in
+        // their distance order.
+        const curRange = freshRanges.find(r =>
+          r.galaxy === current.galaxy && current.system >= r.startSystem && current.system <= r.endSystem);
+        let orderedRest = rest;
+        if (curRange) {
+          const inCurrentRange = rest.filter(q =>
+            q.galaxy === curRange.galaxy && q.system >= curRange.startSystem && q.system <= curRange.endSystem);
+          const inSet = new Set(inCurrentRange.map(q => `${q.galaxy}:${q.system}`));
+          orderedRest = [...inCurrentRange, ...rest.filter(q => !inSet.has(`${q.galaxy}:${q.system}`))];
+        }
         scanState.ranges = freshRanges;
-        scanState.queue = [current, ...rest];
+        scanState.queue = [current, ...orderedRest];
         scanState.totalCount = scanState.scannedCount + scanState.queue.length;
         ScanState.save(scanState);
         log(`Range verify: ranges changed to ${freshLabels} — queue rebuilt (${scanState.queue.length} systems, current [${current.galaxy}:${current.system}] kept)`, "asteroid");
