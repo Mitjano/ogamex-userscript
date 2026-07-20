@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.5
+// @version      2.12.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1005,11 +1005,26 @@
     // maxFlightMinutes (no point queueing what we can't dispatch).
     // Same-galaxy systems always sort before cross-galaxy.
     buildScanQueue(ranges, base = null, maxFlightMinutes = null) {
+      // v2.12.6: a range whose asteroid we already dispatched to is DONE for
+      // as long as the fleet is en route (live DispatchedAsteroids entry) —
+      // "one asteroid per range" means walking its other systems finds
+      // nothing, and re-walking a harvested range minutes later is pure
+      // bot-tell traffic. Drop such ranges wholesale at every queue build
+      // (new scan, sweep-end rescan, mid-scan rebuilds). The entry expires
+      // at fleet ARRIVAL, so the range returns to rotation exactly when a
+      // fresh spawn becomes possible there.
+      const blocked = DispatchedAsteroids.coords();
+      const liveRanges = ranges.filter(r => {
+        const hit = blocked.find(c => c.galaxy === r.galaxy && c.system >= r.startSystem && c.system <= r.endSystem);
+        if (hit) log(`Range [${r.galaxy}:${r.startSystem}-${r.endSystem}] excluded — asteroid [${hit.galaxy}:${hit.system}:17] already dispatched, fleet en route.`, "asteroid");
+        return !hit;
+      });
+
       // Sort ranges so the closest one (to base) is scanned first,
       // but stay sequential ascending inside each range — otherwise we
       // interleave systems across ranges when two ranges have overlapping
       // distance bands (e.g. [185-209] and [331-355] from base 269).
-      const sortedRanges = [...ranges];
+      const sortedRanges = [...liveRanges];
       if (base) {
         sortedRanges.sort((a, b) => {
           const aSame = a.galaxy === base.galaxy;
@@ -1213,6 +1228,15 @@
       const entries = this._load();
       entries.push({ coord: `${galaxy}:${system}`, at: Date.now() });
       GM_setValue(this.KEY, JSON.stringify(entries));
+    },
+
+    // v2.12.6: all live (non-expired) dispatched coords, parsed. Used by
+    // buildScanQueue to drop whole ranges that already yielded an asteroid.
+    coords() {
+      return this._load().map(e => {
+        const [g, s] = String(e.coord).split(":").map(Number);
+        return { galaxy: g, system: s };
+      }).filter(c => Number.isFinite(c.galaxy) && Number.isFinite(c.system));
     },
 
     // v2.10.25: set/tighten the expiry of the newest entry for these coords.
@@ -2044,24 +2068,32 @@
         const currentInAny = isInAnyFreshRange(current.galaxy, current.system);
 
         if (!currentInAny) {
-          // Ranges shifted, current is stale — drop history, restart fresh.
+          // Ranges shifted, current is stale — jump into the new ranges.
+          // v2.12.6: KEEP the scanned-history. The old reset wiped
+          // scannedSystems and rebuilt the FULL queue, so systems checked
+          // minutes earlier — and even a pruned range whose asteroid already
+          // had a fleet in flight — went right back into the walk (observed:
+          // reset to [3:371] re-queued [3:1-41] scanned 2min before AND
+          // [3:371-391] with the just-dispatched [3:385]). Filter the rebuilt
+          // queue by everything this sweep already covered.
           const baseCfg = CONFIG.asteroidMining.minerBase;
           const maxFlightCfg = CONFIG.asteroidMining.maxFlightMinutes;
-          const fullQueue = AsteroidScanner.buildScanQueue(freshRanges, baseCfg, maxFlightCfg);
+          const scannedSetR = new Set((scanState.scannedSystems || []).map(s => `${s.galaxy}:${s.system}`));
+          const fullQueue = AsteroidScanner.buildScanQueue(freshRanges, baseCfg, maxFlightCfg)
+            .filter(q => !scannedSetR.has(`${q.galaxy}:${q.system}`));
           scanState.ranges = freshRanges;
-          scanState.scannedSystems = [];
-          scanState.scannedCount = 0;
           scanState.queue = fullQueue;
-          scanState.totalCount = fullQueue.length;
+          scanState.totalCount = scanState.scannedCount + fullQueue.length;
           ScanState.save(scanState);
 
           if (fullQueue.length === 0) {
-            log(`Range verify: no systems in ranges ${freshLabels} — scan complete`, "asteroid");
-            ScanState.clear();
+            // Everything in the fresh ranges is already covered — that's a
+            // sweep end, not a fresh start (verified cooldown, no restart).
+            await this.finishSweep(scanState);
             return;
           }
           const jumpTo = fullQueue[0];
-          log(`Range verify: current [${current.galaxy}:${current.system}] outside new ranges ${freshLabels} — resetting to [${jumpTo.galaxy}:${jumpTo.system}] (${fullQueue.length} systems)`, "asteroid");
+          log(`Range verify: current [${current.galaxy}:${current.system}] outside new ranges ${freshLabels} — jumping to [${jumpTo.galaxy}:${jumpTo.system}] (${fullQueue.length} unscanned systems, history kept)`, "asteroid");
           scanNavigate(`/galaxy?x=${jumpTo.galaxy}&y=${jumpTo.system}`, "range-verify reset");
           return;
         }
@@ -2236,7 +2268,12 @@
       if (newRanges.length > 0) {
         const base = CONFIG.asteroidMining.minerBase;
         const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
-        const queue = AsteroidScanner.buildScanQueue(freshRanges, base, maxFlight);
+        // v2.12.6: exclude systems the just-finished sweep already covered —
+        // the fresh-range rescan is for the NEW areas, not a re-walk of the
+        // ranges we finished seconds ago.
+        const doneSet = new Set((scanState.scannedSystems || []).map(s => `${s.galaxy}:${s.system}`));
+        const queue = AsteroidScanner.buildScanQueue(freshRanges, base, maxFlight)
+          .filter(q => !doneSet.has(`${q.galaxy}:${q.system}`));
         if (queue.length > 0) {
           const newLabels = newRanges.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(", ");
           log(`Sweep done (${scannedCount} systems) — ${newRanges.length} fresh range(s) appeared (${newLabels}) → rescanning now instead of a cooldown wait.`, "asteroid");
