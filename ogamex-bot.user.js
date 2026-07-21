@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.6
+// @version      2.12.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -750,7 +750,7 @@
 
         if (!response.ok) {
           log(`Asteroid range fetch failed: HTTP ${response.status}`, "error");
-          return [];
+          return null; // v2.12.7: error ≠ empty — don't let a failed fetch read as "no ranges"
         }
 
         const html = await response.text();
@@ -773,7 +773,7 @@
             log("Reloading page to restore session...", "warn");
             setTimeout(() => window.location.reload(), 2000 + Math.random() * 3000);
           }
-          return [];
+          return null; // v2.12.7: unknown state, not a verified-empty pool
         }
 
         const ranges = AsteroidScanner.parseRangesFromHtml(html);
@@ -787,8 +787,12 @@
 
         return ranges;
       } catch (err) {
+        // v2.12.7: observed live at 05:01 — a transient NetworkError returned
+        // [] here, the per-step verify read it as "no active ranges" and
+        // KILLED a sweep at 121/155 systems. Errors must be "unknown" (null),
+        // never "verified empty"; only a parsed no-asteroid response is [].
         log(`Asteroid range scan error: ${err.message}`, "error");
-        return [];
+        return null;
       }
     },
 
@@ -873,6 +877,7 @@
       for (let call = 0; call < maxCalls; call++) {
         if (call > 0) await AntiDetection.sleep(800 + Math.random() * 1200);
         const batch = await AsteroidScanner.scanRanges(call > 0);
+        if (batch === null) continue; // v2.12.7: errored call = no information, not "empty"
         for (const r of batch) {
           const key = `${r.galaxy}:${r.startSystem}-${r.endSystem}`;
           if (!seen.has(key)) {
