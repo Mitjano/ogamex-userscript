@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.7
+// @version      2.12.8
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1014,16 +1014,45 @@
       // as long as the fleet is en route (live DispatchedAsteroids entry) —
       // "one asteroid per range" means walking its other systems finds
       // nothing, and re-walking a harvested range minutes later is pure
-      // bot-tell traffic. Drop such ranges wholesale at every queue build
-      // (new scan, sweep-end rescan, mid-scan rebuilds). The entry expires
-      // at fleet ARRIVAL, so the range returns to rotation exactly when a
-      // fresh spawn becomes possible there.
+      // bot-tell traffic. The entry expires at fleet ARRIVAL, so the range
+      // returns to rotation exactly when a fresh spawn becomes possible.
+      //
+      // v2.12.8: one en-route fleet cancels AT MOST ONE range. The old
+      // filter dropped every range containing ANY dispatched coord, so with
+      // overlapping hints a single fleet killed several ranges at once
+      // (observed: [3:13] en route excluded BOTH [3:9-29] and [3:12-32] —
+      // two hint rows = two asteroids, and the second, unclaimed one was
+      // never scanned; the bot then reported "no asteroids" while the game
+      // modal still listed its range). Maximum bipartite matching between
+      // dispatched coords and the ranges that contain them: only matched
+      // ranges are dropped, every surplus range stays in the queue.
       const blocked = DispatchedAsteroids.coords();
-      const liveRanges = ranges.filter(r => {
-        const hit = blocked.find(c => c.galaxy === r.galaxy && c.system >= r.startSystem && c.system <= r.endSystem);
-        if (hit) log(`Range [${r.galaxy}:${r.startSystem}-${r.endSystem}] excluded — asteroid [${hit.galaxy}:${hit.system}:17] already dispatched, fleet en route.`, "asteroid");
-        return !hit;
+      const covers = (c, r) => c.galaxy === r.galaxy && c.system >= r.startSystem && c.system <= r.endSystem;
+      const matchedBy = new Array(ranges.length).fill(-1); // range idx → blocked idx
+      const tryAssign = (bi, visited) => {
+        for (let ri = 0; ri < ranges.length; ri++) {
+          if (visited.has(ri) || !covers(blocked[bi], ranges[ri])) continue;
+          visited.add(ri);
+          if (matchedBy[ri] === -1 || tryAssign(matchedBy[ri], visited)) {
+            matchedBy[ri] = bi;
+            return true;
+          }
+        }
+        return false;
+      };
+      for (let bi = 0; bi < blocked.length; bi++) tryAssign(bi, new Set());
+      const liveRanges = ranges.filter((r, ri) => {
+        if (matchedBy[ri] === -1) return true;
+        const hit = blocked[matchedBy[ri]];
+        log(`Range [${r.galaxy}:${r.startSystem}-${r.endSystem}] excluded — asteroid [${hit.galaxy}:${hit.system}:17] already dispatched, fleet en route.`, "asteroid");
+        return false;
       });
+      // Stats for the caller: lets startScan tell "everything is already
+      // being mined" (normal) apart from "queue truly empty" (config issue).
+      this.lastQueueStats = {
+        totalRanges: ranges.length,
+        fleetExcluded: ranges.length - liveRanges.length,
+      };
 
       // Sort ranges so the closest one (to base) is scanned first,
       // but stay sequential ascending inside each range — otherwise we
@@ -1967,7 +1996,17 @@
       // Build scan queue — all systems in all ranges, closest to base first
       const queue = AsteroidScanner.buildScanQueue(ranges, base, maxFlight);
       if (queue.length === 0) {
-        log("Empty scan queue — no systems in returned ranges (or all beyond maxFlight)", "error");
+        const stats = AsteroidScanner.lastQueueStats || {};
+        if (stats.fleetExcluded > 0 && stats.fleetExcluded === stats.totalRanges) {
+          // v2.12.8: NOT an error — every hint range is claimed by a miner
+          // fleet already en route. Nothing new can appear in those ranges
+          // until a fleet arrives (entries release at arrival), so back off
+          // like the no-hints path instead of red-flagging a healthy state.
+          log(`All ${stats.totalRanges} hint range(s) already claimed by en-route miner fleets — nothing new to scan. Re-check in 10min.`, "asteroid");
+          GM_setValue("ogamex_scan_cooldown_until", String(Date.now() + 10 * 60 * 1000));
+        } else {
+          log("Empty scan queue — no systems in returned ranges (or all beyond maxFlight)", "error");
+        }
         return;
       }
 
