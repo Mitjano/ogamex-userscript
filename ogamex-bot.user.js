@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.8
+// @version      2.12.9
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1026,8 +1026,23 @@
       // modal still listed its range). Maximum bipartite matching between
       // dispatched coords and the ranges that contain them: only matched
       // ranges are dropped, every surplus range stays in the queue.
-      const blocked = DispatchedAsteroids.coords();
+      //
+      // v2.12.9: matching, but only over coords whose range is CERTAIN. A
+      // coord inside the overlap of two hints could belong to either one, and
+      // dropping the wrong one takes an unclaimed asteroid's whole search area
+      // out of the sweep (same failure mode pruneFoundRange had). An ambiguous
+      // en-route coord therefore excludes NOTHING — re-walking a possibly
+      // harvested range costs page loads; the coord itself can never get a
+      // second fleet, because the dispatch path re-checks DispatchedAsteroids
+      // .has() live on the galaxy page before every send.
       const covers = (c, r) => c.galaxy === r.galaxy && c.system >= r.startSystem && c.system <= r.endSystem;
+      const blocked = DispatchedAsteroids.coords().filter(c => {
+        const containing = ranges.filter(r => covers(c, r));
+        if (containing.length <= 1) return true;
+        const labels = containing.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(" / ");
+        log(`En-route asteroid [${c.galaxy}:${c.system}:17] is inside ${containing.length} overlapping ranges (${labels}) — ambiguous, so none of them is excluded from the scan.`, "asteroid");
+        return false;
+      });
       const matchedBy = new Array(ranges.length).fill(-1); // range idx → blocked idx
       const tryAssign = (bi, visited) => {
         for (let ri = 0; ri < ranges.length; ri++) {
@@ -1215,11 +1230,26 @@
       // them — we cannot tell which, and the other range still holds its own
       // asteroid a few systems away. Crediting the find to EVERY containing
       // range pruned them all at once, so that second asteroid was never
-      // scanned and never mined. Credit the narrowest containing range only;
-      // every other range stays unsatisfied and keeps its systems queued.
-      const owner = allContaining.reduce((a, b) =>
-        (b.endSystem - b.startSystem) < (a.endSystem - a.startSystem) ? b : a);
-      const containing = [owner];
+      // scanned and never mined.
+      //
+      // v2.12.9: v2.10.23's "credit the NARROWEST containing range" is not a
+      // tiebreak at all when the hints are equal-width — and on athena every
+      // hint row is exactly 21 systems wide, so reduce() always kept the FIRST
+      // range and pruned its exclusive half unscanned. Simulation over the
+      // live 10-hint layout ([3:43-63]/[3:54-74], [3:88-108]/[3:102-122],
+      // [3:158-178]/[3:175-195] overlapping): only 49.3% of sweeps dispatched
+      // all 10 asteroids, avg 9.37/10, and every loss was the lower range of
+      // an overlapping pair. The other range's asteroid can be ANYWHERE in its
+      // span — including the shared part — so an ambiguous find licenses no
+      // pruning whatsoever. Extra page loads are the price of never dropping
+      // an unscanned asteroid.
+      if (allContaining.length > 1) {
+        const labels = allContaining.map(r => `[${r.galaxy}:${r.startSystem}-${r.endSystem}]`).join(" / ");
+        log(`Asteroid [${galaxy}:${system}:17] sits in ${allContaining.length} overlapping ranges (${labels}) — can't tell which one it satisfies, keeping every system of both queued.`, "asteroid");
+        return 0;
+      }
+      const containing = [allContaining[0]];
+      const owner = allContaining[0];
       const others = state.ranges.filter(r => r !== owner);
       const before = state.queue.length;
       state.queue = state.queue.filter(q => {
