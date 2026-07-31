@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.13.0
+// @version      2.13.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2798,6 +2798,103 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  FLEET RECON  (v2.13.1, 2026-07-31)
+  // ═══════════════════════════════════════════════════════════════
+  // Everything the expedition module will need lives on step 1 of the fleet
+  // page — and ONLY there: the ship types this planet actually has (with their
+  // internal data-ship-type ids), the saved "Select fleet group" entries, and
+  // the two slot counters ("Fleets: X/Y", "Expeditions: X/Y"). The bot visits
+  // that page on every dispatch anyway, so instead of asking the player to
+  // read markup out of devtools, we snapshot it into GM storage on each visit
+  // and log a one-line summary when it CHANGES (silent otherwise — this runs
+  // on every fleet page load and must not flood the log).
+  //
+  // Read by: the expedition composition UI (which ships to send), the wave
+  // planner (how many expedition slots exist), the farmer's slot budget.
+
+  const FleetRecon = {
+    KEY: "ogamex_fleet_recon",
+
+    snapshot() {
+      try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; }
+    },
+
+    // Best-effort: which planet is selected in the sidebar (ships are per-planet).
+    activePlanet() {
+      const el = document.querySelector(
+        ".smallplanet.active, .planetlink.active, .planet-item.active, [class*='planet'][class*='active']"
+      );
+      const m = (el?.textContent || "").match(/\[(\d+):(\d+):(\d+)\]/);
+      return m ? `${m[1]}:${m[2]}:${m[3]}` : null;
+    },
+
+    scan() {
+      if (GameState.getCurrentPage() !== "fleet") return null;
+
+      const ships = [...document.querySelectorAll("[data-ship-type]")].map(el => {
+        const item = el.closest(".ship-item") || el;
+        const label = (el.getAttribute("title") || item.querySelector("img")?.alt ||
+                       el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+        return {
+          type: el.dataset.shipType,
+          qty: parseInt(el.dataset.shipQuantity || "0") || 0,
+          label: label.slice(0, 30),
+        };
+      }).filter(s => s.type);
+
+      // "Select fleet group" — a <select> whose own options say so. Matching on
+      // the placeholder option keeps us off unrelated selects (expedition
+      // duration, speed, …) without depending on an id we haven't seen.
+      let groups = [];
+      for (const sel of document.querySelectorAll("select")) {
+        const opts = [...sel.options].map(o => (o.textContent || "").replace(/\s+/g, " ").trim());
+        if (!opts.some(t => /fleet\s*group/i.test(t))) continue;
+        groups = [...sel.options].map(o => ({ value: o.value, text: (o.textContent || "").trim().slice(0, 40) }));
+        break;
+      }
+
+      const text = document.body.textContent;
+      const fm = text.match(/Fleets:\s*(\d+)\s*\/\s*(\d+)/);
+      const em = text.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
+
+      const snap = {
+        at: Date.now(),
+        planet: this.activePlanet(),
+        ships,
+        groups,
+        fleetSlots: fm ? { used: parseInt(fm[1]), total: parseInt(fm[2]) } : null,
+        expoSlots: em ? { used: parseInt(em[1]), total: parseInt(em[2]) } : null,
+      };
+
+      // Cache the slot totals where the existing consumers already look.
+      if (snap.fleetSlots) GM_setValue("ogamex_fleet_total_slots", String(snap.fleetSlots.total));
+      if (snap.expoSlots) GM_setValue("ogamex_expo_total_slots", String(snap.expoSlots.total));
+
+      // Log only when the interesting part changed (ship TYPES, groups, slot
+      // totals) — quantities move constantly and would spam every page load.
+      const prev = this.snapshot();
+      const fingerprint = s => s && JSON.stringify([
+        s.planet,
+        (s.ships || []).map(x => x.type).sort(),
+        (s.groups || []).map(x => x.text),
+        s.fleetSlots?.total, s.expoSlots?.total,
+      ]);
+      GM_setValue(this.KEY, JSON.stringify(snap));
+      if (fingerprint(prev) !== fingerprint(snap)) this.logSummary(snap, "changed");
+      return snap;
+    },
+
+    logSummary(snap, tag = "cached") {
+      if (!snap) { log("[FLEET RECON] no snapshot yet — open the Fleet page once.", "warn"); return; }
+      const ships = (snap.ships || []).map(s => `${s.type}${s.label ? `/${s.label}` : ""}=${s.qty.toLocaleString()}`).join(", ") || "NONE";
+      const groups = (snap.groups || []).map(g => `"${g.text}"(${g.value})`).join(", ") || "none";
+      const slots = `fleets ${snap.fleetSlots ? `${snap.fleetSlots.used}/${snap.fleetSlots.total}` : "?"}, expeditions ${snap.expoSlots ? `${snap.expoSlots.used}/${snap.expoSlots.total}` : "?"}`;
+      log(`[FLEET RECON ${tag}] planet ${snap.planet || "?"} | slots: ${slots} | groups: ${groups}`, "info");
+      log(`[FLEET RECON ${tag}] ships: ${ships}`, "info");
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  ONLINE BONUS CLAIMER  (v2.13.0, 2026-07-31)
   // ═══════════════════════════════════════════════════════════════
   // Every few hours OGameX puts a green "Online bonus" entry at the top of
@@ -4350,6 +4447,7 @@
           </div>
           <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
+          <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
         </div>
 
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
@@ -4433,6 +4531,13 @@
         if (sec) sec.className = `section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}`;
         log(`Online bonus auto-claim ${CONFIG.onlineBonus.enabled ? "enabled" : "disabled"}`, "info");
         updateStatusUI();
+      });
+      const recon = document.getElementById("ogx-fleet-recon");
+      if (recon) recon.addEventListener("click", () => {
+        // On the fleet page take a fresh reading; elsewhere show what the last
+        // visit stored (the data only exists on step 1 of /fleet).
+        const snap = GameState.getCurrentPage() === "fleet" ? FleetRecon.scan() : FleetRecon.snapshot();
+        FleetRecon.logSummary(snap, GameState.getCurrentPage() === "fleet" ? "live" : "cached");
       });
       const bnNow = document.getElementById("ogx-bonus-now");
       if (bnNow) bnNow.addEventListener("click", () => {
@@ -4923,7 +5028,12 @@
 
     // v2.11.0: cache the fleet-slot TOTAL ("Fleets: X/37") — visible only on
     // the fleet page; the farmer's slot budget needs it on galaxy pages.
-    {
+    // v2.13.1: superseded by FleetRecon.scan() on fleet pages (it caches the
+    // same key plus ship types, fleet groups and expedition slots). The plain
+    // regex stays for every OTHER page that happens to show the counter.
+    if (GameState.getCurrentPage() === "fleet") {
+      FleetRecon.scan();
+    } else {
       const ftm = document.body.textContent.match(/Fleets:\s*\d+\s*\/\s*(\d+)/);
       if (ftm) GM_setValue("ogamex_fleet_total_slots", ftm[1]);
     }
