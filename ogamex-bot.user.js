@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.16.1
+// @version      2.16.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -186,7 +186,7 @@
       // v2.16.1: one-shot — give the account a night. Start === end means the
       // window is OFF, i.e. the bot runs 24/7 with no daily quiet period, and
       // that is a far louder signal to an admin than anything about fleet
-      // arithmetic. Sets 23:00-05:00 UTC (01:00-07:00 in PL) ONCE; both fields
+      // arithmetic. Sets 23:00-05:00 LOCAL time ONCE; both fields
       // stay editable in the panel afterwards and this never runs again, so
       // turning it back off sticks.
       {
@@ -200,7 +200,7 @@
             // without a write the next page load would reload the saved 0/0
             // and the window would silently vanish.
             saveConfig(merged);
-            setTimeout(() => log("Night window enabled: 23:00-05:00 UTC (01:00-07:00 PL) — a 24/7 bot with no quiet hours is the loudest pattern there is. Change or disable it in the panel (equal start/end = off).", "warn"), 1500);
+            setTimeout(() => log("Night window enabled: 23:00-05:00 your local time — a 24/7 bot with no quiet hours is the loudest pattern there is. Change or disable it in the panel (equal start/end = off).", "warn"), 1500);
           }
         }
       }
@@ -514,7 +514,13 @@
         };
         GM_setValue("ogamex_sleep_jitter", JSON.stringify(jit));
       }
-      const nowMin = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      // v2.16.2: LOCAL time, not UTC. The window exists to make the account
+      // look asleep when its owner is asleep, and the owner thinks in the
+      // clock on their wall (which is also the clock the game shows). UTC also
+      // drifts against local time twice a year with DST — the night window
+      // would silently shift by an hour. The stored numbers are now local
+      // hours: 23 and 5 mean 23:00-05:00 where the player lives.
+      const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
       const norm = (m) => ((m % 1440) + 1440) % 1440;
       const startMin = norm(sleepStartHour * 60 + jit.startOff);
       const endMin = norm(sleepEndHour * 60 + jit.endOff);
@@ -2862,7 +2868,12 @@
     // One-time markup capture so Stage 2 can be written from facts:
     // the event rows (what a hostile row looks like, its target, its ETA) and
     // the base planet's galaxy row (the moon link + its mission id).
-    async dumpMarkupOnce() {
+    // v2.16.2: `force` lets the Fleet Recon button capture the events table on
+    // demand, from OUR OWN fleets. Waiting for a hostile fleet to learn the
+    // table's shape means Stage 2 can't be written until the day it's needed —
+    // the one day nobody wants to be debugging selectors.
+    async dumpMarkupOnce(force = false) {
+      if (force) GM_setValue(this.KEY_DUMPED, "");
       if (GM_getValue(this.KEY_DUMPED, "") === "1" || this._fetching) return;
       this._fetching = true;
       try {
@@ -2884,6 +2895,37 @@
 
     // The moon link lives in the base planet's galaxy row. Captured whenever
     // we happen to be on the base system's galaxy page — no extra navigation.
+    // v2.16.2: the passive version below only fires while STANDING on the base
+    // system's galaxy page — and the scanner never goes there (base [3:269],
+    // asteroid ranges [3:51-160]). So the one markup Stage 2 depends on would
+    // have sat uncaptured forever. Fetch it once instead: a single request,
+    // ever, guarded by the same key.
+    async fetchBaseRowOnce() {
+      if (GM_getValue("ogamex_moon_markup_dumped", "") === "1" || this._fetchingMoon) return;
+      const base = CONFIG.asteroidMining.minerBase;
+      if (!base) return;
+      this._fetchingMoon = true;
+      try {
+        const res = await fetch(`/galaxy?x=${base.galaxy}&y=${base.system}`, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!res.ok) return;
+        const html = await res.text();
+        if (/login|password/i.test(html.slice(0, 500))) return; // session page, not galaxy
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        for (const item of doc.querySelectorAll(".galaxy-item")) {
+          const idx = item.querySelector(".planet-index");
+          if (!idx || idx.textContent.trim() !== String(base.position)) continue;
+          GM_setValue("ogamex_moon_markup_dumped", "1");
+          log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 1200)}`, "info");
+          return;
+        }
+        log(`[MOON DOM] base row ${base.position} not found in the fetched galaxy page — the AJAX shape may differ from the rendered one.`, "warn");
+      } catch (e) {
+        log(`[MOON DOM] fetch failed: ${e.message}`, "warn");
+      } finally {
+        this._fetchingMoon = false;
+      }
+    },
+
     dumpBaseRowOnce() {
       if (GM_getValue("ogamex_moon_markup_dumped", "") === "1") return;
       if (GameState.getCurrentPage() !== "galaxy") return;
@@ -2905,6 +2947,7 @@
     check() {
       if (!CONFIG.threatAlarm?.enabled) return;
       this.dumpBaseRowOnce();
+      this.fetchBaseRowOnce().catch(() => {}); // one-shot, no-op once captured
 
       const r = this.read();
       if (!r) return; // no mission bar on this page — say nothing, change nothing
@@ -4690,7 +4733,7 @@
 
     // Sleep check
     if (AntiDetection.isSleepTime()) {
-      log("Night mode active - sleeping until " + CONFIG.antiDetection.sleepEndHour + ":00 UTC", "delay");
+      log("Night mode active - sleeping until " + CONFIG.antiDetection.sleepEndHour + ":00 (czas lokalny)", "delay");
       return;
     }
 
@@ -5079,7 +5122,7 @@
             <span>Anti-Detection</span>
             <span class="status ${AntiDetection.isSleepTime() ? "off" : "on"}">${AntiDetection.isSleepTime() ? "SLEEP" : "ACTIVE"}</span>
           </div>
-          <div class="status">Delay: ${CONFIG.antiDetection.minDelaySeconds}-${CONFIG.antiDetection.maxDelaySeconds}s | Sleep: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 UTC (±20min/day)</div>
+          <div class="status">Delay: ${CONFIG.antiDetection.minDelaySeconds}-${CONFIG.antiDetection.maxDelaySeconds}s | Sleep: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 (czas lokalny, ±20min/dzień)</div>
           <div class="status" id="ogx-humanizer-status" style="font-size:10px;color:#7f8c8d;margin-top:3px;">—</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
@@ -5091,11 +5134,11 @@
               <input id="ogx-hum-maxatk" type="number" min="0" step="10" value="${CONFIG.humanizer.maxAttacksPerDay}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Night pause start hour (UTC). Same start and end = no night pause. Boundaries drift ±20min daily so the bot never sleeps at the exact same second.">Sleep start (UTC h)</span>
+              <span title="Godzina rozpoczęcia nocnej przerwy, czas LOKALNY (ten sam, co zegar w grze). Równy start i koniec = brak przerwy. Granice dryfują ±20 min dziennie, żeby bot nie zasypiał co do sekundy.">Sen od (godz. lokalna)</span>
               <input id="ogx-hum-sleepstart" type="number" min="0" max="23" step="1" value="${CONFIG.antiDetection.sleepStartHour}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Night pause end hour (UTC).">Sleep end (UTC h)</span>
+              <span title="Godzina zakończenia nocnej przerwy, czas LOKALNY.">Sen do (godz. lokalna)</span>
               <input id="ogx-hum-sleepend" type="number" min="0" max="23" step="1" value="${CONFIG.antiDetection.sleepEndHour}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
           </div>
@@ -5262,6 +5305,10 @@
         // visit stored (the data only exists on step 1 of /fleet).
         const snap = GameState.getCurrentPage() === "fleet" ? FleetRecon.scan() : FleetRecon.snapshot();
         FleetRecon.logSummary(snap, GameState.getCurrentPage() === "fleet" ? "live" : "cached");
+        // v2.16.2: same button also captures what Stage 2 (fleet-save to the
+        // moon) needs: the events table shape and the base row's moon link.
+        ThreatMonitor.dumpMarkupOnce(true).catch(() => {});
+        ThreatMonitor.fetchBaseRowOnce().catch(() => {});
         const exp = FleetRecon.learnExpeditionLink() || FleetRecon.expeditionLink();
         log(exp ? `[EXPO] link: ${exp.href} (mission=${exp.mission ?? "?"})`
                 : "[EXPO] link unknown — open any Galaxy page once so row 16 can be read.", exp ? "info" : "warn");
@@ -5318,7 +5365,7 @@
           el.value = v;
           CONFIG.antiDetection[key] = v;
           saveConfig(CONFIG);
-          log(`Sleep window: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 UTC${CONFIG.antiDetection.sleepStartHour === CONFIG.antiDetection.sleepEndHour ? " (disabled)" : ""}`, "info");
+          log(`Okno snu: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 czasu lokalnego${CONFIG.antiDetection.sleepStartHour === CONFIG.antiDetection.sleepEndHour ? " (wyłączone)" : ""}`, "info");
         });
       };
       bindSleep("ogx-hum-sleepstart", "sleepStartHour");
