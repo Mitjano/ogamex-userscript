@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.15.0
+// @version      2.15.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -105,8 +105,11 @@
       enabled: false,
       waves: 8,                 // split the fleet into this many flights
       holdingHours: 1,          // "Expedition duration" on the send page
-      waveGapMinSec: 90,        // spacing between waves (randomised in this range)
-      waveGapMaxSec: 180,
+      // Spacing between waves, randomised in this range. v2.15.1: owner
+      // confirmed ~60s is enough separation in practice, so the whole fleet
+      // goes out in ~8 minutes and mining gets the rest of the hour.
+      waveGapMinSec: 60,
+      waveGapMaxSec: 90,
       slotReserve: 2,           // fleet slots to leave free for mining/manual play
       heavyCargoPerWave: 1,     // HC is the farmer's tool AND the loot carrier — fixed count, never split
       // Never send these on an expedition. Miners are the mining module's;
@@ -3126,6 +3129,11 @@
     afterSend() {
       const st = ExpeditionState.load();
       const today = new Date().toISOString().slice(0, 10);
+      // v2.15.1: BOTH post-send paths can fire for the SAME wave — finishDispatch
+      // runs when the click doesn't navigate, and the fleetSendSuccessfully
+      // handler runs when it does. Live log showed one wave counted as #2 and
+      // #3 four seconds apart. One physical send inside 15s = one wave.
+      if (st.lastSendAt && Date.now() - st.lastSendAt < 15000) return;
       st.lastSendAt = Date.now();
       st.nextGapMs = this.nextWaveGapMs();
       st.sentTotal = (st.sentTotal || 0) + 1;
@@ -3657,6 +3665,20 @@
     GM_setValue("ogamex_inflight_fleets", "0");
   }
 
+  // v2.15.1: MINING fleets only. inflightFleetCount() reads "M Own", i.e. every
+  // mission we own — including expeditions. Mining's parallel budget
+  // (floor(totalMinersToUse / minersPerFlight)) was therefore being eaten by
+  // expedition waves: 3 expeditions + 1 mining flight read as "4/4 — flight
+  // budget reached", and the asteroid scanner stopped dispatching. The game
+  // reports its own expedition counter ("Expeditions: X/Y"), so subtract it.
+  // Fleet-SLOT maths (farmer reserve, expedition reserve) still uses the full
+  // count — there every fleet really does occupy a slot.
+  function miningInflightCount() {
+    const all = inflightFleetCount();
+    const expo = ExpeditionRunner.slots().used || 0;
+    return Math.max(0, all - expo);
+  }
+
   // v2.10.1: set the scan-pause timer from the page header countdown (factored
   // out so both the legacy serial path and the parallel "must wait" path share
   // identical logic).
@@ -3707,7 +3729,7 @@
     const storedNow = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
     GM_setValue("ogamex_inflight_fleets", String(storedNow + 1));
     GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
-    const inflight = inflightFleetCount(); // reconciles with the live "M Own" page bar
+    const inflight = miningInflightCount(); // "M Own" minus expeditions (v2.15.1)
     const maxConc = maxMiningFleets(); // floor(totalMinersToUse / perFlight), or maxConcurrentMiningFleets
     const concOk = maxConc <= 0 || inflight < maxConc;
 
@@ -4419,7 +4441,9 @@
             writeLastSent(null);
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
-            log("FLEET SENT! All miners dispatched!", "success");
+            log(mission.expedition ? "EXPEDITION FLEET SENT!"
+              : mission.farm ? "FARM FLEET SENT!"
+              : "FLEET SENT! All miners dispatched!", "success");
             GM_setValue("ogamex_dispatch_fail_at", "0");
             GM_setValue("ogamex_tried_planets", "[]"); // reset planet rotation
             GM_setValue("ogamex_last_switched_planet", "");
@@ -4427,13 +4451,19 @@
 
             // Use captured flight time from step 2 (actual asteroid mining flight time)
             // (v2.11.0: farm sends don't pause anything — no return timer.)
-            if (capturedFlightMs > 0 && !mission.farm) {
+            // v2.15.1: `expedition` joins `farm` here. An expedition wave was
+            // setting ogamex_fleet_return_at (90min fallback — its flight time
+            // isn't parseable from the expedition form), and the asteroid
+            // scanner then paused for an hour and a half waiting for "miners"
+            // that were never sent. Observed live: "FLEET SENT! All miners
+            // dispatched!" right after an expedition send to [3:269:16].
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition) {
               // Round trip = flight time * 2, add 1 min buffer for processing
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               const minLeft = Math.ceil((returnTime - Date.now()) / 60000);
               log(`Fleet returns in ~${minLeft}min (flight: ${Math.round(capturedFlightMs/60000)}min × 2)`, "fleet");
-            } else {
+            } else if (!mission.farm && !mission.expedition) {
               // Fallback: try parsing from page, but only accept asteroid-type
               const returnTime = parseFleetReturnTime();
               if (returnTime) {
@@ -4454,8 +4484,8 @@
             GM_setValue("ogamex_tried_planets", "[]");
             GM_setValue("ogamex_last_switched_planet", "");
             dispatchOk = true; // assume success if no error
-            // Still use captured flight time if available (not for farm sends)
-            if (capturedFlightMs > 0 && !mission.farm) {
+            // Still use captured flight time if available (mining only)
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition) {
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               log(`Estimated return in ~${Math.ceil((capturedFlightMs * 2 + 60000) / 60000)}min`, "fleet");
@@ -5424,7 +5454,7 @@
       const cargo = AsteroidYieldTracker.cargoPerMiner();
       const est = AsteroidYieldTracker.expectedResources();
       const need = AsteroidYieldTracker.minersNeeded();
-      const inflight = inflightFleetCount();
+      const inflight = miningInflightCount();
       const maxFleets = maxMiningFleets();
       const mode = am.parallelDispatch ? "parallel" : "serial";
       const needStr = need > 0 ? need.toLocaleString() : "all";
@@ -5841,7 +5871,7 @@
           const minNeeded = CONFIG.asteroidMining.minMinersPerMission || 1;
           const haveMiners = !known || minersHome >= minNeeded; // unknown → assume some
           const maxFleets = maxMiningFleets();
-          const inflight = inflightFleetCount();
+          const inflight = miningInflightCount(); // v2.15.1: expeditions don't spend the mining budget
           const budgetOk = maxFleets <= 0 || inflight < maxFleets;
           if (slotsFree > 0 && haveMiners && budgetOk) {
             GM_setValue("ogamex_fleet_return_at", "0"); // capacity + (likely) miners + budget → keep scanning
