@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.17.0
+// @version      2.17.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3757,8 +3757,26 @@
       this.busy = true;
       try {
         log(`Online bonus detected ("${hit.label}") — claiming.`, "success");
-        await AntiDetection.sleep(1200 + Math.random() * 2800); // human reaction time
         const href = hit.el.tagName === "A" ? hit.el.getAttribute("href") : null;
+
+        // ── v2.17.1: claim FAST, and by navigation when we can ──
+        // Live log 16:07:54: "Online bonus detected — claiming." and then…
+        // nothing, with the button still on screen minutes later. The claim was
+        // losing a race: it slept 1.2-4s for human-reaction realism while the
+        // asteroid scanner navigated to the next galaxy page ~2s later, killing
+        // the page mid-claim. Every scan step is another lost bonus.
+        // The button is a plain link (<a href="/home/onlinebonus" id=
+        // "btn-online-bonus">), so going straight to that URL is both the
+        // fastest and the most reliable claim — it's one atomic navigation
+        // instead of a click plus several seconds of page life.
+        const realHref = href && href !== "#" && !/^javascript:/i.test(href) ? (hit.el.href || href) : null;
+        if (realHref) {
+          GM_setValue(this.KEY_PENDING, JSON.stringify({ at: Date.now(), label: hit.label }));
+          await AntiDetection.sleep(150 + Math.random() * 450); // enough to not be instant, too short to lose the race
+          log(`Online bonus: navigating to ${href}`, "fleet");
+          window.location.href = realHref;
+          return;
+        }
         // Stamp BEFORE clicking: if the click navigates, this page's JS dies
         // and only the marker (read on the next page's first tick) can tell
         // us the claim went through.
@@ -6274,6 +6292,15 @@
     // v2.10.0: learn expected asteroid yield from mission reports (no-op unless
     // we're on a message-like page; fully guarded).
     AsteroidYieldTracker.scanReports();
+
+    // v2.17.1: check the bonus BEFORE the galaxy-scan resume below. That resume
+    // navigates 1.5s after load and the scheduler's first tick only arrives at
+    // 3-8s — on a tab that is actively scanning, the claim never got a page
+    // that lived long enough. Claiming is a single navigation, so going early
+    // costs one scan step at most.
+    if (CONFIG.enabled) {
+      setTimeout(() => { OnlineBonus.run().catch(() => {}); }, 200 + Math.random() * 250);
+    }
 
     // Handle pending missions from previous page (fleet dispatch flow)
     setTimeout(handlePendingMission, 2000);
