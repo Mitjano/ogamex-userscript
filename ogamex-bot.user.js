@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.15.1
+// @version      2.15.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5735,12 +5735,12 @@
     // parallelKeepScanning is read by the fleet-timer block below to avoid
     // re-pausing the scan we just decided to continue.
     let parallelKeepScanning = false;
+    let wasExpoSend = false; // v2.15.2: read by the fleet-timer block below
     if (window.location.href.includes("fleetSendSuccessfully")) {
       // v2.11.0: was this a FARM send? The browser navigated here before
       // finishDispatch could run, so pending_mission still carries the type.
       // Farm sends must NOT run the mining parallel-decision below.
       let wasFarmSend = false;
-      let wasExpoSend = false;
       try {
         const pm = JSON.parse(GM_getValue("pending_mission", "null"));
         wasFarmSend = !!pm?.farm;
@@ -5835,7 +5835,23 @@
     // This recovers from scenarios where the timer was never persisted (e.g. dispatch
     // failure path didn't save it) — preventing the bot from scanning while miners
     // are still in flight.
-    {
+    // v2.15.2: SKIP the whole block after an expedition send. It is mining
+    // bookkeeping end to end, and an expedition lands on the very same
+    // fleetSendSuccessfully page, so it was being dragged through it with two
+    // possible outcomes, both wrong:
+    //   • `justSentFleet && storedReturnAt > now` → setFleetReturnTimerFromHeader
+    //     re-derived the mining timer from the FIRST countdown on the page,
+    //     which after a wave belongs to an expedition. Live log:
+    //     "Asteroid fleet active! Timer set: ~2min (countdown 0h0m5s ×2)".
+    //   • header shows "Type: Expedition" instead of Asteroid Mining → the
+    //     last branch fires "Active fleets visible but not asteroid mining.
+    //     Resetting timer." and CLEARS the wait while every miner is still
+    //     away — the scanner then hunts asteroids it has no ships to reach.
+    // An expedition changes nothing about where the miners are, so the honest
+    // move is to leave mining's state exactly as it was.
+    if (wasExpoSend) {
+      log("Expedition send — mining fleet timers left untouched.", "fleet");
+    } else {
       const storedReturnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0"));
       const headerText = document.body.textContent;
       const noFleetMovement = /No fleet movement/i.test(headerText);
