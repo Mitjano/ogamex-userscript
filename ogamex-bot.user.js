@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.15.2
+// @version      2.16.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2949,11 +2949,30 @@
     const plan = [];
     const skipped = [];
     const empty = [];
+    // ── v2.16.0: wave size is FROZEN for the whole burst ──
+    // It used to be recomputed from the live hangar at every wave, so each
+    // wave divided what was LEFT: 80M ships over 8 waves went out as 10M,
+    // 8.7M, 7.6M, 6.6M… — a decaying tail that no human produces and that
+    // isn't what "split the fleet into 8" means either. Other players save a
+    // fleet group and send the identical group N times; freezing the first
+    // wave's numbers reproduces exactly that, and it's also simply correct.
+    // The burst is reset in ExpeditionRunner.run() once nothing is in the air.
+    const frozen = ExpeditionState.load().burst;
+    const useFrozen = frozen && frozen.waves === divisor && frozen.sizes;
     for (const el of document.querySelectorAll("[data-ship-type]")) {
       const type = el.dataset.shipType;
       if (!type) continue;
       if (exclude.includes(type.toUpperCase())) { skipped.push(type); continue; }
       const available = parseInt(el.dataset.shipQuantity || "0") || 0;
+      if (useFrozen) {
+        // Cap at what's actually left; a type that ran out simply drops out of
+        // the remaining waves instead of holding up the burst.
+        const want = frozen.sizes[type] || 0;
+        const qty = Math.min(want, available);
+        if (qty > 0) plan.push({ type, qty, available });
+        else empty.push(type);
+        continue;
+      }
       // v2.14.1: floor(available/waves) alone means a fleet SMALLER than the
       // wave count sends nothing at all — with 7 of each and waves=8 the whole
       // module silently sat idle (exactly what happened on the first live run,
@@ -2976,7 +2995,15 @@
       const available = parseInt(el?.dataset?.shipQuantity || "0") || 0;
       if (available > 0) plan.push({ type: "HEAVY_CARGO", qty: Math.min(hc, available), available });
     }
-    return { plan, skipped, empty };
+    // First wave of a burst: remember these numbers so every later wave of the
+    // same burst is identical.
+    if (!useFrozen && plan.length) {
+      const st = ExpeditionState.load();
+      st.burst = { waves: divisor, at: Date.now(), sizes: Object.fromEntries(plan.map(p => [p.type, p.qty])) };
+      ExpeditionState.save(st);
+      log(`Expedition burst sized: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — every wave of this burst is identical.`, "fleet");
+    }
+    return { plan, skipped, empty, frozen: !!useFrozen };
   }
 
   const ExpeditionRunner = {
@@ -3081,6 +3108,18 @@
 
         // Hard cap: the game's expedition slots.
         const slots = this.slots();
+        // v2.16.0: nothing in the air = the previous burst is home, so the next
+        // wave starts a NEW burst and re-sizes against the full hangar (which
+        // now includes everything that just came back, plus anything built
+        // since). While a burst is running the frozen sizes stand.
+        if (slots.live && slots.used === 0) {
+          const st0 = ExpeditionState.load();
+          if (st0.burst) {
+            delete st0.burst;
+            ExpeditionState.save(st0);
+            log("All expeditions home — next burst will be re-sized against the full fleet.", "fleet");
+          }
+        }
         const cap = this.waveCap();
         if (slots.total && slots.used >= cap) {
           this._say("slots", `Expeditions: ${slots.used}/${slots.total} in the air (cap ${cap}) — waiting for returns.`);
@@ -4068,6 +4107,10 @@
             input.dispatchEvent(new Event("input", { bubbles: true }));
             input.dispatchEvent(new Event("change", { bubbles: true }));
             filled.push(`${p.type}×${p.qty}`);
+            // v2.16.0: a human fills eleven boxes one after another, not all of
+            // them inside the same millisecond. Cheap, and it's the kind of
+            // timing signature that's actually visible to a server.
+            await AntiDetection.sleep(120 + Math.random() * 380);
           }
           if (!filled.length) {
             log("Expedition: could not fill any ship input — aborting wave.", "error");
