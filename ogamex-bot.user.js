@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.14.1
+// @version      2.15.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -91,6 +91,10 @@
       // to min-over-all-planets behavior. Per-host storage means each universe
       // remembers its own base independently (set via UI or saved config).
       minerBase: { galaxy: 3, system: 269, position: 8 },
+    },
+    // ── v2.15.0: incoming-attack alarm (detection only) ──
+    threatAlarm: {
+      enabled: true, // read-only: it never moves a fleet
     },
     // ── v2.14.0: expeditions in WAVES ──
     // Position 16 of the base system, combat fleet split into N waves sent a
@@ -2549,6 +2553,16 @@
       }
       if (AntiDetection.isSleepTime()) return;
       if (Humanizer.isOnBreak()) return; // v2.12.0: also covers init on-load hooks
+      // v2.15.0: attacking someone else while a fleet is inbound on US is the
+      // worst possible use of a fleet slot.
+      if (ThreatMonitor.active()) {
+        if (!this._threatLogged) {
+          this._threatLogged = true;
+          log("Farming on hold — incoming foreign fleet.", "warn");
+        }
+        return;
+      }
+      this._threatLogged = false;
       if (Humanizer.attackLimitReached()) {
         if (!this._limitLogged) {
           this._limitLogged = true;
@@ -2752,6 +2766,144 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  THREAT MONITOR  (v2.15.0) — someone is flying at us
+  // ═══════════════════════════════════════════════════════════════
+  // Stage 1 of fleet-save: DETECT and SHOUT. It never moves a ship.
+  //
+  // The signal was already in the codebase and unused: the mission bar reads
+  // "N Missions: M Own", and inflightFleetCount() takes only M. N > M means
+  // fleets are in the air that are NOT ours — an incoming attack, an
+  // espionage probe, or an ally. One regex, zero extra requests.
+  //
+  // What it deliberately does NOT do yet: decide WHICH of those it is. A spy
+  // probe is the scout before the punch, not a reason to launch 18 billion
+  // miners, and getting that classification wrong is expensive in both
+  // directions. So on the first sighting we DUMP the event rows (and, on a
+  // galaxy page, the base row with its moon link) into the persisted log —
+  // the same trick that saved us from assuming mission=15 for expeditions,
+  // where the real answer turned out to be mission=1. Stage 2 (deploy
+  // everything to the moon at the same coords) gets written against that
+  // markup, not against a guess.
+  //
+  // While an alert is up: farming and expedition waves hold. Mining does NOT
+  // — a mining dispatch sends miners AWAY from the planet, which is the
+  // direction we want them going anyway.
+
+  const ThreatMonitor = {
+    KEY: "ogamex_threat",
+    KEY_DUMPED: "ogamex_threat_markup_dumped",
+    _fetching: false,
+
+    state() {
+      try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; }
+    },
+
+    // An alert goes stale on its own: if we stop seeing foreign fleets for
+    // 10 minutes the danger either landed or turned around.
+    active() {
+      const s = this.state();
+      return !!(s && s.count > 0 && Date.now() - s.seenAt < 10 * 60 * 1000);
+    },
+
+    clear() { GM_setValue(this.KEY, "null"); },
+
+    // Reads the mission bar of whatever page we're on. Returns null when the
+    // bar isn't rendered (most galaxy pages) so a blind page never clears a
+    // live alert.
+    read() {
+      const m = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
+      if (!m) return null;
+      const total = parseInt(m[1]) || 0;
+      const own = parseInt(m[2]) || 0;
+      return { total, own, foreign: Math.max(0, total - own) };
+    },
+
+    // One-time markup capture so Stage 2 can be written from facts:
+    // the event rows (what a hostile row looks like, its target, its ETA) and
+    // the base planet's galaxy row (the moon link + its mission id).
+    async dumpMarkupOnce() {
+      if (GM_getValue(this.KEY_DUMPED, "") === "1" || this._fetching) return;
+      this._fetching = true;
+      try {
+        for (const url of ["/ajax/fleet/eventlist", "/ajax/fleet/eventbox"]) {
+          try {
+            const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+            if (!res.ok) continue;
+            const txt = (await res.text()).replace(/\s+/g, " ").trim();
+            if (!txt) continue;
+            log(`[THREAT DOM] ${url}: ${txt.slice(0, 1500)}`, "error");
+            GM_setValue(this.KEY_DUMPED, "1");
+            break;
+          } catch {}
+        }
+      } finally {
+        this._fetching = false;
+      }
+    },
+
+    // The moon link lives in the base planet's galaxy row. Captured whenever
+    // we happen to be on the base system's galaxy page — no extra navigation.
+    dumpBaseRowOnce() {
+      if (GM_getValue("ogamex_moon_markup_dumped", "") === "1") return;
+      if (GameState.getCurrentPage() !== "galaxy") return;
+      const base = CONFIG.asteroidMining.minerBase;
+      if (!base) return;
+      const url = window.location.href;
+      const gx = url.match(/[?&]x=(\d+)/);
+      const sy = url.match(/[?&]y=(\d+)/);
+      if (!gx || !sy || parseInt(gx[1]) !== base.galaxy || parseInt(sy[1]) !== base.system) return;
+      for (const item of document.querySelectorAll(".galaxy-item")) {
+        const idx = item.querySelector(".planet-index");
+        if (!idx || idx.textContent.trim() !== String(base.position)) continue;
+        GM_setValue("ogamex_moon_markup_dumped", "1");
+        log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 900)}`, "info");
+        return;
+      }
+    },
+
+    check() {
+      if (!CONFIG.threatAlarm?.enabled) return;
+      this.dumpBaseRowOnce();
+
+      const r = this.read();
+      if (!r) return; // no mission bar on this page — say nothing, change nothing
+      const prev = this.state();
+
+      if (r.foreign > 0) {
+        const first = !prev || !(prev.count > 0);
+        GM_setValue(this.KEY, JSON.stringify({
+          count: r.foreign,
+          total: r.total,
+          own: r.own,
+          seenAt: Date.now(),
+          firstAt: first ? Date.now() : (prev.firstAt || Date.now()),
+        }));
+        if (first || r.foreign !== prev.count) {
+          log(`INCOMING: ${r.foreign} foreign fleet(s) in the mission bar (${r.own} of ${r.total} are ours). Farming and expedition waves are on hold — CHECK THE GAME.`, "error");
+          this.dumpMarkupOnce().catch(() => {});
+          this.notify(r.foreign);
+        }
+      } else if (prev && prev.count > 0) {
+        log("Incoming fleets gone — threat alert cleared.", "success");
+        this.clear();
+      }
+      updateStatusUI();
+    },
+
+    // Desktop notification if the user already granted it (we ask once, from
+    // the toggle — never unprompted mid-scan).
+    notify(count) {
+      try {
+        if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+        new Notification("OGameX: obca flota w drodze", {
+          body: `${count} obcych flot w pasku misji na ${location.host}. Sprawdź grę.`,
+          tag: "ogamex-threat",
+        });
+      } catch {}
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  EXPEDITIONS  (v2.14.0) — combat fleet in timed waves to position 16
   // ═══════════════════════════════════════════════════════════════
   // Sends the combat fleet on expeditions to [base:16], split into N waves a
@@ -2899,6 +3051,12 @@
       const cfg = CONFIG.expeditions;
       if (!CONFIG.enabled || !cfg.enabled || this.running) return;
       if (AntiDetection.isSleepTime() || Humanizer.isOnBreak()) return;
+      // v2.15.0: don't put MORE fleets in the air while something hostile is
+      // inbound — every wave is one more group that could land badly timed.
+      if (ThreatMonitor.active()) {
+        this._say("threat", "Expeditions on hold — incoming foreign fleet.", "warn", 5 * 60 * 1000);
+        return;
+      }
       // A wave click navigates through 3 pages — never start one on top of a
       // mining/farm dispatch (they share the single pending_mission slot).
       const pending = GM_getValue("pending_mission", null);
@@ -3868,7 +4026,10 @@
         if (mission.expedition) {
           const { plan, skipped, empty } = expeditionShipPlan(mission.waves);
           if (!plan.length) {
-            log(`Expedition: no ships to send on the active planet (excluded: ${skipped.join(", ") || "none"}; too few for ${mission.waves} waves: ${empty.join(", ") || "none"}). Ships: ${shipDump}`, "warn");
+            const why = shipDump === "NONE"
+              ? "the hangar is empty (everything is already in the air)"
+              : `excluded: ${skipped.join(", ") || "none"}; none left of: ${empty.join(", ") || "none"}`;
+            log(`Expedition: no ships to send on the active planet — ${why}. Ships: ${shipDump}`, "warn");
             GM_setValue("pending_mission", null);
             // Back off a full wave-gap so we don't retry every tick.
             ExpeditionState.save({ ...ExpeditionState.load(), lastSendAt: Date.now(), nextGapMs: 10 * 60 * 1000 });
@@ -4410,6 +4571,10 @@
       return;
     }
 
+    // v2.15.0: threat check first — it's a pure DOM read of the mission bar
+    // already on the page, and every module below gates on its result.
+    ThreatMonitor.check();
+
     // v2.13.0: grab the green "Online bonus" if it's on screen. Placed before
     // the keepalive reload (which returns) and before jitter (which can sleep
     // 15min inside the tick) so a visible bonus is taken promptly. No-ops in
@@ -4533,6 +4698,11 @@
         scheduleNext();
       }, intervalMs);
     }
+    // v2.15.0: stamp the heartbeat NOW. While the bot is off nothing ticks, so
+    // last_tick_at goes stale; re-enabling it then tripped the 25min watchdog
+    // within seconds and reloaded the page for no reason (seen at 13:32 —
+    // "Bot ENABLED" at :06, "scheduler chain dead. Reloading." at :08).
+    GM_setValue("ogamex_last_tick_at", String(Date.now()));
     // First run after random 3-8 seconds
     setTimeout(() => {
       schedulerTick();
@@ -4726,6 +4896,17 @@
           </div>
         </div>
 
+        <div id="ogx-threat-banner" style="display:none;margin-bottom:8px;padding:8px;border-radius:4px;background:rgba(192,57,43,0.25);border:1px solid #e74c3c;color:#ff8a80;font-weight:bold;font-size:11px;line-height:1.4;"></div>
+
+        <div class="section" id="ogx-threat-section">
+          <div class="section-title">
+            <span>Alarm: obca flota</span>
+            <button class="mini-btn" id="ogx-threat-toggle">${CONFIG.threatAlarm.enabled ? "ON" : "OFF"}</button>
+          </div>
+          <div class="status" id="ogx-threat-status">—</div>
+          <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
+        </div>
+
         <div class="section ${CONFIG.expeditions.enabled ? "active" : "inactive"}" id="ogx-expo-section">
           <div class="section-title">
             <span>Expeditions</span>
@@ -4875,6 +5056,23 @@
       log(`Inactive farming ${CONFIG.inactiveFarming.enabled ? "enabled" : "disabled"}`, "info");
       updateStatusUI();
     });
+
+    // v2.15.0: incoming-fleet alarm
+    {
+      const tBtn = document.getElementById("ogx-threat-toggle");
+      if (tBtn) tBtn.addEventListener("click", () => {
+        CONFIG.threatAlarm.enabled = !CONFIG.threatAlarm.enabled;
+        saveConfig(CONFIG);
+        tBtn.textContent = CONFIG.threatAlarm.enabled ? "ON" : "OFF";
+        if (!CONFIG.threatAlarm.enabled) ThreatMonitor.clear();
+        // Ask for desktop notifications only here — never unprompted mid-scan.
+        if (CONFIG.threatAlarm.enabled && typeof Notification !== "undefined" && Notification.permission === "default") {
+          Notification.requestPermission().catch(() => {});
+        }
+        log(`Alarm obcej floty ${CONFIG.threatAlarm.enabled ? "włączony" : "wyłączony"}`, "info");
+        updateStatusUI();
+      });
+    }
 
     // v2.14.0: expedition controls
     {
@@ -5276,6 +5474,31 @@
         }
       }
       farmStatus.textContent = ftext;
+    }
+
+    // v2.15.0: threat banner + status line
+    {
+      const banner = document.getElementById("ogx-threat-banner");
+      const tStatus = document.getElementById("ogx-threat-status");
+      const st = ThreatMonitor.state();
+      const active = ThreatMonitor.active();
+      if (banner) {
+        if (active) {
+          const mins = Math.floor((Date.now() - (st.firstAt || st.seenAt)) / 60000);
+          banner.style.display = "block";
+          banner.textContent = `⚠ OBCA FLOTA W DRODZE — ${st.count} (pasek misji: ${st.own}/${st.total} nasze). Wykryta ${mins}min temu. Farmienie i fale ekspedycji wstrzymane. SPRAWDŹ GRĘ.`;
+        } else {
+          banner.style.display = "none";
+        }
+      }
+      if (tStatus) {
+        tStatus.textContent = !CONFIG.threatAlarm?.enabled
+          ? "Off"
+          : active
+            ? `ALARM: ${st.count} obcych flot`
+            : "Czysto — brak obcych flot w pasku misji";
+        tStatus.style.color = active ? "#e74c3c" : "#999";
+      }
     }
 
     // v2.14.0: expedition status line
