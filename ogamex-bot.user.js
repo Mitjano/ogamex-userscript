@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.17.1
+// @version      2.17.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2900,8 +2900,29 @@
     // asteroid ranges [3:51-160]). So the one markup Stage 2 depends on would
     // have sat uncaptured forever. Fetch it once instead: a single request,
     // ever, guarded by the same key.
+    // v2.17.2: fallback when the fetch can't see the table — go there ONCE for
+    // real. The scan state machine already recovers from being sent elsewhere
+    // ("Scan stranded off galaxy page. Resuming at …"), so this costs one page
+    // load. Only fires while nothing is in progress.
+    maybeVisitBaseForMoon() {
+      if (GM_getValue("ogamex_moon_markup_dumped", "") === "1") return false;
+      if (GM_getValue("ogamex_moon_fetch_dead", "") !== "1") return false; // fetch path still has a chance
+      if (GM_getValue("ogamex_moon_visit_done", "") === "1") return false; // one visit, ever
+      const base = CONFIG.asteroidMining.minerBase;
+      if (!base || !CONFIG.enabled) return false;
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return false;
+      if (ScanState.load()?.active) return false; // never interrupt a running sweep
+      if (AsteroidMiner.running || InactiveFarmer.running || ExpeditionRunner.running) return false;
+      GM_setValue("ogamex_moon_visit_done", "1");
+      log(`[MOON DOM] visiting [${base.galaxy}:${base.system}] once to read the base row (fleet-save target).`, "info");
+      scanNavigate(`/galaxy?x=${base.galaxy}&y=${base.system}`, "moon recon");
+      return true;
+    },
+
     async fetchBaseRowOnce() {
       if (GM_getValue("ogamex_moon_markup_dumped", "") === "1" || this._fetchingMoon) return;
+      if (GM_getValue("ogamex_moon_fetch_dead", "") === "1") return; // proven useless here
       const base = CONFIG.asteroidMining.minerBase;
       if (!base) return;
       this._fetchingMoon = true;
@@ -2920,7 +2941,20 @@
           MoonSave.learnFromRow(item, `${base.galaxy}:${base.system}:${base.position}`);
           return;
         }
-        log(`[MOON DOM] base row ${base.position} not found in the fetched galaxy page — the AJAX shape may differ from the rendered one.`, "warn");
+        // v2.17.2: the fetched galaxy page comes back WITHOUT .galaxy-item rows
+        // (the table is rendered client-side), so this path can't learn the
+        // moon link at all. Count the failures, give up after two, and hand
+        // over to the navigate-once fallback — the old code only set the
+        // one-shot flag on SUCCESS, so it re-fetched on every scheduler tick
+        // and spammed the log (seen live at 16:15:57, 16:16:00, 16:17:15).
+        const tries = (parseInt(GM_getValue("ogamex_moon_fetch_tries", "0")) || 0) + 1;
+        GM_setValue("ogamex_moon_fetch_tries", String(tries));
+        if (tries >= 2) {
+          GM_setValue("ogamex_moon_fetch_dead", "1");
+          log(`[MOON DOM] fetched galaxy page has no rows (${tries} tries) — switching to a one-off visit to [${base.galaxy}:${base.system}] when the bot is idle.`, "warn");
+        } else {
+          log(`[MOON DOM] base row ${base.position} not found in the fetched galaxy page — the AJAX shape differs from the rendered one.`, "warn");
+        }
       } catch (e) {
         log(`[MOON DOM] fetch failed: ${e.message}`, "warn");
       } finally {
@@ -2951,6 +2985,7 @@
       if (!CONFIG.threatAlarm?.enabled) return;
       this.dumpBaseRowOnce();
       this.fetchBaseRowOnce().catch(() => {}); // one-shot, no-op once captured
+      this.maybeVisitBaseForMoon(); // only if the fetch path proved blind
 
       const r = this.read();
       if (!r) return; // no mission bar on this page — say nothing, change nothing
