@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.16.0
+// @version      2.16.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -182,6 +182,28 @@
       merged.antiDetection = { ...DEFAULT_CONFIG.antiDetection };
       if (Number.isFinite(savedSleepStart)) merged.antiDetection.sleepStartHour = savedSleepStart;
       if (Number.isFinite(savedSleepEnd)) merged.antiDetection.sleepEndHour = savedSleepEnd;
+
+      // v2.16.1: one-shot — give the account a night. Start === end means the
+      // window is OFF, i.e. the bot runs 24/7 with no daily quiet period, and
+      // that is a far louder signal to an admin than anything about fleet
+      // arithmetic. Sets 23:00-05:00 UTC (01:00-07:00 in PL) ONCE; both fields
+      // stay editable in the panel afterwards and this never runs again, so
+      // turning it back off sticks.
+      {
+        const NIGHT_KEY = "ogamex_migration_night_v2161";
+        if (GM_getValue(NIGHT_KEY, "0") !== "1") {
+          GM_setValue(NIGHT_KEY, "1");
+          if (merged.antiDetection.sleepStartHour === merged.antiDetection.sleepEndHour) {
+            merged.antiDetection.sleepStartHour = 23;
+            merged.antiDetection.sleepEndHour = 5;
+            // MUST persist: the one-shot key stops this from running again, so
+            // without a write the next page load would reload the saved 0/0
+            // and the window would silently vanish.
+            saveConfig(merged);
+            setTimeout(() => log("Night window enabled: 23:00-05:00 UTC (01:00-07:00 PL) — a 24/7 bot with no quiet hours is the loudest pattern there is. Change or disable it in the panel (equal start/end = off).", "warn"), 1500);
+          }
+        }
+      }
       // v2.9.2 forced expeditions.enabled=false here because the UI had been
       // removed and old saved state could keep a headless module running.
       // v2.14.0 gives expeditions a real module AND a real toggle, so the
@@ -1674,7 +1696,23 @@
           ".message, .msg, .messageContent, [data-message-id], .message_item, li.message, .communication-item"
         );
         if (containers.length === 0) {
-          if (root !== document) log(`Yield fetch (${sourceLabel}): no known message markup — selectors need tuning for this OGameX build.`, "warn");
+          if (root !== document) {
+            log(`Yield fetch (${sourceLabel}): no known message markup — selectors need tuning for this OGameX build.`, "warn");
+            // v2.16.1: stop repeating that warning forever and DUMP the page
+            // instead. Without report parsing the bot is blind to what
+            // expeditions and asteroids actually bring back — which is exactly
+            // the number needed to decide whether bigger waves still pay off.
+            // Same one-shot trick that gave us the expedition link (mission=1,
+            // not the 15 everyone would assume).
+            if (GM_getValue("ogamex_messages_markup_dumped", "") !== "1") {
+              GM_setValue("ogamex_messages_markup_dumped", "1");
+              const html = (root.body?.innerHTML || root.documentElement?.innerHTML || "")
+                .replace(/<script[\s\S]*?<\/script>/gi, "")
+                .replace(/\s+/g, " ")
+                .trim();
+              log(`[MSG DOM] ${sourceLabel} (${html.length}ch): ${html.slice(0, 1800)}`, "info");
+            }
+          }
           return;
         }
 
@@ -2942,6 +2980,18 @@
   // Heavy Cargo is a FIXED per-wave count instead: it is the farmer's tool and
   // the single biggest stack, and splitting 1.9 billion of it across waves is
   // not something to do by accident.
+  // v2.16.1: wave sizes a human would actually type. floor(available/waves) on
+  // a growing fleet produces 10 437 522 one day and 11 208 964 the next —
+  // nobody types that, and it changes on every rebuild. Keeping two
+  // significant digits gives 10 000 000 / 11 000 000: looks hand-entered AND
+  // stays put while the fleet grows, stepping up only on a real change.
+  // Below 100 the exact number IS the human one (you don't round 7 ships).
+  function humanRoundDown(n) {
+    if (!Number.isFinite(n) || n < 100) return Math.max(0, Math.floor(n));
+    const factor = Math.pow(10, Math.floor(Math.log10(n)) - 1); // keep 2 sig digits
+    return Math.max(1, Math.floor(n / factor) * factor);
+  }
+
   function expeditionShipPlan(waves) {
     const cfg = CONFIG.expeditions;
     const exclude = (cfg.excludeTypes || []).map(t => String(t).toUpperCase());
@@ -2981,7 +3031,7 @@
       // one ship at a time and stop by themselves when a type hits zero.
       // The `available > 0` guard is what keeps this from ordering ships that
       // don't exist.
-      const qty = available > 0 ? Math.max(1, Math.floor(available / divisor)) : 0;
+      const qty = available > 0 ? Math.max(1, humanRoundDown(available / divisor)) : 0;
       if (qty > 0) plan.push({ type, qty, available });
       else empty.push(type);
     }
