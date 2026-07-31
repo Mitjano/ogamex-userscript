@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.12.9
-// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield)
+// @version      2.13.0
+// @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
@@ -108,6 +108,14 @@
       ranges: "",                // e.g. "3:100-200, 3:250-300" — scanned system by system
       targetCooldownMin: 180,    // don't re-attack the same planet within this window
       slotReserve: 2,            // keep this many fleet slots free (manual play / mining)
+    },
+    // ── v2.13.0: auto-claim the green "Online bonus" menu button ──
+    // (antimatter + Academy points). Independent of mining/farming — runs
+    // whenever the bot is enabled and the button shows up.
+    onlineBonus: {
+      enabled: true,
+      minGapMin: 2,   // floor between two claims (the bonus reappears on its own schedule)
+      retryMin: 15,   // wait after a click that did NOT make the button disappear
     },
     // ── v2.12.0: humanizer — behavioural anti-detection ──
     humanizer: {
@@ -2790,6 +2798,265 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  ONLINE BONUS CLAIMER  (v2.13.0, 2026-07-31)
+  // ═══════════════════════════════════════════════════════════════
+  // Every few hours OGameX puts a green "Online bonus" entry at the top of
+  // the left menu; clicking it grants antimatter + Academy points. Pure
+  // freebie, so the bot takes it — but through the same gates as every other
+  // module: leader tab only, never mid-dispatch (the click can navigate and
+  // would strand a 3-step fleet flow), and quiet during breaks/night so the
+  // account doesn't click at 4am while it's supposed to be asleep.
+  //
+  // We don't know the exact markup ogamex.net uses, so detection is
+  // label-driven and defensive:
+  //   • strict pass — a text node that IS the label ("Online bonus", after
+  //     stripping digits/punctuation), climbing ≤4 levels to the real
+  //     clickable (<a>/<button>/[onclick]/role=button/cursor:pointer)
+  //   • loose pass — a short label CONTAINING the phrase, but only on a
+  //     genuine control (so prose like "you claimed your online bonus"
+  //     can't be clicked)
+  //   • never our own panel, never a disabled/greyed item, never an item
+  //     showing a countdown (that's "next bonus in mm:ss", not a button)
+  // The first sighting dumps the element's outerHTML into the persisted log
+  // so the markup can be tightened later from a real observation.
+
+  const OnlineBonus = {
+    KEY_CLAIMS: "ogamex_bonus_claims",       // JSON array of claim timestamps
+    KEY_NEXT_TRY: "ogamex_bonus_next_try_at",
+    KEY_PENDING: "ogamex_bonus_pending",     // click awaiting verification
+    KEY_MARKUP: "ogamex_bonus_markup_logged",
+    LABEL_RE: /^(online bonus|bonus online)$/i,
+    LOOSE_RE: /online\s*bonus|bonus\s*online/i,
+    busy: false,
+
+    // ── claim bookkeeping ──
+    claims() {
+      try {
+        const arr = JSON.parse(GM_getValue(this.KEY_CLAIMS, "[]"));
+        return Array.isArray(arr) ? arr.filter(t => t > Date.now() - 7 * 24 * 60 * 60 * 1000) : [];
+      } catch { return []; }
+    },
+    recordClaim() {
+      const arr = this.claims();
+      arr.push(Date.now());
+      GM_setValue(this.KEY_CLAIMS, JSON.stringify(arr));
+    },
+    lastClaimAt() {
+      const a = this.claims();
+      return a.length ? a[a.length - 1] : 0;
+    },
+    claimsToday() {
+      const d = new Date();
+      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      return this.claims().filter(t => t >= start).length;
+    },
+
+    // ── DOM helpers ──
+    isVisible(el) {
+      if (!el || !el.getClientRects || el.getClientRects().length === 0) return false;
+      const st = getComputedStyle(el);
+      return st.visibility !== "hidden" && st.display !== "none" && parseFloat(st.opacity || "1") > 0.05;
+    },
+
+    // The greyed-out state may sit on the control OR on its <li>/wrapper, so
+    // check a couple of levels up too.
+    isDisabled(el) {
+      for (let cur = el, i = 0; cur && i < 3; cur = cur.parentElement, i++) {
+        if (cur.disabled) return true;
+        if (cur.getAttribute && cur.getAttribute("aria-disabled") === "true") return true;
+        const cls = typeof cur.className === "string" ? cur.className : "";
+        if (/disabl|inactive|locked|cooldown|unavailable|not-?active/i.test(cls)) return true;
+      }
+      return false;
+    },
+
+    // Nearest real control at or above `el` (menu entries are usually <a>/<li>).
+    // A real control ALWAYS wins over the cursor heuristic: `cursor` is an
+    // inherited CSS property, so the label <span> inside a clickable <a>
+    // computes to `pointer` as well — trusting it first returned the span and
+    // lost both the href fallback and the wrapper's disabled/greyed classes.
+    clickableFor(el) {
+      let pointer = null;
+      for (let cur = el, i = 0; cur && cur !== document.body && i < 5; cur = cur.parentElement, i++) {
+        if (/^(A|BUTTON|INPUT)$/.test(cur.tagName)) return cur;
+        if (cur.hasAttribute && (cur.hasAttribute("onclick") || cur.getAttribute("role") === "button")) return cur;
+        try {
+          if (getComputedStyle(cur).cursor === "pointer") {
+            const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
+            if (t.length <= 40) pointer = cur; // outermost node that is still just the label
+          }
+        } catch {}
+      }
+      return pointer;
+    },
+
+    find() {
+      // Cheap prefilter: one string scan per tick instead of a full DOM walk.
+      if (!this.LOOSE_RE.test(document.body.textContent || "")) return null;
+
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node, loose = null;
+      while ((node = walker.nextNode())) {
+        const raw = (node.nodeValue || "").replace(/\s+/g, " ").trim();
+        if (!raw || raw.length > 60 || !this.LOOSE_RE.test(raw)) continue;
+        const parent = node.parentElement;
+        if (!parent || (parent.closest && parent.closest("#ogx-bot-panel"))) continue; // our own UI/log
+        const ctrl = this.clickableFor(parent);
+        const target = ctrl || parent;
+        if (!this.isVisible(target)) continue;
+
+        const label = (target.textContent || "").replace(/\s+/g, " ").trim();
+        const letters = raw.replace(/[^\p{L} ]/gu, "").replace(/\s+/g, " ").trim();
+        const hit = { el: target, node: raw, label: label.slice(0, 80) };
+        if (this.LABEL_RE.test(letters)) return hit;           // strict: the node IS the label
+        if (ctrl && label.length <= 40 && !loose) loose = hit;  // loose: a real control, short label
+      }
+      return loose;
+    },
+
+    // Some UIs put the reward behind a confirm inside a modal. Only click a
+    // confirm that sits in a container actually talking about the bonus.
+    clickConfirmIfAny() {
+      const btns = document.querySelectorAll("button, a, input[type='button'], input[type='submit']");
+      for (const b of btns) {
+        if (b.closest && b.closest("#ogx-bot-panel")) continue;
+        const t = ((b.textContent || b.value || "") + "").replace(/\s+/g, " ").trim();
+        if (!t || t.length > 24) continue;
+        if (!/^(claim|collect|receive|get( it)?|odbierz|zbierz|confirm|ok|yes)$/i.test(t)) continue;
+        if (!this.isVisible(b) || this.isDisabled(b)) continue;
+        // Smallest meaningful container around the button — NOT <body>, whose
+        // text always contains "Online bonus" (the menu entry) and would make
+        // this match any stray OK button on the page.
+        let ctx = "";
+        for (let cur = b.parentElement, i = 0; cur && cur !== document.body && i < 5; cur = cur.parentElement, i++) {
+          const t = (cur.textContent || "").replace(/\s+/g, " ").trim();
+          if (t.length >= 20) { ctx = t.slice(0, 600); break; }
+        }
+        if (!/bonus|antimatter|dark\s*matter|academy/i.test(ctx)) continue;
+        log(`Online bonus: confirming via "${t}".`, "info");
+        this.humanClick(b);
+        return true;
+      }
+      return false;
+    },
+
+    humanClick(el) {
+      const opts = { bubbles: true, cancelable: true, view: window };
+      try {
+        el.dispatchEvent(new MouseEvent("mouseover", opts));
+        el.dispatchEvent(new MouseEvent("mousedown", opts));
+        el.dispatchEvent(new MouseEvent("mouseup", opts));
+      } catch {}
+      try { el.click(); } catch {}
+    },
+
+    markup(el) {
+      return ((el && el.outerHTML) || "").replace(/\s+/g, " ").slice(0, 300);
+    },
+
+    // Resolve a click made earlier (possibly before a page navigation).
+    // Returns true while the outcome is still undecided.
+    // `force` = we just clicked in THIS tick and already waited out the UI,
+    // so judge immediately instead of deferring to the next scheduler tick.
+    settle(force = false) {
+      let pend = null;
+      try { pend = JSON.parse(GM_getValue(this.KEY_PENDING, "null")); } catch {}
+      if (!pend) return false;
+      const age = Date.now() - (pend.at || 0);
+      if (!force && age < 2000) return true; // too early to judge
+
+      const still = this.find();
+      if (!still) {
+        GM_setValue(this.KEY_PENDING, "null");
+        this.recordClaim();
+        const gap = Math.max(1, CONFIG.onlineBonus?.minGapMin || 2);
+        GM_setValue(this.KEY_NEXT_TRY, String(Date.now() + gap * 60 * 1000));
+        log(`Online bonus CLAIMED — antimatter + Academy points (#${this.claimsToday()} today).`, "success");
+        updateStatusUI();
+        return false;
+      }
+      if (age > 20000 || force) {
+        GM_setValue(this.KEY_PENDING, "null");
+        const retry = Math.max(1, CONFIG.onlineBonus?.retryMin || 15);
+        GM_setValue(this.KEY_NEXT_TRY, String(Date.now() + retry * 60 * 1000));
+        log(`Online bonus: clicked but the button is still there — retry in ${retry}min. Markup: ${this.markup(still.el)}`, "warn");
+        updateStatusUI();
+        return false;
+      }
+      return true; // still settling
+    },
+
+    async run({ manual = false } = {}) {
+      if (this.busy) return;
+      if (!manual && !CONFIG.onlineBonus?.enabled) return;
+
+      if (this.settle()) return; // a previous click is still being judged
+
+      if (!manual) {
+        const nextTry = parseInt(GM_getValue(this.KEY_NEXT_TRY, "0")) || 0;
+        if (Date.now() < nextTry) return;
+      }
+
+      // A click may navigate — never do it in the middle of a fleet flow.
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return;
+      if (AsteroidMiner.running || InactiveFarmer.running || ExpeditionManager.running) return;
+
+      const hit = this.find();
+      if (!hit) {
+        if (manual) log("No 'Online bonus' button visible on this page right now.", "warn");
+        return;
+      }
+
+      // Learn the real markup once — the persisted log can be copied out.
+      if (!GM_getValue(this.KEY_MARKUP, "")) {
+        GM_setValue(this.KEY_MARKUP, "1");
+        log(`Online bonus markup (first sighting): ${this.markup(hit.el)}`, "info");
+      }
+
+      if (this.isDisabled(hit.el)) {
+        GM_setValue(this.KEY_NEXT_TRY, String(Date.now() + 10 * 60 * 1000));
+        log(`Online bonus entry present but disabled/greyed — skipping for 10min.`, "info");
+        return;
+      }
+      // "Online bonus 04:12" = countdown to the NEXT bonus, not a claimable one.
+      if (/\d{1,2}:\d{2}/.test(hit.label)) {
+        GM_setValue(this.KEY_NEXT_TRY, String(Date.now() + 5 * 60 * 1000));
+        log(`Online bonus shows a countdown ("${hit.label}") — not claimable yet.`, "info");
+        return;
+      }
+
+      this.busy = true;
+      try {
+        log(`Online bonus detected ("${hit.label}") — claiming.`, "success");
+        await AntiDetection.sleep(1200 + Math.random() * 2800); // human reaction time
+        const href = hit.el.tagName === "A" ? hit.el.getAttribute("href") : null;
+        // Stamp BEFORE clicking: if the click navigates, this page's JS dies
+        // and only the marker (read on the next page's first tick) can tell
+        // us the claim went through.
+        GM_setValue(this.KEY_PENDING, JSON.stringify({ at: Date.now(), label: hit.label }));
+        this.humanClick(hit.el);
+
+        await AntiDetection.sleep(1500 + Math.random() * 1500);
+        this.clickConfirmIfAny();
+        await AntiDetection.sleep(1500 + Math.random() * 1000);
+
+        // Still here (no navigation) → judge now instead of waiting a tick.
+        if (this.find() && href && href !== "#" && !/^javascript:/i.test(href)) {
+          log(`Online bonus: click didn't take — following its link (${href}).`, "warn");
+          window.location.href = hit.el.href || href;
+          return;
+        }
+        this.settle(true);
+      } catch (err) {
+        log(`Online bonus error: ${err.message}`, "error");
+      } finally {
+        this.busy = false;
+      }
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  FLEET RETURN TIME PARSER
   // ═══════════════════════════════════════════════════════════════
 
@@ -3736,6 +4003,12 @@
       return;
     }
 
+    // v2.13.0: grab the green "Online bonus" if it's on screen. Placed before
+    // the keepalive reload (which returns) and before jitter (which can sleep
+    // 15min inside the tick) so a visible bonus is taken promptly. No-ops in
+    // ~microseconds when the button isn't there (single textContent scan).
+    await OnlineBonus.run().catch(() => {});
+
     // v2.10.10 keepalive: guarantee a REAL page load at least every ~12min.
     // After "scan complete — no asteroids" the bot used to sit 45min on one
     // galaxy page with zero requests; the session could expire in that window
@@ -4035,6 +4308,15 @@
           </div>
         </div>
 
+        <div class="section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}" id="ogx-bonus-section">
+          <div class="section-title">
+            <span>Online Bonus</span>
+            <button class="mini-btn" id="ogx-bonus-toggle">${CONFIG.onlineBonus.enabled ? "ON" : "OFF"}</button>
+          </div>
+          <div class="status" id="ogx-bonus-status">—</div>
+          <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Klika zielony „Online bonus" w menu, gdy się pojawi → antymateria + punkty Academy. Działa razem z mining/farming.</div>
+        </div>
+
         <div class="section">
           <div class="section-title">
             <span>Anti-Detection</span>
@@ -4067,6 +4349,7 @@
             <span>Quick Actions</span>
           </div>
           <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
+          <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
         </div>
 
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
@@ -4138,6 +4421,26 @@
       log(`Inactive farming ${CONFIG.inactiveFarming.enabled ? "enabled" : "disabled"}`, "info");
       updateStatusUI();
     });
+
+    // v2.13.0: online-bonus toggle (independent of mining/farming)
+    {
+      const bnBtn = document.getElementById("ogx-bonus-toggle");
+      if (bnBtn) bnBtn.addEventListener("click", () => {
+        CONFIG.onlineBonus.enabled = !CONFIG.onlineBonus.enabled;
+        saveConfig(CONFIG);
+        bnBtn.textContent = CONFIG.onlineBonus.enabled ? "ON" : "OFF";
+        const sec = document.getElementById("ogx-bonus-section");
+        if (sec) sec.className = `section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}`;
+        log(`Online bonus auto-claim ${CONFIG.onlineBonus.enabled ? "enabled" : "disabled"}`, "info");
+        updateStatusUI();
+      });
+      const bnNow = document.getElementById("ogx-bonus-now");
+      if (bnNow) bnNow.addEventListener("click", () => {
+        log("Manual online-bonus check...", "info");
+        GM_setValue(OnlineBonus.KEY_MARKUP, ""); // re-dump the markup on a manual probe
+        OnlineBonus.run({ manual: true }).catch(err => log(`Online bonus error: ${err.message}`, "error"));
+      });
+    }
 
     // Farming config inputs (numeric + the free-text ranges field)
     const bindFarmNum = (id, key, label) => {
@@ -4462,6 +4765,24 @@
         }
       }
       farmStatus.textContent = ftext;
+    }
+
+    // v2.13.0: online-bonus status line
+    const bonusStatus = document.getElementById("ogx-bonus-status");
+    if (bonusStatus) {
+      if (!CONFIG.onlineBonus?.enabled) {
+        bonusStatus.textContent = "Off";
+        bonusStatus.style.color = "#7f8c8d";
+      } else {
+        const last = OnlineBonus.lastClaimAt();
+        const parts = [`claimed today: ${OnlineBonus.claimsToday()}`];
+        parts.push(last ? `last: ${Math.max(0, Math.round((Date.now() - last) / 60000))}min ago` : "last: never");
+        const nextTry = parseInt(GM_getValue(OnlineBonus.KEY_NEXT_TRY, "0")) || 0;
+        if (nextTry > Date.now()) parts.push(`next check in ${Math.ceil((nextTry - Date.now()) / 60000)}min`);
+        else parts.push("watching");
+        bonusStatus.textContent = parts.join(" | ");
+        bonusStatus.style.color = "#999";
+      }
     }
 
     // v2.12.0: humanizer status line

@@ -18,6 +18,7 @@ This repo is the **public mirror** for auto-update only. Active development live
 
 - Asteroid Mining: scan galaxies, find asteroids in range, dispatch ASTEROID_MINER fleet
 - Expeditions: auto-send fleet exploration
+- Online Bonus: auto-claims the green "Online bonus" menu button (antimatter + Academy points) whenever it appears
 - Anti-detection: random delays, night mode, jitter, rate limiting
 - Persistent state across browser reloads (Tampermonkey GM_setValue)
 - Multi-universe: each universe gets isolated config + scan state
