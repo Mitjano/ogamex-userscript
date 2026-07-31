@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.14.0
+// @version      2.14.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2799,7 +2799,15 @@
       if (!type) continue;
       if (exclude.includes(type.toUpperCase())) { skipped.push(type); continue; }
       const available = parseInt(el.dataset.shipQuantity || "0") || 0;
-      const qty = Math.floor(available / divisor);
+      // v2.14.1: floor(available/waves) alone means a fleet SMALLER than the
+      // wave count sends nothing at all — with 7 of each and waves=8 the whole
+      // module silently sat idle (exactly what happened on the first live run,
+      // one ship of each still being out on the test expedition). Send at
+      // least one of anything we actually have: waves then drain the hangar
+      // one ship at a time and stop by themselves when a type hits zero.
+      // The `available > 0` guard is what keeps this from ordering ships that
+      // don't exist.
+      const qty = available > 0 ? Math.max(1, Math.floor(available / divisor)) : 0;
       if (qty > 0) plan.push({ type, qty, available });
       else empty.push(type);
     }
