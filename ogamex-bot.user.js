@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.13.2
+// @version      2.14.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -92,11 +92,25 @@
       // remembers its own base independently (set via UI or saved config).
       minerBase: { galaxy: 3, system: 269, position: 8 },
     },
+    // ── v2.14.0: expeditions in WAVES ──
+    // Position 16 of the base system, combat fleet split into N waves sent a
+    // couple of minutes apart. The spacing is a safety feature, not politeness:
+    // one fleet returning at a time means a hunter camping the return can take
+    // at most one wave, and there's a window to react.
     expeditions: {
       enabled: false,
-      fleetComposition: { HEAVY_CARGO: 50, PATHFINDER: 5 },
-      holdingTimeHours: 1,
-      maxConcurrent: 2, // max simultaneous expeditions
+      waves: 8,                 // split the fleet into this many flights
+      holdingHours: 1,          // "Expedition duration" on the send page
+      waveGapMinSec: 90,        // spacing between waves (randomised in this range)
+      waveGapMaxSec: 180,
+      slotReserve: 2,           // fleet slots to leave free for mining/manual play
+      heavyCargoPerWave: 1,     // HC is the farmer's tool AND the loot carrier — fixed count, never split
+      // Never send these on an expedition. Miners are the mining module's;
+      // colony ships are one-shot and irreplaceable.
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "HEAVY_CARGO"],
+      // Base = where the combat fleet sits; target is position 16 of ITS system.
+      // null → falls back to the asteroid-mining base.
+      base: null,
     },
     // ── v2.11.0: Inactive-player farming (event: reward per fleet sent) ──
     // Scans user-given system ranges, attacks EVERY (i)/(I) inactive planet
@@ -161,10 +175,16 @@
       merged.antiDetection = { ...DEFAULT_CONFIG.antiDetection };
       if (Number.isFinite(savedSleepStart)) merged.antiDetection.sleepStartHour = savedSleepStart;
       if (Number.isFinite(savedSleepEnd)) merged.antiDetection.sleepEndHour = savedSleepEnd;
-      // v2.9.2: Expeditions UI removed — force off so any old saved-state
-      // that had expeditions.enabled=true doesn't keep running with no UI
-      // to turn it off.
-      if (merged.expeditions) merged.expeditions.enabled = false;
+      // v2.9.2 forced expeditions.enabled=false here because the UI had been
+      // removed and old saved state could keep a headless module running.
+      // v2.14.0 gives expeditions a real module AND a real toggle, so the
+      // override is gone. The shape changed completely though (fleetComposition
+      // / maxConcurrent → waves / holdingHours / …), so a saved v2.9-era block
+      // is dropped once: deepMerge would otherwise keep dead keys around and,
+      // worse, resurrect enabled=true from a config the user never reviewed.
+      if (merged.expeditions && ("fleetComposition" in merged.expeditions || "maxConcurrent" in merged.expeditions)) {
+        merged.expeditions = { ...DEFAULT_CONFIG.expeditions };
+      }
 
       // v2.9.3 migration: v2.9.0 default minerBase was 6:71:9 (old nexus
       // playthrough). Athena users got that saved in their host-scoped
@@ -2732,68 +2752,222 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
-  //  EXPEDITION MANAGER: Auto-send expeditions
+  //  EXPEDITIONS  (v2.14.0) — combat fleet in timed waves to position 16
   // ═══════════════════════════════════════════════════════════════
+  // Sends the combat fleet on expeditions to [base:16], split into N waves a
+  // couple of minutes apart. The spacing is a SAFETY feature, not politeness:
+  // fleets return one at a time, so a hunter camping the return can catch at
+  // most one wave and there is a window to react before the rest lands.
+  //
+  // The old ExpeditionManager is gone rather than extended: it was written for
+  // the pre-2.10 "pick ONE ship type" flow, had no waves, no slot accounting
+  // and no UI, and loadConfig force-disabled it. Nothing to salvage.
+  //
+  // Deliberately reuses the proven parts:
+  //   • the 3-step direct-URL dispatch (select_ships_direct) that mining and
+  //     farming already use, with an `expedition: true` flag switching the
+  //     three things that differ: multi-type ship fill, the holding-time
+  //     select, and skipping the same-target duplicate guard (many fleets to
+  //     the SAME [g:s:16] is the whole point here — see the guard's comment).
+  //   • FleetRecon for the mission id, read off galaxy row 16. Asteroids are
+  //     mission=12, so 15 would have been a guess.
 
-  const ExpeditionManager = {
+  const ExpeditionState = {
+    KEY: "ogamex_expo_state",
+    load() {
+      try { return JSON.parse(GM_getValue(this.KEY, "null")) || {}; } catch { return {}; }
+    },
+    save(s) { GM_setValue(this.KEY, JSON.stringify(s)); },
+    clear() { GM_setValue(this.KEY, "null"); },
+  };
+
+  // Ships for ONE wave, computed from the LIVE fleet page (never from a stale
+  // snapshot — a recon taken while the fleet is away sees an empty hangar).
+  // Split = floor(available / waves), so "8 of each" becomes 8 waves of 1.
+  // Heavy Cargo is a FIXED per-wave count instead: it is the farmer's tool and
+  // the single biggest stack, and splitting 1.9 billion of it across waves is
+  // not something to do by accident.
+  function expeditionShipPlan(waves) {
+    const cfg = CONFIG.expeditions;
+    const exclude = (cfg.excludeTypes || []).map(t => String(t).toUpperCase());
+    const divisor = Math.max(1, waves || 1);
+    const plan = [];
+    const skipped = [];
+    const empty = [];
+    for (const el of document.querySelectorAll("[data-ship-type]")) {
+      const type = el.dataset.shipType;
+      if (!type) continue;
+      if (exclude.includes(type.toUpperCase())) { skipped.push(type); continue; }
+      const available = parseInt(el.dataset.shipQuantity || "0") || 0;
+      const qty = Math.floor(available / divisor);
+      if (qty > 0) plan.push({ type, qty, available });
+      else empty.push(type);
+    }
+    // Heavy Cargo last, with an explicit count that overrides any split entry
+    // (the type is excluded by default, but the user can remove it).
+    const hc = Math.max(0, parseInt(cfg.heavyCargoPerWave) || 0);
+    const hcIdx = plan.findIndex(p => p.type.toUpperCase() === "HEAVY_CARGO");
+    if (hcIdx >= 0) plan.splice(hcIdx, 1);
+    if (hc > 0) {
+      const el = document.querySelector('[data-ship-type="HEAVY_CARGO"]');
+      const available = parseInt(el?.dataset?.shipQuantity || "0") || 0;
+      if (available > 0) plan.push({ type: "HEAVY_CARGO", qty: Math.min(hc, available), available });
+    }
+    return { plan, skipped, empty };
+  }
+
+  const ExpeditionRunner = {
     running: false,
+    _warned: {},
+
+    base() {
+      const b = CONFIG.expeditions.base || CONFIG.asteroidMining.minerBase;
+      return b && Number.isFinite(b.galaxy) && Number.isFinite(b.system) ? b : null;
+    },
+
+    // Rebuild the link for OUR base system: the learned href points at
+    // whichever system the bot happened to be scanning, only its mission id is
+    // universal. Shape mirrors the asteroid link (no planet= param — the game
+    // launches from the ACTIVE planet, which is what the miner base already is).
+    fleetUrl() {
+      const b = this.base();
+      const link = FleetRecon.expeditionLink();
+      if (!b || !link || !link.mission) return null;
+      return `/fleet?x=${b.galaxy}&y=${b.system}&z=16&mission=${link.mission}`;
+    },
+
+    // Live page value wins; off the fleet page fall back to the last cache.
+    slots() {
+      const m = document.body.textContent.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
+      if (m) {
+        GM_setValue("ogamex_expo_total_slots", m[2]);
+        GM_setValue("ogamex_expo_used", m[1]);
+        return { used: parseInt(m[1]), total: parseInt(m[2]), live: true };
+      }
+      return {
+        used: parseInt(GM_getValue("ogamex_expo_used", "0")) || 0,
+        total: parseInt(GM_getValue("ogamex_expo_total_slots", "0")) || 0,
+        live: false,
+      };
+    },
+
+    // Cap = waves the user wants, never above the game's expedition slots.
+    waveCap() {
+      const wanted = Math.max(1, CONFIG.expeditions.waves || 1);
+      const total = this.slots().total;
+      return total > 0 ? Math.min(wanted, total) : wanted;
+    },
+
+    nextWaveGapMs() {
+      const cfg = CONFIG.expeditions;
+      const min = Math.max(10, cfg.waveGapMinSec || 90);
+      const max = Math.max(min, cfg.waveGapMaxSec || 180);
+      return Math.round((min + Math.random() * (max - min)) * 1000);
+    },
+
+    // Repeat-suppressed logging — this runs every scheduler tick and the
+    // "waiting for returns" state can last an hour.
+    _say(key, msg, type = "info", everyMs = 15 * 60 * 1000) {
+      const last = this._warned[key] || 0;
+      if (Date.now() - last < everyMs) return;
+      this._warned[key] = Date.now();
+      log(msg, type);
+    },
+
+    sentToday() {
+      const st = ExpeditionState.load();
+      const today = new Date().toISOString().slice(0, 10);
+      return st.day === today ? (st.sentToday || 0) : 0;
+    },
+
+    msToNextWave() {
+      const st = ExpeditionState.load();
+      if (!st.lastSendAt) return 0;
+      const gap = st.nextGapMs || this.nextWaveGapMs();
+      return Math.max(0, st.lastSendAt + gap - Date.now());
+    },
 
     async run() {
-      if (!CONFIG.expeditions.enabled || !CONFIG.enabled) return;
-      if (AntiDetection.isSleepTime()) {
-        log("Sleep time - expeditions paused", "delay");
-        return;
-      }
+      const cfg = CONFIG.expeditions;
+      if (!CONFIG.enabled || !cfg.enabled || this.running) return;
+      if (AntiDetection.isSleepTime() || Humanizer.isOnBreak()) return;
+      // A wave click navigates through 3 pages — never start one on top of a
+      // mining/farm dispatch (they share the single pending_mission slot).
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return;
+      if (AsteroidMiner.running || InactiveFarmer.running) return;
 
       this.running = true;
       try {
-        // Rate limit check
-        if (!RateLimiter.canAct()) {
-          log(`Rate limit reached (${RateLimiter.maxPerHour}/hr). Waiting...`, "delay");
+        const url = this.fleetUrl();
+        if (!url) {
+          this._say("link", "Expeditions ON but no target yet — open any Galaxy page once so the bot can read the Expedition link from row 16 (and set a base planet).", "warn");
           return;
         }
 
-        // Check expedition slots
-        const expoSlots = GameState.getExpeditionSlots();
-        if (expoSlots.used >= Math.min(expoSlots.total, CONFIG.expeditions.maxConcurrent)) {
-          log(`Expedition slots full (${expoSlots.used}/${expoSlots.total})`, "expedition");
+        // Wave pacing — the reason this module exists.
+        const st = ExpeditionState.load();
+        const gap = st.nextGapMs || this.nextWaveGapMs();
+        if (st.lastSendAt && Date.now() - st.lastSendAt < gap) return;
+
+        // Hard cap: the game's expedition slots.
+        const slots = this.slots();
+        const cap = this.waveCap();
+        if (slots.total && slots.used >= cap) {
+          this._say("slots", `Expeditions: ${slots.used}/${slots.total} in the air (cap ${cap}) — waiting for returns.`);
           return;
         }
-
-        // Get current or first planet
-        const planets = GameState.getPlanets();
-        if (planets.length === 0) {
-          log("No planets found", "error");
-          return;
+        // Soft cap: leave fleet slots for mining / manual play.
+        const fleetTotal = parseInt(GM_getValue("ogamex_fleet_total_slots", "0")) || 0;
+        if (fleetTotal) {
+          const free = fleetTotal - (cfg.slotReserve || 0) - inflightFleetCount();
+          if (free <= 0) {
+            this._say("fleetslots", `Expeditions: no fleet slot free (reserve ${cfg.slotReserve}) — waiting.`);
+            return;
+          }
         }
 
-        const fromPlanet = planets[Math.floor(Math.random() * planets.length)]; // Random planet
-
-        // Store expedition mission
+        const b = this.base();
         GM_setValue("pending_mission", JSON.stringify({
-          type: "expedition",
-          missionId: 15,
-          shipType: "HEAVY_CARGO", // Primary ship
-          quantity: CONFIG.expeditions.fleetComposition.HEAVY_CARGO || 50,
-          target: {
-            galaxy: fromPlanet.galaxy,
-            system: fromPlanet.system,
-            position: 16, // Deep Space
-          },
-          fromPlanet,
-          holdingTime: CONFIG.expeditions.holdingTimeHours,
-          step: "select_ships",
+          type: "expedition_direct",
+          expedition: true,
+          fleetUrl: url,
+          waves: Math.max(1, cfg.waves || 1),
+          holdingHours: Math.max(1, cfg.holdingHours || 1),
+          step: "select_ships_direct",
           timestamp: Date.now(),
         }));
-
-        RateLimiter.record();
-        await AntiDetection.delay("expedition dispatch");
-        FleetDispatcher.goToFleet(fromPlanet);
+        // Deliberately NOT RateLimiter.record(): that 20/hour pool has exactly
+        // one consumer-side gate — AsteroidMiner refuses to START A SCAN when
+        // canAct() is false. Mining already spends it fast (up to 14 parallel
+        // flights), so charging 8+ expedition waves to the same pool would
+        // starve the scanner, i.e. trade the big income (1.3B miners a flight)
+        // for the small one. Expeditions are capped by something stricter
+        // anyway: the game's expedition slots plus the wave gap. Total page
+        // traffic stays under NavRateLimiter, which they do share.
+        log(`EXPEDITION wave → [${b.galaxy}:${b.system}:16] for ${cfg.holdingHours}h (1/${cfg.waves} of the fleet, ${slots.used}/${slots.total || "?"} slots used)`, "success");
+        await AntiDetection.shortDelay();
+        window.location.href = url;
       } catch (err) {
         log(`Expedition error: ${err.message}`, "error");
       } finally {
         this.running = false;
       }
+    },
+
+    // Both post-send paths land here: finishDispatch (click didn't navigate)
+    // and the fleetSendSuccessfully handler in init (the usual case).
+    afterSend() {
+      const st = ExpeditionState.load();
+      const today = new Date().toISOString().slice(0, 10);
+      st.lastSendAt = Date.now();
+      st.nextGapMs = this.nextWaveGapMs();
+      st.sentTotal = (st.sentTotal || 0) + 1;
+      st.sentToday = (st.day === today ? (st.sentToday || 0) : 0) + 1;
+      st.day = today;
+      ExpeditionState.save(st);
+      this._warned = {};
+      log(`Expedition wave sent (#${st.sentToday} today) — next in ~${Math.round(st.nextGapMs / 1000)}s.`, "success");
     },
   };
 
@@ -3138,7 +3312,7 @@
       // A click may navigate — never do it in the middle of a fleet flow.
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") return;
-      if (AsteroidMiner.running || InactiveFarmer.running || ExpeditionManager.running) return;
+      if (AsteroidMiner.running || InactiveFarmer.running || ExpeditionRunner.running) return;
 
       const hit = this.find();
       if (!hit) {
@@ -3463,9 +3637,14 @@
         // reconstructed /fleet?x=..&y=..), so url-equality let dupes through
         // whenever two dispatch cycles detected it differently (observed
         // 2026-07-20: 2-3 fleets to one asteroid, minutes apart).
+        // v2.14.0: EXPEDITIONS ARE EXEMPT. Both guards below exist to stop two
+        // fleets landing on one asteroid; an expedition wave is the opposite —
+        // 8 fleets to the SAME [g:s:16] minutes apart IS the feature. Leaving
+        // the guard on would have let wave 1 through and silently blocked
+        // waves 2..N as "duplicates".
         const SEND_GUARD_MS = 10 * 60 * 1000;
         const missionCoord = coordsFromFleetUrl(mission.fleetUrl);
-        try {
+        if (!mission.expedition) try {
           const lastSent = readLastSent(); // v2.10.25: GM + localStorage, newest wins
           const sameTarget = lastSent && (
             (missionCoord && lastSent.coord && lastSent.coord === missionCoord) ||
@@ -3486,8 +3665,8 @@
 
         // v2.10.25: server-truth check — catches a fleet launched seconds ago
         // by another tab, another browser or another machine, which no local
-        // storage guard can see.
-        const alreadyFlying = await fleetAlreadyFlyingTo(missionCoord);
+        // storage guard can see. Expeditions skip it for the same reason as above.
+        const alreadyFlying = mission.expedition ? null : await fleetAlreadyFlyingTo(missionCoord);
         if (alreadyFlying) {
           log(`DUPLICATE BLOCKED (server events via ${alreadyFlying}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
           GM_setValue("pending_mission", null);
@@ -3515,6 +3694,17 @@
           // asteroid scanner over an HC attack). Success AND failure both just
           // hand control back to the farmer (next target / resume sweep);
           // a failed target stays on its FarmedTargets cooldown.
+          // v2.14.0: expeditions own their pacing/counters and must not touch
+          // the mining wait timers (a 1h expedition would pause the scanner).
+          if (mission.expedition) {
+            if (dispatchOk) {
+              const storedExp = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+              GM_setValue("ogamex_inflight_fleets", String(storedExp + 1));
+              GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
+              ExpeditionRunner.afterSend();
+            }
+            return;
+          }
           if (mission.farm) {
             if (dispatchOk) {
               // Same in-flight bump as the fleetSendSuccessfully farm branch
@@ -3662,6 +3852,41 @@
         log(`Ships on page: ${shipDump || "NONE"}`, "fleet");
         dumpButtons("step1-before");
 
+        // ── v2.14.0: expeditions fill MANY types in one go ──
+        // Mining/farming send a single ship type; an expedition takes the whole
+        // combat fleet split into `waves`. Same input-writing mechanics as
+        // below (native setter + input/change — React-style bindings ignore a
+        // plain .value assignment), just applied per type.
+        if (mission.expedition) {
+          const { plan, skipped, empty } = expeditionShipPlan(mission.waves);
+          if (!plan.length) {
+            log(`Expedition: no ships to send on the active planet (excluded: ${skipped.join(", ") || "none"}; too few for ${mission.waves} waves: ${empty.join(", ") || "none"}). Ships: ${shipDump}`, "warn");
+            GM_setValue("pending_mission", null);
+            // Back off a full wave-gap so we don't retry every tick.
+            ExpeditionState.save({ ...ExpeditionState.load(), lastSendAt: Date.now(), nextGapMs: 10 * 60 * 1000 });
+            return;
+          }
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+          const filled = [];
+          for (const p of plan) {
+            const el = document.querySelector(`[data-ship-type="${p.type}"]`);
+            const item = el?.closest(".ship-item") || el?.parentElement;
+            const input = item?.querySelector("input.numberFormatInput, input[type='text']");
+            if (!input) { log(`Expedition: no input for ${p.type} — skipping it.`, "warn"); continue; }
+            if (nativeSetter) nativeSetter.call(input, p.qty); else input.value = p.qty;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            filled.push(`${p.type}×${p.qty}`);
+          }
+          if (!filled.length) {
+            log("Expedition: could not fill any ship input — aborting wave.", "error");
+            GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            GM_setValue("pending_mission", null);
+            return;
+          }
+          log(`Expedition wave composition (1/${mission.waves} of the fleet): ${filled.join(", ")}`, "fleet");
+        } else {
+
         // Find the ship to send. Farm missions name their ship explicitly
         // (HEAVY_CARGO); asteroid missions try configured types first, then
         // fall back to ASTEROID/MINER naming.
@@ -3788,6 +4013,7 @@
             return;
           }
         }
+        } // end single-ship-type path (v2.14.0)
 
         await AntiDetection.sleep(1000 + Math.random() * 1500);
 
@@ -3895,6 +4121,30 @@
           return;
         }
         log("Step 3 loaded (mission select)", "fleet");
+
+        // ── v2.14.0: expedition holding time ──
+        // Step 3 of an expedition carries an extra "Expedition duration"
+        // dropdown ("1 Hours", …). Match by the option TEXT, not by index or
+        // value — we've never seen this select's markup, and a wrong value
+        // would silently change how long the fleet sits in deep space.
+        if (mission.expedition) {
+          const want = String(Math.max(1, mission.holdingHours || 1));
+          let done = false;
+          for (const sel of document.querySelectorAll("select")) {
+            const opts = [...sel.options];
+            if (!opts.some(o => /\b\d+\s*(hour|hours|h|godz)/i.test(o.textContent || ""))) continue;
+            const hit = opts.find(o => (o.textContent || "").replace(/\s+/g, " ").trim().match(/^(\d+)\b/)?.[1] === want);
+            if (!hit) { log(`Expedition: no "${want}h" option (have: ${opts.map(o => (o.textContent || "").trim()).join(", ")}) — leaving the default.`, "warn"); break; }
+            sel.value = hit.value;
+            sel.dispatchEvent(new Event("input", { bubbles: true }));
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            log(`Expedition duration set to ${hit.textContent.trim()}`, "fleet");
+            done = true;
+            break;
+          }
+          if (!done) log("Expedition: duration select not found — sending with the page default.", "warn");
+          await AntiDetection.sleep(600 + Math.random() * 900);
+        }
         dumpButtons("step3");
 
         await AntiDetection.sleep(800 + Math.random() * 1200);
@@ -3947,7 +4197,7 @@
           // start of the 3-step flow, ~10s ago — another machine/browser can
           // have sent a fleet in that window. Fetch-only (skipDom — the step-3
           // page may render our own chosen target as text).
-          const flyingNow = await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
+          const flyingNow = mission.expedition ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
           if (flyingNow) {
             log(`DUPLICATE BLOCKED (pre-click, server events via ${flyingNow}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
             GM_setValue("pending_mission", null);
@@ -3965,8 +4215,19 @@
             // v2.12.1: `farm` flag lets fleetSendSuccessfully tell a late-nav
             // farm send apart from a mining send even after pending_mission
             // was already cleared by finishDispatch (slow-navigation race).
-            writeLastSent({ url: mission.fleetUrl, coord: missionCoord, at: Date.now(), releaseAt, farm: !!mission.farm });
-            if (missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
+            // v2.14.0: an expedition stamp must NOT look like an asteroid one —
+            // writeLastSent feeds the same-target guard, so stamping [g:s:16]
+            // would make the next wave (and any asteroid at those coords) look
+            // like a duplicate. Record the kind and drop the coord.
+            writeLastSent({
+              url: mission.fleetUrl,
+              coord: mission.expedition ? null : missionCoord,
+              at: Date.now(),
+              releaseAt: mission.expedition ? Date.now() : releaseAt,
+              farm: !!mission.farm,
+              expedition: !!mission.expedition,
+            });
+            if (!mission.expedition && missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
           }
           sendBtn.click();
 
@@ -4171,6 +4432,21 @@
       }
     }
 
+    // ── v2.14.0: expedition waves go BEFORE mining ──
+    // Not a priority statement — a mechanical one. AsteroidMiner.run() usually
+    // ends by navigating to the next galaxy page, and once the page unloads the
+    // rest of this tick never executes. Left at the end of the tick (where the
+    // old ExpeditionManager sat) a wave would almost never fire while a scan is
+    // running. ExpeditionRunner.run() is a cheap no-op until a wave is actually
+    // due (pacing + slot checks), it never starts on top of a pending dispatch,
+    // and the scan self-heals from being interrupted — so preempting one scan
+    // step every ~2min is the cheapest correct arrangement.
+    if (CONFIG.expeditions.enabled && !ExpeditionRunner.running) {
+      await ExpeditionRunner.run();
+      const pendingAfterExpo = GM_getValue("pending_mission", null);
+      if (pendingAfterExpo && pendingAfterExpo !== "null") return; // wave in progress — mining waits one tick
+    }
+
     // Run asteroid mining
     const scanState = ScanState.load();
     const scanActive = scanState?.active;
@@ -4237,10 +4513,6 @@
       await InactiveFarmer.run();
     }
 
-    // Run expeditions if due
-    if (CONFIG.expeditions.enabled && !ExpeditionManager.running) {
-      await ExpeditionManager.run();
-    }
   }
 
   function startScheduler() {
@@ -4446,6 +4718,41 @@
           </div>
         </div>
 
+        <div class="section ${CONFIG.expeditions.enabled ? "active" : "inactive"}" id="ogx-expo-section">
+          <div class="section-title">
+            <span>Expeditions</span>
+            <button class="mini-btn" id="ogx-expo-toggle">${CONFIG.expeditions.enabled ? "ON" : "OFF"}</button>
+          </div>
+          <div class="status" id="ogx-expo-status">Idle</div>
+          <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Na tyle fal dzielona jest flota bojowa. Masz po 8 sztuk każdego typu → 8 fal po 1 sztuce. Nigdy więcej niż slotów ekspedycyjnych.">Fale (podział floty)</span>
+              <input id="ogx-expo-waves" type="number" min="1" step="1" value="${CONFIG.expeditions.waves}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Czas postoju w kosmosie („Expedition duration" na stronie wysyłki).">Długość ekspedycji (h)</span>
+              <input id="ogx-expo-hours" type="number" min="1" max="24" step="1" value="${CONFIG.expeditions.holdingHours}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Minimalny odstęp między falami (sekundy). Odstęp = bezpieczeństwo: wracają pojedynczo, więc łowca złapie najwyżej jedną falę.">Odstęp fal min (s)</span>
+              <input id="ogx-expo-gapmin" type="number" min="10" step="10" value="${CONFIG.expeditions.waveGapMinSec}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Maksymalny odstęp między falami (sekundy). Bot losuje z przedziału min-max, żeby nie wysyłać co równe 120 s.">Odstęp fal max (s)</span>
+              <input id="ogx-expo-gapmax" type="number" min="10" step="10" value="${CONFIG.expeditions.waveGapMaxSec}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Ile Heavy Cargo dołożyć do JEDNEJ fali (stała liczba, nie dzielona). To one wiozą łup z ekspedycji, ale są też narzędziem farmienia — dlatego osobne pole. 0 = bez HC.">Heavy Cargo / falę</span>
+              <input id="ogx-expo-hc" type="number" min="0" step="1" value="${CONFIG.expeditions.heavyCargoPerWave}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Tyle slotów flot zostaje wolnych dla mininga i gry ręcznej.">Rezerwa slotów</span>
+              <input id="ogx-expo-reserve" type="number" min="0" step="1" value="${CONFIG.expeditions.slotReserve}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Cel: pozycja 16 systemu bazy. Statki: wszystko poza ${CONFIG.expeditions.excludeTypes.join(", ")}. Działa razem z miningiem.</div>
+          </div>
+        </div>
+
         <div class="section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}" id="ogx-bonus-section">
           <div class="section-title">
             <span>Online Bonus</span>
@@ -4560,6 +4867,53 @@
       log(`Inactive farming ${CONFIG.inactiveFarming.enabled ? "enabled" : "disabled"}`, "info");
       updateStatusUI();
     });
+
+    // v2.14.0: expedition controls
+    {
+      const eBtn = document.getElementById("ogx-expo-toggle");
+      if (eBtn) eBtn.addEventListener("click", () => {
+        CONFIG.expeditions.enabled = !CONFIG.expeditions.enabled;
+        saveConfig(CONFIG);
+        eBtn.textContent = CONFIG.expeditions.enabled ? "ON" : "OFF";
+        const sec = document.getElementById("ogx-expo-section");
+        if (sec) sec.className = `section ${CONFIG.expeditions.enabled ? "active" : "inactive"}`;
+        if (CONFIG.expeditions.enabled && !FleetRecon.expeditionLink()) {
+          log("Expeditions enabled — open any Galaxy page once so the bot can read the Expedition link (row 16).", "warn");
+        }
+        log(`Expeditions ${CONFIG.expeditions.enabled ? "enabled" : "disabled"}`, "info");
+        updateStatusUI();
+      });
+      const bindExpo = (id, key, label, { min = 0 } = {}) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener("change", () => {
+          const v = Math.max(min, parseInt(el.value) || 0);
+          el.value = v;
+          CONFIG.expeditions[key] = v;
+          // Keep the gap range coherent — a max below min would make the
+          // randomised spacing collapse to a constant.
+          if (key === "waveGapMinSec" && CONFIG.expeditions.waveGapMaxSec < v) {
+            CONFIG.expeditions.waveGapMaxSec = v;
+            const mx = document.getElementById("ogx-expo-gapmax");
+            if (mx) mx.value = v;
+          }
+          if (key === "waveGapMaxSec" && v < CONFIG.expeditions.waveGapMinSec) {
+            CONFIG.expeditions.waveGapMinSec = v;
+            const mn = document.getElementById("ogx-expo-gapmin");
+            if (mn) mn.value = v;
+          }
+          saveConfig(CONFIG);
+          log(`${label} set to ${v}`, "info");
+          updateStatusUI();
+        });
+      };
+      bindExpo("ogx-expo-waves", "waves", "Expedition waves", { min: 1 });
+      bindExpo("ogx-expo-hours", "holdingHours", "Expedition duration (h)", { min: 1 });
+      bindExpo("ogx-expo-gapmin", "waveGapMinSec", "Wave gap min (s)", { min: 10 });
+      bindExpo("ogx-expo-gapmax", "waveGapMaxSec", "Wave gap max (s)", { min: 10 });
+      bindExpo("ogx-expo-hc", "heavyCargoPerWave", "Heavy Cargo per wave", { min: 0 });
+      bindExpo("ogx-expo-reserve", "slotReserve", "Expedition slot reserve", { min: 0 });
+    }
 
     // v2.13.0: online-bonus toggle (independent of mining/farming)
     {
@@ -4916,6 +5270,28 @@
       farmStatus.textContent = ftext;
     }
 
+    // v2.14.0: expedition status line
+    const expoStatus = document.getElementById("ogx-expo-status");
+    if (expoStatus) {
+      const cfg = CONFIG.expeditions;
+      let etext;
+      if (!cfg.enabled) {
+        etext = "Off";
+      } else if (!FleetRecon.expeditionLink()) {
+        etext = "Czeka na link ekspedycji — wejdź raz na Galaxy";
+      } else if (!ExpeditionRunner.base()) {
+        etext = "Brak bazy — ustaw minerBase / expeditions.base";
+      } else {
+        const s = ExpeditionRunner.slots();
+        const nextMs = ExpeditionRunner.msToNextWave();
+        const parts = [`w powietrzu: ${s.used}/${s.total || "?"} (cap ${ExpeditionRunner.waveCap()})`];
+        parts.push(nextMs > 0 ? `następna fala za ~${Math.ceil(nextMs / 1000)}s` : "fala gotowa");
+        parts.push(`dziś: ${ExpeditionRunner.sentToday()}`);
+        etext = parts.join(" | ");
+      }
+      expoStatus.textContent = etext;
+    }
+
     // v2.13.0: online-bonus status line
     const bonusStatus = document.getElementById("ogx-bonus-status");
     if (bonusStatus) {
@@ -5103,11 +5479,26 @@
       // finishDispatch could run, so pending_mission still carries the type.
       // Farm sends must NOT run the mining parallel-decision below.
       let wasFarmSend = false;
+      let wasExpoSend = false;
       try {
         const pm = JSON.parse(GM_getValue("pending_mission", "null"));
         wasFarmSend = !!pm?.farm;
+        wasExpoSend = !!pm?.expedition;
       } catch {}
-      if (wasFarmSend) {
+      // v2.14.0: slow-navigation twin of the farm check below — if
+      // finishDispatch already cleared pending_mission, the send stamp still
+      // carries the kind, so an expedition never falls into the mining branch.
+      if (!wasExpoSend) {
+        const ls = readLastSent();
+        wasExpoSend = !!(ls?.expedition && Date.now() - (ls.at || 0) < 60000);
+      }
+      if (wasExpoSend) {
+        GM_setValue("pending_mission", null);
+        const storedExp = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
+        GM_setValue("ogamex_inflight_fleets", String(storedExp + 1));
+        GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
+        ExpeditionRunner.afterSend();
+      } else if (wasFarmSend) {
         GM_setValue("pending_mission", null);
         // v2.11.1: bump the in-flight floor + stamp, exactly like the mining
         // path (decideAfterMiningSend) does — the page may not list the fleet
