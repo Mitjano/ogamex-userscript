@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.13.1
+// @version      2.13.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2819,13 +2819,54 @@
       try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; }
     },
 
-    // Best-effort: which planet is selected in the sidebar (ships are per-planet).
+    // Which planet is selected in the sidebar (ships are per-planet).
+    // v2.13.2: the real marker is `a.planet-select.selected` — confirmed from
+    // a step-3 clickable dump ("Yoyoyoyoyo "[A.planet-select.selected]). The
+    // guessed .active/.smallplanet selectors matched nothing, hence "planet ?".
+    // The entry's own text is just the NAME here, so fall back to it when the
+    // sidebar doesn't render coords.
     activePlanet() {
       const el = document.querySelector(
-        ".smallplanet.active, .planetlink.active, .planet-item.active, [class*='planet'][class*='active']"
+        "a.planet-select.selected, .planet-select.selected, .smallplanet.active, .planetlink.active"
       );
-      const m = (el?.textContent || "").match(/\[(\d+):(\d+):(\d+)\]/);
-      return m ? `${m[1]}:${m[2]}:${m[3]}` : null;
+      if (!el) return null;
+      const txt = (el.textContent || "").replace(/\s+/g, " ").trim();
+      const m = txt.match(/\[?(\d+):(\d+):(\d+)\]?/);
+      return m ? `${m[1]}:${m[2]}:${m[3]}` : (txt.slice(0, 30) || null);
+    },
+
+    // ── Expedition entry point (v2.13.2) ──
+    // Row 16 ("Deep space") of any galaxy page carries the Expedition link,
+    // exactly like row 17 carries the asteroid one. Learn the real URL from
+    // the game instead of assuming mission=15: one row-16 dump into the
+    // persisted log, then cache the parsed link + mission id for the
+    // expedition module.
+    KEY_EXPO_LINK: "ogamex_expo_link",
+
+    expeditionLink() {
+      try { return JSON.parse(GM_getValue(this.KEY_EXPO_LINK, "null")); } catch { return null; }
+    },
+
+    learnExpeditionLink() {
+      if (GameState.getCurrentPage() !== "galaxy") return null;
+      if (this.expeditionLink()) return this.expeditionLink(); // learned once, it's static
+      for (const item of document.querySelectorAll(".galaxy-item")) {
+        const idx = item.querySelector(".planet-index");
+        if (!idx || idx.textContent.trim() !== "16") continue;
+        log(`[DOM] Row 16 HTML: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 600)}`, "fleet");
+        const a = item.querySelector("a[href*='/fleet']");
+        if (!a) {
+          log("[EXPO] Row 16 has no /fleet link — the Expedition button is scripted; markup dumped above.", "warn");
+          return null;
+        }
+        const href = a.getAttribute("href");
+        const mission = (href.match(/[?&]mission=(\d+)/) || [])[1] || null;
+        const learned = { href, mission: mission ? parseInt(mission) : null, at: Date.now() };
+        GM_setValue(this.KEY_EXPO_LINK, JSON.stringify(learned));
+        log(`[EXPO] Expedition link learned: ${href} (mission=${learned.mission ?? "?"})`, "success");
+        return learned;
+      }
+      return null;
     },
 
     scan() {
@@ -4538,6 +4579,9 @@
         // visit stored (the data only exists on step 1 of /fleet).
         const snap = GameState.getCurrentPage() === "fleet" ? FleetRecon.scan() : FleetRecon.snapshot();
         FleetRecon.logSummary(snap, GameState.getCurrentPage() === "fleet" ? "live" : "cached");
+        const exp = FleetRecon.learnExpeditionLink() || FleetRecon.expeditionLink();
+        log(exp ? `[EXPO] link: ${exp.href} (mission=${exp.mission ?? "?"})`
+                : "[EXPO] link unknown — open any Galaxy page once so row 16 can be read.", exp ? "info" : "warn");
       });
       const bnNow = document.getElementById("ogx-bonus-now");
       if (bnNow) bnNow.addEventListener("click", () => {
@@ -5033,6 +5077,11 @@
     // regex stays for every OTHER page that happens to show the counter.
     if (GameState.getCurrentPage() === "fleet") {
       FleetRecon.scan();
+    } else if (GameState.getCurrentPage() === "galaxy") {
+      // One-shot: learn the Expedition link from row 16 (no-op once known).
+      FleetRecon.learnExpeditionLink();
+      const ftm = document.body.textContent.match(/Fleets:\s*\d+\s*\/\s*(\d+)/);
+      if (ftm) GM_setValue("ogamex_fleet_total_slots", ftm[1]);
     } else {
       const ftm = document.body.textContent.match(/Fleets:\s*\d+\s*\/\s*(\d+)/);
       if (ftm) GM_setValue("ogamex_fleet_total_slots", ftm[1]);
