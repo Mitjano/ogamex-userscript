@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.16.2
+// @version      2.17.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2916,6 +2916,8 @@
           if (!idx || idx.textContent.trim() !== String(base.position)) continue;
           GM_setValue("ogamex_moon_markup_dumped", "1");
           log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 1200)}`, "info");
+          // v2.17.0: same row carries the moon link the fleet-save needs.
+          MoonSave.learnFromRow(item, `${base.galaxy}:${base.system}:${base.position}`);
           return;
         }
         log(`[MOON DOM] base row ${base.position} not found in the fetched galaxy page — the AJAX shape may differ from the rendered one.`, "warn");
@@ -2940,6 +2942,7 @@
         if (!idx || idx.textContent.trim() !== String(base.position)) continue;
         GM_setValue("ogamex_moon_markup_dumped", "1");
         log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 900)}`, "info");
+        MoonSave.learnFromRow(item, `${base.galaxy}:${base.system}:${base.position}`);
         return;
       }
     },
@@ -2984,6 +2987,113 @@
           tag: "ogamex-threat",
         });
       } catch {}
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  MOON SAVE  (v2.17.0) — Stage 2 of fleet-save
+  // ═══════════════════════════════════════════════════════════════
+  // Lifts EVERYTHING off the base planet — every ship plus every resource —
+  // onto our own moon at the same coordinates. Works because the attacker
+  // picks the target when the fleet launches and cannot re-aim mid-flight:
+  // planet and moon at [3:269:8] are two separate bodies. Flight is a couple
+  // of minutes, so it still beats an attack landing in three.
+  //
+  // WHAT IS AND ISN'T AUTOMATIC, deliberately:
+  //   • the SAVE itself is written and usable now, by button;
+  //   • the AUTOMATIC trigger stays off until the events table has been seen,
+  //     because "someone is flying at us" (mission bar: total > own) does not
+  //     distinguish an attack from an espionage probe, and probes are the
+  //     normal prelude to nothing. Launching the entire economy on every probe
+  //     costs an hour of mining for no reason. ThreatMonitor dumps that markup
+  //     on the first sighting / on demand from Fleet Recon; classification
+  //     lands after, not before.
+  //
+  // Nothing here is guessed. The moon URL is learned from the base planet's
+  // own galaxy row, exactly like the expedition link was — where the obvious
+  // assumption (mission=15) turned out to be wrong (mission=1).
+
+  const MoonSave = {
+    KEY_LINK: "ogamex_moon_link",
+    KEY_STATE: "ogamex_moonsave_state",
+    running: false,
+
+    // Candidate mission names for "fly there and STAY". The game marks the
+    // choices with a class named after the mission (observed live:
+    // A.mission-item.EXPEDITION, A.mission-item.ASTEROID_MINING), so we match
+    // on that and log everything available when none fits — no silent wrong pick.
+    MISSION_CANDIDATES: ["DEPLOYMENT", "DEPLOY", "STATION", "STATIONING", "TRANSPORT"],
+
+    link() {
+      try { return JSON.parse(GM_getValue(this.KEY_LINK, "null")); } catch { return null; }
+    },
+    armed() { return !!this.link()?.href; },
+
+    state() {
+      try { return JSON.parse(GM_getValue(this.KEY_STATE, "null")) || {}; } catch { return {}; }
+    },
+    saveState(s) { GM_setValue(this.KEY_STATE, JSON.stringify(s)); },
+
+    // Called with the base planet's galaxy row (from either dump path). The
+    // moon column holds the link; we keep whatever the game itself points at.
+    learnFromRow(rowEl, coordLabel) {
+      if (this.armed() || !rowEl) return null;
+      const moonCol = rowEl.querySelector(".col-moon, .galaxy-col.col-moon");
+      const candidates = [
+        ...(moonCol ? moonCol.querySelectorAll("a[href]") : []),
+        ...rowEl.querySelectorAll("a[href*='moon'], a[href*='type=moon'], a[href*='isMoon']"),
+      ];
+      const a = candidates.find(el => /\/fleet/i.test(el.getAttribute("href") || ""))
+             || candidates.find(el => (el.getAttribute("href") || "").length > 1);
+      if (!a) return null;
+      const href = a.getAttribute("href");
+      const learned = { href, at: Date.now(), coord: coordLabel || null };
+      GM_setValue(this.KEY_LINK, JSON.stringify(learned));
+      log(`[MOON SAVE] moon target learned from the galaxy row: ${href}`, "success");
+      updateStatusUI();
+      return learned;
+    },
+
+    // One save per emergency. Without this the scheduler would re-fire every
+    // tick and keep bouncing the fleet between planet and moon.
+    recentlySaved() {
+      const st = this.state();
+      return !!(st.at && Date.now() - st.at < 15 * 60 * 1000);
+    },
+
+    async run({ manual = false, reason = "manual" } = {}) {
+      if (this.running) return false;
+      if (!this.armed()) {
+        log("[MOON SAVE] no moon target learned yet — press Fleet Recon once (it fetches the base system's galaxy row).", "warn");
+        return false;
+      }
+      if (!manual && this.recentlySaved()) return false;
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") {
+        log("[MOON SAVE] another dispatch is mid-flow — retrying on the next tick.", "warn");
+        return false;
+      }
+      this.running = true;
+      try {
+        const href = this.link().href;
+        GM_setValue("pending_mission", JSON.stringify({
+          type: "moon_save_direct",
+          moonSave: true,
+          fleetUrl: href,
+          step: "select_ships_direct",
+          timestamp: Date.now(),
+        }));
+        this.saveState({ at: Date.now(), reason });
+        log(`FLEET SAVE → moon at the base coords (${reason}). Sending EVERY ship and ALL resources.`, "success");
+        await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
+        window.location.href = href;
+        return true;
+      } catch (err) {
+        log(`[MOON SAVE] error: ${err.message}`, "error");
+        return false;
+      } finally {
+        this.running = false;
+      }
     },
   };
 
@@ -3964,7 +4074,7 @@
         // waves 2..N as "duplicates".
         const SEND_GUARD_MS = 10 * 60 * 1000;
         const missionCoord = coordsFromFleetUrl(mission.fleetUrl);
-        if (!mission.expedition) try {
+        if (!mission.expedition && !mission.moonSave) try {
           const lastSent = readLastSent(); // v2.10.25: GM + localStorage, newest wins
           const sameTarget = lastSent && (
             (missionCoord && lastSent.coord && lastSent.coord === missionCoord) ||
@@ -3986,7 +4096,7 @@
         // v2.10.25: server-truth check — catches a fleet launched seconds ago
         // by another tab, another browser or another machine, which no local
         // storage guard can see. Expeditions skip it for the same reason as above.
-        const alreadyFlying = mission.expedition ? null : await fleetAlreadyFlyingTo(missionCoord);
+        const alreadyFlying = (mission.expedition || mission.moonSave) ? null : await fleetAlreadyFlyingTo(missionCoord);
         if (alreadyFlying) {
           log(`DUPLICATE BLOCKED (server events via ${alreadyFlying}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
           GM_setValue("pending_mission", null);
@@ -4016,6 +4126,10 @@
           // a failed target stays on its FarmedTargets cooldown.
           // v2.14.0: expeditions own their pacing/counters and must not touch
           // the mining wait timers (a 1h expedition would pause the scanner).
+          if (mission.moonSave) {
+            if (dispatchOk) log("[MOON SAVE] fleet and resources are on the moon.", "success");
+            return;
+          }
           if (mission.expedition) {
             if (dispatchOk) {
               const storedExp = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
@@ -4171,6 +4285,35 @@
         ).join(", ");
         log(`Ships on page: ${shipDump || "NONE"}`, "fleet");
         dumpButtons("step1-before");
+
+        // ── v2.17.0: fleet save takes EVERYTHING ──
+        // No splitting, no exclusions, no reserve: every hull on the planet
+        // goes, miners included. The whole point is that nothing is left where
+        // the attack lands.
+        if (mission.moonSave) {
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+          const loaded = [];
+          for (const el of document.querySelectorAll("[data-ship-type]")) {
+            const type = el.dataset.shipType;
+            const available = parseInt(el.dataset.shipQuantity || "0") || 0;
+            if (!type || available <= 0) continue;
+            const item = el.closest(".ship-item") || el.parentElement;
+            const input = item?.querySelector("input.numberFormatInput, input[type='text']");
+            if (!input) continue;
+            if (nativeSetter) nativeSetter.call(input, available); else input.value = available;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            loaded.push(`${type}×${available}`);
+            // Emergency: no human-pacing delay here. Every second counts and a
+            // fleet save is exactly the moment a real player also hammers it.
+          }
+          if (!loaded.length) {
+            log("[MOON SAVE] nothing on this planet to save — aborting.", "warn");
+            GM_setValue("pending_mission", null);
+            return;
+          }
+          log(`[MOON SAVE] loading everything: ${loaded.join(", ")}`, "success");
+        } else
 
         // ── v2.14.0: expeditions fill MANY types in one go ──
         // Mining/farming send a single ship type; an expedition takes the whole
@@ -4449,6 +4592,45 @@
         }
         log("Step 3 loaded (mission select)", "fleet");
 
+        // ── v2.17.0: fleet save — pick "stay there", then take every resource ──
+        if (mission.moonSave) {
+          // Mission choice. The game tags each option with a class named after
+          // the mission (seen live: A.mission-item.EXPEDITION,
+          // A.mission-item.ASTEROID_MINING), so match on that and — when
+          // nothing matches — DUMP what's on offer rather than click something
+          // plausible. A wrong mission here flies the fleet somewhere else.
+          const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
+          const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
+          let picked = null;
+          for (const want of MoonSave.MISSION_CANDIDATES) {
+            picked = missions.find(m => nameOf(m).includes(want));
+            if (picked) break;
+          }
+          if (picked) {
+            log(`[MOON SAVE] mission: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
+            picked.click();
+            await AntiDetection.sleep(500 + Math.random() * 500);
+          } else {
+            log(`[MOON SAVE] no stationing-type mission matched. Available: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"} — sending with the page default.`, "warn");
+          }
+
+          // Resources: the form has a per-resource "max" and an all-in-one
+          // button (observed live as A.btn-all-res). Take everything — loot is
+          // half the reason the attack is coming.
+          const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
+          if (allRes) {
+            allRes.click();
+            log("[MOON SAVE] all resources loaded.", "fleet");
+          } else {
+            const fulls = [...document.querySelectorAll("a.btn-res-full, .btn-res-full")];
+            fulls.forEach(b => b.click());
+            log(fulls.length
+              ? `[MOON SAVE] loaded resources via ${fulls.length} per-resource max buttons.`
+              : "[MOON SAVE] no resource-load button found — ships fly, resources stay.", fulls.length ? "fleet" : "warn");
+          }
+          await AntiDetection.sleep(400 + Math.random() * 400);
+        }
+
         // ── v2.14.0: expedition holding time ──
         // Step 3 of an expedition carries an extra "Expedition duration"
         // dropdown ("1 Hours", …). Match by the option TEXT, not by index or
@@ -4524,7 +4706,7 @@
           // start of the 3-step flow, ~10s ago — another machine/browser can
           // have sent a fleet in that window. Fetch-only (skipDom — the step-3
           // page may render our own chosen target as text).
-          const flyingNow = mission.expedition ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
+          const flyingNow = (mission.expedition || mission.moonSave) ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
           if (flyingNow) {
             log(`DUPLICATE BLOCKED (pre-click, server events via ${flyingNow}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
             GM_setValue("pending_mission", null);
@@ -4577,7 +4759,8 @@
             writeLastSent(null);
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
-            log(mission.expedition ? "EXPEDITION FLEET SENT!"
+            log(mission.moonSave ? "FLEET SAVED — everything moved to the moon."
+              : mission.expedition ? "EXPEDITION FLEET SENT!"
               : mission.farm ? "FARM FLEET SENT!"
               : "FLEET SENT! All miners dispatched!", "success");
             GM_setValue("ogamex_dispatch_fail_at", "0");
@@ -4593,13 +4776,13 @@
             // scanner then paused for an hour and a half waiting for "miners"
             // that were never sent. Observed live: "FLEET SENT! All miners
             // dispatched!" right after an expedition send to [3:269:16].
-            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition) {
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave) {
               // Round trip = flight time * 2, add 1 min buffer for processing
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               const minLeft = Math.ceil((returnTime - Date.now()) / 60000);
               log(`Fleet returns in ~${minLeft}min (flight: ${Math.round(capturedFlightMs/60000)}min × 2)`, "fleet");
-            } else if (!mission.farm && !mission.expedition) {
+            } else if (!mission.farm && !mission.expedition && !mission.moonSave) {
               // Fallback: try parsing from page, but only accept asteroid-type
               const returnTime = parseFleetReturnTime();
               if (returnTime) {
@@ -4621,7 +4804,7 @@
             GM_setValue("ogamex_last_switched_planet", "");
             dispatchOk = true; // assume success if no error
             // Still use captured flight time if available (mining only)
-            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition) {
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave) {
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               log(`Estimated return in ~${Math.ceil((capturedFlightMs * 2 + 60000) / 60000)}min`, "fleet");
@@ -5070,6 +5253,10 @@
             <button class="mini-btn" id="ogx-threat-toggle">${CONFIG.threatAlarm.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-threat-status">—</div>
+          <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+            <button class="mini-btn" id="ogx-moonsave-now" style="width:100%;background:#7b241c;border-color:#e74c3c;color:#fff;font-weight:bold;" title="Wysyła CAŁĄ flotę z planety bazowej i WSZYSTKIE surowce na Twój księżyc na tych samych koordach. Atakujący wybiera cel przy starcie i nie może go zmienić w locie, więc flota na księżycu jest poza tym uderzeniem.">RATUJ FLOTĘ → księżyc</button>
+            <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
+          </div>
           <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
         </div>
 
@@ -5237,6 +5424,22 @@
         }
         log(`Alarm obcej floty ${CONFIG.threatAlarm.enabled ? "włączony" : "wyłączony"}`, "info");
         updateStatusUI();
+      });
+    }
+
+    // v2.17.0: manual fleet save
+    {
+      const msBtn = document.getElementById("ogx-moonsave-now");
+      if (msBtn) msBtn.addEventListener("click", () => {
+        if (!MoonSave.armed()) {
+          log("[MOON SAVE] moon target not learned yet — press Fleet Recon first.", "warn");
+          ThreatMonitor.fetchBaseRowOnce().catch(() => {});
+          return;
+        }
+        if (!window.confirm(
+          "Wysłać CAŁĄ flotę z planety bazowej i WSZYSTKIE surowce na księżyc?\n\n" +
+          "Minerzy przestaną kopać do czasu powrotu.")) return;
+        MoonSave.run({ manual: true, reason: "ręcznie" }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
       });
     }
 
@@ -5668,6 +5871,16 @@
             ? `ALARM: ${st.count} obcych flot`
             : "Czysto — brak obcych flot w pasku misji";
         tStatus.style.color = active ? "#e74c3c" : "#999";
+      }
+      const msStatus = document.getElementById("ogx-moonsave-status");
+      if (msStatus) {
+        const ms = MoonSave.state();
+        msStatus.textContent = !MoonSave.armed()
+          ? "Cel nieznany — kliknij Fleet Recon (dociąga wiersz bazy z galaktyki)"
+          : ms.at
+            ? `Gotowe. Ostatni ratunek: ${Math.round((Date.now() - ms.at) / 60000)}min temu (${ms.reason || "?"})`
+            : "Gotowe — cel księżyca nauczony. Automat WYŁĄCZONY (czeka na rozpoznanie ataku vs sondy).";
+        msStatus.style.color = MoonSave.armed() ? "#7f8c8d" : "#e67e22";
       }
     }
 
