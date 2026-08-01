@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.29.0
+// @version      2.30.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4441,10 +4441,24 @@
   // reports its own expedition counter ("Expeditions: X/Y"), so subtract it.
   // Fleet-SLOT maths (farmer reserve, expedition reserve) still uses the full
   // count — there every fleet really does occupy a slot.
+  // ── v2.30.0: nie mieszaj świeżego z nieświeżym ──
+  // Mining = wszystkie misje minus ekspedycje. Tyle że te dwie liczby czyta się
+  // z RÓŻNYCH miejsc: „N Missions: M Own" jest w górnym pasku (także na
+  // galaktyce), a „Expeditions: X/Y" tylko na stronie floty. Poza nią licznik
+  // ekspedycji spadał do CACHE'U i odejmowaliśmy zeszłoroczną liczbę od
+  // dzisiejszej. Właściciel trzyma 10 ekspedycji w powietrzu non stop, więc
+  // pomyłka bywała ogromna: log pokazywał „flight budget reached (5/3)", czyli
+  // pięć lotów górniczych przy limicie trzech — po czym mining sam sobie
+  // blokował wysyłkę. Na jego największym źródle dochodu.
+  //
+  // Zwraca -1 = NIE WIEM. Wywołania traktują to jako „budżet nie blokuje":
+  // pomyłka w tę stronę kosztuje najwyżej jeden lot ponad limit, który sam się
+  // rozejdzie, a w drugą stronę kosztuje przestój kopania.
   function miningInflightCount() {
     const all = inflightFleetCount();
-    const expo = ExpeditionRunner.slots().used || 0;
-    return Math.max(0, all - expo);
+    const slots = ExpeditionRunner.slots();
+    if (!slots.live) return -1; // licznik ekspedycji nieświeży → różnica nic nie znaczy
+    return Math.max(0, all - (slots.used || 0));
   }
 
   // v2.10.1: set the scan-pause timer from the page header countdown (factored
@@ -4499,7 +4513,8 @@
     GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
     const inflight = miningInflightCount(); // "M Own" minus expeditions (v2.15.1)
     const maxConc = maxMiningFleets(); // floor(totalMinersToUse / perFlight), or maxConcurrentMiningFleets
-    const concOk = maxConc <= 0 || inflight < maxConc;
+    // inflight < 0 = liczba nieznana → budżet nie blokuje (v2.30.0)
+    const concOk = maxConc <= 0 || inflight < 0 || inflight < maxConc;
 
     // ── v2.22.0: don't launch the scraps ──
     // The flight budget is floor(totalMinersToUse / perFlight), which counts
@@ -4541,7 +4556,7 @@
       : !worthFlying ? `resztówka: ${minersLeftHome} minerów w domu to mniej niż ${Math.round(ratio * 100)}% lotu (${intendedPerFlight}) — czekam na powrót zamiast marnować asteroidę na pół floty`
       : minersLeftHome < (am.minMinersPerMission || 1) ? "no miners left home"
       : slotsFree <= 0 ? "fleet slots full"
-      : `flight budget reached (${inflight}/${maxConc} flights)`;
+      : `flight budget reached (${inflight < 0 ? "?" : inflight}/${maxConc} flights)`;
     log(`WAIT (${reason}): scan paused ~${Math.ceil((returnAt - Date.now()) / 60000)}min until a fleet returns.`, "asteroid");
     return false;
   }
@@ -6991,14 +7006,14 @@
           const haveMiners = !known || minersHome >= minNeeded; // unknown → assume some
           const maxFleets = maxMiningFleets();
           const inflight = miningInflightCount(); // v2.15.1: expeditions don't spend the mining budget
-          const budgetOk = maxFleets <= 0 || inflight < maxFleets;
+          const budgetOk = maxFleets <= 0 || inflight < 0 || inflight < maxFleets; // <0 = nieznane (v2.30.0)
           if (slotsFree > 0 && haveMiners && budgetOk) {
             GM_setValue("ogamex_fleet_return_at", "0"); // capacity + (likely) miners + budget → keep scanning
             const homeStr = known ? `~${minersHome}` : "unknown→verify at dispatch";
-            const budgetStr = maxFleets > 0 ? `, ${inflight}/${maxFleets} flights` : "";
+            const budgetStr = maxFleets > 0 ? `, ${inflight < 0 ? "?" : inflight}/${maxFleets} flights` : "";
             log(`Asteroid fleet in flight, ${homeStr} miners home + ${slotsFree} slot(s) free${budgetStr} — parallel keeps scanning.`, "asteroid");
           } else {
-            const why = !budgetOk ? `flight budget reached (${inflight}/${maxFleets})`
+            const why = !budgetOk ? `flight budget reached (${inflight < 0 ? "?" : inflight}/${maxFleets})`
               : !haveMiners ? `no miners home (${minersHome})`
               : "fleet slots full";
             log(`Parallel: ${why} → wait for fleet return.`, "asteroid");
