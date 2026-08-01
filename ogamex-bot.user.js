@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.22.0
+// @version      2.23.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1763,7 +1763,7 @@
         }
 
         const seen = new Set(JSON.parse(GM_getValue(this.SEEN_REPORTS_KEY, "[]")));
-        let learned = 0, dumped = 0;
+        let learned = 0, dumped = 0, capped = 0;
 
         containers.forEach((c, i) => {
           const text = (c.textContent || "").replace(/\s+/g, " ").trim();
@@ -1780,16 +1780,53 @@
           const isDM = /dark\s*matter|dunkle\s*materie|ciemna\s*materia/i.test(text);
           let resources = 0;
           if (!isEmpty && !isDM) {
-            // Grab metal/crystal/deuterium amounts. Try labelled numbers first,
-            // then fall back to all grouped numbers near resource words.
+            // ── v2.23.0: read the heading, not the word "Metal" ──
+            // This build labels every amount with an ICON, so the only words in
+            // the report are the headings: "Resources found", "Fuel
+            // consumption", "Total profit (Metal)". The label regex below
+            // therefore matched exactly one thing — the "Metal" inside "Total
+            // profit" — and learned profit-AFTER-FUEL as the asteroid's
+            // content (4 084 467 657 139 instead of 4 150 000 000 000 on the
+            // owner's report). Anchor on the heading and sum what follows it.
             const nums = [];
-            const re = /(?:metal|crystal|kristall|kryszta|deuterium|deuter)\D{0,12}?([\d.,\s]{2,})/gi;
-            let m;
-            while ((m = re.exec(text)) !== null) {
-              const v = parseInt((m[1] || "").replace(/[^\d]/g, ""), 10);
-              if (Number.isFinite(v) && v > 0) nums.push(v);
+            const seg = text.match(/resources?\s*found([\s\S]{0,120}?)(?:fuel\s*consumption|total\s*profit|mission\s*date|$)/i);
+            if (seg && seg[1]) {
+              // No \s in the class: "4.150.000.000.000 0" is TWO amounts
+              // (metal and crystal), and letting a space join them produced
+              // 41 500 000 000 000 — a tenfold over-estimate from one stray zero.
+              for (const g of seg[1].match(/\d[\d.,]*/g) || []) {
+                const v = parseInt(g.replace(/[^\d]/g, ""), 10);
+                if (Number.isFinite(v) && v > 0) nums.push(v);
+              }
+            }
+            // Fallback for builds that DO write the resource names out.
+            if (nums.length === 0) {
+              const re = /(?:metal|crystal|kristall|kryszta|deuterium|deuter)\D{0,12}?([\d.,\s]{2,})/gi;
+              let m;
+              while ((m = re.exec(text)) !== null) {
+                const v = parseInt((m[1] || "").replace(/[^\d]/g, ""), 10);
+                if (Number.isFinite(v) && v > 0) nums.push(v);
+              }
             }
             resources = nums.reduce((a, b) => a + b, 0);
+
+            // ── The haul is capped by the fleet's TOTAL cargo ──
+            // When "resources found" equals the capacity of the miners that
+            // flew, the number is a FLOOR, not the asteroid's content: the
+            // rest stayed in the ground. Learning it as "expected" is how a
+            // small fleet teaches itself to stay small. Flag it loudly; the
+            // sample is kept but marked, so the estimate can't be trusted as
+            // an upper bound.
+            const minersM = text.match(/asteroid\s*miner\D{0,12}?([\d][\d.,\s]*)/i);
+            const minersSent = minersM ? parseInt(minersM[1].replace(/[^\d]/g, ""), 10) : 0;
+            const cargo = this.cargoPerMiner();
+            if (resources > 0 && minersSent > 0 && cargo > 0) {
+              const capacity = minersSent * cargo;
+              if (resources >= capacity * 0.98) {
+                capped++;
+                log(`[YIELD] limit ładowności: ${minersSent.toLocaleString()} minerów uniosło ${resources.toLocaleString()} = pełna ładowność ${capacity.toLocaleString()}. Asteroida miała WIĘCEJ — reszta została w ziemi.`, "warn");
+              }
+            }
             // Diagnostics: if it's clearly an asteroid resources report but we
             // parsed nothing, dump it so selectors/regex can be fixed.
             if (resources === 0 && dumped < 3) {
@@ -1805,7 +1842,7 @@
         if (learned > 0 || seen.size) {
           GM_setValue(this.SEEN_REPORTS_KEY, JSON.stringify([...seen].slice(-300)));
         }
-        if (learned > 0) log(`Parsed ${learned} new asteroid report(s) for yield learning (${sourceLabel})`, "asteroid");
+        if (learned > 0) log(`Parsed ${learned} new asteroid report(s) for yield learning (${sourceLabel})${capped ? ` — ${capped} z nich uderzyło w limit ładowności, więc szacunek asteroidy jest zaniżony` : ""}`, "asteroid");
       } catch (err) {
         log(`Report scan error (non-fatal): ${err.message}`, "warn");
       }
