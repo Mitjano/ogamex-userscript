@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.25.0
+// @version      2.25.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3287,13 +3287,17 @@
       if (!ThreatMonitor.active()) return false;
       if (this.watch().armed) return false;      // already saving for this alert
       if (this.running) return false;
+      // v2.25.1: neither gate REFUSES any more. Both used to abort the save —
+      // the fleet stayed on the planet while the bot explained what the owner
+      // should have clicked earlier. That is the wrong trade under attack: a
+      // save that goes wrong costs a page load and a fleet sitting on the moon
+      // instead of the planet, while not saving costs the fleet.
       if (!this.armed()) {
-        this._sayOnce("nolink", "[MOON SAVE] ATAK, a cel księżyca nieznany — kliknij Fleet Recon. Ratunku NIE wysłano.");
-        return false;
+        this._sayOnce("nolink", "[MOON SAVE] ATAK — celu księżyca jeszcze nie znam, wchodzę na galaktykę bazy, odczytuję go i od razu ratuję flotę.");
+        return this.learnThenSave("AUTOMAT: atak, cel doczytany w locie");
       }
       if (!this.proven()) {
-        this._sayOnce("noproof", "[MOON SAVE] ATAK — automat czeka na jeden ręczny ratunek, żeby poznać misję stacjonowania tej gry. KLIKNIJ RATUJ FLOTĘ → księżyc TERAZ.");
-        return false;
+        this._sayOnce("noproof", "[MOON SAVE] ATAK — misji stacjonowania nikt jeszcze nie potwierdził ręcznym ratunkiem. RATUJĘ MIMO TO i wypiszę wybraną misję niżej. SPRAWDŹ W GRZE, czy flota siedzi na księżycu.");
       }
       return this.run({ auto: true, reason: "AUTOMAT: obca flota w pasku misji" });
     },
