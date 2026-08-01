@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.25.3
+// @version      2.26.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3176,12 +3176,26 @@
     // choices with a class named after the mission (observed live:
     // A.mission-item.EXPEDITION, A.mission-item.ASTEROID_MINING), so we match
     // on that and log everything available when none fits — no silent wrong pick.
-    MISSION_CANDIDATES: ["DEPLOYMENT", "DEPLOY", "STATION", "STATIONING", "TRANSPORT"],
+    // v2.26.0: owner's own screenshot of step 3 settles this — the game offers
+    // Transport / Deploy / Collect, and "Deploy" is the one that flies there
+    // and STAYS. It leads the list now; TRANSPORT survives only as a last
+    // resort (it unloads and comes home, see the warning where it's picked).
+    MISSION_CANDIDATES: ["DEPLOY", "DEPLOYMENT", "STATION", "STATIONING", "TRANSPORT"],
 
     link() {
       try { return JSON.parse(GM_getValue(this.KEY_LINK, "null")); } catch { return null; }
     },
-    armed() { return !!this.link()?.href; },
+
+    // The fleet form takes COORDINATES and lets step 2 choose planet / moon /
+    // debris for them. So the target was never a link to be learned from the
+    // galaxy row — it's the base's own coordinates plus a click on step 2.
+    // Three releases were spent hunting a link that this build does not have.
+    targetUrl() {
+      const b = CONFIG.asteroidMining.minerBase;
+      if (!b || !Number.isFinite(b.galaxy) || !Number.isFinite(b.system)) return null;
+      return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}`;
+    },
+    armed() { return !!this.targetUrl(); },
 
     state() {
       try { return JSON.parse(GM_getValue(this.KEY_STATE, "null")) || {}; } catch { return {}; }
@@ -3241,7 +3255,7 @@
     homeUrl() {
       const b = CONFIG.asteroidMining.minerBase;
       if (!b) return null;
-      return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}&planet=1`;
+      return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}`; // step 2 picks the planet
     },
 
     // v2.25.0: the button used to dead-end on "press Fleet Recon first" —
@@ -3402,7 +3416,7 @@
       }
       this.running = true;
       try {
-        const href = this.link().href;
+        const href = this.targetUrl();
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
           moonSave: true,
@@ -4985,6 +4999,37 @@
         }
         log("Step 2 loaded (destination)", "fleet");
         dumpButtons("step2");
+
+        // ── v2.26.0: the moon is a DESTINATION TYPE, not a link ──
+        // Owner walked the form by hand and showed what the game actually does:
+        // step 2's Destination panel offers planet / moon / debris for the SAME
+        // coordinates, and step 3 then offers Transport / Deploy / Collect.
+        // There is no moon link in the galaxy row to learn — which is why the
+        // fleet save sat "cel nieznany" through every visit. Target the base
+        // coords like any other fleet and pick the body here.
+        if (mission.moonSave) {
+          const wantMoon = !mission.moonReturn; // the return leg goes back to the planet
+          const panel = document.querySelector("#fleet2, .fleet2, .destination, [class*='destination']") || document.body;
+          if (GM_getValue("ogamex_step2_markup_dumped", "") !== "1") {
+            GM_setValue("ogamex_step2_markup_dumped", "1");
+            log(`[MOON DOM] step-2 destination panel: ${(panel.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 1200)}`, "info");
+          }
+          // Candidates for the body switch, narrowed to the form: the sidebar's
+          // own .planet-select/.moon-select are the PLANET SWITCHER and must not
+          // be touched here — clicking those changes which planet we fly FROM.
+          const inSidebar = (el) => !!el.closest(".planet-select, .moon-select, .sidebar, nav, #ogx-bot-panel");
+          const wanted = wantMoon ? /moon|ksi[ea]zyc|mond|luna/i : /planet|planeta/i;
+          const pick = [...panel.querySelectorAll("a, button, img, span, div, input")]
+            .filter(el => el.offsetParent !== null && !inSidebar(el))
+            .find(el => wanted.test(`${el.className || ""} ${el.id || ""} ${el.getAttribute("title") || ""} ${el.getAttribute("alt") || ""} ${el.dataset?.type || ""}`));
+          if (pick) {
+            pick.click();
+            log(`[MOON SAVE] cel: ${wantMoon ? "KSIĘŻYC" : "PLANETA"} — kliknięto ${pick.tagName}.${(pick.className || "").toString().split(" ")[0] || "-"}`, "fleet");
+            await AntiDetection.sleep(400 + Math.random() * 400);
+          } else {
+            log(`[MOON SAVE] NIE ZNALAZŁEM przełącznika ${wantMoon ? "księżyca" : "planety"} na kroku 2 — lecę z domyślnym celem (to jest PLANETA). Zrzut panelu wyżej: przyślij go, dopiszę selektor.`, "error");
+          }
+        }
 
         // ── v2.10.0: learn cargo-per-miner from the confirmation page ──
         // OGameX shows the selected fleet's total cargo capacity here. Divide
