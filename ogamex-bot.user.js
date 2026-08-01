@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.23.0
+// @version      2.24.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4168,11 +4168,53 @@
   // mode dormant until right-sizing actually leaves miners behind: a 100% send
   // (minersNeeded=0, the pre-learning fallback) leaves 0 home → bot waits, just
   // like the old serial behaviour.
+  // ── v2.24.0: count the hangar, don't remember it ──
+  // This used to answer ONLY from the last dispatch record: available − toSend,
+  // valid for maxFlightMinutes×2+10 = 100 minutes. After a send that took every
+  // miner it therefore reported "0 home" for an hour and a half, long after the
+  // fleets had landed. Owner's log, 2026-08-01: "Parallel: no miners home (0) →
+  // wait for fleet return" at 10:59:09, and four seconds later the fleet page
+  // listed ASTEROID_MINER qty 7 200 000 000. Seven point two BILLION miners sat
+  // idle because of a stale arithmetic memory. The live page always wins; the
+  // recon cache (written on every fleet-page visit) is the second choice; the
+  // dispatch estimate is the last resort it always should have been.
+  function minersHomeLive() {
+    const types = [...(CONFIG.asteroidMining.minerShipTypes || []), "ASTEROID_MINER"];
+    for (const t of types) {
+      const el = document.querySelector(`[data-ship-type="${t}"]`);
+      if (el) {
+        const n = parseInt(el.dataset.shipQuantity || "0");
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return -1;
+  }
+
+  function minersHomeFromRecon(maxAgeMs = 10 * 60 * 1000) {
+    try {
+      const snap = JSON.parse(GM_getValue("ogamex_fleet_recon", "null"));
+      if (!snap?.at || Date.now() - snap.at > maxAgeMs) return -1;
+      const types = [...(CONFIG.asteroidMining.minerShipTypes || []), "ASTEROID_MINER"];
+      for (const t of types) {
+        const s = (snap.ships || []).find(x => x.type === t);
+        if (s && Number.isFinite(s.qty)) return s.qty;
+      }
+    } catch {}
+    return -1;
+  }
+
   function minersHomeAfterLastDispatch() {
+    const live = minersHomeLive();
+    if (live >= 0) return live;
+    const recon = minersHomeFromRecon();
+    if (recon >= 0) return recon;
     let d = null;
     try { d = JSON.parse(GM_getValue("ogamex_last_dispatch", "null")); } catch {}
     if (!d || !Number.isFinite(d.available) || !Number.isFinite(d.toSend)) return -1;
-    const maxAgeMs = (CONFIG.asteroidMining.maxFlightMinutes * 2 + 10) * 60 * 1000;
+    // v2.24.0: the estimate is only believable for as long as a dispatch takes
+    // to matter — one round trip, not two plus ten minutes. Past that the
+    // fleets are back and the arithmetic is fiction.
+    const maxAgeMs = (CONFIG.asteroidMining.maxFlightMinutes + 5) * 60 * 1000;
     if (!d.at || Date.now() - d.at > maxAgeMs) return -1; // stale — tells us nothing about now
     return d.available - d.toSend;
   }
