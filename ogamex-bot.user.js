@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.26.2
+// @version      2.26.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6732,10 +6732,12 @@
       // finishDispatch could run, so pending_mission still carries the type.
       // Farm sends must NOT run the mining parallel-decision below.
       let wasFarmSend = false;
+      let wasMoonSend = false;
       try {
         const pm = JSON.parse(GM_getValue("pending_mission", "null"));
         wasFarmSend = !!pm?.farm;
         wasExpoSend = !!pm?.expedition;
+        wasMoonSend = !!pm?.moonSave;
       } catch {}
       // v2.14.0: slow-navigation twin of the farm check below — if
       // finishDispatch already cleared pending_mission, the send stamp still
@@ -6744,7 +6746,17 @@
         const ls = readLastSent();
         wasExpoSend = !!(ls?.expedition && Date.now() - (ls.at || 0) < 60000);
       }
-      if (wasExpoSend) {
+      if (wasMoonSend) {
+        // v2.26.3: a fleet save / return is not a mining flight and must not be
+        // booked as one. Owner's 18:51 log shows the return leg landing here and
+        // printing "PARALLEL: sent 1000000000, ~4400000000 miners still home" —
+        // numbers recycled from an old mining record, on a send that moved no
+        // miners to any asteroid. Beyond the nonsense in the log it also bumped
+        // the in-flight fleet counter and could set a mining return timer, i.e.
+        // spend the mining budget on a trip to our own moon.
+        GM_setValue("pending_mission", null);
+        log("Ratunek/powrót floty wysłany — liczniki mininga nietknięte.", "fleet");
+      } else if (wasExpoSend) {
         GM_setValue("pending_mission", null);
         const storedExp = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
         GM_setValue("ogamex_inflight_fleets", String(storedExp + 1));
