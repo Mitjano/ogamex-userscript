@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.17.2
+// @version      2.18.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -112,6 +112,13 @@
       waveGapMaxSec: 90,
       slotReserve: 2,           // fleet slots to leave free for mining/manual play
       heavyCargoPerWave: 1,     // HC is the farmer's tool AND the loot carrier — fixed count, never split
+      // v2.18.0: a type whose wave share lands below this stays home. With 8
+      // Battleships and 8 waves the split is 1 per wave — one capital ship
+      // carries no meaningful cargo and adds no meaningful firepower, but it
+      // is exposed to the expedition's combat and black-hole events like any
+      // other. Small stacks are worth more parked than trickled out one at a
+      // time. 0 = off (send whatever the split produces).
+      minShipsPerWave: 10,
       // Never send these on an expedition. Miners are the mining module's;
       // colony ships are one-shot and irreplaceable.
       excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "HEAVY_CARGO"],
@@ -3184,9 +3191,11 @@
     const cfg = CONFIG.expeditions;
     const exclude = (cfg.excludeTypes || []).map(t => String(t).toUpperCase());
     const divisor = Math.max(1, waves || 1);
+    const minPerWave = Math.max(0, parseInt(cfg.minShipsPerWave) || 0);
     const plan = [];
     const skipped = [];
     const empty = [];
+    const tooSmall = [];
     // ── v2.16.0: wave size is FROZEN for the whole burst ──
     // It used to be recomputed from the live hangar at every wave, so each
     // wave divided what was LEFT: 80M ships over 8 waves went out as 10M,
@@ -3220,18 +3229,35 @@
       // The `available > 0` guard is what keeps this from ordering ships that
       // don't exist.
       const qty = available > 0 ? Math.max(1, humanRoundDown(available / divisor)) : 0;
-      if (qty > 0) plan.push({ type, qty, available });
-      else empty.push(type);
+      if (qty <= 0) { empty.push(type); continue; }
+      // v2.18.0: below the floor the type sits this burst out (see
+      // minShipsPerWave). Keep the numbers — if NOTHING clears the floor we
+      // fall back to them rather than send an empty fleet.
+      if (minPerWave > 0 && qty < minPerWave) { tooSmall.push({ type, qty, available }); continue; }
+      plan.push({ type, qty, available });
     }
     // Heavy Cargo last, with an explicit count that overrides any split entry
     // (the type is excluded by default, but the user can remove it).
     const hc = Math.max(0, parseInt(cfg.heavyCargoPerWave) || 0);
     const hcIdx = plan.findIndex(p => p.type.toUpperCase() === "HEAVY_CARGO");
     if (hcIdx >= 0) plan.splice(hcIdx, 1);
+    // HC never rides on the split, so it must not come back through the
+    // below-the-floor fallback either — its count is the config field.
+    for (let i = tooSmall.length - 1; i >= 0; i--) {
+      if (tooSmall[i].type.toUpperCase() === "HEAVY_CARGO") tooSmall.splice(i, 1);
+    }
     if (hc > 0) {
       const el = document.querySelector('[data-ship-type="HEAVY_CARGO"]');
       const available = parseInt(el?.dataset?.shipQuantity || "0") || 0;
       if (available > 0) plan.push({ type: "HEAVY_CARGO", qty: Math.min(hc, available), available });
+    }
+    // The floor must never mean "send nothing". A fleet where every type falls
+    // below it (small hangar, many waves) would otherwise reproduce the
+    // v2.14.1 bug: the module sits idle and says nothing useful about why.
+    if (!plan.length && tooSmall.length) {
+      tooSmall.forEach(p => plan.push(p));
+      log(`Expedition: no type reaches the ${minPerWave}/wave floor — sending the small stacks anyway (${plan.map(p => `${p.type}×${p.qty}`).join(", ")}).`, "warn");
+      tooSmall.length = 0;
     }
     // First wave of a burst: remember these numbers so every later wave of the
     // same burst is identical.
@@ -3239,9 +3265,12 @@
       const st = ExpeditionState.load();
       st.burst = { waves: divisor, at: Date.now(), sizes: Object.fromEntries(plan.map(p => [p.type, p.qty])) };
       ExpeditionState.save(st);
-      log(`Expedition burst sized: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — every wave of this burst is identical.`, "fleet");
+      const held = tooSmall.length
+        ? ` Held back (below ${minPerWave}/wave): ${tooSmall.map(p => `${p.type}×${p.qty}`).join(", ")}.`
+        : "";
+      log(`Expedition burst sized: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — every wave of this burst is identical.${held}`, "fleet");
     }
-    return { plan, skipped, empty, frozen: !!useFrozen };
+    return { plan, skipped, empty, tooSmall, frozen: !!useFrozen };
   }
 
   const ExpeditionRunner = {
@@ -5341,6 +5370,10 @@
               <input id="ogx-expo-hc" type="number" min="0" step="1" value="${CONFIG.expeditions.heavyCargoPerWave}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Typ, którego udział w fali wypada poniżej tej liczby, zostaje w domu. Masz po 8 pancerników przy 8 falach = 1 na falę: jedna taka sztuka nic nie wnosi, a ginie w walce jak każda inna. 0 = wysyłaj cokolwiek wyjdzie z podziału.">Min. sztuk / falę</span>
+              <input id="ogx-expo-min" type="number" min="0" step="1" value="${CONFIG.expeditions.minShipsPerWave}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Tyle slotów flot zostaje wolnych dla mininga i gry ręcznej.">Rezerwa slotów</span>
               <input id="ogx-expo-reserve" type="number" min="0" step="1" value="${CONFIG.expeditions.slotReserve}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -5530,6 +5563,17 @@
             const mn = document.getElementById("ogx-expo-gapmin");
             if (mn) mn.value = v;
           }
+          // Fields that change the COMPOSITION must not wait for the current
+          // burst to drain — its wave sizes were frozen under the old value.
+          // (`waves` needs no reset: the frozen entry is keyed by wave count.)
+          if (key === "minShipsPerWave" || key === "heavyCargoPerWave") {
+            const st = ExpeditionState.load();
+            if (st.burst) {
+              delete st.burst;
+              ExpeditionState.save(st);
+              log("Expedition burst sizing dropped — the next wave is resized.", "info");
+            }
+          }
           saveConfig(CONFIG);
           log(`${label} set to ${v}`, "info");
           updateStatusUI();
@@ -5540,6 +5584,7 @@
       bindExpo("ogx-expo-gapmin", "waveGapMinSec", "Wave gap min (s)", { min: 10 });
       bindExpo("ogx-expo-gapmax", "waveGapMaxSec", "Wave gap max (s)", { min: 10 });
       bindExpo("ogx-expo-hc", "heavyCargoPerWave", "Heavy Cargo per wave", { min: 0 });
+      bindExpo("ogx-expo-min", "minShipsPerWave", "Min ships per wave", { min: 0 });
       bindExpo("ogx-expo-reserve", "slotReserve", "Expedition slot reserve", { min: 0 });
     }
 
