@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.28.0
+// @version      2.29.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2943,6 +2943,8 @@
   const ThreatMonitor = {
     KEY: "ogamex_threat",
     KEY_DUMPED: "ogamex_threat_markup_dumped_v220",
+    KEY_SEEN: "ogamex_threat_last_seen",      // v2.29.0: co pasek pokazał ostatnio
+    KEY_SEEN_AT: "ogamex_threat_last_seen_at",
     _fetching: false,
 
     state() {
@@ -3114,6 +3116,26 @@
       }
 
       const r = this.read();
+      // ── v2.29.0: powiedz, CO właściwie odczytałeś ──
+      // 2026-08-01 23:30:20 obca flota (KARAGUMRUK z [3:307:7]) doleciała pod
+      // planetę właściciela i zrobiła skan. Bot tykał o 23:30:38, :41 i :47 —
+      // i nie napisał ani słowa. Nie dało się rozstrzygnąć, czy pasek pokazał
+      // ZERO obcych, czy paska w ogóle nie było na tej stronie, bo obie ścieżki
+      // milczały tak samo. Alarm bez śladu odczytu jest niesprawdzalny: nie
+      // wiadomo, czy działa, dopóki nie zawiedzie na prawdziwym ataku.
+      // Log jest dławiony do jednej linii na 10 min ORAZ przy każdej zmianie,
+      // więc nie zaśmieca, a zostawia dowód.
+      {
+        const now = Date.now();
+        const seen = r ? `${r.total} misji / ${r.own} własnych → ${r.foreign} obcych` : "BRAK PASKA MISJI na tej stronie";
+        const lastSeen = GM_getValue(this.KEY_SEEN, "");
+        const lastAt = parseInt(GM_getValue(this.KEY_SEEN_AT, "0")) || 0;
+        if (seen !== lastSeen || now - lastAt > 10 * 60 * 1000) {
+          GM_setValue(this.KEY_SEEN, seen);
+          GM_setValue(this.KEY_SEEN_AT, String(now));
+          log(`[THREAT] odczyt: ${seen}${r ? "" : " (na tej stronie alarm jest ślepy)"}`, r && r.foreign > 0 ? "error" : "info");
+        }
+      }
       if (!r) return; // no mission bar on this page — say nothing, change nothing
       const prev = this.state();
 
