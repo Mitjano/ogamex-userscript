@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.24.0
+// @version      2.25.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2982,23 +2982,26 @@
     // ("Scan stranded off galaxy page. Resuming at …"), so this costs one page
     // load. Only fires while nothing is in progress.
     maybeVisitBaseForMoon() {
-      if (GM_getValue("ogamex_moon_markup_dumped", "") === "1") return false;
+      if (MoonSave.armed()) return false;
       if (GM_getValue("ogamex_moon_fetch_dead", "") !== "1") return false; // fetch path still has a chance
-      if (GM_getValue("ogamex_moon_visit_done", "") === "1") return false; // one visit, ever
+      // v2.25.0: retry with a cooldown instead of "one visit, ever". A single
+      // failed visit used to close the only remaining path permanently.
+      const nextTry = parseInt(GM_getValue("ogamex_moon_visit_at", "0")) || 0;
+      if (Date.now() < nextTry) return false;
+      GM_setValue("ogamex_moon_visit_at", String(Date.now() + 30 * 60 * 1000));
       const base = CONFIG.asteroidMining.minerBase;
       if (!base || !CONFIG.enabled) return false;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") return false;
       if (ScanState.load()?.active) return false; // never interrupt a running sweep
       if (AsteroidMiner.running || InactiveFarmer.running || ExpeditionRunner.running) return false;
-      GM_setValue("ogamex_moon_visit_done", "1");
       log(`[MOON DOM] visiting [${base.galaxy}:${base.system}] once to read the base row (fleet-save target).`, "info");
       scanNavigate(`/galaxy?x=${base.galaxy}&y=${base.system}`, "moon recon");
       return true;
     },
 
     async fetchBaseRowOnce() {
-      if (GM_getValue("ogamex_moon_markup_dumped", "") === "1" || this._fetchingMoon) return;
+      if (MoonSave.armed() || this._fetchingMoon) return;
       if (GM_getValue("ogamex_moon_fetch_dead", "") === "1") return; // proven useless here
       const base = CONFIG.asteroidMining.minerBase;
       if (!base) return;
@@ -3012,10 +3015,13 @@
         for (const item of doc.querySelectorAll(".galaxy-item")) {
           const idx = item.querySelector(".planet-index");
           if (!idx || idx.textContent.trim() !== String(base.position)) continue;
-          GM_setValue("ogamex_moon_markup_dumped", "1");
-          log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 1200)}`, "info");
+          if (GM_getValue("ogamex_moon_markup_dumped", "") !== "1") {
+            GM_setValue("ogamex_moon_markup_dumped", "1");
+            log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 1200)}`, "info");
+          }
           // v2.17.0: same row carries the moon link the fleet-save needs.
           MoonSave.learnFromRow(item, `${base.galaxy}:${base.system}:${base.position}`);
+          MoonSave.resumeAfterLearn();
           return;
         }
         // v2.17.2: the fetched galaxy page comes back WITHOUT .galaxy-item rows
@@ -3039,8 +3045,15 @@
       }
     },
 
+    // v2.25.0: the goal is the LINK, not the dump. All three learning paths
+    // used to stop at `ogamex_moon_markup_dumped === "1"`, which is set the
+    // moment the row is printed to the log — whether or not a moon link was
+    // found in it. One unlucky dump therefore disabled moon-learning forever,
+    // and the fleet-save button was left telling the owner to "press Fleet
+    // Recon", which reads the FLEET page and can never learn a galaxy row.
+    // That is the whole reason the save has been unusable.
     dumpBaseRowOnce() {
-      if (GM_getValue("ogamex_moon_markup_dumped", "") === "1") return;
+      if (MoonSave.armed()) return;
       if (GameState.getCurrentPage() !== "galaxy") return;
       const base = CONFIG.asteroidMining.minerBase;
       if (!base) return;
@@ -3051,9 +3064,13 @@
       for (const item of document.querySelectorAll(".galaxy-item")) {
         const idx = item.querySelector(".planet-index");
         if (!idx || idx.textContent.trim() !== String(base.position)) continue;
-        GM_setValue("ogamex_moon_markup_dumped", "1");
-        log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 900)}`, "info");
+        // Learn on EVERY visit until armed; dump the markup only once.
+        if (GM_getValue("ogamex_moon_markup_dumped", "") !== "1") {
+          GM_setValue("ogamex_moon_markup_dumped", "1");
+          log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 900)}`, "info");
+        }
         MoonSave.learnFromRow(item, `${base.galaxy}:${base.system}:${base.position}`);
+        MoonSave.resumeAfterLearn();
         return;
       }
     },
@@ -3220,6 +3237,34 @@
       return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}&planet=1`;
     },
 
+    // v2.25.0: the button used to dead-end on "press Fleet Recon first" —
+    // advice that cannot work, because Fleet Recon reads the fleet page and
+    // the moon link lives in the base system's GALAXY row. Now the button
+    // fetches what it needs itself: go to that galaxy page, learn, and carry
+    // on with the save the operator actually asked for.
+    KEY_RESUME: "ogamex_moonsave_resume",
+
+    async learnThenSave(reason) {
+      const b = CONFIG.asteroidMining.minerBase;
+      if (!b) { log("[MOON SAVE] nie znam planety bazowej — ustaw ją najpierw.", "error"); return false; }
+      GM_setValue(this.KEY_RESUME, JSON.stringify({ at: Date.now(), reason }));
+      log(`[MOON SAVE] cel księżyca nieznany — wchodzę na galaktykę [${b.galaxy}:${b.system}], żeby go odczytać, i wracam dokończyć ratunek.`, "warn");
+      await AntiDetection.sleep(300 + Math.random() * 400);
+      window.location.href = `/galaxy?x=${b.galaxy}&y=${b.system}`;
+      return true;
+    },
+
+    // Called right after a successful learn on the base galaxy row.
+    resumeAfterLearn() {
+      let r = null;
+      try { r = JSON.parse(GM_getValue(this.KEY_RESUME, "null")); } catch {}
+      if (!r || !this.armed()) return;
+      GM_setValue(this.KEY_RESUME, "null");
+      if (Date.now() - (r.at || 0) > 10 * 60 * 1000) return; // too old to be "the click"
+      log("[MOON SAVE] cel księżyca nauczony — dokańczam ratunek, o który prosiłeś.", "success");
+      setTimeout(() => { this.run({ manual: true, reason: r.reason || "ręcznie (po nauce celu)" }).catch(() => {}); }, 1200);
+    },
+
     watch() {
       try { return JSON.parse(GM_getValue(this.KEY_WATCH, "null")) || {}; } catch { return {}; }
     },
@@ -3324,10 +3369,7 @@
 
     async run({ manual = false, sweep = false, auto = false, reason = "manual" } = {}) {
       if (this.running) return false;
-      if (!this.armed()) {
-        log("[MOON SAVE] no moon target learned yet — press Fleet Recon once (it fetches the base system's galaxy row).", "warn");
-        return false;
-      }
+      if (!this.armed()) return this.learnThenSave(reason);
       // A sweep is paced by MIN_RESAVE_MS instead: the 15-minute guard exists
       // to stop a bounce loop, and under multi-wave it would block exactly the
       // re-save the returning fleets need.
@@ -5895,14 +5937,11 @@
 
       const msBtn = document.getElementById("ogx-moonsave-now");
       if (msBtn) msBtn.addEventListener("click", () => {
-        if (!MoonSave.armed()) {
-          log("[MOON SAVE] moon target not learned yet — press Fleet Recon first.", "warn");
-          ThreatMonitor.fetchBaseRowOnce().catch(() => {});
-          return;
-        }
+        const needsLearn = !MoonSave.armed();
         if (!window.confirm(
           "Wysłać CAŁĄ flotę z planety bazowej i WSZYSTKIE surowce na księżyc?\n\n" +
-          "Minerzy przestaną kopać do czasu powrotu.")) return;
+          "Minerzy przestaną kopać do czasu powrotu." +
+          (needsLearn ? "\n\nCel księżyca nie jest jeszcze znany — bot wejdzie najpierw na galaktykę bazy, odczyta go i dokończy sam." : ""))) return;
         MoonSave.run({ manual: true, reason: "ręcznie" }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
       });
     }
@@ -6341,7 +6380,7 @@
         const ms = MoonSave.state();
         const mw = MoonSave.watch();
         msStatus.textContent = !MoonSave.armed()
-          ? "Cel nieznany — kliknij Fleet Recon (dociąga wiersz bazy z galaktyki)"
+          ? "Cel księżyca nieznany — po prostu kliknij RATUJ FLOTĘ, bot sam wejdzie na galaktykę bazy i go odczyta"
           : mw.armed
             ? `STRAŻ WIELOFALOWA: trzymam planetę pustą (${mw.saves || 0} zapis(ów), co ~${Math.round(MoonSave.MIN_RESAVE_MS / 1000)}s). Wyłączy się, gdy obce floty znikną z paska.`
             : ms.at
