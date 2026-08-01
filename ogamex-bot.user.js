@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.26.3
+// @version      2.27.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -317,6 +317,12 @@
   // code default with. The long scanIntervalMin now only applies when there are
   // no hint ranges at all.
   const ACTIVE_RANGE_RECHECK_MIN = 10;
+
+  // v2.27.0: how often to peek at the hint pool WHILE a scan cooldown runs.
+  // Asteroids are the owner's largest income by far, so sitting out a 10-minute
+  // cooldown after hints reappear is the single most expensive thing this bot
+  // can do. One ajax call per probe (a deep fetch is six), so this is cheap.
+  const HINT_PROBE_EVERY_MS = 2 * 60 * 1000;
 
   // ═══════════════════════════════════════════════════════════════
   //  LOGGING
@@ -2122,6 +2128,27 @@
           // Check scan cooldown — don't rescan immediately after full scan found nothing
           const scanCooldownUntil = parseInt(GM_getValue("ogamex_scan_cooldown_until", "0"));
           if (scanCooldownUntil && Date.now() < scanCooldownUntil) {
+            // ── v2.27.0: the cooldown must not outlive its own reason ──
+            // It is set when the hint pool comes back empty, and then held for
+            // ten minutes no matter what. Owner's log, 22:46-22:56: hints were
+            // empty at 22:46, a manual scan found FIVE ranges at 22:53:42 — and
+            // the bot still answered "Scan cooldown: 3min remaining (no
+            // asteroids last sweep)". Ten minutes of blindness on the biggest
+            // income source, with the answer already on screen.
+            // A probe is ONE ajax call, against six for a deep fetch, so
+            // re-checking every 2min costs a fraction of a sweep and cuts the
+            // worst case from 10 minutes to about 2.
+            const lastProbe = parseInt(GM_getValue("ogamex_hint_probe_at", "0")) || 0;
+            if (Date.now() - lastProbe >= HINT_PROBE_EVERY_MS) {
+              GM_setValue("ogamex_hint_probe_at", String(Date.now()));
+              const probe = await AsteroidScanner.scanRanges(false).catch(() => null);
+              if (probe && probe.length) {
+                log(`Cooldown przerwany: pojawiło się ${probe.length} przedział(ów) podpowiedzi — skanuję OD RAZU zamiast czekać.`, "asteroid");
+                GM_setValue("ogamex_scan_cooldown_until", "0");
+                await this.startNewScan();
+                return;
+              }
+            }
             const waitMin = Math.ceil((scanCooldownUntil - Date.now()) / 60000);
             log(`Scan cooldown: ${waitMin}min remaining (no asteroids last sweep)`, "delay");
             return;
@@ -6231,6 +6258,12 @@
 
     document.getElementById("ogx-scan-now").addEventListener("click", async () => {
       log("Manual scan triggered...", "asteroid");
+      // v2.27.0: the operator asking for a scan outranks any cooldown. Without
+      // this the button could find ranges and the very next scheduler tick
+      // would still refuse to sweep them, because the cooldown from the last
+      // empty fetch was never cleared — exactly what happened at 22:53.
+      GM_setValue("ogamex_scan_cooldown_until", "0");
+      GM_setValue("ogamex_hint_probe_at", "0");
       // If already on galaxy page, check current position 17 first
       if (GameState.getCurrentPage() === "galaxy") {
         const result = AsteroidScanner.checkCurrentPageForAsteroid();
