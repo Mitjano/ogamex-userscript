@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.18.1
+// @version      2.19.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1698,9 +1698,32 @@
         }
 
         // Candidate report containers — try a few common message selectors.
-        const containers = root.querySelectorAll(
+        let containers = Array.from(root.querySelectorAll(
           ".message, .msg, .messageContent, [data-message-id], .message_item, li.message, .communication-item"
-        );
+        ));
+        // v2.19.0: class names differ per OGameX build and guessing them is
+        // what left this parser blind. Fall back to structure-agnostic
+        // scanning: the INNERMOST elements that mention an asteroid are the
+        // report bodies, whatever they happen to be wrapped in. Extraction
+        // below is text-based anyway, so a container only has to be small and
+        // not contain another report.
+        if (containers.length === 0) {
+          // A report body is the smallest element holding BOTH the asteroid
+          // keyword and an outcome (resources, dark matter or "empty"). Keying
+          // on "asteroid" alone picks the heading span, which carries no
+          // numbers — so require both, then take the innermost such element.
+          const isReport = (t) =>
+            /asteroid/i.test(t) &&
+            /(metal|crystal|kristall|kryszta|deuterium|deuter|dark\s*matter|ciemna\s*materia|empty|nothing found|nichts|pusto|brak)/i.test(t);
+          containers = Array.from(root.querySelectorAll("*")).filter(el => {
+            const t = el.textContent || "";
+            if (!t || t.length > 3000 || !isReport(t)) return false;
+            return !Array.from(el.children).some(ch => isReport(ch.textContent || ""));
+          });
+          if (containers.length) {
+            log(`Yield fetch (${sourceLabel}): unknown message markup — generic block scan found ${containers.length} candidate(s).`, "info");
+          }
+        }
         if (containers.length === 0) {
           if (root !== document) {
             log(`Yield fetch (${sourceLabel}): no known message markup — selectors need tuning for this OGameX build.`, "warn");
@@ -1710,8 +1733,8 @@
             // the number needed to decide whether bigger waves still pay off.
             // Same one-shot trick that gave us the expedition link (mission=1,
             // not the 15 everyone would assume).
-            if (GM_getValue("ogamex_messages_markup_dumped", "") !== "1") {
-              GM_setValue("ogamex_messages_markup_dumped", "1");
+            if (GM_getValue("ogamex_messages_markup_dumped_v219", "") !== "1") {
+              GM_setValue("ogamex_messages_markup_dumped_v219", "1");
               const html = (root.body?.innerHTML || root.documentElement?.innerHTML || "")
                 .replace(/<script[\s\S]*?<\/script>/gi, "")
                 .replace(/\s+/g, " ")
@@ -3194,9 +3217,23 @@
     // isn't what "split the fleet into 8" means either. Other players save a
     // fleet group and send the identical group N times; freezing the first
     // wave's numbers reproduces exactly that, and it's also simply correct.
-    // The burst is reset in ExpeditionRunner.run() once nothing is in the air.
+    // v2.19.0: a burst now ENDS after `waves` sends and the next wave re-sizes.
+    // The old end condition — "nothing in the air" — was unreachable in the
+    // steady state it was written for: the cap equals the wave count, so the
+    // moment one lands the runner sends another and the slot count never
+    // reaches zero. Sizes frozen on the first ever burst were being reused
+    // forever, so a growing fleet kept flying yesterday's wave.
     const frozen = ExpeditionState.load().burst;
-    const useFrozen = frozen && frozen.waves === divisor && frozen.sizes;
+    const sameShape = frozen && frozen.waves === divisor && frozen.sizes;
+    const useFrozen = sameShape && (frozen.sent || 0) < divisor;
+    // Re-sizing is only safe because the basis is the FLEET, not the hangar.
+    // With 7 of 8 waves away the hangar holds an eighth of the fleet, and
+    // dividing that by eight is the decaying tail v2.16.0 froze the numbers to
+    // avoid. Adding back what is demonstrably out (last wave sizes × waves in
+    // the air) gives the same total whenever we recompute, so ending a burst
+    // no longer shrinks the next one.
+    const wavesInAir = ExpeditionRunner.slots().used || 0;
+    const inAir = (type) => (frozen?.sizes?.[type] || 0) * wavesInAir;
     for (const el of document.querySelectorAll("[data-ship-type]")) {
       const type = el.dataset.shipType;
       if (!type) continue;
@@ -3219,8 +3256,14 @@
       // one ship at a time and stop by themselves when a type hits zero.
       // The `available > 0` guard is what keeps this from ordering ships that
       // don't exist.
-      const qty = available > 0 ? Math.max(1, humanRoundDown(available / divisor)) : 0;
-      if (qty > 0) plan.push({ type, qty, available });
+      // `share` is the wave this type SHOULD contribute (fleet ÷ waves) and is
+      // what gets frozen; `qty` is what the hangar can actually hand over right
+      // now. Freezing the clipped number instead would bake a half-empty
+      // hangar into the next `waves` sends.
+      const fleet = available + inAir(type);
+      const share = fleet > 0 ? Math.max(1, humanRoundDown(fleet / divisor)) : 0;
+      const qty = Math.min(share, available);
+      if (qty > 0) plan.push({ type, qty, available, share });
       else empty.push(type);
     }
     // Heavy Cargo last, with an explicit count that overrides any split entry
@@ -3237,9 +3280,10 @@
     // same burst is identical.
     if (!useFrozen && plan.length) {
       const st = ExpeditionState.load();
-      st.burst = { waves: divisor, at: Date.now(), sizes: Object.fromEntries(plan.map(p => [p.type, p.qty])) };
+      st.burst = { waves: divisor, at: Date.now(), sent: 0, sizes: Object.fromEntries(plan.map(p => [p.type, p.share ?? p.qty])) };
       ExpeditionState.save(st);
-      log(`Expedition burst sized: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — every wave of this burst is identical.`, "fleet");
+      const basis = wavesInAir > 0 ? ` (fleet = hangar + ${wavesInAir} wave(s) still in the air)` : "";
+      log(`Expedition burst sized${basis}: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — the next ${divisor} wave(s) are identical.`, "fleet");
     }
     return { plan, skipped, empty, frozen: !!useFrozen };
   }
@@ -3413,6 +3457,11 @@
       if (st.lastSendAt && Date.now() - st.lastSendAt < 15000) return;
       st.lastSendAt = Date.now();
       st.nextGapMs = this.nextWaveGapMs();
+      // v2.19.0: what ends a burst. Once `waves` waves have gone out on these
+      // frozen sizes the fleet is fully committed, so the next wave re-sizes
+      // against the fleet (hangar + what's in the air) and picks up anything
+      // built since.
+      if (st.burst) st.burst.sent = (st.burst.sent || 0) + 1;
       st.sentTotal = (st.sentTotal || 0) + 1;
       st.sentToday = (st.day === today ? (st.sentToday || 0) : 0) + 1;
       st.day = today;
