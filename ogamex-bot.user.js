@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.25.2
+// @version      2.25.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3015,8 +3015,8 @@
         for (const item of doc.querySelectorAll(".galaxy-item")) {
           const idx = item.querySelector(".planet-index");
           if (!idx || idx.textContent.trim() !== String(base.position)) continue;
-          if (GM_getValue("ogamex_moon_markup_dumped", "") !== "1") {
-            GM_setValue("ogamex_moon_markup_dumped", "1");
+          if (GM_getValue("ogamex_moon_markup_dumped_v2253", "") !== "1") {
+            GM_setValue("ogamex_moon_markup_dumped_v2253", "1");
             log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 1200)}`, "info");
           }
           // v2.17.0: same row carries the moon link the fleet-save needs.
@@ -3046,7 +3046,7 @@
     },
 
     // v2.25.0: the goal is the LINK, not the dump. All three learning paths
-    // used to stop at `ogamex_moon_markup_dumped === "1"`, which is set the
+    // used to stop at `ogamex_moon_markup_dumped_v2253 === "1"`, which is set the
     // moment the row is printed to the log — whether or not a moon link was
     // found in it. One unlucky dump therefore disabled moon-learning forever,
     // and the fleet-save button was left telling the owner to "press Fleet
@@ -3065,8 +3065,8 @@
         const idx = item.querySelector(".planet-index");
         if (!idx || idx.textContent.trim() !== String(base.position)) continue;
         // Learn on EVERY visit until armed; dump the markup only once.
-        if (GM_getValue("ogamex_moon_markup_dumped", "") !== "1") {
-          GM_setValue("ogamex_moon_markup_dumped", "1");
+        if (GM_getValue("ogamex_moon_markup_dumped_v2253", "") !== "1") {
+          GM_setValue("ogamex_moon_markup_dumped_v2253", "1");
           log(`[MOON DOM] base row [${base.galaxy}:${base.system}:${base.position}]: ${item.innerHTML.replace(/\s+/g, " ").trim().slice(0, 900)}`, "info");
         }
         MoonSave.learnFromRow(item, `${base.galaxy}:${base.system}:${base.position}`);
@@ -3199,7 +3199,14 @@
       ];
       const a = candidates.find(el => /\/fleet/i.test(el.getAttribute("href") || ""))
              || candidates.find(el => (el.getAttribute("href") || "").length > 1);
-      if (!a) return null;
+      if (!a) {
+        // v2.25.3: this used to fail SILENTLY, which is why the fleet save sat
+        // "cel nieznany" through two visits to the base system with nothing in
+        // the log to explain it. Say what was actually in the row.
+        const moonCol = rowEl.querySelector(".col-moon, .galaxy-col.col-moon");
+        log(`[MOON SAVE] wiersz bazy znaleziony, ale BEZ linku do księżyca. Kolumna moon: ${moonCol ? `"${(moonCol.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 200) || "PUSTA"}"` : "brak kolumny"} | wszystkich linków w wierszu: ${rowEl.querySelectorAll("a[href]").length}`, "warn");
+        return null;
+      }
       const href = a.getAttribute("href");
       const learned = { href, at: Date.now(), coord: coordLabel || null };
       GM_setValue(this.KEY_LINK, JSON.stringify(learned));
@@ -3260,7 +3267,7 @@
       try { r = JSON.parse(GM_getValue(this.KEY_RESUME, "null")); } catch {}
       if (!r || !this.armed()) return;
       GM_setValue(this.KEY_RESUME, "null");
-      if (Date.now() - (r.at || 0) > 10 * 60 * 1000) return; // too old to be "the click"
+      if (Date.now() - (r.at || 0) > 30 * 60 * 1000) return; // too old to be "the click"
       log("[MOON SAVE] cel księżyca nauczony — dokańczam ratunek, o który prosiłeś.", "success");
       setTimeout(() => { this.run({ manual: true, reason: r.reason || "ręcznie (po nauce celu)" }).catch(() => {}); }, 1200);
     },
@@ -6593,6 +6600,18 @@
     // tab owns the lock isLeader() refreshes it; when another fresh tab owns
     // it, isLeader() is a read-only false — no write war.
     setInterval(() => TabLock.isLeader(), TabLock.HEARTBEAT_MS);
+
+    // ── v2.25.3: learn the moon target ON PAGE LOAD ──
+    // It used to depend on the scheduler tick reaching ThreatMonitor.check()
+    // while we happened to be standing on the base system's galaxy page. The
+    // asteroid scanner starts a sweep within seconds of that page loading and
+    // navigates away, and a jitter pause can swallow the tick entirely (a 13min
+    // one landed on the very click that triggered this). Doing it at load
+    // removes the race: the page we arrived at is the page we read.
+    if (GameState.getCurrentPage() === "galaxy") {
+      ThreatMonitor.dumpBaseRowOnce();
+      MoonSave.resumeAfterLearn();
+    }
 
     // v2.11.0: cache the fleet-slot TOTAL ("Fleets: X/37") — visible only on
     // the fleet page; the farmer's slot budget needs it on galaxy pages.
