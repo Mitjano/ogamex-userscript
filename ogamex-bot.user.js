@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.19.0
+// @version      2.20.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2861,7 +2861,7 @@
 
   const ThreatMonitor = {
     KEY: "ogamex_threat",
-    KEY_DUMPED: "ogamex_threat_markup_dumped",
+    KEY_DUMPED: "ogamex_threat_markup_dumped_v220",
     _fetching: false,
 
     state() {
@@ -3071,9 +3071,29 @@
   // own galaxy row, exactly like the expedition link was — where the obvious
   // assumption (mission=15) turned out to be wrong (mission=1).
 
+  // v2.20.0 — MULTI-WAVE. Owner's attacker sends several fleets in several
+  // waves, and one save is not a plan against that. The hole isn't the fleet
+  // we lifted; it's everything that lands on the base planet BETWEEN the
+  // waves: 8 expedition waves and up to 3 mining flights come home one at a
+  // time, and each one sits on the planet waiting for the next hit. So once a
+  // save has been made for a live alert, a watcher keeps the planet empty
+  // until the alert clears — re-running the same proven save, which aborts by
+  // itself when there is nothing left to lift.
+  //
+  // The watcher never DECIDES that an attack is real: it only continues what
+  // the first save started (button today, classifier later). That keeps the
+  // probe-vs-attack question exactly where it belongs.
+  //
+  // Known limit, worth stating plainly: the moon is a separate target at the
+  // same coords, so this dodges waves aimed at the PLANET only. An attacker
+  // who splits waves between planet and moon cannot be dodged by moving
+  // between them — that needs flying the fleet off-world entirely.
   const MoonSave = {
     KEY_LINK: "ogamex_moon_link",
     KEY_STATE: "ogamex_moonsave_state",
+    KEY_WATCH: "ogamex_moonsave_watch",
+    MIN_RESAVE_MS: 90 * 1000,   // floor between sweeps: enough for a wave to land
+    MAX_SAVES_PER_ALERT: 20,    // stop rather than loop forever on a stuck alert
     running: false,
 
     // Candidate mission names for "fly there and STAY". The game marks the
@@ -3119,13 +3139,47 @@
       return !!(st.at && Date.now() - st.at < 15 * 60 * 1000);
     },
 
-    async run({ manual = false, reason = "manual" } = {}) {
+    watch() {
+      try { return JSON.parse(GM_getValue(this.KEY_WATCH, "null")) || {}; } catch { return {}; }
+    },
+    saveWatch(w) { GM_setValue(this.KEY_WATCH, JSON.stringify(w)); },
+    disarm(why) {
+      const w = this.watch();
+      if (!w.armed) return;
+      GM_setValue(this.KEY_WATCH, "null");
+      log(`[MOON SAVE] straż wyłączona (${why}) — planeta znów pracuje normalnie. Zapisów w tym alarmie: ${w.saves || 0}.`, "info");
+      updateStatusUI();
+    },
+
+    // Scheduler hook. Only ever CONTINUES a save the operator (or, later, the
+    // classifier) already started; it never starts one. Re-running run() is
+    // the whole detection mechanism: the save aborts itself with "nothing on
+    // this planet to save" when the hangar is clean, so an empty planet costs
+    // one page load and nothing else.
+    async keepPlanetEmpty() {
+      if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) return false;
+      const w = this.watch();
+      if (!w.armed) return false;
+      if (!ThreatMonitor.active()) { this.disarm("obce floty zniknęły z paska misji"); return false; }
+      if (this.running) return false;
+      if (Date.now() - (w.lastAt || 0) < this.MIN_RESAVE_MS) return false;
+      if ((w.saves || 0) >= this.MAX_SAVES_PER_ALERT) {
+        if (!w.capped) { this.saveWatch({ ...w, capped: true }); log(`[MOON SAVE] limit ${this.MAX_SAVES_PER_ALERT} zapisów na alarm osiągnięty — straż stoi. SPRAWDŹ GRĘ.`, "error"); }
+        return false;
+      }
+      return this.run({ sweep: true, reason: "straż wielofalowa — sprzątam planetę" });
+    },
+
+    async run({ manual = false, sweep = false, reason = "manual" } = {}) {
       if (this.running) return false;
       if (!this.armed()) {
         log("[MOON SAVE] no moon target learned yet — press Fleet Recon once (it fetches the base system's galaxy row).", "warn");
         return false;
       }
-      if (!manual && this.recentlySaved()) return false;
+      // A sweep is paced by MIN_RESAVE_MS instead: the 15-minute guard exists
+      // to stop a bounce loop, and under multi-wave it would block exactly the
+      // re-save the returning fleets need.
+      if (!manual && !sweep && this.recentlySaved()) return false;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") {
         log("[MOON SAVE] another dispatch is mid-flow — retrying on the next tick.", "warn");
@@ -3142,6 +3196,11 @@
           timestamp: Date.now(),
         }));
         this.saveState({ at: Date.now(), reason });
+        // Arm (or re-arm) the multi-wave watcher on every save, including the
+        // manual one: pressing the button once is the operator saying "we are
+        // under attack", and everything that lands afterwards has to go too.
+        const w = this.watch();
+        this.saveWatch({ armed: true, lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
         log(`FLEET SAVE → moon at the base coords (${reason}). Sending EVERY ship and ALL resources.`, "success");
         await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
         window.location.href = href;
@@ -4703,13 +4762,21 @@
           // plausible. A wrong mission here flies the fleet somewhere else.
           const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
           const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
-          let picked = null;
+          let picked = null, matched = null;
           for (const want of MoonSave.MISSION_CANDIDATES) {
             picked = missions.find(m => nameOf(m).includes(want));
-            if (picked) break;
+            if (picked) { matched = want; break; }
           }
           if (picked) {
             log(`[MOON SAVE] mission: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
+            // v2.20.0: a transport UNLOADS and flies home, and with the moon at
+            // the same coords "home" is minutes away — straight back onto the
+            // planet, in time for the next wave. It stays as the last resort
+            // (better on the moon for a few minutes than on the planet), but it
+            // is the multi-wave watcher that then does the actual work.
+            if (matched === "TRANSPORT") {
+              log("[MOON SAVE] UWAGA: to transport, nie stacjonowanie — flota WRÓCI na planetę po rozładunku. Straż wielofalowa będzie ją zdejmować co ~90 s, ale przy wielu falach sprawdź grę.", "error");
+            }
             picked.click();
             await AntiDetection.sleep(500 + Math.random() * 500);
           } else {
@@ -5025,6 +5092,12 @@
     // v2.15.0: threat check first — it's a pure DOM read of the mission bar
     // already on the page, and every module below gates on its result.
     ThreatMonitor.check();
+
+    // v2.20.0: multi-wave watch, straight after the threat read and ahead of
+    // every income module. If a save is armed, keeping the base planet empty
+    // outranks mining, farming and expedition waves — it navigates, so it has
+    // to win the tick rather than share it.
+    if (await MoonSave.keepPlanetEmpty().catch(() => false)) return;
 
     // v2.13.0: grab the green "Online bonus" if it's on screen. Placed before
     // the keepalive reload (which returns) and before jitter (which can sleep
@@ -5977,12 +6050,15 @@
       const msStatus = document.getElementById("ogx-moonsave-status");
       if (msStatus) {
         const ms = MoonSave.state();
+        const mw = MoonSave.watch();
         msStatus.textContent = !MoonSave.armed()
           ? "Cel nieznany — kliknij Fleet Recon (dociąga wiersz bazy z galaktyki)"
-          : ms.at
-            ? `Gotowe. Ostatni ratunek: ${Math.round((Date.now() - ms.at) / 60000)}min temu (${ms.reason || "?"})`
-            : "Gotowe — cel księżyca nauczony. Automat WYŁĄCZONY (czeka na rozpoznanie ataku vs sondy).";
-        msStatus.style.color = MoonSave.armed() ? "#7f8c8d" : "#e67e22";
+          : mw.armed
+            ? `STRAŻ WIELOFALOWA: trzymam planetę pustą (${mw.saves || 0} zapis(ów), co ~${Math.round(MoonSave.MIN_RESAVE_MS / 1000)}s). Wyłączy się, gdy obce floty znikną z paska.`
+            : ms.at
+              ? `Gotowe. Ostatni ratunek: ${Math.round((Date.now() - ms.at) / 60000)}min temu (${ms.reason || "?"})`
+              : "Gotowe — cel księżyca nauczony. Automat WYŁĄCZONY (czeka na rozpoznanie ataku vs sondy).";
+        msStatus.style.color = mw.armed ? "#e74c3c" : MoonSave.armed() ? "#7f8c8d" : "#e67e22";
       }
     }
 
