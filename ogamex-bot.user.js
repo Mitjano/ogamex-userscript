@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.26.0
+// @version      2.26.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5018,10 +5018,20 @@
           // own .planet-select/.moon-select are the PLANET SWITCHER and must not
           // be touched here — clicking those changes which planet we fly FROM.
           const inSidebar = (el) => !!el.closest(".planet-select, .moon-select, .sidebar, nav, #ogx-bot-panel");
-          const wanted = wantMoon ? /moon|ksi[ea]zyc|mond|luna/i : /planet|planeta/i;
-          const pick = [...panel.querySelectorAll("a, button, img, span, div, input")]
+          // v2.26.1: the live dump settled the markup — the switch is
+          //   <a data-name="Moon" data-planet-type="2" class="moon-icon">
+          // with 1=Planet, 2=Moon, 3=Debris. Match the DATA ATTRIBUTE, not a
+          // regex over class names: "planet" appears in half the ids on this
+          // page (#target_planet_type_name, .planet-coord, .planet-name), so
+          // the fuzzy match for the RETURN leg could have grabbed a label
+          // instead of the button and quietly left the target on the moon.
+          const wantType = wantMoon ? "2" : "1";
+          const byData = [...panel.querySelectorAll(`[data-planet-type="${wantType}"]`)]
+            .filter(el => !inSidebar(el));
+          const wanted = wantMoon ? /moon-icon/i : /planet-icon/i;
+          const pick = byData[0] || [...panel.querySelectorAll("a, button")]
             .filter(el => el.offsetParent !== null && !inSidebar(el))
-            .find(el => wanted.test(`${el.className || ""} ${el.id || ""} ${el.getAttribute("title") || ""} ${el.getAttribute("alt") || ""} ${el.dataset?.type || ""}`));
+            .find(el => wanted.test(`${el.className || ""} ${el.getAttribute("data-name") || ""}`));
           if (pick) {
             pick.click();
             log(`[MOON SAVE] cel: ${wantMoon ? "KSIĘŻYC" : "PLANETA"} — kliknięto ${pick.tagName}.${(pick.className || "").toString().split(" ")[0] || "-"}`, "fleet");
