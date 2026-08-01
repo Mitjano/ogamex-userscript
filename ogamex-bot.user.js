@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.26.1
+// @version      2.26.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3337,7 +3337,11 @@
     // the bot resumes on its own.
     async returnHome({ byOperator = false } = {}) {
       const w = this.watch();
-      if (!w.armed || !w.saves) return false;
+      // v2.26.2: the operator's own request never needs the guard to be armed.
+      // A failed return used to disarm it, which then made this button refuse
+      // to try again — the fleet sat on the moon with no way back through the
+      // bot at all.
+      if (!byOperator && (!w.armed || !w.saves)) return false;
       if (!byOperator) {
         if (!CONFIG.threatAlarm?.autoReturn) return false;
         // v2.25.2: auto-return belongs ONLY to saves the alarm started. A save
@@ -4511,7 +4515,32 @@
       // parsing, no guessing which of the moons is ours.
       if (mission.step === "switch_to_moon") {
         const b = CONFIG.asteroidMining.minerBase;
-        const planets = [...document.querySelectorAll("a.planet-select, .planet-select")];
+        // v2.26.2: after a save we are ALREADY standing on the moon, so there
+        // is usually nothing to switch. The old code always hunted the sidebar
+        // and aborted the whole return when it came up empty — which is what
+        // happened at 18:40: the step ran on the MESSAGES page, where there is
+        // no planet list at all, and it threw the fleet-save guard away with it.
+        const onMoon = !!document.querySelector(".moon-select.selected, a.moon-select.selected");
+        const planetList = document.querySelectorAll("a.planet-select, .planet-select");
+        if (!planetList.length && !onMoon) {
+          // No sidebar on this page — go where there is one instead of giving up.
+          log("[MOON SAVE] brak listy planet na tej stronie — przechodzę na Overview i wracam do powrotu.", "fleet");
+          mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          await AntiDetection.sleep(500 + Math.random() * 500);
+          window.location.href = "/overview";
+          return;
+        }
+        if (onMoon) {
+          log("[MOON SAVE] jesteśmy już na księżycu — pomijam przełączanie, lecę prosto do formularza.", "fleet");
+          mission.step = "select_ships_direct";
+          mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          await AntiDetection.sleep(500 + Math.random() * 500);
+          window.location.href = mission.fleetUrl;
+          return;
+        }
+        const planets = [...planetList];
         let moonLink = null;
         for (const p of planets) {
           const href = p.getAttribute("href") || "";
@@ -4523,9 +4552,12 @@
           if (sib) { moonLink = sib; if (isBase) break; }
         }
         if (!moonLink) {
-          log("[MOON SAVE] POWRÓT PRZERWANY: nie znalazłem księżyca bazy na liście planet. Flota zostaje na księżycu — ściągnij ją ręcznie.", "error");
+          // v2.26.2: do NOT disarm here. The fleet is still sitting on the moon,
+          // and disarming made the WRÓĆ Z KSIĘŻYCA button answer "nie ma czego
+          // ściągać" — the guard was thrown away at the exact moment it was the
+          // only way back. Keep the state; the operator can retry.
+          log("[MOON SAVE] POWRÓT NIEUDANY: nie znalazłem księżyca bazy na liście planet. Flota ZOSTAJE na księżycu, straż działa — kliknij WRÓĆ Z KSIĘŻYCA jeszcze raz albo ściągnij ją ręcznie.", "error");
           GM_setValue("pending_mission", null);
-          MoonSave.disarm("powrót nieudany — brak księżyca w sidebarze");
           return;
         }
         log("[MOON SAVE] przełączam aktywne ciało na księżyc bazy…", "fleet");
@@ -6027,11 +6059,9 @@
 
       const mbBtn = document.getElementById("ogx-moonback-now");
       if (mbBtn) mbBtn.addEventListener("click", () => {
-        if (!MoonSave.watch().armed) {
-          log("[MOON SAVE] nie ma czego ściągać — żaden ratunek nie jest aktywny.", "warn");
-          return;
-        }
-        if (!window.confirm("Ściągnąć CAŁĄ flotę i WSZYSTKIE surowce z księżyca z powrotem na planetę bazową?")) return;
+        const noGuard = !MoonSave.watch().armed;
+        if (!window.confirm("Ściągnąć CAŁĄ flotę i WSZYSTKIE surowce z księżyca z powrotem na planetę bazową?" +
+          (noGuard ? "\n\n(Straż nie jest aktywna — jeśli na księżycu nic nie ma, formularz po prostu nic nie wyśle.)" : ""))) return;
         MoonSave.returnHome({ byOperator: true }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
       });
     }
