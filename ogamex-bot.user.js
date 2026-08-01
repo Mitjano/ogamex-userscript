@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.21.0
+// @version      2.22.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -76,6 +76,12 @@
       // minersPerMission (per flight) 0 = send ALL available in a single wave.
       totalMinersToUse: 0,          // budget of miners to commit across simultaneous flights; 0 = unlimited
       minMinersPerMission: 1,       // never send fewer than this (also the floor for "miners left home" to bother going parallel)
+      // v2.22.0: a parallel flight must carry at least this fraction of the
+      // intended per-flight size, or the leftover miners wait for a full one.
+      // A mission's haul is capped by the fleet's total cargo, so half a fleet
+      // doesn't collect half an asteroid — it collects half a cap and abandons
+      // the rest. 0 = off (fly any remainder, pre-2.22 behaviour).
+      partialFlightMinRatio: 0.5,
       cargoPerMiner: 0,             // cargo capacity of ONE asteroid miner; 0 = auto-learn from the fleet confirmation page
       expectedResourcesPerAsteroid: 0, // expected resources per asteroid; 0 = auto-learn from mission reports (set manually to seed before learning)
       bufferFactor: 1.15,           // over-provision factor vs the estimate (covers above-average asteroids)
@@ -4245,8 +4251,23 @@
     const maxConc = maxMiningFleets(); // floor(totalMinersToUse / perFlight), or maxConcurrentMiningFleets
     const concOk = maxConc <= 0 || inflight < maxConc;
 
+    // ── v2.22.0: don't launch the scraps ──
+    // The flight budget is floor(totalMinersToUse / perFlight), which counts
+    // miners the hangar may not actually hold. Owner's case: 5.0B miners,
+    // 2.4B per flight, budget 3 flights → the third launched with the 200M
+    // remainder. That flight isn't free money: the game caps a mission's haul
+    // at the fleet's TOTAL cargo, so 200M miners came back with exactly
+    // 200M × 20 750 = 4.15T — the cap to the digit, i.e. the asteroid had more
+    // and the rest was left in the ground. Those miners earn far more as part
+    // of the next full flight, so a parallel leg now has to be worth flying.
+    const intendedPerFlight = am.minersPerMission > 0 ? am.minersPerMission : AsteroidYieldTracker.minersNeeded();
+    const ratio = Number.isFinite(am.partialFlightMinRatio) ? am.partialFlightMinRatio : 0.5;
+    const worthFlying = !(intendedPerFlight > 0 && ratio > 0) ||
+      minersLeftHome >= Math.ceil(intendedPerFlight * ratio);
+
     const canParallel = am.parallelDispatch &&
       minersLeftHome >= (am.minMinersPerMission || 1) &&
+      worthFlying &&
       slotsFree > 0 && concOk;
 
     if (canParallel) {
@@ -4267,6 +4288,7 @@
       GM_setValue("ogamex_fleet_return_at", String(returnAt));
     }
     const reason = !am.parallelDispatch ? "parallel off"
+      : !worthFlying ? `resztówka: ${minersLeftHome} minerów w domu to mniej niż ${Math.round(ratio * 100)}% lotu (${intendedPerFlight}) — czekam na powrót zamiast marnować asteroidę na pół floty`
       : minersLeftHome < (am.minMinersPerMission || 1) ? "no miners left home"
       : slotsFree <= 0 ? "fleet slots full"
       : `flight budget reached (${inflight}/${maxConc} flights)`;
