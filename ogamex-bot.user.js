@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.20.0
+// @version      2.21.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -92,9 +92,20 @@
       // remembers its own base independently (set via UI or saved config).
       minerBase: { galaxy: 3, system: 269, position: 8 },
     },
-    // ── v2.15.0: incoming-attack alarm (detection only) ──
+    // ── v2.15.0: incoming-attack alarm ──
     threatAlarm: {
-      enabled: true, // read-only: it never moves a fleet
+      enabled: true,
+      // ── v2.21.0: act on the alarm, don't just shout about it ──
+      // The old objection to arming this was that the mission bar can't tell an
+      // attack from an espionage probe, so every probe would launch the whole
+      // economy at the moon. That objection was half an argument: it priced the
+      // false positive as permanent, when the fleet only has to sit out the
+      // alert. With autoReturn the cost of a wrong guess is one alert window of
+      // downtime (alert clears 10min after the last sighting) plus fuel for a
+      // same-coords hop — against losing everything for being asleep. Cheap
+      // insurance, so it defaults ON.
+      autoSave: true,
+      autoReturn: true,
     },
     // ── v2.14.0: expeditions in WAVES ──
     // Position 16 of the base system, combat fleet split into N waves sent a
@@ -3004,11 +3015,16 @@
       }
     },
 
-    check() {
+    check({ emergencyOnly = false } = {}) {
       if (!CONFIG.threatAlarm?.enabled) return;
-      this.dumpBaseRowOnce();
-      this.fetchBaseRowOnce().catch(() => {}); // one-shot, no-op once captured
-      this.maybeVisitBaseForMoon(); // only if the fetch path proved blind
+      // These three LEARN (and the last one navigates). Skipped while the bot
+      // is on a humanizer break or in the night window — the mission-bar read
+      // below still runs, because that is the part an attack depends on.
+      if (!emergencyOnly) {
+        this.dumpBaseRowOnce();
+        this.fetchBaseRowOnce().catch(() => {}); // one-shot, no-op once captured
+        this.maybeVisitBaseForMoon(); // only if the fetch path proved blind
+      }
 
       const r = this.read();
       if (!r) return; // no mission bar on this page — say nothing, change nothing
@@ -3139,6 +3155,28 @@
       return !!(st.at && Date.now() - st.at < 15 * 60 * 1000);
     },
 
+    // ── v2.21.0: the proof gate for unattended saving ──
+    KEY_PROOF: "ogamex_moonsave_proven",
+    proven() {
+      try { return JSON.parse(GM_getValue(this.KEY_PROOF, "null")); } catch { return null; }
+    },
+    proveMission(name, cls) {
+      if (this.proven()?.name === name) return;
+      GM_setValue(this.KEY_PROOF, JSON.stringify({ name, cls, at: Date.now() }));
+      log(`[MOON SAVE] misja stacjonowania potwierdzona na żywo: ${name} (${cls}). Automatyczny ratunek jest od teraz uzbrojony.`, "success");
+      updateStatusUI();
+    },
+
+    // Where the fleet goes home to. The moon href is LEARNED from the galaxy
+    // row; the planet side is the base coords with planet=1 — the same shape
+    // the farm module has been sending on for months, so it isn't a guess
+    // either. The mission is picked on step 3 exactly like the outbound save.
+    homeUrl() {
+      const b = CONFIG.asteroidMining.minerBase;
+      if (!b) return null;
+      return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}&planet=1`;
+    },
+
     watch() {
       try { return JSON.parse(GM_getValue(this.KEY_WATCH, "null")) || {}; } catch { return {}; }
     },
@@ -3151,6 +3189,71 @@
       updateStatusUI();
     },
 
+    // v2.21.0 — the automatic trigger. Fires on ANY foreign fleet, on purpose:
+    // telling an attack from a probe needs the events table we still haven't
+    // captured, and waiting for that means the fleet is unprotected every
+    // night in the meantime. Reacting to both is the safe error, because
+    // returnHome() bounds what a false alarm costs.
+    async autoSaveOnThreat() {
+      if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled || !CONFIG.threatAlarm?.autoSave) return false;
+      if (!ThreatMonitor.active()) return false;
+      if (this.watch().armed) return false;      // already saving for this alert
+      if (this.running) return false;
+      if (!this.armed()) {
+        this._sayOnce("nolink", "[MOON SAVE] ATAK, a cel księżyca nieznany — kliknij Fleet Recon. Ratunku NIE wysłano.");
+        return false;
+      }
+      if (!this.proven()) {
+        this._sayOnce("noproof", "[MOON SAVE] ATAK — automat czeka na jeden ręczny ratunek, żeby poznać misję stacjonowania tej gry. KLIKNIJ RATUJ FLOTĘ → księżyc TERAZ.");
+        return false;
+      }
+      return this.run({ auto: true, reason: "AUTOMAT: obca flota w pasku misji" });
+    },
+
+    _sayOnce(key, msg) {
+      this._said = this._said || {};
+      if (this._said[key] && Date.now() - this._said[key] < 5 * 60 * 1000) return;
+      this._said[key] = Date.now();
+      log(msg, "error");
+    },
+
+    // v2.21.0 — the other half. Without it a false alarm would park the
+    // economy on the moon indefinitely: mining and expeditions both launch
+    // from the base planet, so an empty planet earns nothing. The alert clears
+    // itself 10min after the last foreign sighting; everything comes back and
+    // the bot resumes on its own.
+    async returnHome() {
+      if (!CONFIG.threatAlarm?.autoReturn) return false;
+      const w = this.watch();
+      if (!w.armed || !w.saves) return false;
+      if (ThreatMonitor.active()) return false;       // still hostile — stay put
+      if (this.running) return false;
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return false;
+      const url = this.homeUrl();
+      if (!url) return false;
+      this.running = true;
+      try {
+        GM_setValue("pending_mission", JSON.stringify({
+          type: "moon_return_direct",
+          moonSave: true,       // identical form handling: all ships, all resources, stationing
+          moonReturn: true,     // …but this leg has to start FROM the moon
+          fleetUrl: url,
+          step: "switch_to_moon",
+          timestamp: Date.now(),
+        }));
+        this.saveWatch({ ...w, returning: true, returnAt: Date.now() });
+        log("POWRÓT: alarm minął — ściągam flotę i surowce z księżyca na planetę bazową.", "success");
+        await AntiDetection.sleep(400 + Math.random() * 600);
+        return true;
+      } catch (err) {
+        log(`[MOON SAVE] powrót nieudany: ${err.message}`, "error");
+        return false;
+      } finally {
+        this.running = false;
+      }
+    },
+
     // Scheduler hook. Only ever CONTINUES a save the operator (or, later, the
     // classifier) already started; it never starts one. Re-running run() is
     // the whole detection mechanism: the save aborts itself with "nothing on
@@ -3160,7 +3263,13 @@
       if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) return false;
       const w = this.watch();
       if (!w.armed) return false;
-      if (!ThreatMonitor.active()) { this.disarm("obce floty zniknęły z paska misji"); return false; }
+      if (!ThreatMonitor.active()) {
+        // Don't disarm out from under returnHome() — it needs the armed state
+        // to know there is something on the moon to bring back.
+        if (CONFIG.threatAlarm?.autoReturn) return false;
+        this.disarm("obce floty zniknęły z paska misji");
+        return false;
+      }
       if (this.running) return false;
       if (Date.now() - (w.lastAt || 0) < this.MIN_RESAVE_MS) return false;
       if ((w.saves || 0) >= this.MAX_SAVES_PER_ALERT) {
@@ -3170,7 +3279,7 @@
       return this.run({ sweep: true, reason: "straż wielofalowa — sprzątam planetę" });
     },
 
-    async run({ manual = false, sweep = false, reason = "manual" } = {}) {
+    async run({ manual = false, sweep = false, auto = false, reason = "manual" } = {}) {
       if (this.running) return false;
       if (!this.armed()) {
         log("[MOON SAVE] no moon target learned yet — press Fleet Recon once (it fetches the base system's galaxy row).", "warn");
@@ -3179,7 +3288,7 @@
       // A sweep is paced by MIN_RESAVE_MS instead: the 15-minute guard exists
       // to stop a bounce loop, and under multi-wave it would block exactly the
       // re-save the returning fleets need.
-      if (!manual && !sweep && this.recentlySaved()) return false;
+      if (!manual && !sweep && !auto && this.recentlySaved()) return false;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") {
         log("[MOON SAVE] another dispatch is mid-flow — retrying on the next tick.", "warn");
@@ -4212,6 +4321,43 @@
         return;
       }
 
+      // ── v2.21.0: the return leg starts on the MOON ──
+      // A fleet launches from whichever body is active in the sidebar, and
+      // after a save the active body is still the (now empty) planet. So the
+      // moon has to be selected first, or the "return" would fly nothing from
+      // the planet to itself. The sidebar renders each moon right after its
+      // planet, so the base planet's entry identifies its moon — no coord
+      // parsing, no guessing which of the moons is ours.
+      if (mission.step === "switch_to_moon") {
+        const b = CONFIG.asteroidMining.minerBase;
+        const planets = [...document.querySelectorAll("a.planet-select, .planet-select")];
+        let moonLink = null;
+        for (const p of planets) {
+          const href = p.getAttribute("href") || "";
+          const txt = `${href} ${p.textContent || ""}`;
+          const isBase = b && (href.includes(`${b.galaxy}`) && href.includes(`${b.system}`) && href.includes(`${b.position}`));
+          if (!isBase && !p.classList.contains("selected")) continue;
+          let sib = p.nextElementSibling;
+          while (sib && !(sib.classList && sib.classList.contains("moon-select"))) sib = sib.nextElementSibling;
+          if (sib) { moonLink = sib; if (isBase) break; }
+        }
+        if (!moonLink) {
+          log("[MOON SAVE] POWRÓT PRZERWANY: nie znalazłem księżyca bazy na liście planet. Flota zostaje na księżycu — ściągnij ją ręcznie.", "error");
+          GM_setValue("pending_mission", null);
+          MoonSave.disarm("powrót nieudany — brak księżyca w sidebarze");
+          return;
+        }
+        log("[MOON SAVE] przełączam aktywne ciało na księżyc bazy…", "fleet");
+        mission.step = "switch_planet_then_fleet";
+        mission.switchToFleetUrl = mission.fleetUrl;
+        mission.timestamp = Date.now();
+        GM_setValue("pending_mission", JSON.stringify(mission));
+        await AntiDetection.sleep(600 + Math.random() * 600);
+        const href = moonLink.getAttribute("href");
+        if (href && href.length > 1) window.location.href = href; else moonLink.click();
+        return;
+      }
+
       // ── Direct asteroid mining: fleet URL has coords + mission pre-set ──
       // 3-step form on same page: Select ships → Confirm destination → Send fleet
       if (mission.step === "select_ships_direct" && page === "fleet") {
@@ -4769,6 +4915,11 @@
           }
           if (picked) {
             log(`[MOON SAVE] mission: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
+            // v2.21.0: this is the fact the automatic trigger waits for. Until
+            // a real send has shown which "fly there and stay" mission this
+            // build offers, arming an unattended fleet mover would be guessing
+            // with the whole fleet as the stake. One save proves it, forever.
+            if (matched !== "TRANSPORT") MoonSave.proveMission(matched, picked.className || "");
             // v2.20.0: a transport UNLOADS and flies home, and with the moon at
             // the same coords "home" is minutes away — straight back onto the
             // planet, in time for the next wave. It stays as the last resort
@@ -4928,7 +5079,9 @@
             writeLastSent(null);
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
-            log(mission.moonSave ? "FLEET SAVED — everything moved to the moon."
+            if (mission.moonReturn) MoonSave.disarm("flota i surowce wróciły na planetę bazową");
+            log(mission.moonReturn ? "POWRÓT ZAKOŃCZONY — flota i surowce lecą z księżyca na planetę. Mining i ekspedycje wracają do pracy."
+              : mission.moonSave ? "FLEET SAVED — everything moved to the moon."
               : mission.expedition ? "EXPEDITION FLEET SENT!"
               : mission.farm ? "FARM FLEET SENT!"
               : "FLEET SENT! All miners dispatched!", "success");
@@ -5073,6 +5226,24 @@
     // Handle any pending multi-page mission first
     await handlePendingMission();
 
+    // ── v2.21.0: DEFENCE RUNS BEFORE EVERY PAUSE ──
+    // This block used to sit below the coffee-break and night-sleep returns,
+    // which meant the bot was blind to an incoming fleet for 5-15 minutes at a
+    // time — and asleep for hours if a night window were set. A humanizer
+    // break is a pretence; an attack is not. Detection and the fleet save now
+    // run first, unconditionally. The one-shot LEARNING side-effects (galaxy
+    // visits to capture the moon link) stay behind the pause, because those
+    // are the parts that would make a "resting" bot navigate.
+    {
+      const resting = Humanizer.isOnBreak() || AntiDetection.isSleepTime();
+      ThreatMonitor.check({ emergencyOnly: resting });
+      // If a save is armed, keeping the base planet empty outranks mining,
+      // farming and expeditions — it navigates, so it wins the whole tick.
+      if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
+      if (await MoonSave.returnHome().catch(() => false)) return;
+      if (await MoonSave.keepPlanetEmpty().catch(() => false)) return;
+    }
+
     // v2.12.0: coffee breaks — full-bot pause with human macro-pacing.
     if (Humanizer.isOnBreak()) {
       log(`On break (~${Humanizer.breakLeftMin()}min left) — no activity.`, "delay");
@@ -5089,15 +5260,10 @@
       return;
     }
 
-    // v2.15.0: threat check first — it's a pure DOM read of the mission bar
-    // already on the page, and every module below gates on its result.
+    // v2.21.0: the threat read moved above the pause gates (see the defence
+    // block after handlePendingMission). Only the learning side-effects run
+    // here, once the bot is genuinely active.
     ThreatMonitor.check();
-
-    // v2.20.0: multi-wave watch, straight after the threat read and ahead of
-    // every income module. If a save is armed, keeping the base planet empty
-    // outranks mining, farming and expedition waves — it navigates, so it has
-    // to win the tick rather than share it.
-    if (await MoonSave.keepPlanetEmpty().catch(() => false)) return;
 
     // v2.13.0: grab the green "Online bonus" if it's on screen. Placed before
     // the keepalive reload (which returns) and before jitter (which can sleep
@@ -5430,6 +5596,14 @@
           <div class="status" id="ogx-threat-status">—</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
             <button class="mini-btn" id="ogx-moonsave-now" style="width:100%;background:#7b241c;border-color:#e74c3c;color:#fff;font-weight:bold;" title="Wysyła CAŁĄ flotę z planety bazowej i WSZYSTKIE surowce na Twój księżyc na tych samych koordach. Atakujący wybiera cel przy starcie i nie może go zmienić w locie, więc flota na księżycu jest poza tym uderzeniem.">RATUJ FLOTĘ → księżyc</button>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px;font-size:10px;color:#bbb;">
+              <span title="Gdy w pasku misji pojawi się obca flota, bot sam wysyła CAŁĄ flotę i WSZYSTKIE surowce na księżyc. Reaguje też na sondy szpiegowskie — dlatego działa razem z automatycznym powrotem.">Auto-ratunek przy ataku</span>
+              <button class="mini-btn" id="ogx-auto-save">${CONFIG.threatAlarm.autoSave ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Gdy alarm wygaśnie (10 min bez obcych flot), bot ściąga flotę i surowce z powrotem na planetę, żeby mining i ekspedycje ruszyły. Bez tego fałszywy alarm parkowałby gospodarkę na księżycu na stałe.">Auto-powrót po alarmie</span>
+              <button class="mini-btn" id="ogx-auto-return">${CONFIG.threatAlarm.autoReturn ? "ON" : "OFF"}</button>
+            </label>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
           </div>
           <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
@@ -5604,6 +5778,20 @@
 
     // v2.17.0: manual fleet save
     {
+      const bindThreatToggle = (id, key, label) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener("click", () => {
+          CONFIG.threatAlarm[key] = !CONFIG.threatAlarm[key];
+          saveConfig(CONFIG);
+          btn.textContent = CONFIG.threatAlarm[key] ? "ON" : "OFF";
+          log(`${label} ${CONFIG.threatAlarm[key] ? "włączony" : "WYŁĄCZONY"}`, CONFIG.threatAlarm[key] ? "info" : "warn");
+          updateStatusUI();
+        });
+      };
+      bindThreatToggle("ogx-auto-save", "autoSave", "Auto-ratunek przy ataku");
+      bindThreatToggle("ogx-auto-return", "autoReturn", "Auto-powrót po alarmie");
+
       const msBtn = document.getElementById("ogx-moonsave-now");
       if (msBtn) msBtn.addEventListener("click", () => {
         if (!MoonSave.armed()) {
