@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.27.0
+// @version      2.28.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3222,6 +3222,18 @@
       if (!b || !Number.isFinite(b.galaxy) || !Number.isFinite(b.system)) return null;
       return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}`;
     },
+
+    // v2.28.0: which body is active right now — the one a fleet would launch
+    // from, and therefore the one the ships are sitting on. The sidebar marks
+    // it: a moon carries .moon-select.selected, a planet .planet-select.selected.
+    // Verified live on 2026-08-01 (18:51 dump listed A.moon-select.selected
+    // while the planet entry had lost its .selected class).
+    // null = page has no sidebar; callers fall back rather than guess.
+    currentBody() {
+      if (document.querySelector(".moon-select.selected, a.moon-select.selected")) return "moon";
+      if (document.querySelector(".planet-select.selected, a.planet-select.selected")) return "planet";
+      return null;
+    },
     armed() { return !!this.targetUrl(); },
 
     state() {
@@ -3377,7 +3389,7 @@
         // because ThreatMonitor sees no foreign fleets and calls it over. The
         // bot would be overruling a human decision 90 seconds after it was
         // made. Operator-triggered saves stay until the operator says
-        // otherwise (the WRÓĆ Z KSIĘŻYCA button).
+        // otherwise (the WRÓĆ NA BAZĘ button).
         if (w.trigger !== "threat") return false;
         if (ThreatMonitor.active()) return false;     // still hostile — stay put
       }
@@ -3388,16 +3400,25 @@
       if (!url) return false;
       this.running = true;
       try {
+        // v2.28.0: home is whatever body the fleet lived on when the alert
+        // started; the refuge is the other one. The return therefore has to
+        // launch FROM the refuge and target HOME — both read from the watch
+        // instead of being hard-wired to moon→planet.
+        const home = w.homeBody || "planet";
+        const refuge = w.refugeBody || (home === "moon" ? "planet" : "moon");
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_return_direct",
           moonSave: true,       // identical form handling: all ships, all resources, stationing
-          moonReturn: true,     // …but this leg has to start FROM the moon
+          moonReturn: true,
+          targetBody: home,     // …and this leg flies back to where the fleet lives
+          launchBody: refuge,   // …starting from the body it fled to
           fleetUrl: url,
-          step: "switch_to_moon",
+          step: "switch_to_body",
           timestamp: Date.now(),
         }));
         this.saveWatch({ ...w, returning: true, returnAt: Date.now() });
-        log("POWRÓT: alarm minął — ściągam flotę i surowce z księżyca na planetę bazową.", "success");
+        const nm = (b) => (b === "moon" ? "księżyca" : "planety");
+        log(`POWRÓT: alarm minął — ściągam flotę i surowce z ${nm(refuge)} z powrotem na ${home === "moon" ? "księżyc" : "planetę"}.`, "success");
         await AntiDetection.sleep(400 + Math.random() * 600);
         return true;
       } catch (err) {
@@ -3448,9 +3469,21 @@
       this.running = true;
       try {
         const href = this.targetUrl();
+        // ── v2.28.0: uciekaj na DRUGIE ciało, nie zawsze na księżyc ──
+        // Właściciel: „jeśli flota stoi na księżycu i leci atak na księżyc, ma
+        // przenieść na planetę i odwrotnie" — i zamierza używać raz jednego,
+        // raz drugiego. Okazuje się, że nie trzeba wiedzieć, w co celuje atak:
+        // napastnik szpieguje i celuje tam, gdzie WIDZI flotę, więc ucieczka na
+        // przeciwne ciało jest właściwa w obu przypadkach. To usuwa zależność
+        // od rozpoznania celu, którego nigdy nie udało się potwierdzić.
+        const from = this.currentBody() || "planet";
+        const to = from === "moon" ? "planet" : "moon";
+        const w0 = this.watch();
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
           moonSave: true,
+          targetBody: to,
+          homeBody: w0.homeBody || from,
           fleetUrl: href,
           step: "select_ships_direct",
           timestamp: Date.now(),
@@ -3463,8 +3496,13 @@
         // Remember WHO started this: the alarm may undo its own saves, nobody
         // else's. A sweep inherits the trigger of the save it continues.
         const trigger = w.trigger || (auto || ThreatMonitor.active() ? "threat" : "manual");
-        this.saveWatch({ armed: true, trigger, lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
-        log(`FLEET SAVE → moon at the base coords (${reason}). Sending EVERY ship and ALL resources.`, "success");
+        // homeBody is where the fleet LIVES — recorded on the first save of an
+        // alert and never overwritten by the sweeps, so the return always knows
+        // where to put everything back regardless of which body it is today.
+        this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: to,
+                         lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
+        const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
+        log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na tych samych koordach (${reason}). Wszystkie statki i wszystkie surowce.`, "success");
         await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
         window.location.href = href;
         return true;
@@ -4540,26 +4578,25 @@
       // the planet to itself. The sidebar renders each moon right after its
       // planet, so the base planet's entry identifies its moon — no coord
       // parsing, no guessing which of the moons is ours.
-      if (mission.step === "switch_to_moon") {
-        const b = CONFIG.asteroidMining.minerBase;
-        // v2.26.2: after a save we are ALREADY standing on the moon, so there
-        // is usually nothing to switch. The old code always hunted the sidebar
-        // and aborted the whole return when it came up empty — which is what
-        // happened at 18:40: the step ran on the MESSAGES page, where there is
-        // no planet list at all, and it threw the fleet-save guard away with it.
-        const onMoon = !!document.querySelector(".moon-select.selected, a.moon-select.selected");
-        const planetList = document.querySelectorAll("a.planet-select, .planet-select");
-        if (!planetList.length && !onMoon) {
+      if (mission.step === "switch_to_body" || mission.step === "switch_to_moon") {
+        // v2.28.0: generalised from "switch to the moon". Either body can be
+        // the refuge now, so the step switches to mission.launchBody — the one
+        // the fleet fled to and must take off from. Old missions that still say
+        // switch_to_moon mean the moon.
+        const want = mission.launchBody || "moon";
+        const here = MoonSave.currentBody();
+        const sidebar = document.querySelectorAll("a.planet-select, .planet-select, a.moon-select, .moon-select");
+        if (!sidebar.length) {
           // No sidebar on this page — go where there is one instead of giving up.
-          log("[MOON SAVE] brak listy planet na tej stronie — przechodzę na Overview i wracam do powrotu.", "fleet");
+          log("[RATUNEK] brak listy planet na tej stronie — przechodzę na Overview i wracam do powrotu.", "fleet");
           mission.timestamp = Date.now();
           GM_setValue("pending_mission", JSON.stringify(mission));
           await AntiDetection.sleep(500 + Math.random() * 500);
           window.location.href = "/overview";
           return;
         }
-        if (onMoon) {
-          log("[MOON SAVE] jesteśmy już na księżycu — pomijam przełączanie, lecę prosto do formularza.", "fleet");
+        if (here === want) {
+          log(`[RATUNEK] jesteśmy już na właściwym ciele (${want === "moon" ? "księżyc" : "planeta"}) — lecę prosto do formularza.`, "fleet");
           mission.step = "select_ships_direct";
           mission.timestamp = Date.now();
           GM_setValue("pending_mission", JSON.stringify(mission));
@@ -4567,34 +4604,38 @@
           window.location.href = mission.fleetUrl;
           return;
         }
-        const planets = [...planetList];
-        let moonLink = null;
+        // Find the base entry in the sidebar. The game renders each moon right
+        // after its planet, so the pair identifies itself by adjacency — no
+        // coordinate parsing, and it works whichever half is currently active.
+        const b = CONFIG.asteroidMining.minerBase;
+        let target = null;
+        const planets = [...document.querySelectorAll("a.planet-select, .planet-select")];
         for (const p of planets) {
           const href = p.getAttribute("href") || "";
-          const txt = `${href} ${p.textContent || ""}`;
-          const isBase = b && (href.includes(`${b.galaxy}`) && href.includes(`${b.system}`) && href.includes(`${b.position}`));
-          if (!isBase && !p.classList.contains("selected")) continue;
-          let sib = p.nextElementSibling;
-          while (sib && !(sib.classList && sib.classList.contains("moon-select"))) sib = sib.nextElementSibling;
-          if (sib) { moonLink = sib; if (isBase) break; }
+          const isBase = b && href.includes(`${b.galaxy}`) && href.includes(`${b.system}`) && href.includes(`${b.position}`);
+          let moon = p.nextElementSibling;
+          while (moon && !(moon.classList && moon.classList.contains("moon-select"))) moon = moon.nextElementSibling;
+          const mineHere = isBase || p.classList.contains("selected") ||
+                           (moon && moon.classList.contains("selected"));
+          if (!mineHere) continue;
+          target = want === "moon" ? moon : p;
+          if (isBase) break;
         }
-        if (!moonLink) {
-          // v2.26.2: do NOT disarm here. The fleet is still sitting on the moon,
-          // and disarming made the WRÓĆ Z KSIĘŻYCA button answer "nie ma czego
-          // ściągać" — the guard was thrown away at the exact moment it was the
-          // only way back. Keep the state; the operator can retry.
-          log("[MOON SAVE] POWRÓT NIEUDANY: nie znalazłem księżyca bazy na liście planet. Flota ZOSTAJE na księżycu, straż działa — kliknij WRÓĆ Z KSIĘŻYCA jeszcze raz albo ściągnij ją ręcznie.", "error");
+        if (!target) {
+          // Never disarm on failure: the fleet is still parked on the refuge and
+          // the guard is the only way back through the bot.
+          log(`[RATUNEK] POWRÓT NIEUDANY: nie znalazłem ${want === "moon" ? "księżyca" : "planety"} bazy na liście. Flota ZOSTAJE na miejscu, straż działa — kliknij WRÓĆ jeszcze raz albo przenieś ją ręcznie.`, "error");
           GM_setValue("pending_mission", null);
           return;
         }
-        log("[MOON SAVE] przełączam aktywne ciało na księżyc bazy…", "fleet");
+        log(`[RATUNEK] przełączam aktywne ciało na ${want === "moon" ? "księżyc" : "planetę"} bazy…`, "fleet");
         mission.step = "switch_planet_then_fleet";
         mission.switchToFleetUrl = mission.fleetUrl;
         mission.timestamp = Date.now();
         GM_setValue("pending_mission", JSON.stringify(mission));
         await AntiDetection.sleep(600 + Math.random() * 600);
-        const href = moonLink.getAttribute("href");
-        if (href && href.length > 1) window.location.href = href; else moonLink.click();
+        const href = target.getAttribute("href");
+        if (href && href.length > 1) window.location.href = href; else target.click();
         return;
       }
 
@@ -5067,7 +5108,11 @@
         // fleet save sat "cel nieznany" through every visit. Target the base
         // coords like any other fleet and pick the body here.
         if (mission.moonSave) {
-          const wantMoon = !mission.moonReturn; // the return leg goes back to the planet
+          // v2.28.0: the target body is decided at dispatch time and carried on
+          // the mission, because "flee" and "home" are no longer fixed to moon
+          // and planet — either can be the base. Old missions without the field
+          // keep the pre-2.28 meaning.
+          const wantMoon = mission.targetBody ? mission.targetBody === "moon" : !mission.moonReturn;
           const panel = document.querySelector("#fleet2, .fleet2, .destination, [class*='destination']") || document.body;
           if (GM_getValue("ogamex_step2_markup_dumped", "") !== "1") {
             GM_setValue("ogamex_step2_markup_dumped", "1");
@@ -5876,7 +5921,7 @@
           </div>
           <div class="status" id="ogx-threat-status">—</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
-            <button class="mini-btn" id="ogx-moonsave-now" style="width:100%;background:#7b241c;border-color:#e74c3c;color:#fff;font-weight:bold;" title="Wysyła CAŁĄ flotę z planety bazowej i WSZYSTKIE surowce na Twój księżyc na tych samych koordach. Atakujący wybiera cel przy starcie i nie może go zmienić w locie, więc flota na księżycu jest poza tym uderzeniem.">RATUJ FLOTĘ → księżyc</button>
+            <button class="mini-btn" id="ogx-moonsave-now" style="width:100%;background:#7b241c;border-color:#e74c3c;color:#fff;font-weight:bold;" title="Przenosi CAŁĄ flotę i WSZYSTKIE surowce na DRUGIE ciało na tych samych koordach: z planety na księżyc albo z księżyca na planetę, zależnie od tego, gdzie flota stoi. Atakujący wybiera cel przy starcie i nie może go zmienić w locie, więc flota na drugim ciele jest poza tym uderzeniem.">RATUJ FLOTĘ → drugie ciało</button>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px;font-size:10px;color:#bbb;">
               <span title="Gdy w pasku misji pojawi się obca flota, bot sam wysyła CAŁĄ flotę i WSZYSTKIE surowce na księżyc. Reaguje też na sondy szpiegowskie — dlatego działa razem z automatycznym powrotem.">Auto-ratunek przy ataku</span>
               <button class="mini-btn" id="ogx-auto-save">${CONFIG.threatAlarm.autoSave ? "ON" : "OFF"}</button>
@@ -5885,7 +5930,7 @@
               <span title="Gdy alarm wygaśnie (10 min bez obcych flot), bot ściąga flotę i surowce z powrotem na planetę, żeby mining i ekspedycje ruszyły. Bez tego fałszywy alarm parkowałby gospodarkę na księżycu na stałe.">Auto-powrót po alarmie</span>
               <button class="mini-btn" id="ogx-auto-return">${CONFIG.threatAlarm.autoReturn ? "ON" : "OFF"}</button>
             </label>
-            <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z księżyca z powrotem na planetę bazową. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ Z KSIĘŻYCA → planeta</button>
+            <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
           </div>
           <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
@@ -6078,7 +6123,7 @@
       if (msBtn) msBtn.addEventListener("click", () => {
         const needsLearn = !MoonSave.armed();
         if (!window.confirm(
-          "Wysłać CAŁĄ flotę z planety bazowej i WSZYSTKIE surowce na księżyc?\n\n" +
+          "Przenieść CAŁĄ flotę i WSZYSTKIE surowce na drugie ciało (planeta ↔ księżyc, te same koordy)?\n\n" +
           "Minerzy przestaną kopać do czasu powrotu." +
           (needsLearn ? "\n\nCel księżyca nie jest jeszcze znany — bot wejdzie najpierw na galaktykę bazy, odczyta go i dokończy sam." : ""))) return;
         MoonSave.run({ manual: true, reason: "ręcznie" }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
@@ -6087,7 +6132,7 @@
       const mbBtn = document.getElementById("ogx-moonback-now");
       if (mbBtn) mbBtn.addEventListener("click", () => {
         const noGuard = !MoonSave.watch().armed;
-        if (!window.confirm("Ściągnąć CAŁĄ flotę i WSZYSTKIE surowce z księżyca z powrotem na planetę bazową?" +
+        if (!window.confirm("Ściągnąć CAŁĄ flotę i WSZYSTKIE surowce z powrotem na ciało bazowe?" +
           (noGuard ? "\n\n(Straż nie jest aktywna — jeśli na księżycu nic nie ma, formularz po prostu nic nie wyśle.)" : ""))) return;
         MoonSave.returnHome({ byOperator: true }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
       });
@@ -6535,7 +6580,7 @@
         msStatus.textContent = !MoonSave.armed()
           ? "Cel księżyca nieznany — po prostu kliknij RATUJ FLOTĘ, bot sam wejdzie na galaktykę bazy i go odczyta"
           : mw.armed
-            ? `STRAŻ WIELOFALOWA (${mw.trigger === "threat" ? "alarm" : "ręcznie"}): trzymam planetę pustą, ${mw.saves || 0} zapis(ów) co ~${Math.round(MoonSave.MIN_RESAVE_MS / 1000)}s. ${mw.trigger === "threat" ? "Powrót sam, gdy obce floty znikną z paska." : "Ratunek ręczny — powrót TYLKO przyciskiem WRÓĆ Z KSIĘŻYCA."}`
+            ? `STRAŻ WIELOFALOWA (${mw.trigger === "threat" ? "alarm" : "ręcznie"}): flota na ${mw.refugeBody === "moon" ? "księżycu" : "planecie"}, baza ${mw.homeBody === "moon" ? "księżyc" : "planeta"} trzymana pusta, ${mw.saves || 0} zapis(ów) co ~${Math.round(MoonSave.MIN_RESAVE_MS / 1000)}s. ${mw.trigger === "threat" ? "Powrót sam, gdy obce floty znikną z paska." : "Ratunek ręczny — powrót TYLKO przyciskiem WRÓĆ NA BAZĘ."}`
             : ms.at
               ? `Gotowe. Ostatni ratunek: ${Math.round((Date.now() - ms.at) / 60000)}min temu (${ms.reason || "?"})`
               : "Gotowe — cel księżyca nauczony. Automat WYŁĄCZONY (czeka na rozpoznanie ataku vs sondy).";
