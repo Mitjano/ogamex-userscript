@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.25.1
+// @version      2.25.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3314,11 +3314,21 @@
     // from the base planet, so an empty planet earns nothing. The alert clears
     // itself 10min after the last foreign sighting; everything comes back and
     // the bot resumes on its own.
-    async returnHome() {
-      if (!CONFIG.threatAlarm?.autoReturn) return false;
+    async returnHome({ byOperator = false } = {}) {
       const w = this.watch();
       if (!w.armed || !w.saves) return false;
-      if (ThreatMonitor.active()) return false;       // still hostile — stay put
+      if (!byOperator) {
+        if (!CONFIG.threatAlarm?.autoReturn) return false;
+        // v2.25.2: auto-return belongs ONLY to saves the alarm started. A save
+        // the operator pressed with a clean mission bar — "I can see something
+        // you can't" — would otherwise be undone within one scheduler tick,
+        // because ThreatMonitor sees no foreign fleets and calls it over. The
+        // bot would be overruling a human decision 90 seconds after it was
+        // made. Operator-triggered saves stay until the operator says
+        // otherwise (the WRÓĆ Z KSIĘŻYCA button).
+        if (w.trigger !== "threat") return false;
+        if (ThreatMonitor.active()) return false;     // still hostile — stay put
+      }
       if (this.running) return false;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") return false;
@@ -3398,7 +3408,10 @@
         // manual one: pressing the button once is the operator saying "we are
         // under attack", and everything that lands afterwards has to go too.
         const w = this.watch();
-        this.saveWatch({ armed: true, lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
+        // Remember WHO started this: the alarm may undo its own saves, nobody
+        // else's. A sweep inherits the trigger of the save it continues.
+        const trigger = w.trigger || (auto || ThreatMonitor.active() ? "threat" : "manual");
+        this.saveWatch({ armed: true, trigger, lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
         log(`FLEET SAVE → moon at the base coords (${reason}). Sending EVERY ship and ALL resources.`, "success");
         await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
         window.location.href = href;
@@ -5751,6 +5764,7 @@
               <span title="Gdy alarm wygaśnie (10 min bez obcych flot), bot ściąga flotę i surowce z powrotem na planetę, żeby mining i ekspedycje ruszyły. Bez tego fałszywy alarm parkowałby gospodarkę na księżycu na stałe.">Auto-powrót po alarmie</span>
               <button class="mini-btn" id="ogx-auto-return">${CONFIG.threatAlarm.autoReturn ? "ON" : "OFF"}</button>
             </label>
+            <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z księżyca z powrotem na planetę bazową. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ Z KSIĘŻYCA → planeta</button>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
           </div>
           <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
@@ -5947,6 +5961,16 @@
           "Minerzy przestaną kopać do czasu powrotu." +
           (needsLearn ? "\n\nCel księżyca nie jest jeszcze znany — bot wejdzie najpierw na galaktykę bazy, odczyta go i dokończy sam." : ""))) return;
         MoonSave.run({ manual: true, reason: "ręcznie" }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
+      });
+
+      const mbBtn = document.getElementById("ogx-moonback-now");
+      if (mbBtn) mbBtn.addEventListener("click", () => {
+        if (!MoonSave.watch().armed) {
+          log("[MOON SAVE] nie ma czego ściągać — żaden ratunek nie jest aktywny.", "warn");
+          return;
+        }
+        if (!window.confirm("Ściągnąć CAŁĄ flotę i WSZYSTKIE surowce z księżyca z powrotem na planetę bazową?")) return;
+        MoonSave.returnHome({ byOperator: true }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
       });
     }
 
@@ -6386,7 +6410,7 @@
         msStatus.textContent = !MoonSave.armed()
           ? "Cel księżyca nieznany — po prostu kliknij RATUJ FLOTĘ, bot sam wejdzie na galaktykę bazy i go odczyta"
           : mw.armed
-            ? `STRAŻ WIELOFALOWA: trzymam planetę pustą (${mw.saves || 0} zapis(ów), co ~${Math.round(MoonSave.MIN_RESAVE_MS / 1000)}s). Wyłączy się, gdy obce floty znikną z paska.`
+            ? `STRAŻ WIELOFALOWA (${mw.trigger === "threat" ? "alarm" : "ręcznie"}): trzymam planetę pustą, ${mw.saves || 0} zapis(ów) co ~${Math.round(MoonSave.MIN_RESAVE_MS / 1000)}s. ${mw.trigger === "threat" ? "Powrót sam, gdy obce floty znikną z paska." : "Ratunek ręczny — powrót TYLKO przyciskiem WRÓĆ Z KSIĘŻYCA."}`
             : ms.at
               ? `Gotowe. Ostatni ratunek: ${Math.round((Date.now() - ms.at) / 60000)}min temu (${ms.reason || "?"})`
               : "Gotowe — cel księżyca nauczony. Automat WYŁĄCZONY (czeka na rozpoznanie ataku vs sondy).";
