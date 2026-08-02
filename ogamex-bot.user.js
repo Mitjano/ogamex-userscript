@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.44.0
+// @version      2.45.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1998,12 +1998,10 @@
       // ajaxGetTabContents): /ajax/messages?tab=fleets&pagination=1. Raporty
       // z ekspedycji i wypraw górniczych siedzą w zakładce „fleets"; wcześniej
       // bot pobierał gołe /messages i lądował na „unknown message markup".
-      for (const url of [
-        "/ajax/messages?tab=fleets&pagination=1",
-        "/ajax/messages?tab=fleets&pagination=2",
-        "/ajax/messages",
-        "/messages",
-      ]) {
+      // v2.45.0: /ajax/messages na tym serwerze oddaje zwykłą stronę, nie
+      // treść zakładki (test 18:31 → 200 text/html z <style>). Zostaje samo
+      // /messages, czyli to, co bot czytał wcześniej.
+      for (const url of ["/messages"]) {
         try {
           const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
           if (!res.ok) continue;
@@ -3090,6 +3088,7 @@
     // Odpytuje check-target o WŁASNĄ bazę (cel istniejący i nasz, więc żadna
     // walidacja nie kłuje w oczy) i zapamiętuje tabelę statków.
     async refreshShips(force = false) {
+      if (!Ajax.supported()) return this.data();
       const at = parseInt(GM_getValue(this.KEY_SHIPS_AT, "0")) || 0;
       if (!force && this.data() && Date.now() - at < this.SHIPS_TTL_MS) return this.data();
       const b = CONFIG.asteroidMining.minerBase;
@@ -3124,6 +3123,7 @@
     // czyli w złą stronę), ale to jedyny sposób, żeby cofnąć pomyłkową wysyłkę
     // bez czekania na powrót. Stąd: przycisk w panelu, nie automat.
     async recall(missionId) {
+      if (!Ajax.supported()) return { ok: false, error: "serwer nie ma endpointu odwołania" };
       if (!missionId) return { ok: false, error: "brak numeru misji" };
       const json = await Ajax.post("/ajax/fleet/dispatch/recall-fleet", { fleet_mission_id: missionId }).catch(() => null);
       if (!json || json._raw) return { ok: false, error: "brak odpowiedzi z endpointu" };
@@ -3151,6 +3151,7 @@
     // ships: { ASTEROID_MINER: 2500000000, ... }; zwraca { ok, error }
     async send({ galaxy, system, position, type = 1, mission, ships = {}, speed = 10,
                  holdingtime = 0, metal = 0, crystal = 0, deuterium = 0 }) {
+      if (!Ajax.supported()) return { ok: false, error: "serwer nie ma endpointu wysyłki" };
       if (!Number.isFinite(mission) || mission <= 0) return { ok: false, error: "brak numeru misji" };
       const params = {
         galaxy, system, position, type, mission, speed, holdingtime,
@@ -3177,6 +3178,72 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  API SNIFFER (v2.45.0) — czego gra używa NAPRAWDĘ
+  // ═══════════════════════════════════════════════════════════════
+  // Trasy z open-source'owego OGameX okazały się nieprawdziwe dla tego serwera
+  // (404 na eventbox, eventlist i check-target). Zgadywanie kolejnych adresów
+  // to strzelanie w ciemno, a każdy strzał to 404 w logach serwera.
+  //
+  // Jest prostszy i uczciwszy sposób: gra sama odpytuje swoje endpointy —
+  // pasek misji odświeża się bez przeładowania, galaktyka doczytuje wiersze,
+  // wiadomości ładują zakładki. Wystarczy podsłuchać WŁASNE zapytania strony.
+  // Podpinamy się pod fetch i XMLHttpRequest w kontekście strony, notujemy
+  // unikalne adresy i wypisujemy je raz. Zero dodatkowego ruchu.
+  const ApiSniffer = {
+    KEY: "ogamex_seen_endpoints",
+    MAX: 40,
+
+    seen() { try { return JSON.parse(GM_getValue(this.KEY, "{}")); } catch { return {}; } },
+
+    note(method, url) {
+      try {
+        const u = String(url || "");
+        if (!u || /^data:|^blob:/.test(u)) return;
+        const path = u.startsWith("http") ? new URL(u).pathname + (new URL(u).search ? "?…" : "") : u.split("#")[0];
+        if (/\.(js|css|png|jpg|jpeg|gif|svg|woff2?|ico|mp3)$/i.test(path)) return;
+        const key = `${method} ${path}`;
+        const all = this.seen();
+        if (all[key]) { all[key].n = (all[key].n || 1) + 1; GM_setValue(this.KEY, JSON.stringify(all)); return; }
+        if (Object.keys(all).length >= this.MAX) return;
+        all[key] = { at: Date.now(), n: 1 };
+        GM_setValue(this.KEY, JSON.stringify(all));
+        log(`[API SNIFFER] gra odpytuje: ${key}`, "info");
+      } catch {}
+    },
+
+    install() {
+      const w = (typeof unsafeWindow !== "undefined" && unsafeWindow) || window;
+      if (!w || w.__ogxSniffer) return;
+      try {
+        w.__ogxSniffer = true;
+        const origFetch = w.fetch;
+        if (typeof origFetch === "function") {
+          w.fetch = function (input, init) {
+            try { ApiSniffer.note((init && init.method) || "GET", typeof input === "string" ? input : input?.url); } catch {}
+            return origFetch.apply(this, arguments);
+          };
+        }
+        const origOpen = w.XMLHttpRequest?.prototype?.open;
+        if (typeof origOpen === "function") {
+          w.XMLHttpRequest.prototype.open = function (method, url) {
+            try { ApiSniffer.note(method || "GET", url); } catch {}
+            return origOpen.apply(this, arguments);
+          };
+        }
+      } catch (e) {
+        log(`[API SNIFFER] nie udało się podpiąć: ${e.message}`, "warn");
+      }
+    },
+
+    dump() {
+      const all = this.seen();
+      const keys = Object.keys(all).sort();
+      if (!keys.length) { log("[API SNIFFER] nic jeszcze nie złapano — pochodź chwilę po grze (galaktyka, flota, wiadomości).", "warn"); return; }
+      log(`[API SNIFFER] złapane adresy (${keys.length}): ${keys.map(k => `${k} ×${all[k].n}`).join(" | ")}`, "error");
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  PHALANX (v2.43.0) — co właściwie na nas leci
   // ═══════════════════════════════════════════════════════════════
   // POST /ajax/phalanx/scan { galaxy, system, position } zwraca ruchy flot
@@ -3194,6 +3261,7 @@
     COOLDOWN_MS: 10 * 60 * 1000,
 
     async scanAttacker() {
+      if (!Ajax.supported()) return false;
       const ev = ThreatMonitor.events();
       const origin = ev?.origins?.[0];
       if (!origin || !(ev.attacks > 0)) return false;
@@ -3275,7 +3343,7 @@
 
     // Zwraca { usable, asteroid, ttl } — usable=false znaczy „nie wiem".
     async look(galaxy, system) {
-      if (this.off()) return { usable: false };
+      if (this.off() || !Ajax.supported()) return { usable: false };
       const json = await Ajax.post("/ajax/galaxy", { galaxy, system }).catch(() => null);
       if (!json || json._raw || json.success === false) {
         this.disable(json?._raw ? "endpoint zwrócił coś, co nie jest JSON-em" : "endpoint nie odpowiedział");
@@ -3340,6 +3408,25 @@
   // ścieżkę zamiast zgadywać.
   const Ajax = {
     KEY_TOKEN: "ogamex_csrf_token",
+    // ── v2.45.0: ten serwer NIE MA upstreamowych endpointów ──
+    // Test z 2026-08-02 18:31 na athena.ogamex.net:
+    //   /ajax/fleet/eventbox/fetch      → 404
+    //   /ajax/fleet/eventlist/fetch     → 404
+    //   /ajax/fleet/dispatch/check-target → 404
+    //   /ajax/galaxy                    → 200, ale zwykła strona HTML
+    //   /ajax/messages?tab=…            → 200, też strona HTML
+    // Trasy z lanedirt/OGameX opisują INNĄ wersję gry. Dopóki nie znamy
+    // prawdziwych adresów tego forka, nie wolno tych zapytań powtarzać: to
+    // czysty ruch w tle bez żadnego pożytku, a każde 404 to ślad w logach
+    // serwera. Bramka jest jednokierunkowa — raz wyłączona zostaje wyłączona,
+    // aż do jawnego „Test API".
+    KEY_SUPPORT: "ogamex_api_support",
+    supported() { return GM_getValue(this.KEY_SUPPORT, "") !== "no"; },
+    markUnsupported(url, status) {
+      if (!this.supported()) return;
+      GM_setValue(this.KEY_SUPPORT, "no");
+      log(`[API] ${url} → ${status}. Ten serwer nie ma endpointów AJAX z upstream OGameX — wyłączam wszystkie ścieżki API i zostaję przy czytaniu stron. Użyj „Test API", jeśli chcesz sprawdzić ponownie.`, "warn");
+    },
 
     // Token CSRF: z <meta>, z ukrytego pola, z globalnej zmiennej `token`
     // (tak trzyma go sama gra), a w ostateczności z zapamiętanego
@@ -3505,11 +3592,13 @@
       this._evFetching = true;
       try {
         const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
+        if (!Ajax.supported()) return;
         let box = null;
         try {
           const res = await fetch("/ajax/fleet/eventbox/fetch", hdr);
-          if (res.ok) box = await res.json();
-        } catch {}
+          if (!res.ok) { Ajax.markUnsupported("/ajax/fleet/eventbox/fetch", res.status); return; }
+          box = await res.json();
+        } catch { return; }
         if (!box || !Number.isFinite(box.hostile)) return; // nie wiem → pasek zostaje awaryjnym źródłem
         Ajax.remember(box.newAjaxToken); // każda odpowiedź gry niesie świeży token CSRF
         const out = { at: Date.now(), hostile: box.hostile, attacks: 0, spies: 0, classified: true, targets: [], origins: [] };
@@ -7288,6 +7377,8 @@
       if (apiTestBtn) apiTestBtn.addEventListener("click", async () => {
         apiTestBtn.disabled = true;
         log("[API TEST] sprawdzam endpointy gry…", "info");
+        ApiSniffer.dump();
+        GM_setValue(Ajax.KEY_SUPPORT, ""); // ręczny test zawsze otwiera bramkę
         try { await Ajax.diagnose(); } catch (e) { log(`[API TEST] błąd: ${e.message}`, "error"); }
         finally { apiTestBtn.disabled = false; }
       });
@@ -7861,6 +7952,7 @@
     }
 
     const SCRIPT_VERSION = (typeof GM_info !== "undefined" && GM_info?.script?.version) || "?";
+    ApiSniffer.install(); // v2.45.0: notuj, czego gra używa naprawdę
     log(`OGameX Assistant v${SCRIPT_VERSION} loaded`, "info");
 
     // v2.10.10: timestamp of the last real page load — read by the scheduler

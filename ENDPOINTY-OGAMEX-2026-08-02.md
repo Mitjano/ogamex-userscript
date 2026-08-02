@@ -1,5 +1,25 @@
 # Endpointy OGameX — co bot może z nich wyciągnąć (2026-08-02)
 
+> **WERYFIKACJA NA ŻYWO 18:31 — WIĘKSZOŚĆ TEGO DOKUMENTU NIE DOTYCZY ATHENY.**
+> Test na athena.ogamex.net dał:
+> ```
+> token CSRF                          → BRAK (nie ma go ani w <meta>, ani w polach, ani w skryptach)
+> GET  /ajax/fleet/eventbox/fetch      → 404
+> GET  /ajax/fleet/eventlist/fetch     → 404
+> POST /ajax/fleet/dispatch/check-target → 404
+> POST /ajax/galaxy                    → 200, ale zwykła strona HTML (nie JSON)
+> GET  /ajax/messages?tab=fleets       → 200, też strona HTML
+> ```
+> Ten serwer to fork o innej (najpewniej starszej) budowie niż lanedirt/OGameX.
+> Wszystkie ścieżki API zostały w v2.45.0 wyłączone jedną bramką, a bot wrócił
+> do czytania stron. Dokument zostaje jako zapis metody i jako lista rzeczy do
+> sprawdzenia, GDY poznamy prawdziwe adresy — do tego służy ApiSniffer, który
+> notuje zapytania wysyłane przez samą grę.
+>
+> Wniosek na przyszłość: przed budowaniem czegokolwiek na cudzym źródle trzeba
+> najpierw potwierdzić JEDEN endpoint na żywo. Zrobiliśmy to dopiero po pięciu
+> wersjach.
+
 Źródło: `routes/web.php` z open-source'owego OGameX (lanedirt/OGameX) plus
 kontrolery. **Uwaga:** athena.ogamex.net to FORK — asteroidy, Galleon, Falcon,
 Planet Bomber i Reaper nie istnieją w wersji upstream. Trasy bazowe fork
