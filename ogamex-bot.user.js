@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.31.0
+// @version      2.32.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2984,6 +2984,9 @@
   const ThreatMonitor = {
     KEY: "ogamex_threat",
     KEY_DUMPED: "ogamex_threat_markup_dumped_v220",
+    KEY_CANDIDATE: "ogamex_threat_candidate", // v2.32.0: od kiedy widzimy obcych
+    CONFIRM_MS: 25 * 1000,                    // tyle musi się utrzymać, zanim ruszymy flotą
+    SELF_SEND_BLIND_MS: 20 * 1000,            // tyle po NASZEJ wysyłce pasek kłamie
     KEY_SEEN: "ogamex_threat_last_seen",      // v2.29.0: co pasek pokazał ostatnio
     KEY_SEEN_AT: "ogamex_threat_last_seen_at",
     _fetching: false,
@@ -3185,7 +3188,38 @@
       if (!r) return; // no mission bar on this page — say nothing, change nothing
       const prev = this.state();
 
+      // ── v2.32.0: POTWIERDŹ, zanim ruszysz flotą ──
+      // 2026-08-02 09:24:14 bot wysłał własną falę ekspedycji. Sześć sekund
+      // później pasek pokazał „19 misji / 18 własnych" — jedna „obca". O 09:24:20
+      // ruszył pełny ratunek KSIĘŻYC → PLANETĘ, o 09:24:31 alarm sam zgasł
+      // („18/18 → 0 obcych"). Nikt nie atakował: gra dolicza wysłaną flotę do
+      // sumy, zanim dopisze ją do „Own", więc bot zobaczył własny statek jako
+      // wroga i ewakuował całą gospodarkę. Potem próbował wracać i wpadł
+      // w pętlę nieudanych powrotów.
+      //
+      // Atak leci minutami, więc kilkadziesiąt sekund na potwierdzenie nic nie
+      // kosztuje, a odróżnia prawdziwego gościa od własnego cienia:
+      //   • odczyt w ciągu SELF_SEND_BLIND_MS od NASZEJ wysyłki jest ignorowany
+      //     (pasek jest w trakcie aktualizacji),
+      //   • obce floty muszą utrzymać się przez CONFIRM_MS, zanim podniesiemy
+      //     alarm.
+      const lastOwnSend = Math.max(
+        parseInt(GM_getValue("ogamex_last_dispatch_at", "0")) || 0,
+        (() => { try { return JSON.parse(GM_getValue("ogamex_expo_state", "null"))?.lastSendAt || 0; } catch { return 0; } })()
+      );
+      if (r.foreign > 0 && Date.now() - lastOwnSend < this.SELF_SEND_BLIND_MS) {
+        ThreatLog.add("odczyt", `${r.foreign} „obcych" tuż po NASZEJ wysyłce (${Math.round((Date.now() - lastOwnSend) / 1000)}s) — to własna flota w trakcie dopisywania do paska. Ignoruję.`);
+        return;
+      }
       if (r.foreign > 0) {
+        const pendingSince = parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0;
+        if (!pendingSince) {
+          GM_setValue(this.KEY_CANDIDATE, String(Date.now()));
+          log(`[THREAT] ${r.foreign} obcą flotę widzę pierwszy raz — potwierdzam przez ${Math.round(this.CONFIRM_MS / 1000)}s, zanim ruszę flotą.`, "warn");
+          ThreatLog.add("odczyt", `Kandydat na alarm: ${r.foreign} obcych (${r.own}/${r.total}). Czekam na potwierdzenie ${Math.round(this.CONFIRM_MS / 1000)}s.`);
+          return;
+        }
+        if (Date.now() - pendingSince < this.CONFIRM_MS) return; // jeszcze się nie potwierdziło
         const first = !prev || !(prev.count > 0);
         GM_setValue(this.KEY, JSON.stringify({
           count: r.foreign,
@@ -3201,8 +3235,16 @@
           this.notify(r.foreign);
         }
       } else if (prev && prev.count > 0) {
+        GM_setValue(this.KEY_CANDIDATE, "0");
         log("Incoming fleets gone — threat alert cleared.", "success");
         ThreatLog.add("koniec", "Obce floty zniknęły z paska misji — alarm zdjęty.");
+      } else if (r.foreign === 0 && (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0)) {
+        // Kandydat zgasł, zanim się potwierdził — dokładnie ten przypadek, który
+        // 2 sierpnia wyewakuował flotę bez powodu. Zostawiamy ślad w dzienniku.
+        const held = Math.round((Date.now() - (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0)) / 1000);
+        GM_setValue(this.KEY_CANDIDATE, "0");
+        log(`[THREAT] niepotwierdzony kandydat zniknął po ${held}s — flota NIE była ruszana.`, "info");
+        ThreatLog.add("odczyt", `Kandydat zniknął po ${held}s bez potwierdzenia — flota nietknięta.`);
         this.clear();
       }
       updateStatusUI();
