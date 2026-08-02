@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.52.0
+// @version      2.52.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4607,11 +4607,20 @@
         const [g, sy, pos] = String(target).split(":").map(Number);
         if (Number.isFinite(g) && Number.isFinite(sy) && Number.isFinite(pos)) where = { galaxy: g, system: sy, position: pos };
       }
-      if (where) {
-        const b = CONFIG.asteroidMining.minerBase;
-        const isBase = where.galaxy === b.galaxy && where.system === b.system && where.position === b.position;
-        ThreatLog.add("ATAK", `Cel ataku: [${target}]${isBase ? " (baza)" : " — ewakuuję TĘ kolonię, nie bazę"}.`);
+      // ── v2.52.1: BEZ przełączania planety `where` jest niebezpieczne ──
+      // MoonSave buduje tylko adres CELU; formularz floty wysyła z planety
+      // AKTYWNEJ w danej chwili. Przy ataku na obcą kolonię 2.52.0 wysłałaby
+      // więc flotę Z BAZY na księżyc tamtej kolonii — czyli sama wyprowadziłaby
+      // flotę z bezpiecznego miejsca. Dopóki nie ma kroku „przełącz się na tę
+      // planetę", ratujemy wyłącznie bazę, a o reszcie mówimy wprost.
+      const b = CONFIG.asteroidMining.minerBase;
+      const isBase = where && where.galaxy === b.galaxy && where.system === b.system && where.position === b.position;
+      if (where && !isBase) {
+        log(`[RATUNEK] atak leci na [${target}], nie na bazę. Nie ruszam floty: bot nie umie jeszcze wysłać z innej kolonii, a wysyłka z bazy wyprowadziłaby flotę z bezpiecznego miejsca. SPRAWDŹ GRĘ.`, "error");
+        ThreatLog.add("ATAK", `Cel: [${target}] — INNA KOLONIA niż baza. Flota bazy NIETKNIĘTA (ewakuacja innych kolonii jeszcze nie działa). Reaguj ręcznie.`);
+        return false;
       }
+      if (isBase) ThreatLog.add("ATAK", `Cel ataku: [${target}] — to baza, ewakuuję.`);
       return this.run({
         auto: true,
         where,
