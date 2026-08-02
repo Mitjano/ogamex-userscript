@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.49.1
+// @version      2.50.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3739,6 +3739,7 @@
         ["GET", "/home/Partial_ExpeditionJournal"],
         ["GET", "/messages/messagedata?MessageCategoryType=FLEET_OTHER&page=1"],
         ["GET", "/messages/messagedata?MessageCategoryType=FLEET_EXPEDITION&page=1"],
+        ["GET", "/home/fleetmovementlist"],
       ];
       for (const [method, url, params] of probes) {
         try {
@@ -3850,6 +3851,23 @@
       this._evFetching = true;
       try {
         const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
+        // ── v2.50.0: lista ruchów flot TEGO serwera ──
+        // Podsłuch złapał /home/fleetmovementlist — endpoint, który gra odpytuje
+        // sama, żeby odświeżyć pasek misji. Jeśli niesie wiersze z typem misji
+        // i celem, to jest brakujące źródło do rozróżnienia sondy od ataku
+        // i do wskazania atakowanej kolonii. Najpierw jednak ZOBACZĘ, co
+        // zwraca — parser powstanie na markupie, nie na domyśle.
+        if (Ajax.supported("/home/fleetmovementlist") && GM_getValue("ogamex_fml_dumped", "") !== "1") {
+          try {
+            const res = await fetch("/home/fleetmovementlist", hdr);
+            if (!res.ok) Ajax.markUnsupported("/home/fleetmovementlist", res.status);
+            else {
+              const txt = (await res.text()).replace(/\s+/g, " ").trim();
+              GM_setValue("ogamex_fml_dumped", "1");
+              log(`[RUCHY FLOT] /home/fleetmovementlist (${txt.length} zn.): ${txt.slice(0, 2000)}`, "error");
+            }
+          } catch {}
+        }
         if (!Ajax.supported("/ajax/fleet/eventbox/fetch")) return;
         let box = null;
         try {
