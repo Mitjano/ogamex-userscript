@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.42.0
+// @version      2.43.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3119,6 +3119,35 @@
     idFor(type) { return this.data()?.[this._norm(type)]?.id || 0; },
     cargoFor(type) { return this.data()?.[this._norm(type)]?.cargo || 0; },
 
+    // ── v2.43.0: odwołanie własnej floty w locie ──
+    // Wartość obronna jest żadna (odwołana flota wraca DO atakowanego ciała,
+    // czyli w złą stronę), ale to jedyny sposób, żeby cofnąć pomyłkową wysyłkę
+    // bez czekania na powrót. Stąd: przycisk w panelu, nie automat.
+    async recall(missionId) {
+      if (!missionId) return { ok: false, error: "brak numeru misji" };
+      const json = await Ajax.post("/ajax/fleet/dispatch/recall-fleet", { fleet_mission_id: missionId }).catch(() => null);
+      if (!json || json._raw) return { ok: false, error: "brak odpowiedzi z endpointu" };
+      if (json.success === true) return { ok: true };
+      return { ok: false, error: json.message || JSON.stringify(json).slice(0, 200) };
+    },
+
+    // Najnowsza WŁASNA misja z listy zdarzeń (wiersz ma id="eventRow-{id}").
+    async lastOwnMissionId() {
+      const html = await fetch("/ajax/fleet/eventlist/fetch", { headers: { "X-Requested-With": "XMLHttpRequest" } })
+        .then(r => r.ok ? r.text() : "").catch(() => "");
+      if (!html) return 0;
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const own = ThreatMonitor.ownBodies();
+      let best = 0;
+      for (const tr of doc.querySelectorAll("tr.eventFleet[id^='eventRow-']")) {
+        const origin = (tr.querySelector(".coordsOrigin")?.textContent || "").match(/(\d+:\d+:\d+)/);
+        if (own.size && (!origin || !own.has(origin[1]))) continue;
+        const id = parseInt(String(tr.id).replace("eventRow-", "")) || 0;
+        if (id > best) best = id;
+      }
+      return best;
+    },
+
     // ships: { ASTEROID_MINER: 2500000000, ... }; zwraca { ok, error }
     async send({ galaxy, system, position, type = 1, mission, ships = {}, speed = 10,
                  holdingtime = 0, metal = 0, crystal = 0, deuterium = 0 }) {
@@ -3144,6 +3173,48 @@
       const err = (json.errors && json.errors[0] && (json.errors[0].message || json.errors[0].error))
         || json.message || JSON.stringify(json).slice(0, 200);
       return { ok: false, error: err };
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  PHALANX (v2.43.0) — co właściwie na nas leci
+  // ═══════════════════════════════════════════════════════════════
+  // POST /ajax/phalanx/scan { galaxy, system, position } zwraca ruchy flot
+  // skanowanej planety: skład, czas przylotu, liczbę flot. To jest ta
+  // informacja, o którą pytał właściciel („sondy max 10 000 sztuk, atak to
+  // setki tysięcy") i której pasek misji nigdy nie poda.
+  //
+  // Dwa twarde warunki gry: skan idzie WYŁĄCZNIE z księżyca z Sensor Phalanx
+  // i kosztuje deuter. Dlatego nie skanujemy profilaktycznie — tylko przy
+  // potwierdzonym ataku, tylko gdy aktywnym ciałem jest księżyc (czyli
+  // naturalnie po ewakuacji, bo wtedy bot i tak na nim stoi) i tylko raz na
+  // dany atak.
+  const Phalanx = {
+    KEY_LAST: "ogamex_phalanx_last",
+    COOLDOWN_MS: 10 * 60 * 1000,
+
+    async scanAttacker() {
+      const ev = ThreatMonitor.events();
+      const origin = ev?.origins?.[0];
+      if (!origin || !(ev.attacks > 0)) return false;
+      if (MoonSave.currentBody?.() !== "moon") return false; // falanga działa tylko z księżyca
+      const last = GM_getValue(this.KEY_LAST, "");
+      const stamp = `${origin}@${Math.floor((ev.at || 0) / 60000)}`;
+      if (last === stamp) return false;
+      const [g, sy, pos] = origin.split(":").map(Number);
+      if (!Number.isFinite(g) || !Number.isFinite(sy) || !Number.isFinite(pos)) return false;
+      const json = await Ajax.post("/ajax/phalanx/scan", { galaxy: g, system: sy, position: pos }).catch(() => null);
+      GM_setValue(this.KEY_LAST, stamp);
+      if (!json || json._raw || json.success !== true) {
+        const why = json?.error_message || json?.errorMessage || "brak odpowiedzi";
+        log(`[FALANGA] skan [${origin}] nieudany: ${why}`, "warn");
+        ThreatLog.add("odczyt", `Falanga na [${origin}] nieudana: ${why}`);
+        return false;
+      }
+      const txt = String(json.content_html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      log(`[FALANGA] [${origin}] — ${json.fleet_count} ruch(ów) floty, koszt ${json.scan_cost} deuteru: ${txt.slice(0, 400)}`, "error");
+      ThreatLog.add("ATAK", `Falanga na [${origin}] (${json.target?.player_name || "?"}): ${json.fleet_count} ruch(ów). ${txt.slice(0, 600)}`);
+      return true;
     },
   };
 
@@ -3397,7 +3468,7 @@
         } catch {}
         if (!box || !Number.isFinite(box.hostile)) return; // nie wiem → pasek zostaje awaryjnym źródłem
         Ajax.remember(box.newAjaxToken); // każda odpowiedź gry niesie świeży token CSRF
-        const out = { at: Date.now(), hostile: box.hostile, attacks: 0, spies: 0, classified: true, targets: [] };
+        const out = { at: Date.now(), hostile: box.hostile, attacks: 0, spies: 0, classified: true, targets: [], origins: [] };
         if (box.hostile > 0) {
           let html = "";
           try {
@@ -3456,6 +3527,7 @@
             if (this.ATTACK_TYPES.includes(type)) {
               out.attacks++;
               if (dest) out.targets.push(dest);
+              if (origin) out.origins.push(origin); // do falangi: skąd leci
             }
           }
         }
@@ -6567,6 +6639,9 @@
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
       await MoonSave.keepPlanetEmpty().catch(() => false);
+      // v2.43.0: stoimy na księżycu i mamy potwierdzony atak → sprawdź falangą,
+      // co właściwie leci. Raz na atak, tylko z księżyca, tylko za deuter.
+      await Phalanx.scanAttacker().catch(() => false);
 
       // ── v2.39.0: gdy COŚ widzimy, patrz częściej ──
       // Potwierdzenie wymaga dwóch odczytów, a pętla chodzi co 30 s — więc
@@ -6918,6 +6993,7 @@
           </div>
           <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
+          <button class="mini-btn" id="ogx-recall" title="Odwołuje NAJNOWSZĄ własną misję z listy zdarzeń gry (endpoint recall-fleet). Do cofania pomyłkowych wysyłek — obronnie bezużyteczne, bo odwołana flota wraca do atakowanego ciała.">Odwołaj wysyłkę</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
         </div>
 
@@ -7150,6 +7226,21 @@
         if (sec) sec.className = `section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}`;
         log(`Online bonus auto-claim ${CONFIG.onlineBonus.enabled ? "enabled" : "disabled"}`, "info");
         updateStatusUI();
+      });
+      const recallBtn = document.getElementById("ogx-recall");
+      if (recallBtn) recallBtn.addEventListener("click", async () => {
+        recallBtn.disabled = true;
+        try {
+          const id = await FleetApi.lastOwnMissionId();
+          if (!id) { log("[RECALL] nie znalazłem własnej misji na liście zdarzeń.", "warn"); return; }
+          const res = await FleetApi.recall(id);
+          log(res.ok ? `[RECALL] misja #${id} odwołana — flota wraca.` : `[RECALL] misja #${id}: ${res.error}`,
+              res.ok ? "success" : "error");
+        } catch (e) {
+          log(`[RECALL] błąd: ${e.message}`, "error");
+        } finally {
+          recallBtn.disabled = false;
+        }
       });
       const recon = document.getElementById("ogx-fleet-recon");
       if (recon) recon.addEventListener("click", () => {
