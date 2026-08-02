@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.51.0
+// @version      2.52.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4595,7 +4595,28 @@
       if (!this.proven()) {
         this._sayOnce("noproof", "[MOON SAVE] ATAK — misji stacjonowania nikt jeszcze nie potwierdził ręcznym ratunkiem. RATUJĘ MIMO TO i wypiszę wybraną misję niżej. SPRAWDŹ W GRZE, czy flota siedzi na księżycu.");
       }
-      return this.run({ auto: true, reason: "AUTOMAT: obca flota w pasku misji" });
+      // ── v2.52.0: ratuj TĘ kolonię, na którą leci atak ──
+      // Do 2.51.0 ewakuacja zawsze ruszała bazę, bo pasek misji nie podawał
+      // celu. Lista ruchów flot podaje go wprost, więc trzymanie się bazy jest
+      // teraz wprost szkodliwe: ruszałoby flotę tam, gdzie nic nie leci,
+      // i zostawiało atakowaną kolonię bez reakcji.
+      const ev = ThreatMonitor.events();
+      const target = ev?.attacks > 0 ? (ev.targets || [])[0] : null;
+      let where = null;
+      if (target) {
+        const [g, sy, pos] = String(target).split(":").map(Number);
+        if (Number.isFinite(g) && Number.isFinite(sy) && Number.isFinite(pos)) where = { galaxy: g, system: sy, position: pos };
+      }
+      if (where) {
+        const b = CONFIG.asteroidMining.minerBase;
+        const isBase = where.galaxy === b.galaxy && where.system === b.system && where.position === b.position;
+        ThreatLog.add("ATAK", `Cel ataku: [${target}]${isBase ? " (baza)" : " — ewakuuję TĘ kolonię, nie bazę"}.`);
+      }
+      return this.run({
+        auto: true,
+        where,
+        reason: where ? `AUTOMAT: atak na [${target}]` : "AUTOMAT: obca flota w pasku misji",
+      });
     },
 
     _sayOnce(key, msg) {
