@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.52.1
+// @version      2.53.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3930,6 +3930,23 @@
             targets: [...new Set(attacks.map(r => r.dst).filter(Boolean))],
             origins: [...new Set(attacks.map(r => r.src).filter(Boolean))],
           };
+          // ── v2.53.0: kontrola krzyżowa z paskiem misji ──
+          // /home/fleetmovementlist zweryfikowałem WYŁĄCZNIE na naszych własnych
+          // wierszach — nikt jeszcze nie leciał na nas od czasu wdrożenia. Jeśli
+          // ta lista pokazuje tylko FLOTY WŁASNE, to v2.51.0 nie „poprawiła"
+          // wykrywania, tylko je WYŁĄCZYŁA: obcych zawsze zero, alarm nigdy nie
+          // wstaje. Pasek misji liczy floty na całym koncie, więc rozbieżność
+          // „pasek widzi obcych, lista nie" jest jedynym sygnałem, jaki mamy.
+          // W razie rozbieżności wygrywa pasek — mniej wie, ale wie na pewno.
+          const barNow = this.read();
+          if (barNow && barNow.foreign > 0 && foreign.length === 0) {
+            if (GM_getValue("ogamex_fml_blind_warned", "") !== "1") {
+              GM_setValue("ogamex_fml_blind_warned", "1");
+              log(`[THREAT] UWAGA: pasek pokazuje ${barNow.foreign} obcych flot, a lista ruchów flot żadnej. Ta lista najpewniej zawiera tylko NASZE floty — wracam do liczenia z paska (sondy znów będą ruszać flotą).`, "error");
+              ThreatLog.add("BŁĄD", `Lista ruchów flot nie pokazuje obcych, a pasek widzi ${barNow.foreign}. Klasyfikacja niepewna — obrona wraca na pasek misji.`);
+            }
+            // Nie kończymy tu: schodzimy do ścieżki paska niżej.
+          } else {
           GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
           if (attacks.length) {
             const first = attacks.sort((a, b) => (a.eta || 1e9) - (b.eta || 1e9))[0];
@@ -3939,6 +3956,7 @@
               + (first.ships?.length ? ` | flota: ${first.ships.slice(0, 8).join(", ")}` : ""));
           }
           return;
+          }
         }
 
         if (!Ajax.supported("/ajax/fleet/eventbox/fetch")) return;
