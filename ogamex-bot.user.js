@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.38.3
+// @version      2.39.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6039,6 +6039,17 @@
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
       await MoonSave.keepPlanetEmpty().catch(() => false);
+
+      // ── v2.39.0: gdy COŚ widzimy, patrz częściej ──
+      // Potwierdzenie wymaga dwóch odczytów, a pętla chodzi co 30 s — więc
+      // decyzja mogła zająć nawet minutę. Przy locie liczonym w minutach to
+      // mieści się w normie, ale połowa okna ostrzegawczego schodziła na samo
+      // czekanie na następne spojrzenie. Skoro kandydat jest, dogrywamy odczyt
+      // po 10 s: potwierdzenie spada z ~60 s do ~35 s, a ruch w tle się nie
+      // zmienia, bo dzieje się to tylko wtedy, gdy naprawdę coś zobaczyliśmy.
+      if (parseInt(GM_getValue(ThreatMonitor.KEY_CANDIDATE, "0")) || 0) {
+        setTimeout(() => { defenceTick().catch(() => {}); }, 10 * 1000);
+      }
     } catch (err) {
       log(`[RATUNEK] błąd pętli obrony: ${err.message}`, "error");
       ThreatLog.add("BŁĄD", `Pętla obrony wyrzuciła wyjątek: ${err.message}`);
