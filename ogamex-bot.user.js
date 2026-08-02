@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.34.0
+// @version      2.35.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3513,8 +3513,22 @@
       // gdzieś przepadło, powrót wysłany minutę temu jest w drodze — flota nie
       // stoi już na refugium, więc kolejna próba i tak trafi w pustkę
       // („nothing on this planet to save"). Jeden powrót na 5 minut wystarczy.
-      if (w.returning && w.returnAt && Date.now() - w.returnAt < 5 * 60 * 1000) {
-        this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round((Date.now() - w.returnAt) / 1000)}s temu) — nie wysyłam drugiego.`);
+      if (w.returning && w.returnAt) {
+        const age = Date.now() - w.returnAt;
+        // ── v2.35.0: koniec zakleszczenia ──
+        // Zapora z v2.33.0 blokowała ponowny powrót przez 5 minut, ale wyjścia
+        // ze stanu dodane w v2.34.0 działają DOPIERO w formularzu — do którego
+        // ta zapora nie pozwalała dojść. Stan mógł więc sprzątnąć tylko kod,
+        // który sam blokował. Log właściciela: „powrót już leci (146s temu)"
+        // w kółko, przy flocie od dawna stojącej w domu.
+        // Skok planeta↔księżyc na tych samych koordach trwa poniżej minuty,
+        // więc powrót sprzed 3 minut jest po prostu ZAKOŃCZONY.
+        if (age > 3 * 60 * 1000) {
+          ThreatLog.add("POWRÓT", `Powrót wysłany ${Math.round(age / 1000)}s temu — lot na te same koordy trwa <1 min, więc jest po wszystkim. Straż zdjęta.`);
+          this.disarm("powrót dawno dolecial — zamykam alarm");
+          return false;
+        }
+        this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round(age / 1000)}s temu) — nie wysyłam drugiego.`);
         return false;
       }
       const url = this.homeUrl();
@@ -6279,7 +6293,13 @@
         CONFIG.threatAlarm.enabled = !CONFIG.threatAlarm.enabled;
         saveConfig(CONFIG);
         tBtn.textContent = CONFIG.threatAlarm.enabled ? "ON" : "OFF";
-        if (!CONFIG.threatAlarm.enabled) ThreatMonitor.clear();
+        if (!CONFIG.threatAlarm.enabled) {
+          ThreatMonitor.clear();
+          // v2.35.0: wyłączenie alarmu to jednoznaczne „przestań" — kasuje też
+          // straż ratunku. Bez tego operator nie miał ŻADNEGO sposobu, żeby
+          // ręcznie zdjąć zator stanu, i musiał czekać na bezpiecznik.
+          MoonSave.disarm("alarm wyłączony przez operatora");
+        }
         // Ask for desktop notifications only here — never unprompted mid-scan.
         if (CONFIG.threatAlarm.enabled && typeof Notification !== "undefined" && Notification.permission === "default") {
           Notification.requestPermission().catch(() => {});
