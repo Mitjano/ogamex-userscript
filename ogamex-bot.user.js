@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.33.0
+// @version      2.34.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3556,10 +3556,20 @@
     // the whole detection mechanism: the save aborts itself with "nothing on
     // this planet to save" when the hangar is clean, so an empty planet costs
     // one page load and nothing else.
+    MAX_ARMED_MS: 60 * 60 * 1000, // v2.34.0: bezpiecznik na zator stanu
+
     async keepPlanetEmpty() {
       if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) return false;
       const w = this.watch();
       if (!w.armed) return false;
+      // Ostatnia linia obrony przed zatorem: straż uzbrojona godzinę bez
+      // zagrożenia to nie alarm, tylko zapomniany stan. Sama się nie odblokuje,
+      // a każde jej odpalenie rusza CAŁĄ flotą.
+      if (w.since && Date.now() - w.since > this.MAX_ARMED_MS && !ThreatMonitor.active()) {
+        ThreatLog.add("BŁĄD", `Straż była uzbrojona ponad ${Math.round(this.MAX_ARMED_MS / 60000)} min bez zagrożenia — zdejmuję jako zator stanu.`);
+        this.disarm("bezpiecznik: uzbrojona zbyt długo bez zagrożenia");
+        return false;
+      }
       if (!ThreatMonitor.active()) {
         // Don't disarm out from under returnHome() — it needs the armed state
         // to know there is something on the moon to bring back.
@@ -5019,6 +5029,21 @@
         // goes, miners included. The whole point is that nothing is left where
         // the attack lands.
         if (mission.moonSave) {
+          // ── v2.34.0: powrót do miejsca, w którym flota już jest, to nie powrót ──
+          // Właściciel: „flotę ma przenosić gdy leci na nią atak" — i miał rację,
+          // że to, co robił bot, nie ma z tym nic wspólnego. Po fałszywym alarmie
+          // z 09:24 flota wróciła na księżyc, ale straż została uzbrojona, więc
+          // powrót odpalał w kółko: przełącz na planetę, wejdź na formularz,
+          // ustaw cel KSIĘŻYC — stojąc już na księżycu. Cel równy źródłu, więc
+          // gra wyszarza „Next" i lecimy w timeout. I tak w nieskończoność.
+          const bodyNow = MoonSave.currentBody();
+          if (mission.moonReturn && bodyNow && bodyNow === mission.targetBody) {
+            log(`[RATUNEK] flota jest już na ${bodyNow === "moon" ? "księżycu" : "planecie"} — nie ma czego ściągać. Kończę powrót.`, "success");
+            ThreatLog.add("POWRÓT", `Flota już na ${bodyNow === "moon" ? "księżycu" : "planecie"} (cel powrotu) — powrót zbędny, straż zdjęta.`);
+            GM_setValue("pending_mission", null);
+            MoonSave.disarm("flota już na ciele docelowym");
+            return;
+          }
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
           const loaded = [];
           for (const el of document.querySelectorAll("[data-ship-type]")) {
@@ -5038,6 +5063,13 @@
           if (!loaded.length) {
             log("[MOON SAVE] nothing on this planet to save — aborting.", "warn");
             GM_setValue("pending_mission", null);
+            // v2.34.0: przy POWROCIE pusto na refugium znaczy, że nie ma czego
+            // ściągać — flota już wróciła albo jest w drodze. Ponawianie tego
+            // co pięć minut to była właśnie ta pętla, którą właściciel widział.
+            if (mission.moonReturn) {
+              ThreatLog.add("POWRÓT", "Na refugium pusto — nie ma czego ściągać. Straż zdjęta.");
+              MoonSave.disarm("refugium puste — powrót bezprzedmiotowy");
+            }
             return;
           }
           log(`[MOON SAVE] loading everything: ${loaded.join(", ")}`, "success");
