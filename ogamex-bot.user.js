@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.56.0
+// @version      2.57.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -99,6 +99,20 @@
       minerBase: { galaxy: 3, system: 269, position: 8 },
     },
     // ── v2.15.0: incoming-attack alarm ──
+    // ── v2.57.0: Fleet Save (FS) ──
+    // Najbezpieczniejszy FS: wysyłka Z KSIĘŻYCA na inny księżyc misją Stacjonuj
+    // i ZAWRÓCENIE w locie. Zawrócona flota wraca tyle czasu, ile leciała, więc
+    //     powrót = start + 2 × opóźnienie zawrócenia
+    // Właściciel podaje godzinę powrotu; bot wylicza, kiedy wystartować i kiedy
+    // zawrócić. Minery zostają w domu — one pracują.
+    fleetSave: {
+      enabled: false,
+      from: { galaxy: 3, system: 269, position: 8 },  // bazowy księżyc
+      to: { galaxy: 3, system: 269, position: 5 },    // cel (też księżyc)
+      returnAt: null,          // ISO, godzina powrotu ustawiona przez właściciela
+      speedPercent: 10,        // wolniej = dłuższy lot = dłuższy możliwy FS
+      excludeTypes: ["ASTEROID_MINER"],
+    },
     threatAlarm: {
       enabled: true,
       // ── v2.21.0: act on the alarm, don't just shout about it ──
@@ -3338,6 +3352,76 @@
         });
       }
       return { ok: true, rows };
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  FLEET SAVE (v2.57.0) — planowanie, na razie bez wysyłki
+  // ═══════════════════════════════════════════════════════════════
+  // Arytmetyka jest prosta i pewna: zawrócona flota wraca dokładnie tyle, ile
+  // zdążyła lecieć. Powrót = start + 2 × opóźnienie zawrócenia, a opóźnienie
+  // nie może przekroczyć pełnego czasu lotu w jedną stronę (T) — po T flota
+  // dolatuje i przestaje być w drodze.
+  //
+  //   maksymalny FS z jednego lotu = 2 × T
+  //   start = powrót − 2 × opóźnienie      (opóźnienie ≤ T)
+  //
+  // T zależy od trasy, składu floty i PRĘDKOŚCI. Przy 10% prędkości lot trwa
+  // dziesięciokrotnie dłużej, więc suwak prędkości jest tu głównym narzędziem.
+  // Bot pozna T dopiero z formularza wysyłki (gra pokazuje czas lotu w kroku 2)
+  // — dlatego planer liczy na zmierzonym T i mówi wprost, gdy go jeszcze nie ma.
+  const FleetSave = {
+    KEY: "ogamex_fs_state",
+    KEY_T: "ogamex_fs_flight_ms",   // zmierzony czas lotu w jedną stronę
+
+    cfg() { return CONFIG.fleetSave || {}; },
+    state() { try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; } },
+    save(st) { GM_setValue(this.KEY, JSON.stringify(st)); },
+
+    // Zmierzony czas lotu dla tej trasy i prędkości (klucz uwzględnia oba).
+    routeKey() {
+      const c = this.cfg();
+      return `${c.from?.galaxy}:${c.from?.system}:${c.from?.position}→${c.to?.galaxy}:${c.to?.system}:${c.to?.position}@${c.speedPercent}`;
+    },
+    flightMs() {
+      try { return JSON.parse(GM_getValue(this.KEY_T, "{}"))[this.routeKey()] || 0; } catch { return 0; }
+    },
+    noteFlightMs(ms) {
+      if (!(ms > 0)) return;
+      let all = {};
+      try { all = JSON.parse(GM_getValue(this.KEY_T, "{}")); } catch {}
+      all[this.routeKey()] = ms;
+      GM_setValue(this.KEY_T, JSON.stringify(all));
+      log(`[FS] czas lotu tej trasy przy ${this.cfg().speedPercent}% prędkości: ${Math.round(ms / 60000)} min → maksymalny FS ${Math.round(ms / 30000)} min.`, "info");
+    },
+
+    // Zwraca plan albo powód, dla którego go nie ma.
+    plan(now = Date.now()) {
+      const c = this.cfg();
+      if (!c.enabled) return { ok: false, why: "FS wyłączony" };
+      const at = c.returnAt ? Date.parse(c.returnAt) : NaN;
+      if (!Number.isFinite(at)) return { ok: false, why: "nie ustawiono godziny powrotu" };
+      if (at <= now) return { ok: false, why: "godzina powrotu już minęła" };
+      const T = this.flightMs();
+      if (!T) return { ok: false, why: "nie znam jeszcze czasu lotu tej trasy — pierwszy FS trzeba wysłać ręcznie albo pozwolić botowi zmierzyć" };
+      const window = at - now;
+      if (window > 2 * T) {
+        return {
+          ok: false,
+          why: `okno ${Math.round(window / 60000)} min przekracza maksimum ${Math.round(T / 30000)} min dla tej trasy. Zmniejsz prędkość albo wybierz dalszy księżyc.`,
+          maxMs: 2 * T,
+        };
+      }
+      // Startujemy jak najpóźniej: mniej czasu w powietrzu = mniej okazji.
+      const delay = Math.floor(window / 2);        // ≤ T, bo window ≤ 2T
+      return { ok: true, launchAt: now, recallAt: now + delay, returnAt: at, delayMs: delay, flightMs: T };
+    },
+
+    describe() {
+      const p = this.plan();
+      if (!p.ok) return `FS: ${p.why}`;
+      const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+      return `FS: start ${f(p.launchAt)} → zawrócenie ${f(p.recallAt)} → powrót ${f(p.returnAt)}`;
     },
   };
 
