@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.50.0
+// @version      2.51.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3409,6 +3409,66 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  FLEET MOVEMENTS (v2.51.0) — kto, po co i dokąd leci
+  // ═══════════════════════════════════════════════════════════════
+  // GET /home/fleetmovementlist — endpoint, który gra odpytuje sama, żeby
+  // odświeżyć pasek misji. Zrzut z 21:09:52 pokazał, że wiersz niesie WSZYSTKO,
+  // czego brakowało obronie:
+  //
+  //   <tr data-fleet-id="4649f6fc-…" class="row-mission-type-EXPEDITION">
+  //     <td data-remaining-seconds="213" …>03:33</td>
+  //     <td><img … data-tooltip-content="Expedition" /></td>
+  //     <td> Yoyoyoyoyo <a href="/galaxy?x=3&y=269" class="fleet-source-coords">[3:269:8]</a> </td>
+  //     <td><span … tooltip ze składem floty …>
+  //
+  // Typ misji jest podany NAZWĄ, nie numerem — więc odpada cały problem
+  // numeracji, przez który 2.40.0 mogło czytać wrogość na odwrót. Do tego
+  // źródło, cel, czas do przylotu i skład floty.
+  const FleetMovements = {
+    URL: "/home/fleetmovementlist",
+    ATTACK: /(ATTACK|MISSILE|DESTRUCT|DESTROY|BOMBARD|INVAS)/i,
+    SPY: /(ESPIONAGE|SPY|PROBE|SCAN)/i,
+
+    // Zwraca { ok, rows } — ok=false znaczy „nie wiem", a nie „bezpiecznie".
+    async fetch() {
+      if (!Ajax.supported(this.URL)) return { ok: false, rows: [] };
+      let html = "";
+      try {
+        const res = await fetch(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!res.ok) { Ajax.markUnsupported(this.URL, res.status); return { ok: false, rows: [] }; }
+        html = await res.text();
+      } catch { return { ok: false, rows: [] }; }
+      if (!html) return { ok: false, rows: [] };
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const trs = [...doc.querySelectorAll("tr[class*='row-mission-type-']")];
+      if (!trs.length) return { ok: false, rows: [] };
+      const own = ThreatMonitor.ownBodies();
+      const rows = [];
+      for (const tr of trs) {
+        const type = (String(tr.className).match(/row-mission-type-([A-Z_]+)/i) || [])[1] || "?";
+        const srcEl = tr.querySelector(".fleet-source-coords");
+        const coords = [...(tr.textContent || "").matchAll(/\[(\d+:\d+:\d+)\]/g)].map(m => m[1]);
+        const src = (String(srcEl?.textContent || "").match(/(\d+:\d+:\d+)/) || [])[1] || coords[0] || null;
+        const dst = coords.filter(c => c !== src).pop() || null;
+        const eta = parseInt(tr.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0;
+        // Skład floty siedzi w tooltipie („Light Cargo : 330.000.000").
+        const tip = tr.querySelector("[data-tooltip-content*='Ships']")?.getAttribute("data-tooltip-content") || "";
+        const ships = [...tip.matchAll(/>([A-Za-z ]+?)\s*:\s*<\/td>\s*<td[^>]*>([\d.\s]+)</g)]
+          .map(m => `${m[1].trim()} ${m[2].trim()}`);
+        rows.push({
+          id: tr.getAttribute("data-fleet-id") || "",
+          type, src, dst, eta,
+          mine: !!(src && own.size && own.has(src)),
+          attack: this.ATTACK.test(type),
+          spy: this.SPY.test(type),
+          ships,
+        });
+      }
+      return { ok: true, rows };
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  API SNIFFER (v2.45.0) — czego gra używa NAPRAWDĘ
   // ═══════════════════════════════════════════════════════════════
   // Trasy z open-source'owego OGameX okazały się nieprawdziwe dla tego serwera
@@ -3851,23 +3911,36 @@
       this._evFetching = true;
       try {
         const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
-        // ── v2.50.0: lista ruchów flot TEGO serwera ──
-        // Podsłuch złapał /home/fleetmovementlist — endpoint, który gra odpytuje
-        // sama, żeby odświeżyć pasek misji. Jeśli niesie wiersze z typem misji
-        // i celem, to jest brakujące źródło do rozróżnienia sondy od ataku
-        // i do wskazania atakowanej kolonii. Najpierw jednak ZOBACZĘ, co
-        // zwraca — parser powstanie na markupie, nie na domyśle.
-        if (Ajax.supported("/home/fleetmovementlist") && GM_getValue("ogamex_fml_dumped", "") !== "1") {
-          try {
-            const res = await fetch("/home/fleetmovementlist", hdr);
-            if (!res.ok) Ajax.markUnsupported("/home/fleetmovementlist", res.status);
-            else {
-              const txt = (await res.text()).replace(/\s+/g, " ").trim();
-              GM_setValue("ogamex_fml_dumped", "1");
-              log(`[RUCHY FLOT] /home/fleetmovementlist (${txt.length} zn.): ${txt.slice(0, 2000)}`, "error");
-            }
-          } catch {}
+        // ── v2.51.0: prawdziwe źródło — lista ruchów flot ──
+        // Wiersz podaje typ misji NAZWĄ (row-mission-type-ATTACK / ESPIONAGE /
+        // EXPEDITION), źródło, cel i czas do przylotu. To zamyka trzy braki
+        // naraz: sonda nie rusza już flotą, znamy atakowaną kolonię i mamy
+        // skład napastnika do dziennika.
+        const fm = await FleetMovements.fetch().catch(() => ({ ok: false, rows: [] }));
+        if (fm.ok) {
+          const foreign = fm.rows.filter(r => !r.mine);
+          const attacks = foreign.filter(r => r.attack);
+          const spies = foreign.filter(r => r.spy);
+          const out = {
+            at: Date.now(),
+            hostile: foreign.length,
+            attacks: attacks.length,
+            spies: spies.length,
+            classified: true,
+            targets: [...new Set(attacks.map(r => r.dst).filter(Boolean))],
+            origins: [...new Set(attacks.map(r => r.src).filter(Boolean))],
+          };
+          GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
+          if (attacks.length) {
+            const first = attacks.sort((a, b) => (a.eta || 1e9) - (b.eta || 1e9))[0];
+            const mins = first.eta ? Math.max(0, Math.round(first.eta / 60)) : null;
+            ThreatLog.add("ATAK", `${attacks.length}× ${first.type} z [${first.src}] na [${first.dst}]`
+              + (mins !== null ? `, przylot za ~${mins} min` : "")
+              + (first.ships?.length ? ` | flota: ${first.ships.slice(0, 8).join(", ")}` : ""));
+          }
+          return;
         }
+
         if (!Ajax.supported("/ajax/fleet/eventbox/fetch")) return;
         let box = null;
         try {
