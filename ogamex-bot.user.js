@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.45.0
+// @version      2.46.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -136,7 +136,11 @@
       heavyCargoPerWave: 0,
       // Never send these on an expedition. Miners are the mining module's;
       // colony ships are one-shot and irreplaceable.
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP"],
+      // v2.46.0: Gwiazda Śmierci NIE lata na ekspedycje. Fala leci z prędkością
+      // najwolniejszej jednostki, a GS to 26 minut w jedną stronę zamiast kilku
+      // — jedna sztuka zamraża całą falę na prawie godzinę i zjada slot
+      // ekspedycyjny, którego brakuje reszcie floty.
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR"],
       // Base = where the combat fleet sits; target is position 16 of ITS system.
       // null → falls back to the asteroid-mining base.
       base: null,
@@ -270,6 +274,23 @@
           GM_setValue(MF_KEY, "1");
           GM_setValue("ogamex_fleet_return_at", "0");
           setTimeout(() => log("Licznik lotow gorniczych liczy teraz tylko WLASNE loty bota (recznie wysylane misje nie zjadaja limitu). Pauza skanu zdjeta.", "info"), 1500);
+        }
+      }
+
+      // v2.46.0: konfiguracja jest zapisana u gracza, więc sama zmiana wartości
+      // domyślnej nic by nie dała — trzeba dopisać GS do jego listy wykluczeń.
+      {
+        const DS_KEY = "ogamex_migration_no_deathstar_v246";
+        if (GM_getValue(DS_KEY, "0") !== "1") {
+          GM_setValue(DS_KEY, "1");
+          if (merged.expeditions) {
+            const ex = (merged.expeditions.excludeTypes || []).map(t => String(t).toUpperCase());
+            if (!ex.includes("DEATH_STAR")) {
+              merged.expeditions.excludeTypes = [...ex, "DEATH_STAR"];
+              saveConfig(merged);
+              setTimeout(() => log("Gwiazda Smierci nie lata juz na ekspedycje — fala leci z predkoscia najwolniejszej jednostki, a GS to 26 min w jedna strone.", "info"), 1500);
+            }
+          }
         }
       }
 
