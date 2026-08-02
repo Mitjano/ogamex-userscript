@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.32.0
+// @version      2.33.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3509,6 +3509,14 @@
       if (this.running) return false;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") return false;
+      // v2.33.0: druga warstwa na tę samą pętlę. Nawet gdyby rozbrojenie znów
+      // gdzieś przepadło, powrót wysłany minutę temu jest w drodze — flota nie
+      // stoi już na refugium, więc kolejna próba i tak trafi w pustkę
+      // („nothing on this planet to save"). Jeden powrót na 5 minut wystarczy.
+      if (w.returning && w.returnAt && Date.now() - w.returnAt < 5 * 60 * 1000) {
+        this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round((Date.now() - w.returnAt) / 1000)}s temu) — nie wysyłam drugiego.`);
+        return false;
+      }
       const url = this.homeUrl();
       if (!url) return false;
       this.running = true;
@@ -7003,11 +7011,13 @@
       // Farm sends must NOT run the mining parallel-decision below.
       let wasFarmSend = false;
       let wasMoonSend = false;
+      let wasMoonReturn = false;
       try {
         const pm = JSON.parse(GM_getValue("pending_mission", "null"));
         wasFarmSend = !!pm?.farm;
         wasExpoSend = !!pm?.expedition;
         wasMoonSend = !!pm?.moonSave;
+        wasMoonReturn = !!pm?.moonReturn;
       } catch {}
       // v2.14.0: slow-navigation twin of the farm check below — if
       // finishDispatch already cleared pending_mission, the send stamp still
@@ -7025,6 +7035,18 @@
         // the in-flight fleet counter and could set a mining return timer, i.e.
         // spend the mining budget on a trip to our own moon.
         GM_setValue("pending_mission", null);
+        // ── v2.33.0: TU rozbraja się straż po powrocie ──
+        // Rozbrojenie siedziało wyłącznie w finishDispatch, czyli na ścieżce,
+        // która działa TYLKO gdy klik nie przeładuje strony. Normalnie gra
+        // przerzuca przeglądarkę na fleetSendSuccessfully i ląduje tutaj —
+        // a ta gałąź (dodana w v2.26.3 dla liczników mininga) czyściła
+        // pending_mission i wychodziła, nie tykając straży. Straż zostawała
+        // uzbrojona po UDANYM powrocie, więc returnHome() odpalał znowu przy
+        // następnym ticku. Log właściciela z 2 sierpnia: powrót wysłany
+        // o 09:26:19, a potem próby o 09:27:45, 09:29:11, 09:30:23, 09:30:36
+        // i 09:32:26 — wszystkie w pustkę, bo flota była już w drodze.
+        if (wasMoonReturn) MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
+        ThreatLog.add(wasMoonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę (potwierdzone po przeładowaniu).");
         log("Ratunek/powrót floty wysłany — liczniki mininga nietknięte.", "fleet");
       } else if (wasExpoSend) {
         GM_setValue("pending_mission", null);
