@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.39.0
+// @version      2.39.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -255,6 +255,19 @@
             saveConfig(merged);
             setTimeout(() => log("Heavy Cargo dzieli sie teraz na fale jak kazdy inny statek (bylo: stala liczba na fale). Zmienisz to polem Heavy Cargo / fale — 0 = podzial.", "info"), 1500);
           }
+        }
+      }
+
+      // v2.39.1: stary licznik lotow gorniczych ("wszystkie misje minus
+      // ekspedycje") potrafil zatrzymac skan na 90 minut ("flight budget
+      // reached (28/3)"). Po podmianie licznika zdejmujemy tez pauze, ktora
+      // ten blad zdazyl ustawic — inaczej mining stoi az do jej wygasniecia.
+      {
+        const MF_KEY = "ogamex_migration_mining_flights_v2391";
+        if (GM_getValue(MF_KEY, "0") !== "1") {
+          GM_setValue(MF_KEY, "1");
+          GM_setValue("ogamex_fleet_return_at", "0");
+          setTimeout(() => log("Licznik lotow gorniczych liczy teraz tylko WLASNE loty bota (recznie wysylane misje nie zjadaja limitu). Pauza skanu zdjeta.", "info"), 1500);
         }
       }
 
@@ -1474,6 +1487,53 @@
     clear() {
       GM_setValue(this.KEY, "[]");
     },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  MINING FLIGHTS (v2.39.1): ile NASZYCH lotow gorniczych jest w powietrzu
+  // ═══════════════════════════════════════════════════════════════
+  // Do v2.39.0 liczylo sie to odejmowaniem: "wszystkie wlasne misje minus
+  // ekspedycje". Zalozenie, ze wszystko, co nie jest ekspedycja, jest
+  // miningiem, jest falszywe — wlasciciel gra tez recznie (kolonizacja,
+  // transporty), a te misje wchodzily w limit gorniczy. Log z 11:54:
+  // "flight budget reached (28/3) -> scan paused ~90min" przy trzech realnych
+  // lotach na asteroidy. Mining, glowne zrodlo dochodu, stal poltorej godziny.
+  //
+  // Bot sam wysyla te floty, wiec sam moze je policzyc. Wpis zyje przez CALY
+  // przelot tam i z powrotem (DispatchedAsteroids kasuje swoj wpis juz przy
+  // przylocie, bo tam chodzi o blokade koordynatow, nie o slot floty).
+  const MiningFlights = {
+    KEY: "ogamex_mining_flights",
+
+    _load() {
+      try {
+        const now = Date.now();
+        return JSON.parse(GM_getValue(this.KEY, "[]")).filter(e => e && e.returnAt > now);
+      } catch { return []; }
+    },
+
+    // flightMs = czas lotu w jedna strone z formularza gry (moze byc nieznany)
+    add(coord, flightMs) {
+      const roundTrip = flightMs > 0
+        ? flightMs * 2 + 60000
+        : (CONFIG.asteroidMining.maxFlightMinutes || 90) * 2 * 60 * 1000;
+      const entries = this._load();
+      entries.push({ coord: coord || "?", at: Date.now(), returnAt: Date.now() + roundTrip });
+      GM_setValue(this.KEY, JSON.stringify(entries));
+    },
+
+    count() { return this._load().length; },
+
+    // wysylka odrzucona przez gre → skasuj ostatni wpis (flota nie wystartowala)
+    dropLast() {
+      const entries = this._load();
+      entries.pop();
+      GM_setValue(this.KEY, JSON.stringify(entries));
+    },
+
+    list() { return this._load(); },
+
+    clear() { GM_setValue(this.KEY, "[]"); },
   };
 
   // v2.10.24: extract target coords from ANY fleet-URL shape the bot produces.
@@ -3080,11 +3140,19 @@
       // całej tabeli. Chcemy element o NAJWIĘKSZEJ liczbie koordynatów (czyli
       // obejmujący wszystkie wiersze), a przy remisie najkrótszy, żeby dostać
       // sam blok zdarzeń, a nie pół strony dookoła niego.
+      // v2.39.1: lista skrotow planet ("Colony 1 [7:499:6]" ... 60 pozycji)
+      // bila kazda tabele zdarzen na liczbe koordynatow i to ona ladowala
+      // w logu. Zdarzenie ma godzine przylotu i typ misji; lista skrotow nie ma
+      // ani jednego, ani drugiego — i siedzi w <select>.
+      const MISSION = /(attack|transport|deploy|expedition|espionage|colonis|harvest|recycl|return|destroy)/i;
+      const hasClock = (t) => /\d{1,2}:\d{2}:\d{2}/.test(String(t).replace(/\[\d+:\d+:\d+\]/g, " "));
       const cand = [...document.querySelectorAll("div, table, tbody, section, ul")]
         .filter(el => {
           if (el.closest("svg") || /c3-|chart|graph/i.test(String(el.className || ""))) return false;
+          if (el.tagName === "SELECT" || el.querySelector("select, option")) return false;
           const t = el.textContent || "";
-          return t.length <= 8000 && isRow(t);
+          if (!(t.length <= 8000 && isRow(t))) return false;
+          return hasClock(t) || MISSION.test(t);
         })
         .map(el => ({ el, n: ((el.textContent || "").match(COORD) || []).length, len: (el.textContent || "").length }))
         .sort((a, b) => (b.n - a.n) || (a.len - b.len));
@@ -4703,11 +4771,20 @@
   // Zwraca -1 = NIE WIEM. Wywołania traktują to jako „budżet nie blokuje":
   // pomyłka w tę stronę kosztuje najwyżej jeden lot ponad limit, który sam się
   // rozejdzie, a w drugą stronę kosztuje przestój kopania.
+  // ── v2.39.1: licz WŁASNE loty górnicze, nie „reszta po odjęciu" ──
+  // Formuła „wszystkie misje minus ekspedycje" zakładała, że wszystko, co nie
+  // jest ekspedycją, jest miningiem. Właściciel gra też ręcznie — kolonizuje,
+  // przewozi surowce — i te misje wpadały do limitu górniczego. Log z 11:54:
+  // „flight budget reached (28/3) → scan paused ~90min". Dwadzieścia osiem
+  // lotów górniczych przy limicie trzech, przy realnych trzech w powietrzu.
+  // Mining stał półtorej godziny na głównym źródle dochodu właściciela.
+  //
+  // Bot sam wysyła te floty i sam je notuje: DispatchedAsteroids trzyma wpis do
+  // momentu przylotu (releaseAt, stemplowany czasem lotu z gry). To jest
+  // dokładna liczba naszych misji górniczych w drodze — bez zgadywania, bez
+  // zależności od tego, co jeszcze robi człowiek na koncie.
   function miningInflightCount() {
-    const all = inflightFleetCount();
-    const slots = ExpeditionRunner.slots();
-    if (!slots.live) return -1; // licznik ekspedycji nieświeży → różnica nic nie znaczy
-    return Math.max(0, all - (slots.used || 0));
+    return MiningFlights.count();
   }
 
   // v2.10.1: set the scan-pause timer from the page header countdown (factored
@@ -5696,6 +5773,12 @@
               expedition: !!mission.expedition,
             });
             if (!mission.expedition && missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
+            // v2.39.1: osobny licznik NASZYCH lotow gorniczych (limit rownoleglych
+            // lotow). Stemplujemy PRZED klikiem — nawigacja potrafi zabic wszystko,
+            // co jest po nim.
+            if (!mission.expedition && !mission.farm && !mission.moonSave) {
+              MiningFlights.add(missionCoord, capturedFlightMs);
+            }
           }
           sendBtn.click();
 
@@ -5717,6 +5800,9 @@
             // No fleet actually left — drop the duplicate-guard stamp so a
             // genuine retry to these coords isn't blocked for the next 10min.
             writeLastSent(null);
+            // v2.39.1: ta flota nie wystartowala — zdejmij ja z licznika lotow
+            // gorniczych, inaczej fantom zjadalby limit az do konca przelotu.
+            if (!mission.expedition && !mission.farm && !mission.moonSave) MiningFlights.dropLast();
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
             if (mission.moonSave) ThreatLog.add(mission.moonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę.");
