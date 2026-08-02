@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.49.0
+// @version      2.49.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1960,7 +1960,18 @@
             return !Array.from(el.children).some(ch => isReport(ch.textContent || ""));
           });
           if (containers.length) {
-            log(`Yield fetch (${sourceLabel}): unknown message markup — generic block scan found ${containers.length} candidate(s).`, "info");
+            // v2.49.1: ta linia leciała przy KAŻDYM wejściu na dowolną stronę
+            // i zalewała log. Treść się nie zmienia, więc raz na 10 minut
+            // wystarczy, żeby wiedzieć, że silnik strony nadal nie rozumie
+            // markupu tego serwera.
+            {
+              const k = "ogamex_yield_unknown_logged_at";
+              const lastNote = parseInt(GM_getValue(k, "0")) || 0;
+              if (Date.now() - lastNote > 10 * 60 * 1000) {
+                GM_setValue(k, String(Date.now()));
+                log(`Yield fetch (${sourceLabel}): unknown message markup — generic block scan found ${containers.length} candidate(s).`, "info");
+              }
+            }
           }
         }
         if (containers.length === 0) {
@@ -3743,7 +3754,10 @@
               });
           const ct = res.headers.get("content-type") || "?";
           const txt = (await res.text()).replace(/\s+/g, " ").trim();
-          log(`[API TEST] ${method} ${url} → ${res.status} ${ct.split(";")[0]} :: ${txt.slice(0, 220)}`, res.ok ? "info" : "error");
+          // v2.49.1: przy adresach, z których ma powstać parser, podgląd musi być
+          // na tyle długi, żeby było w nim widać wiersz raportu, a nie sam <style>.
+          const wide = /messagedata|Journal|combatreport/i.test(url);
+          log(`[API TEST] ${method} ${url} → ${res.status} ${ct.split(";")[0]} :: ${txt.slice(0, wide ? 1500 : 220)}`, res.ok ? "info" : "error");
         } catch (e) {
           log(`[API TEST] ${method} ${url} → wyjątek: ${e.message}`, "error");
         }
@@ -7627,6 +7641,7 @@
         log("[API TEST] sprawdzam endpointy gry…", "info");
         ApiSniffer.dump();
         Ajax.resetDead(); // ręczny test zawsze otwiera bramki
+        GM_setValue("ogamex_yield_fetch_at", "0"); // i zdejmuje 30-minutowy dławik raportów
         try { await Ajax.diagnose(); } catch (e) { log(`[API TEST] błąd: ${e.message}`, "error"); }
         finally { apiTestBtn.disabled = false; }
       });
