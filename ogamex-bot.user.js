@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.41.0
+// @version      2.42.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -121,6 +121,7 @@
     // at most one wave, and there's a window to react.
     expeditions: {
       enabled: false,
+      apiSend: false,               // v2.42.0: wysyłaj fale przez POST /ajax/fleet/dispatch/send-fleet zamiast formularza (włącz po potwierdzeniu w logu)
       waves: 8,                 // split the fleet into this many flights
       holdingHours: 1,          // "Expedition duration" on the send page
       // Spacing between waves, randomised in this range. v2.15.1: owner
@@ -1791,6 +1792,11 @@
     cargoPerMiner() {
       const cfg = CONFIG.asteroidMining.cargoPerMiner || 0;
       if (cfg > 0) return cfg;
+      // v2.42.0: gra podaje ładowność wprost (check-target → shipsData →
+      // baseCargoCapacity, już z bonusami z badań). Wartość uczona z raportów
+      // zostaje jako zapasowa — na wypadek, gdyby fork nie oddał tego pola.
+      const fromGame = FleetApi.cargoFor("ASTEROID_MINER");
+      if (fromGame > 0) return fromGame;
       return parseInt(GM_getValue(this.CARGO_KEY, "0")) || 0;
     },
 
@@ -3058,6 +3064,90 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  FLEET API (v2.42.0) — dane statków i wysyłka bez formularza
+  // ═══════════════════════════════════════════════════════════════
+  // POST /ajax/fleet/dispatch/check-target zwraca `shipsData`: dla KAŻDEGO
+  // statku jego id, nazwę, prędkość, zużycie paliwa i — co najważniejsze —
+  // `baseCargoCapacity` policzone z uwzględnieniem badań gracza. Bot dotąd
+  // uczył się ładowności minera z raportów (20 750 na sztukę); tutaj gra podaje
+  // ją wprost. Przy tej samej okazji dostajemy mapę id statków, bez której nie
+  // da się złożyć wysyłki przez API (pola nazywają się `am` + id).
+  //
+  // POST /ajax/fleet/dispatch/send-fleet wysyła flotę jednym żądaniem. To ten
+  // sam endpoint, w który klika sama gra, więc serwerowo jest nieodróżnialny —
+  // ale zmienia najgłębszą ścieżkę w bocie, dlatego wchodzi etapami i sam
+  // weryfikuje wynik: odpowiedź mówi wprost, czy gra przyjęła flotę. Gdy nie
+  // przyjmie, wracamy na trzykrokowy formularz zamiast zgadywać.
+  const FleetApi = {
+    KEY_SHIPS: "ogamex_ships_data",
+    KEY_SHIPS_AT: "ogamex_ships_data_at",
+    SHIPS_TTL_MS: 12 * 60 * 60 * 1000,
+
+    _norm(name) { return String(name || "").trim().toUpperCase().replace(/\s+/g, "_"); },
+
+    data() { try { return JSON.parse(GM_getValue(this.KEY_SHIPS, "null")); } catch { return null; } },
+
+    // Odpytuje check-target o WŁASNĄ bazę (cel istniejący i nasz, więc żadna
+    // walidacja nie kłuje w oczy) i zapamiętuje tabelę statków.
+    async refreshShips(force = false) {
+      const at = parseInt(GM_getValue(this.KEY_SHIPS_AT, "0")) || 0;
+      if (!force && this.data() && Date.now() - at < this.SHIPS_TTL_MS) return this.data();
+      const b = CONFIG.asteroidMining.minerBase;
+      const json = await Ajax.post("/ajax/fleet/dispatch/check-target", {
+        galaxy: b.galaxy, system: b.system, position: b.position, type: 1,
+      }).catch(() => null);
+      const ships = json && !json._raw ? json.shipsData : null;
+      if (!ships || typeof ships !== "object") return this.data();
+      const byType = {};
+      for (const k of Object.keys(ships)) {
+        const sh = ships[k];
+        if (!sh || !sh.name) continue;
+        byType[this._norm(sh.name)] = {
+          id: parseInt(sh.id ?? k) || 0,
+          cargo: Number(sh.baseCargoCapacity) || 0,
+          speed: Number(sh.speed) || 0,
+          fuel: Number(sh.fuelConsumption) || 0,
+        };
+      }
+      if (!Object.keys(byType).length) return this.data();
+      GM_setValue(this.KEY_SHIPS, JSON.stringify(byType));
+      GM_setValue(this.KEY_SHIPS_AT, String(Date.now()));
+      log(`[FLEET API] tabela statków z gry: ${Object.keys(byType).length} typów (ładowność minera: ${byType.ASTEROID_MINER?.cargo?.toLocaleString?.() || "?"}).`, "info");
+      return byType;
+    },
+
+    idFor(type) { return this.data()?.[this._norm(type)]?.id || 0; },
+    cargoFor(type) { return this.data()?.[this._norm(type)]?.cargo || 0; },
+
+    // ships: { ASTEROID_MINER: 2500000000, ... }; zwraca { ok, error }
+    async send({ galaxy, system, position, type = 1, mission, ships = {}, speed = 10,
+                 holdingtime = 0, metal = 0, crystal = 0, deuterium = 0 }) {
+      if (!Number.isFinite(mission) || mission <= 0) return { ok: false, error: "brak numeru misji" };
+      const params = {
+        galaxy, system, position, type, mission, speed, holdingtime,
+        metal, crystal, deuterium, food: 0,
+        prioMetal: 2, prioCrystal: 3, prioDeuterium: 4, prioFood: 1,
+        retreatAfterDefenderRetreat: 0, lootFoodOnAttack: 0, union: 0,
+      };
+      let any = false;
+      for (const [shipType, qty] of Object.entries(ships)) {
+        const id = this.idFor(shipType);
+        if (!id || !(qty > 0)) continue;
+        params[`am${id}`] = qty;
+        any = true;
+      }
+      if (!any) return { ok: false, error: "nie znam identyfikatorów statków" };
+      const json = await Ajax.post("/ajax/fleet/dispatch/send-fleet", params).catch(() => null);
+      if (!json || json._raw) return { ok: false, error: "brak odpowiedzi z endpointu" };
+      const ok = json.success === true || json.status === "success" || json.redirectUrl || json.fleetId;
+      if (ok) return { ok: true, raw: json };
+      const err = (json.errors && json.errors[0] && (json.errors[0].message || json.errors[0].error))
+        || json.message || JSON.stringify(json).slice(0, 200);
+      return { ok: false, error: err };
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  GALAXY AJAX (v2.41.0) — skan systemów bez przeładowania strony
   // ═══════════════════════════════════════════════════════════════
   // Skaner asteroid nawigował do /galaxy?x=&y= osobno dla KAŻDEGO z ~87
@@ -3326,6 +3416,27 @@
             }
           }
           const own = this.ownBodies();
+          // ── v2.42.0: sprawdź, czy numeracja misji jest ta z upstream ──
+          // W linku galaktyki tego forka ekspedycja to `mission=1`, a w upstream
+          // OGameX `1` znaczy ATAK. Jeśli fork przenumerował misje, cała
+          // klasyfikacja z 2.40.0 czyta wrogość na odwrót. Nasze WŁASNE wiersze
+          // są tu wzorcem: bot lata ekspedycjami, miningiem i transportem, więc
+          // typ, który widać na naszej misji, nie może być typem ataku.
+          const ourTypes = new Set();
+          for (const tr of rows) {
+            const t = parseInt(tr.dataset.missionType || "0") || 0;
+            const oc = (tr.querySelector(".coordsOrigin")?.textContent || "").match(/(\d+:\d+:\d+)/);
+            if (t && oc && own.has(oc[1])) ourTypes.add(t);
+          }
+          const collision = this.ATTACK_TYPES.filter(t => ourTypes.has(t));
+          if (collision.length) {
+            out.classified = false;
+            if (GM_getValue("ogamex_mission_numbering_warned", "") !== "1") {
+              GM_setValue("ogamex_mission_numbering_warned", "1");
+              log(`[THREAT] UWAGA: nasze własne misje mają typ ${collision.join(", ")}, który w upstream oznacza atak. Ten serwer ma inną numerację — rozróżnianie sondy od ataku WYŁĄCZONE, wracam do zasady „każda obca flota = zagrożenie". Typy naszych misji: ${[...ourTypes].join(", ")}.`, "error");
+              ThreatLog.add("BŁĄD", `Numeracja misji forka nie zgadza się z upstream (nasze typy: ${[...ourTypes].join(", ")}). Klasyfikacja wyłączona.`);
+            }
+          }
           const coordIn = (el, fallback) => {
             const m = String((el || fallback || "")).match(/(\d+:\d+:\d+)/);
             return m ? m[1] : null;
@@ -3340,6 +3451,7 @@
             const origin = coordIn(tr.querySelector(".coordsOrigin")?.textContent, all[0]);
             const dest = coordIn(tr.querySelector(".destCoords")?.textContent, all[all.length - 1]);
             if (own.size && origin && own.has(origin)) continue; // nasza własna misja
+            if (!out.classified) { out.attacks = out.hostile; continue; } // numeracja niepewna → wszystko traktuj jak atak
             if (type === this.ESPIONAGE_TYPE) { out.spies++; continue; }
             if (this.ATTACK_TYPES.includes(type)) {
               out.attacks++;
@@ -4415,6 +4527,34 @@
         }
 
         const b = this.base();
+
+        // ── v2.42.0: najpierw spróbuj wysłać falę jednym żądaniem ──
+        // Formularz to cztery przeładowania strony i ~20 s, z wyścigami w rodzaju
+        // „Clicked Next (btn-continue disabled) → Step 3 never loaded" (fala
+        // przepadła 2026-08-02 12:47). Endpoint gry robi to jednym POST-em i sam
+        // mówi, czy przyjął flotę. Numer misji bierzemy z linku, który wystawia
+        // sama gra — nie zgadujemy numeracji forka.
+        if (cfg.apiSend) {
+          const plan = expeditionShipPlan(Math.max(1, cfg.waves || 1));
+          const missionNo = parseInt((url.match(/[?&]mission=(\d+)/) || [])[1] || "0") || 0;
+          if (plan?.length && missionNo) {
+            await FleetApi.refreshShips().catch(() => null);
+            const ships = {};
+            for (const it of plan) ships[it.type] = it.qty;
+            const res = await FleetApi.send({
+              galaxy: b.galaxy, system: b.system, position: 16, type: 1,
+              mission: missionNo, ships, speed: 10,
+              holdingtime: Math.max(1, cfg.holdingHours || 1),
+            }).catch(e => ({ ok: false, error: e.message }));
+            if (res.ok) {
+              this.afterSend(); // ta sama księgowość co po wysyłce z formularza
+              log(`EXPEDITION wave → [${b.galaxy}:${b.system}:16] przez API (bez formularza), ${cfg.holdingHours}h, ${plan.length} typ(ów) statków.`, "success");
+              return;
+            }
+            log(`[FLEET API] wysyłka przez API nie przeszła (${res.error}) — wracam na formularz.`, "warn");
+          }
+        }
+
         GM_setValue("pending_mission", JSON.stringify({
           type: "expedition_direct",
           expedition: true,
@@ -6422,6 +6562,7 @@
       // v2.40.0: najpierw serwer (typ misji + cel), potem decyzja. Dwa lekkie
       // zapytania AJAX, te same, które robi sama gra co kilkanaście sekund.
       await ThreatMonitor.refreshEvents().catch(() => {});
+      FleetApi.refreshShips().catch(() => {}); // raz na 12 h, sam się dławi
       ThreatMonitor.check({ emergencyOnly: resting });
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
@@ -6708,6 +6849,10 @@
               <input id="ogx-expo-waves" type="number" min="1" step="1" value="${CONFIG.expeditions.waves}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Wysyłaj fale jednym żądaniem do endpointu gry zamiast klikać przez trzykrokowy formularz. Szybciej i bez wyścigów o stan formularza; przy odmowie serwera bot i tak wraca na formularz.">Wysyłka przez API</span>
+              <button class="mini-btn" id="ogx-expo-api">${CONFIG.expeditions.apiSend ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Czas postoju w kosmosie („Expedition duration" na stronie wysyłki).">Długość ekspedycji (h)</span>
               <input id="ogx-expo-hours" type="number" min="1" max="24" step="1" value="${CONFIG.expeditions.holdingHours}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -6979,6 +7124,13 @@
           updateStatusUI();
         });
       };
+      const apiBtn = document.getElementById("ogx-expo-api");
+      if (apiBtn) apiBtn.addEventListener("click", () => {
+        CONFIG.expeditions.apiSend = !CONFIG.expeditions.apiSend;
+        apiBtn.textContent = CONFIG.expeditions.apiSend ? "ON" : "OFF";
+        saveConfig(CONFIG);
+        log(`Wysyłka ekspedycji przez API: ${CONFIG.expeditions.apiSend ? "WŁĄCZONA" : "wyłączona"}.`, "info");
+      });
       bindExpo("ogx-expo-waves", "waves", "Expedition waves", { min: 1 });
       bindExpo("ogx-expo-hours", "holdingHours", "Expedition duration (h)", { min: 1 });
       bindExpo("ogx-expo-gapmin", "waveGapMinSec", "Wave gap min (s)", { min: 10 });
