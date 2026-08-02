@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.37.0
+// @version      2.38.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3003,7 +3003,7 @@
 
   const ThreatMonitor = {
     KEY: "ogamex_threat",
-    KEY_DUMPED: "ogamex_threat_markup_dumped_v220",
+    KEY_DUMPED: "ogamex_threat_markup_dumped_v238",
     KEY_CANDIDATE: "ogamex_threat_candidate", // v2.32.0: od kiedy widzimy obcych
     CONFIRM_MS: 25 * 1000,                    // tyle musi się utrzymać, zanim ruszymy flotą
     SELF_SEND_BLIND_MS: 20 * 1000,            // tyle po NASZEJ wysyłce pasek kłamie
@@ -3056,8 +3056,32 @@
     // demand, from OUR OWN fleets. Waiting for a hostile fleet to learn the
     // table's shape means Stage 2 can't be written until the day it's needed —
     // the one day nobody wants to be debugging selectors.
+    // ── v2.38.0: zrzucaj tabelę Events z ŻYWEJ strony, nie z fetcha ──
+    // Fetch /ajax/fleet/eventlist zwracał stronę błędu (log 09:24:21 — sam CSS
+    // i #error-container), więc markup zdarzeń nigdy nie został złapany. A ta
+    // tabela JEST w DOM na stronie floty: widać ją na zrzucie właściciela,
+    // z wierszami „Yoyoyoyoyo [3:269:8] … Asteroid [3:161:17]".
+    //
+    // To jest markup, od którego zależy ochrona WSZYSTKICH planet: pasek misji
+    // podaje tylko LICZBĘ obcych flot, nigdy celu. Bez wiersza zdarzenia nie da
+    // się powiedzieć, którą kolonię trzeba ewakuować — a zgadywanie ruszałoby
+    // flotą na chybił trafił.
+    dumpEventsFromDom() {
+      if (GM_getValue(this.KEY_DUMPED, "") === "1") return;
+      const box = document.querySelector("#eventContent, #eventbox, .event-list, [id*='event'], [class*='event']");
+      const txt = document.body.textContent || "";
+      if (!/Events/i.test(txt) && !box) return;
+      const host = box || document.body;
+      const html = (host.innerHTML || "").replace(/<script[\s\S]*?<\/script>/gi, "").replace(/\s+/g, " ").trim();
+      if (html.length < 80) return;
+      GM_setValue(this.KEY_DUMPED, "1");
+      log(`[THREAT DOM] tabela Events (${html.length}ch): ${html.slice(0, 2500)}`, "error");
+      ThreatLog.add("odczyt", "Zrzucono markup tabeli Events — potrzebny do ochrony wszystkich planet.");
+    },
+
     async dumpMarkupOnce(force = false) {
       if (force) GM_setValue(this.KEY_DUMPED, "");
+      this.dumpEventsFromDom();
       if (GM_getValue(this.KEY_DUMPED, "") === "1" || this._fetching) return;
       this._fetching = true;
       try {
@@ -3066,7 +3090,7 @@
             const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
             if (!res.ok) continue;
             const txt = (await res.text()).replace(/\s+/g, " ").trim();
-            if (!txt) continue;
+            if (!txt || /error-container|<style/i.test(txt.slice(0, 400))) continue; // strona błędu, nie zdarzenia
             log(`[THREAT DOM] ${url}: ${txt.slice(0, 1500)}`, "error");
             GM_setValue(this.KEY_DUMPED, "1");
             break;
@@ -3188,6 +3212,7 @@
       // is on a humanizer break or in the night window — the mission-bar read
       // below still runs, because that is the part an attack depends on.
       if (!emergencyOnly) {
+        this.dumpEventsFromDom();   // v2.38.0: jednorazowo, gdy tabela jest na stronie
         this.dumpBaseRowOnce();
         this.fetchBaseRowOnce().catch(() => {}); // one-shot, no-op once captured
         this.maybeVisitBaseForMoon(); // only if the fetch path proved blind
@@ -3363,9 +3388,20 @@
     // debris for them. So the target was never a link to be learned from the
     // galaxy row — it's the base's own coordinates plus a click on step 2.
     // Three releases were spent hunting a link that this build does not have.
-    targetUrl() {
-      const b = CONFIG.asteroidMining.minerBase;
+    // ── v2.38.0: ratunek działa na DOWOLNYCH koordynatach ──
+    // Właściciel postawił księżyce przy każdej planecie i chce, żeby atak na
+    // kolonię przenosił jej flotę na jej własny księżyc — te same koordy, wybór
+    // „moon", misja stacjonowania. Mechanika jest identyczna jak na bazie, więc
+    // jedyne, co było zaszyte na sztywno, to koordynaty.
+    // Brak argumentu = baza, czyli dotychczasowe zachowanie bez zmian.
+    coordsOf(where) {
+      const b = where || CONFIG.asteroidMining.minerBase;
       if (!b || !Number.isFinite(b.galaxy) || !Number.isFinite(b.system)) return null;
+      return b;
+    },
+    targetUrl(where) {
+      const b = this.coordsOf(where);
+      if (!b) return null;
       return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}`;
     },
 
@@ -3437,10 +3473,8 @@
     // row; the planet side is the base coords with planet=1 — the same shape
     // the farm module has been sending on for months, so it isn't a guess
     // either. The mission is picked on step 3 exactly like the outbound save.
-    homeUrl() {
-      const b = CONFIG.asteroidMining.minerBase;
-      if (!b) return null;
-      return `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}`; // step 2 picks the planet
+    homeUrl(where) {
+      return this.targetUrl(where); // krok 2 wybiera ciało; koordy te same
     },
 
     // v2.25.0: the button used to dead-end on "press Fleet Recon first" —
@@ -3565,7 +3599,7 @@
         this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round(age / 1000)}s temu) — nie wysyłam drugiego.`);
         return false;
       }
-      const url = this.homeUrl();
+      const url = this.homeUrl(w.at);
       if (!url) return false;
       this.running = true;
       try {
@@ -3579,6 +3613,7 @@
           type: "moon_return_direct",
           moonSave: true,       // identical form handling: all ships, all resources, stationing
           moonReturn: true,
+          atCoords: w.at || CONFIG.asteroidMining.minerBase,
           targetBody: home,     // …and this leg flies back to where the fleet lives
           launchBody: refuge,   // …starting from the body it fled to
           fleetUrl: url,
@@ -3635,7 +3670,7 @@
       return this.run({ sweep: true, reason: "straż wielofalowa — sprzątam planetę" });
     },
 
-    async run({ manual = false, sweep = false, auto = false, reason = "manual" } = {}) {
+    async run({ manual = false, sweep = false, auto = false, reason = "manual", where = null } = {}) {
       if (this.running) return false;
       if (!this.armed()) return this.learnThenSave(reason);
       // A sweep is paced by MIN_RESAVE_MS instead: the 15-minute guard exists
@@ -3662,7 +3697,8 @@
       }
       this.running = true;
       try {
-        const href = this.targetUrl();
+        const at = this.coordsOf(where) || this.coordsOf(this.watch().at);
+        const href = this.targetUrl(at);
         // ── v2.28.0: uciekaj na DRUGIE ciało, nie zawsze na księżyc ──
         // Właściciel: „jeśli flota stoi na księżycu i leci atak na księżyc, ma
         // przenieść na planetę i odwrotnie" — i zamierza używać raz jednego,
@@ -3676,6 +3712,7 @@
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
           moonSave: true,
+          atCoords: at,
           targetBody: to,
           homeBody: w0.homeBody || from,
           fleetUrl: href,
@@ -3693,7 +3730,7 @@
         // homeBody is where the fleet LIVES — recorded on the first save of an
         // alert and never overwritten by the sweeps, so the return always knows
         // where to put everything back regardless of which body it is today.
-        this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: to,
+        this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: to, at,
                          lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
         const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na tych samych koordach (${reason}). Wszystkie statki i wszystkie surowce.`, "success");
@@ -4833,7 +4870,7 @@
         // Find the base entry in the sidebar. The game renders each moon right
         // after its planet, so the pair identifies itself by adjacency — no
         // coordinate parsing, and it works whichever half is currently active.
-        const b = CONFIG.asteroidMining.minerBase;
+        const b = mission.atCoords || CONFIG.asteroidMining.minerBase;
         let target = null;
         const planets = [...document.querySelectorAll("a.planet-select, .planet-select")];
         for (const p of planets) {
