@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.30.0
+// @version      2.31.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -348,6 +348,47 @@
     GM_setValue(LOG_STORAGE_KEY, JSON.stringify(logEntries));
     updateLogUI();
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  DZIENNIK OBRONY  (v2.31.0)
+  // ═══════════════════════════════════════════════════════════════
+  // Osobny, trwały zapis WYŁĄCZNIE zdarzeń obronnych. Zwykły log tonie
+  // w skanowaniu asteroid i falach ekspedycji — kilkaset linii na godzinę —
+  // więc gdyby atak przeszedł, dowody byłyby nie do odzyskania dokładnie
+  // wtedy, gdy są najbardziej potrzebne. Tu trafia to, co odpowiada na
+  // pytanie „dlaczego flota zginęła": co bot widział w pasku misji, kiedy
+  // był ślepy, co i dokąd wysłał, i co się nie udało.
+  //
+  // Pojemność liczona w DNIACH, nie w linijkach: odczyty bez obcych flot
+  // wpadają raz na 10 minut, więc 600 wpisów to ponad cztery doby ciszy —
+  // i znacznie więcej historii, jeśli coś się dzieje, bo wtedy liczą się
+  // minuty wokół zdarzenia, a nie tygodnie.
+  const ThreatLog = {
+    KEY: "ogamex_threat_journal",
+    MAX: 600,
+    all() {
+      try { return JSON.parse(GM_getValue(this.KEY, "[]")) || []; } catch { return []; }
+    },
+    add(kind, msg) {
+      const now = new Date();
+      const stamp = `${now.toLocaleDateString("pl-PL")} ${now.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+      const list = this.all();
+      list.unshift({ t: stamp, k: kind, m: String(msg).slice(0, 400) });
+      while (list.length > this.MAX) list.pop();
+      GM_setValue(this.KEY, JSON.stringify(list));
+      try { updateStatusUI(); } catch {}
+    },
+    clear() { GM_setValue(this.KEY, "[]"); },
+    asText() {
+      const list = this.all();
+      if (!list.length) return "(dziennik obrony pusty)";
+      return list.map(e => `${e.t}  [${e.k}]  ${e.m}`).join("\n");
+    },
+    lastAlarmAt() {
+      const hit = this.all().find(e => e.k === "ATAK");
+      return hit ? hit.t : null;
+    },
+  };
 
   // ═══════════════════════════════════════════════════════════════
   //  ERROR-PAGE RECOVERY  (v2.10.11)
@@ -3134,6 +3175,11 @@
           GM_setValue(this.KEY_SEEN, seen);
           GM_setValue(this.KEY_SEEN_AT, String(now));
           log(`[THREAT] odczyt: ${seen}${r ? "" : " (na tej stronie alarm jest ślepy)"}`, r && r.foreign > 0 ? "error" : "info");
+          // Do dziennika trafia KAŻDY odczyt — także zerowy. Bez dowodu, że bot
+          // patrzył i widział zero, nie da się później odróżnić „nie wykrył" od
+          // „nie patrzył", a to dwie różne naprawy.
+          ThreatLog.add(r && r.foreign > 0 ? "ATAK" : (r ? "odczyt" : "ŚLEPY"),
+            `${seen}${r ? "" : ` | strona: ${location.pathname}`}`);
         }
       }
       if (!r) return; // no mission bar on this page — say nothing, change nothing
@@ -3150,11 +3196,13 @@
         }));
         if (first || r.foreign !== prev.count) {
           log(`INCOMING: ${r.foreign} foreign fleet(s) in the mission bar (${r.own} of ${r.total} are ours). Farming and expedition waves are on hold — CHECK THE GAME.`, "error");
+          ThreatLog.add("ATAK", `WYKRYTO ${r.foreign} obcą/obce flotę/floty (${r.own} z ${r.total} to nasze). Farmienie i fale ekspedycji wstrzymane.`);
           this.dumpMarkupOnce().catch(() => {});
           this.notify(r.foreign);
         }
       } else if (prev && prev.count > 0) {
         log("Incoming fleets gone — threat alert cleared.", "success");
+        ThreatLog.add("koniec", "Obce floty zniknęły z paska misji — alarm zdjęty.");
         this.clear();
       }
       updateStatusUI();
@@ -3376,6 +3424,7 @@
       // instead of the planet, while not saving costs the fleet.
       if (!this.armed()) {
         this._sayOnce("nolink", "[MOON SAVE] ATAK — celu księżyca jeszcze nie znam, wchodzę na galaktykę bazy, odczytuję go i od razu ratuję flotę.");
+        ThreatLog.add("ATAK", "Automat rusza, ale celu jeszcze nie znam — wchodzę na galaktykę bazy po niego.");
         return this.learnThenSave("AUTOMAT: atak, cel doczytany w locie");
       }
       if (!this.proven()) {
@@ -3441,6 +3490,7 @@
         this.saveWatch({ ...w, returning: true, returnAt: Date.now() });
         const nm = (b) => (b === "moon" ? "księżyca" : "planety");
         log(`POWRÓT: alarm minął — ściągam flotę i surowce z ${nm(refuge)} z powrotem na ${home === "moon" ? "księżyc" : "planetę"}.`, "success");
+        ThreatLog.add("POWRÓT", `Start: ${refuge === "moon" ? "księżyc" : "planeta"} → ${home === "moon" ? "księżyc" : "planeta"} (${byOperator ? "ręcznie" : "alarm minął"}).`);
         await AntiDetection.sleep(400 + Math.random() * 600);
         return true;
       } catch (err) {
@@ -3473,6 +3523,7 @@
         if (!w.capped) { this.saveWatch({ ...w, capped: true }); log(`[MOON SAVE] limit ${this.MAX_SAVES_PER_ALERT} zapisów na alarm osiągnięty — straż stoi. SPRAWDŹ GRĘ.`, "error"); }
         return false;
       }
+      ThreatLog.add("STRAŻ", `Zamiatanie nr ${(w.saves || 0) + 1}: sprawdzam, czy coś wróciło na bazę.`);
       return this.run({ sweep: true, reason: "straż wielofalowa — sprzątam planetę" });
     },
 
@@ -3525,6 +3576,7 @@
                          lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
         const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na tych samych koordach (${reason}). Wszystkie statki i wszystkie surowce.`, "success");
+        ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
         await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
         window.location.href = href;
         return true;
@@ -4662,6 +4714,7 @@
           // Never disarm on failure: the fleet is still parked on the refuge and
           // the guard is the only way back through the bot.
           log(`[RATUNEK] POWRÓT NIEUDANY: nie znalazłem ${want === "moon" ? "księżyca" : "planety"} bazy na liście. Flota ZOSTAJE na miejscu, straż działa — kliknij WRÓĆ jeszcze raz albo przenieś ją ręcznie.`, "error");
+          ThreatLog.add("BŁĄD", `Powrót przerwany: brak ${want === "moon" ? "księżyca" : "planety"} bazy na liście planet. Flota została na refugium.`);
           GM_setValue("pending_mission", null);
           return;
         }
@@ -4938,6 +4991,7 @@
             return;
           }
           log(`[MOON SAVE] loading everything: ${loaded.join(", ")}`, "success");
+          ThreatLog.add("RATUNEK", `Załadowano: ${loaded.join(", ")}`);
         } else
 
         // ── v2.14.0: expeditions fill MANY types in one go ──
@@ -5176,9 +5230,11 @@
           if (pick) {
             pick.click();
             log(`[MOON SAVE] cel: ${wantMoon ? "KSIĘŻYC" : "PLANETA"} — kliknięto ${pick.tagName}.${(pick.className || "").toString().split(" ")[0] || "-"}`, "fleet");
+            ThreatLog.add("RATUNEK", `Cel ustawiony: ${wantMoon ? "KSIĘŻYC" : "PLANETA"}`);
             await AntiDetection.sleep(400 + Math.random() * 400);
           } else {
             log(`[MOON SAVE] NIE ZNALAZŁEM przełącznika ${wantMoon ? "księżyca" : "planety"} na kroku 2 — lecę z domyślnym celem (to jest PLANETA). Zrzut panelu wyżej: przyślij go, dopiszę selektor.`, "error");
+            ThreatLog.add("BŁĄD", `Nie znalazłem przełącznika ${wantMoon ? "księżyca" : "planety"} na kroku 2 — cel domyślny (PLANETA).`);
           }
         }
 
@@ -5283,6 +5339,7 @@
             // build offers, arming an unattended fleet mover would be guessing
             // with the whole fleet as the stake. One save proves it, forever.
             if (matched !== "TRANSPORT") MoonSave.proveMission(matched, picked.className || "");
+            ThreatLog.add("RATUNEK", `Misja: ${(picked.textContent || "").trim().slice(0, 20)} (${matched})`);
             // v2.20.0: a transport UNLOADS and flies home, and with the moon at
             // the same coords "home" is minutes away — straight back onto the
             // planet, in time for the next wave. It stays as the last resort
@@ -5437,11 +5494,13 @@
 
           if (errorMsg) {
             log(`DISPATCH FAILED! Error: ${errorMsg.textContent.trim().substring(0, 100)}`, "error");
+            if (mission.moonSave) ThreatLog.add("BŁĄD", `Gra odrzuciła wysyłkę: ${errorMsg.textContent.trim().slice(0, 120)}`);
             // No fleet actually left — drop the duplicate-guard stamp so a
             // genuine retry to these coords isn't blocked for the next 10min.
             writeLastSent(null);
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
+            if (mission.moonSave) ThreatLog.add(mission.moonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę.");
             if (mission.moonReturn) MoonSave.disarm("flota i surowce wróciły na planetę bazową");
             log(mission.moonReturn ? "POWRÓT ZAKOŃCZONY — flota i surowce lecą z księżyca na planetę. Mining i ekspedycje wracają do pracy."
               : mission.moonSave ? "FLEET SAVED — everything moved to the moon."
@@ -5498,6 +5557,7 @@
         } else {
           dumpButtons("step3-no-send");
           log("Cannot find 'Send fleet' button (step 3)", "error");
+          if (mission.moonSave) ThreatLog.add("BŁĄD", "Brak przycisku Send fleet na kroku 3 — ratunek NIE poleciał.");
           GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
         }
 
@@ -5969,6 +6029,13 @@
             </label>
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
+            <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+              <div class="status" id="ogx-threatlog-status" style="font-size:10px;color:#e67e22;">Dziennik obrony: —</div>
+              <div style="display:flex;gap:4px;margin-top:3px;">
+                <button class="mini-btn" id="ogx-threatlog-copy" style="flex:1;font-size:10px;" title="Kopiuje CAŁY dziennik obrony do schowka: każdy odczyt paska misji, każdy alarm, każdy ratunek i każdy błąd, ze znacznikiem daty. To jest zapis, który pokazuje, dlaczego flota przetrwała albo nie.">Kopiuj dziennik ataków</button>
+                <button class="mini-btn" id="ogx-threatlog-clear" style="font-size:10px;" title="Czyści dziennik obrony (zwykły log zostaje nietknięty).">Wyczyść</button>
+              </div>
+            </div>
           </div>
           <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
         </div>
@@ -6164,6 +6231,40 @@
           "Minerzy przestaną kopać do czasu powrotu." +
           (needsLearn ? "\n\nCel księżyca nie jest jeszcze znany — bot wejdzie najpierw na galaktykę bazy, odczyta go i dokończy sam." : ""))) return;
         MoonSave.run({ manual: true, reason: "ręcznie" }).catch(err => log(`[MOON SAVE] ${err.message}`, "error"));
+      });
+
+      const tlCopy = document.getElementById("ogx-threatlog-copy");
+      if (tlCopy) tlCopy.addEventListener("click", () => {
+        const text = ThreatLog.asText();
+        const n = ThreatLog.all().length;
+        // GM_setClipboard nie jest w @grant tego skryptu, więc idziemy tą samą
+        // drogą co istniejący przycisk Copy: navigator.clipboard, a gdy
+        // przeglądarka odmówi — textarea + execCommand. Dowody z ataku nie mogą
+        // zależeć od jednego API.
+        const done = () => { tlCopy.textContent = "Skopiowane!"; setTimeout(() => { tlCopy.textContent = "Kopiuj dziennik ataków"; }, 1500); log(`Dziennik obrony skopiowany (${n} wpisów).`, "success"); };
+        const fallback = () => {
+          try {
+            const ta = document.createElement("textarea");
+            ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+            document.body.appendChild(ta); ta.select();
+            const ok = document.execCommand("copy");
+            document.body.removeChild(ta);
+            if (ok) return done();
+          } catch {}
+          log(`Schowek niedostępny — wypisuję dziennik obrony (${n} wpisów):`, "warn");
+          text.split("\n").slice(0, 150).forEach(l => log(l, "info"));
+        };
+        try {
+          if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(fallback);
+          else fallback();
+        } catch { fallback(); }
+      });
+      const tlClear = document.getElementById("ogx-threatlog-clear");
+      if (tlClear) tlClear.addEventListener("click", () => {
+        if (!window.confirm("Wyczyścić dziennik obrony? Stracisz zapis tego, co bot widział przy dotychczasowych alarmach.")) return;
+        ThreatLog.clear();
+        log("Dziennik obrony wyczyszczony.", "info");
+        updateStatusUI();
       });
 
       const mbBtn = document.getElementById("ogx-moonback-now");
@@ -6610,6 +6711,18 @@
             : "Czysto — brak obcych flot w pasku misji";
         tStatus.style.color = active ? "#e74c3c" : "#999";
       }
+      const tlStatus = document.getElementById("ogx-threatlog-status");
+      if (tlStatus) {
+        const all = ThreatLog.all();
+        const alarms = all.filter(e => e.k === "ATAK").length;
+        const blind = all.filter(e => e.k === "ŚLEPY").length;
+        const errs = all.filter(e => e.k === "BŁĄD").length;
+        tlStatus.textContent = all.length
+          ? `Dziennik obrony: ${all.length} wpisów | alarmy: ${alarms} | ślepe strony: ${blind} | błędy: ${errs}${all[0] ? ` | ostatni: ${all[0].t}` : ""}`
+          : "Dziennik obrony: pusty (bot jeszcze nic nie zapisał)";
+        tlStatus.style.color = (alarms || errs) ? "#e74c3c" : "#7f8c8d";
+      }
+
       const msStatus = document.getElementById("ogx-moonsave-status");
       if (msStatus) {
         const ms = MoonSave.state();
