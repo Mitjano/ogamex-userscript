@@ -125,3 +125,37 @@ wywłaszczenie, więc najgorszy skutek jest zdjęty, ale przyczyna została.
 Nie dorabiać kolejnych funkcji na endpointach z upstreamu bez potwierdzenia
 jednego zapytania na żywo. Ta lekcja kosztowała dziś pięć wersji (2.40–2.44),
 z których wszystkie trafiły do kosza.
+
+---
+
+## Stan wykonania (v2.56.0, 2 sierpnia wieczorem)
+
+- **KRYTYCZNE 1 — ZROBIONE (v2.55.0).** Ratunek przełącza aktywną planetę na
+  atakowaną kolonię (klik w kotwicę na liście planet, bez zgadywania adresu),
+  po przeładowaniu potwierdza, że jest na miejscu, i dopiero wtedy wysyła.
+  Gdy kolonii nie ma na liście — flota zostaje nietknięta, wpis `BŁĄD`.
+- **KRYTYCZNE 2 — ZABEZPIECZONE (v2.53.0), niepotwierdzone.** Kontrola
+  krzyżowa z paskiem misji zamienia cichą ślepotę na głośną degradację.
+  Potwierdzenie wymaga pierwszego prawdziwego ataku — nic do kodowania.
+- **KRYTYCZNE 3 — ZROBIONE (v2.54.0).** Falanga, FleetApi, GalaxyAjax,
+  przycisk „Odwołaj wysyłkę" i przełącznik „Wysyłka przez API" usunięte.
+  −371 linii, zero odwołań.
+- **ŚREDNIE 6 — ZROBIONE (v2.56.0).** Po wysłaniu fali bot sam oddaje stronę
+  skanerowi zamiast czekać, aż tick zauważy „Scan stranded". W logu z 21:07 to
+  było 7 s na falę; przy ~100 falach dziennie ponad kwadrans przestoju.
+  (Korekta audytu: szacowałem 10–20% czasu skanowania — pomiar z loga pokazał
+  wartość znacznie niższą.)
+
+### WYSOKIE 4 — MoonSave na maszynę stanu: ŚWIADOMIE NIEZROBIONE
+
+To jedyna ścieżka obrony **potwierdzona na żywym ruchu** (ratunek 09:24,
+powrót 09:26). Przepisanie jej z 64 wyjść na maszynę stanu bez możliwości
+przetestowania na prawdziwym ataku oznacza wymianę zachowania znanego
+i działającego na nieznane — czyli dokładnie ten błąd, który dziś kosztował
+pięć wersji (2.40–2.44) i jeden groźny regres (2.52.0).
+
+Warunek, po którym warto to zrobić: **jeden potwierdzony ratunek na obcej
+kolonii** w dzienniku. Wtedy będzie wzorzec, do którego można porównać
+zachowanie po przepisaniu. Plan: wydzielić `decide()` zwracające jedną z akcji
+(`ratuj`, `wróć`, `czekaj`, `nic`), zostawić mechanikę wysyłki bez zmian,
+i puścić obie ścieżki równolegle w trybie porównawczym przez dobę.
