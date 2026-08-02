@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.36.0
+// @version      2.37.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -128,10 +128,13 @@
       waveGapMinSec: 60,
       waveGapMaxSec: 90,
       slotReserve: 2,           // fleet slots to leave free for mining/manual play
-      heavyCargoPerWave: 1,     // HC is the farmer's tool AND the loot carrier — fixed count, never split
+      // v2.37.0: 0 = Heavy Cargo dzieli się jak każdy inny statek (flota ÷ fale).
+      // Wartość > 0 to świadome nadpisanie stałą liczbą na falę — sens ma tylko
+      // wtedy, gdy HC jest równolegle potrzebne do farmienia.
+      heavyCargoPerWave: 0,
       // Never send these on an expedition. Miners are the mining module's;
       // colony ships are one-shot and irreplaceable.
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "HEAVY_CARGO"],
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP"],
       // Base = where the combat fleet sits; target is position 16 of ITS system.
       // null → falls back to the asteroid-mining base.
       base: null,
@@ -238,6 +241,23 @@
       // 3:269:8 but deepMerge kept the stale saved value. Result: bot
       // sorted "closest-first" against the WRONG galaxy and dispatched
       // fleets that arrived after the asteroid TTL. One-shot reset.
+      // v2.37.0: Heavy Cargo wchodzi do normalnego podziału. Bez migracji
+      // zapisana konfiguracja (stałe 50 000 000 na falę i HC na liście
+      // wykluczeń) trzymałaby stare zachowanie mimo nowych domyślnych wartości.
+      {
+        const HC_KEY = "ogamex_migration_hc_split_v237";
+        if (GM_getValue(HC_KEY, "0") !== "1") {
+          GM_setValue(HC_KEY, "1");
+          if (merged.expeditions) {
+            merged.expeditions.heavyCargoPerWave = 0;
+            merged.expeditions.excludeTypes = (merged.expeditions.excludeTypes || [])
+              .filter(t => String(t).toUpperCase() !== "HEAVY_CARGO");
+            saveConfig(merged);
+            setTimeout(() => log("Heavy Cargo dzieli sie teraz na fale jak kazdy inny statek (bylo: stala liczba na fale). Zmienisz to polem Heavy Cargo / fale — 0 = podzial.", "info"), 1500);
+          }
+        }
+      }
+
       const MIGRATION_KEY = "ogamex_migration_v293_done";
       if (GM_getValue(MIGRATION_KEY, "0") !== "1") {
         merged.asteroidMining.minerBase = { ...DEFAULT_CONFIG.asteroidMining.minerBase };
@@ -3769,53 +3789,69 @@
     // no longer shrinks the next one.
     const wavesInAir = ExpeditionRunner.slots().used || 0;
     const inAir = (type) => (frozen?.sizes?.[type] || 0) * wavesInAir;
+
+    // ── v2.37.0: typ w całości w powietrzu NIE znika z floty ──
+    // Strona floty pomija typy o zerowej liczbie — w logu właściciela o 11:02
+    // „Ships on page" to były tylko HEAVY_CARGO i ASTEROID_MINER, bo cała
+    // reszta latała. Pętla chodziła po tym, co jest w DOM, więc typ całkowicie
+    // wysłany nie istniał w momencie przeliczania serii: udział 0, wypada ze
+    // składu. A skoro wypadł, jego szacunek „w powietrzu" też był zerowy, więc
+    // NIGDY nie wracał. Zapadka. Stąd znikające Galleon i Falcon oraz fale
+    // schodzące do samego Heavy Cargo.
+    // Rejestr floty pamięta ostatni znany udział każdego typu, a przeliczenie
+    // idzie po SUMIE typów z DOM i z rejestru.
+    const roster = ExpeditionState.load().roster || {};
+    const domQty = {};
     for (const el of document.querySelectorAll("[data-ship-type]")) {
-      const type = el.dataset.shipType;
-      if (!type) continue;
+      if (el.dataset.shipType) domQty[el.dataset.shipType] = parseInt(el.dataset.shipQuantity || "0") || 0;
+    }
+    const shares = {}; // typ → zamierzony udział w fali (to trafia do zamrożenia)
+    for (const type of [...new Set([...Object.keys(domQty), ...Object.keys(roster)])]) {
       if (exclude.includes(type.toUpperCase())) { skipped.push(type); continue; }
-      const available = parseInt(el.dataset.shipQuantity || "0") || 0;
+      const available = domQty[type] || 0;
       if (useFrozen) {
-        // Cap at what's actually left; a type that ran out simply drops out of
-        // the remaining waves instead of holding up the burst.
+        // Utnij do tego, co realnie jest; typ, którego zabrakło, po prostu
+        // wypada z pozostałych fal serii zamiast ją blokować.
         const want = frozen.sizes[type] || 0;
         const qty = Math.min(want, available);
         if (qty > 0) plan.push({ type, qty, available });
         else empty.push(type);
         continue;
       }
-      // v2.14.1: floor(available/waves) alone means a fleet SMALLER than the
-      // wave count sends nothing at all — with 7 of each and waves=8 the whole
-      // module silently sat idle (exactly what happened on the first live run,
-      // one ship of each still being out on the test expedition). Send at
-      // least one of anything we actually have: waves then drain the hangar
-      // one ship at a time and stop by themselves when a type hits zero.
-      // The `available > 0` guard is what keeps this from ordering ships that
-      // don't exist.
-      // `share` is the wave this type SHOULD contribute (fleet ÷ waves) and is
-      // what gets frozen; `qty` is what the hangar can actually hand over right
-      // now. Freezing the clipped number instead would bake a half-empty
-      // hangar into the next `waves` sends.
+      // `share` to udział, jaki typ POWINIEN wnieść (flota ÷ fale) i to on jest
+      // zamrażany; `qty` to tyle, ile hangar może dać w tej chwili. Zamrożenie
+      // liczby przyciętej zabetonowałoby pusty hangar na kolejne `waves` wysyłek.
       const fleet = available + inAir(type);
-      const share = fleet > 0 ? Math.max(1, humanRoundDown(fleet / divisor)) : 0;
+      let share = fleet > 0 ? Math.max(1, humanRoundDown(fleet / divisor)) : 0;
+      if (share === 0 && roster[type] > 0) share = roster[type]; // cały typ w powietrzu
+      if (share > 0) shares[type] = share;
       const qty = Math.min(share, available);
-      if (qty > 0) plan.push({ type, qty, available, share });
+      if (qty > 0) plan.push({ type, qty, available });
       else empty.push(type);
     }
-    // Heavy Cargo last, with an explicit count that overrides any split entry
-    // (the type is excluded by default, but the user can remove it).
+
+    // ── v2.37.0: Heavy Cargo dzieli się jak każdy inny statek ──
+    // Był wyłączony ze splitu i dokładany stałą liczbą, bo „to narzędzie
+    // farmienia". Farmienie jest wyłączone, więc HC to po prostu kolejny statek
+    // w fali — a stała liczba drenowała go w tempie niezależnym od tego, ile go
+    // jest (240M → 190M → 140M → 90M po 50M na falę).
+    // heavyCargoPerWave > 0 zostaje jako świadome nadpisanie dla farmiących.
     const hc = Math.max(0, parseInt(cfg.heavyCargoPerWave) || 0);
-    const hcIdx = plan.findIndex(p => p.type.toUpperCase() === "HEAVY_CARGO");
-    if (hcIdx >= 0) plan.splice(hcIdx, 1);
     if (hc > 0) {
-      const el = document.querySelector('[data-ship-type="HEAVY_CARGO"]');
-      const available = parseInt(el?.dataset?.shipQuantity || "0") || 0;
+      const idx = plan.findIndex(p => p.type.toUpperCase() === "HEAVY_CARGO");
+      if (idx >= 0) plan.splice(idx, 1);
+      const available = domQty.HEAVY_CARGO || 0;
+      shares.HEAVY_CARGO = hc;
       if (available > 0) plan.push({ type: "HEAVY_CARGO", qty: Math.min(hc, available), available });
     }
     // First wave of a burst: remember these numbers so every later wave of the
     // same burst is identical.
     if (!useFrozen && plan.length) {
       const st = ExpeditionState.load();
-      st.burst = { waves: divisor, at: Date.now(), sent: 0, sizes: Object.fromEntries(plan.map(p => [p.type, p.share ?? p.qty])) };
+      st.burst = { waves: divisor, at: Date.now(), sent: 0, sizes: { ...shares } };
+      // Rejestr przeżywa serie: typ chwilowo w całości w powietrzu odzyska
+      // swój udział przy następnym przeliczeniu zamiast wypaść na zawsze.
+      st.roster = { ...(st.roster || {}), ...shares };
       ExpeditionState.save(st);
       const basis = wavesInAir > 0 ? ` (fleet = hangar + ${wavesInAir} wave(s) still in the air)` : "";
       log(`Expedition burst sized${basis}: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — the next ${divisor} wave(s) are identical.`, "fleet");
@@ -6226,7 +6262,7 @@
               <input id="ogx-expo-gapmax" type="number" min="10" step="10" value="${CONFIG.expeditions.waveGapMaxSec}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Ile Heavy Cargo dołożyć do JEDNEJ fali (stała liczba, nie dzielona). To one wiozą łup z ekspedycji, ale są też narzędziem farmienia — dlatego osobne pole. 0 = bez HC.">Heavy Cargo / falę</span>
+              <span title="0 = Heavy Cargo dzieli się na fale jak każdy inny statek (flota ÷ fale) — tak jest domyślnie. Wartość większa od zera wymusza STAŁĄ liczbę HC na falę, niezależną od tego, ile ich masz; sens ma tylko, gdy HC są Ci równolegle potrzebne do farmienia.">Heavy Cargo / falę (0=dziel)</span>
               <input id="ogx-expo-hc" type="number" min="0" step="1" value="${CONFIG.expeditions.heavyCargoPerWave}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
