@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.46.0
+// @version      2.47.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -422,24 +422,88 @@
   const ThreatLog = {
     KEY: "ogamex_threat_journal",
     MAX: 600,
+    // ── v2.47.0: rano ma być widać noc ──
+    // Dziennik trzymał 600 ostatnich wpisów bez względu na rodzaj. Zwykłych
+    // odczytów paska przybywa przy KAŻDEJ zmianie liczby misji, a bot wysyła
+    // falę co ~70 s — więc sześćset miejsc potrafi się zapełnić samą rutyną
+    // w kilka godzin i wypchnąć jedyne wpisy, dla których ten dziennik
+    // powstał: alarm, ratunek i powrót. Po nocy zostawałby zapis „12 misji /
+    // 12 własnych" ×600.
+    //
+    // Teraz dwie półki: zdarzenia ważne żyją 12 godzin (i tyle wystarczy, żeby
+    // po przespanej nocy wiedzieć, co się działo), a rutynowe odczyty mają
+    // własny, mały limit i nie mogą wypchnąć niczego ważnego.
+    RETAIN_MS: 12 * 60 * 60 * 1000,
+    ROUTINE_MAX: 60,
+    IMPORTANT: ["ATAK", "RATUNEK", "POWRÓT", "BŁĄD", "koniec"],
+
+    isImportant(kind) { return this.IMPORTANT.includes(kind); },
+
     all() {
       try { return JSON.parse(GM_getValue(this.KEY, "[]")) || []; } catch { return []; }
     },
+
     add(kind, msg) {
       const now = new Date();
       const stamp = `${now.toLocaleDateString("pl-PL")} ${now.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
       const list = this.all();
-      list.unshift({ t: stamp, k: kind, m: String(msg).slice(0, 400) });
-      while (list.length > this.MAX) list.pop();
-      GM_setValue(this.KEY, JSON.stringify(list));
+      list.unshift({ t: stamp, at: Date.now(), k: kind, m: String(msg).slice(0, 400) });
+      GM_setValue(this.KEY, JSON.stringify(this._prune(list)));
       try { updateStatusUI(); } catch {}
     },
+
+    // Wpisy bez `at` pochodzą sprzed 2.47.0 — traktujemy je jak świeże, żeby
+    // aktualizacja nie skasowała historii, którą właściciel może chcieć zobaczyć.
+    _prune(list) {
+      const cutoff = Date.now() - this.RETAIN_MS;
+      const important = [];
+      const routine = [];
+      for (const e of list) {
+        const at = Number.isFinite(e.at) ? e.at : Date.now();
+        if (this.isImportant(e.k)) { if (at >= cutoff) important.push(e); }
+        else if (routine.length < this.ROUTINE_MAX) routine.push(e);
+      }
+      const out = [...important, ...routine].sort((a, b) => (b.at || 0) - (a.at || 0));
+      return out.slice(0, this.MAX);
+    },
+
     clear() { GM_setValue(this.KEY, "[]"); },
+
+    // Co się działo w ostatnich N godzinach — jedno zdanie do panelu i do logu.
+    summary(hours = 12) {
+      const cutoff = Date.now() - hours * 60 * 60 * 1000;
+      const recent = this.all().filter(e => (Number.isFinite(e.at) ? e.at : Date.now()) >= cutoff);
+      const count = (k) => recent.filter(e => e.k === k).length;
+      const lastOf = (k) => recent.find(e => e.k === k)?.t || null;
+      const alarms = count("ATAK");
+      const saves = recent.filter(e => e.k === "RATUNEK" && /WYS[ŁL]ANE/i.test(e.m)).length;
+      const returns = recent.filter(e => e.k === "POWRÓT" && /WYS[ŁL]ANE/i.test(e.m)).length;
+      const errors = count("BŁĄD");
+      return {
+        hours, alarms, saves, returns, errors,
+        lastAlarm: lastOf("ATAK"),
+        lastSave: recent.find(e => e.k === "RATUNEK" && /WYS[ŁL]ANE/i.test(e.m))?.t || null,
+        lastReturn: recent.find(e => e.k === "POWRÓT" && /WYS[ŁL]ANE/i.test(e.m))?.t || null,
+        text: alarms || saves || returns || errors
+          ? `${hours} h: ${alarms} alarm(ów)`
+            + (saves ? `, ${saves}× flota na księżyc (ostatnio ${lastOf("RATUNEK")})` : "")
+            + (returns ? `, ${returns}× powrót` : "")
+            + (errors ? `, ${errors} błąd(ów)` : "")
+          : `${hours} h: spokój — ani jednej obcej floty.`,
+      };
+    },
+
     asText() {
       const list = this.all();
       if (!list.length) return "(dziennik obrony pusty)";
-      return list.map(e => `${e.t}  [${e.k}]  ${e.m}`).join("\n");
+      const s = this.summary(12);
+      const head = `PODSUMOWANIE ${s.text}`
+        + (s.lastAlarm ? `\nOstatni alarm: ${s.lastAlarm}` : "")
+        + (s.lastSave ? `\nOstatni ratunek (flota na drugie ciało): ${s.lastSave}` : "")
+        + (s.lastReturn ? `\nOstatni powrót: ${s.lastReturn}` : "");
+      return `${head}\n${"-".repeat(60)}\n` + list.map(e => `${e.t}  [${e.k}]  ${e.m}`).join("\n");
     },
+
     lastAlarmAt() {
       const hit = this.all().find(e => e.k === "ATAK");
       return hit ? hit.t : null;
@@ -7796,14 +7860,15 @@
       }
       const tlStatus = document.getElementById("ogx-threatlog-status");
       if (tlStatus) {
+        // v2.47.0: pierwsza linia ma odpowiadać na pytanie „co się działo, gdy
+        // spałem", a nie podawać liczbę wpisów.
+        const s12 = ThreatLog.summary(12);
         const all = ThreatLog.all();
-        const alarms = all.filter(e => e.k === "ATAK").length;
-        const blind = all.filter(e => e.k === "ŚLEPY").length;
-        const errs = all.filter(e => e.k === "BŁĄD").length;
-        tlStatus.textContent = all.length
-          ? `Dziennik obrony: ${all.length} wpisów | alarmy: ${alarms} | ślepe strony: ${blind} | błędy: ${errs}${all[0] ? ` | ostatni: ${all[0].t}` : ""}`
-          : "Dziennik obrony: pusty (bot jeszcze nic nie zapisał)";
-        tlStatus.style.color = (alarms || errs) ? "#e74c3c" : "#7f8c8d";
+        tlStatus.textContent = `Ostatnie ${s12.text}`
+          + (s12.lastSave ? ` | ratunek: ${s12.lastSave}` : "")
+          + (s12.lastReturn ? ` | powrót: ${s12.lastReturn}` : "")
+          + ` | wpisów: ${all.length}`;
+        tlStatus.style.color = (s12.alarms || s12.errors) ? "#e74c3c" : "#7f8c8d";
       }
 
       const msStatus = document.getElementById("ogx-moonsave-status");
@@ -7974,6 +8039,17 @@
 
     const SCRIPT_VERSION = (typeof GM_info !== "undefined" && GM_info?.script?.version) || "?";
     ApiSniffer.install(); // v2.45.0: notuj, czego gra używa naprawdę
+    // v2.47.0: raz na godzinę wypisz do logu, co działo się przez ostatnie 12 h.
+    // Po nocy pierwsza linia w logu ma mówić, czy ktoś leciał i czy flota
+    // uciekała na księżyc — bez przeglądania dziennika.
+    try {
+      const last = parseInt(GM_getValue("ogamex_threat_digest_at", "0")) || 0;
+      if (Date.now() - last > 60 * 60 * 1000) {
+        GM_setValue("ogamex_threat_digest_at", String(Date.now()));
+        const d = ThreatLog.summary(12);
+        log(`[OBRONA] Ostatnie ${d.text}`, d.alarms || d.errors ? "warn" : "info");
+      }
+    } catch {}
     log(`OGameX Assistant v${SCRIPT_VERSION} loaded`, "info");
 
     // v2.10.10: timestamp of the last real page load — read by the scheduler
