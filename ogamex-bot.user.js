@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.40.0
+// @version      2.41.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -87,6 +87,7 @@
       bufferFactor: 1.15,           // over-provision factor vs the estimate (covers above-average asteroids)
       yieldSampleSize: 20,          // rolling window of "resources found" reports used for the estimate
       estimatePercentile: 85,       // size the fleet against this percentile of samples (not the mean) so big asteroids aren't under-served
+      ajaxGalaxyScan: true,         // v2.41.0: puste systemy odsiewaj przez POST /ajax/galaxy zamiast wchodzić na stronę
       learnFromReports: true,       // parse asteroid mining reports to learn expectedResources (see AsteroidYieldTracker)
       scanIntervalMin: 15, // minutes between range re-scans when a sweep found nothing NEW. (v2.10.12: was 45 — OGameX refreshes asteroid hints far sooner, so a full set of fresh ranges sat ignored for up to 45min. The immediate-rescan-on-new-ranges path handles the common case; this is just the genuinely-nothing-new fallback.)
       maxFlightMinutes: 45, // safety cap on one-way flight time; ranges beyond this are skipped. Formula max(11, ceil(11+Δ/15)) hits 45min at Δ=499 (max same-galaxy distance), so 45 ensures every range the game reports gets scanned. Lower values silently drop far ranges and the bot keeps spinning on a few empty close ones.
@@ -1987,7 +1988,16 @@
       const last = parseInt(GM_getValue("ogamex_yield_fetch_at", "0")) || 0;
       if (Date.now() - last < this.FETCH_EVERY_MS) return;
       GM_setValue("ogamex_yield_fetch_at", String(Date.now()));
-      for (const url of ["/messages", "/ajax/messages"]) {
+      // v2.41.0: właściwy endpoint zakładki wiadomości (MessagesController@
+      // ajaxGetTabContents): /ajax/messages?tab=fleets&pagination=1. Raporty
+      // z ekspedycji i wypraw górniczych siedzą w zakładce „fleets"; wcześniej
+      // bot pobierał gołe /messages i lądował na „unknown message markup".
+      for (const url of [
+        "/ajax/messages?tab=fleets&pagination=1",
+        "/ajax/messages?tab=fleets&pagination=2",
+        "/ajax/messages",
+        "/messages",
+      ]) {
         try {
           const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
           if (!res.ok) continue;
@@ -2511,6 +2521,9 @@
 
       // Check position 17 in live DOM
       const result = AsteroidScanner.checkCurrentPageForAsteroid();
+      // v2.41.0: kontrola szybkiego skanu — jeśli AJAX twierdził, że tu pusto,
+      // a strona pokazuje asteroidę, parser jest zły i tryb się wyłącza.
+      try { GalaxyAjax.confirmFromDom(current.galaxy, current.system, !!result?.found); } catch {}
 
       if (result.found) {
         // Skip if already dispatched to this asteroid
@@ -2621,11 +2634,18 @@
         return;
       }
 
+      // ── v2.41.0: puste systemy odsiewamy przez AJAX ──
+      // Kolejka potrafi mieć 87 pozycji, z czego asteroidę ma kilka. Każdy pusty
+      // system kosztował przeładowanie strony; teraz kosztuje jedno zapytanie.
+      await GalaxyAjax.skipEmptyAhead(scanState).catch(() => 0);
+      const target = scanState.queue[0] || next;
+      if (!scanState.queue[0]) { await this.finishSweep(scanState); return; }
+
       // Navigate to next system
       const scanDelay = humanScanDelayMs();
-      log(`Next: [${next.galaxy}:${next.system}] in ${Math.round(scanDelay)}ms...`, "asteroid");
+      log(`Next: [${target.galaxy}:${target.system}] in ${Math.round(scanDelay)}ms...`, "asteroid");
       await AntiDetection.sleep(scanDelay);
-      scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "next system");
+      scanNavigate(`/galaxy?x=${target.galaxy}&y=${target.system}`, "next system");
     },
 
     // ── Sweep finished (queue exhausted) — decide what happens next ──
@@ -3038,6 +3058,173 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  GALAXY AJAX (v2.41.0) — skan systemów bez przeładowania strony
+  // ═══════════════════════════════════════════════════════════════
+  // Skaner asteroid nawigował do /galaxy?x=&y= osobno dla KAŻDEGO z ~87
+  // systemów: pełne przeładowanie, 3–6 s na system, do tego stały stan „Scan
+  // stranded off galaxy page. Resuming at …". Gra ma na to własny endpoint
+  // (GalaxyController@ajax): POST /ajax/galaxy { galaxy, system }.
+  //
+  // Używamy go jako PRZEDFILTRA, nie zamiennika: gdy odpowiedź mówi „w tym
+  // systemie nie ma asteroidy", pomijamy system bez wchodzenia na stronę.
+  // Fałszywe „nie ma" kosztuje pominiętą asteroidę, fałszywe „jest" kosztuje
+  // jedno przeładowanie, czyli tyle co dziś. Żadna wysyłka floty nie opiera
+  // się na tym odczycie — decyzję o locie nadal podejmuje DOM.
+  //
+  // Athena to fork (upstream OGameX nie zna asteroid), więc parser musi umieć
+  // się poddać: przy pierwszym niezgodnym odczycie tryb wyłącza się na stałe
+  // i bot wraca do nawigacji.
+  const GalaxyAjax = {
+    KEY_MODE: "ogamex_galaxy_ajax_mode",     // "" nieznany, "on", "off"
+    KEY_DUMPED: "ogamex_galaxy_ajax_dump_v241",
+    KEY_VERDICTS: "ogamex_galaxy_ajax_verdicts",
+    MAX_SKIP_PER_STEP: 12,                   // dłuższy ciąg = ludzka przerwa
+
+    mode() { return GM_getValue(this.KEY_MODE, ""); },
+    off() { return this.mode() === "off"; },
+
+    disable(why) {
+      if (this.off()) return;
+      GM_setValue(this.KEY_MODE, "off");
+      log(`[GALAXY AJAX] wyłączam szybki skan: ${why}. Wracam do nawigacji po stronie galaktyki.`, "warn");
+    },
+
+    // Werdykty trzymamy krótko — służą wyłącznie do wychwycenia rozjazdu
+    // „AJAX mówił pusto, a DOM znalazł asteroidę".
+    _verdicts() { try { return JSON.parse(GM_getValue(this.KEY_VERDICTS, "{}")); } catch { return {}; } },
+    _remember(key, asteroid) {
+      const v = this._verdicts();
+      v[key] = { asteroid, at: Date.now() };
+      const now = Date.now();
+      for (const k of Object.keys(v)) if (now - (v[k].at || 0) > 30 * 60 * 1000) delete v[k];
+      GM_setValue(this.KEY_VERDICTS, JSON.stringify(v));
+    },
+
+    // Wywoływane przez skaner DOM, gdy asteroida JEST na stronie. Jeśli AJAX
+    // twierdził, że tego systemu nie warto odwiedzać, parser jest zły — i to
+    // jest jedyny moment, w którym możemy to zauważyć.
+    confirmFromDom(galaxy, system, found) {
+      if (this.off()) return;
+      const v = this._verdicts()[`${galaxy}:${system}`];
+      if (!v) return;
+      if (found && v.asteroid === false) {
+        this.disable(`AJAX zgłosił brak asteroidy w [${galaxy}:${system}], a strona ją pokazała`);
+      }
+    },
+
+    // Zwraca { usable, asteroid, ttl } — usable=false znaczy „nie wiem".
+    async look(galaxy, system) {
+      if (this.off()) return { usable: false };
+      const json = await Ajax.post("/ajax/galaxy", { galaxy, system }).catch(() => null);
+      if (!json || json._raw || json.success === false) {
+        this.disable(json?._raw ? "endpoint zwrócił coś, co nie jest JSON-em" : "endpoint nie odpowiedział");
+        return { usable: false };
+      }
+      const txt = JSON.stringify(json);
+      if (this.mode() !== "on" && GM_getValue(this.KEY_DUMPED, "") !== "1") {
+        GM_setValue(this.KEY_DUMPED, "1");
+        log(`[GALAXY AJAX] odpowiedź dla [${galaxy}:${system}] (${txt.length}ch): ${txt.slice(0, 2000)}`, "error");
+      }
+      // Fork trzyma asteroidę w tym samym wierszu co strona: przycisk
+      // „Find asteroids" = pusto, licznik „disappear" = jest.
+      const noAsteroid = /find[-_]?asteroid/i.test(txt);
+      const ttlMatch = txt.match(/disappear\D{0,12}(\d{2,7})/i);
+      const hasAsteroid = !!ttlMatch || /mission=12/.test(txt);
+      if (!noAsteroid && !hasAsteroid) {
+        // Ani jednego znanego znacznika — nie zgadujemy.
+        this.disable("w odpowiedzi nie ma żadnego znanego znacznika asteroidy");
+        return { usable: false };
+      }
+      if (this.mode() !== "on") {
+        GM_setValue(this.KEY_MODE, "on");
+        log("[GALAXY AJAX] szybki skan włączony — puste systemy pomijam bez przeładowania strony.", "success");
+      }
+      const asteroid = hasAsteroid && !noAsteroid;
+      this._remember(`${galaxy}:${system}`, asteroid);
+      return { usable: true, asteroid, ttl: ttlMatch ? parseInt(ttlMatch[1]) : 0 };
+    },
+
+    // Przewija kolejkę przez systemy, o których AJAX mówi „pusto". Zwraca
+    // liczbę pominiętych. Nie rusza kolejki, gdy tryb jest wyłączony.
+    async skipEmptyAhead(scanState) {
+      if (this.off() || !CONFIG.asteroidMining.ajaxGalaxyScan) return 0;
+      let skipped = 0;
+      while (skipped < this.MAX_SKIP_PER_STEP) {
+        const next = scanState.queue[0];
+        if (!next) break;
+        const r = await this.look(next.galaxy, next.system);
+        if (!r.usable || r.asteroid) break;
+        ScanState.advance(scanState);
+        skipped++;
+        await AntiDetection.sleep(400 + Math.random() * 900); // tempo zbliżone do klikania
+      }
+      if (skipped) log(`[GALAXY AJAX] pominięto ${skipped} pustych system(ów) bez wchodzenia na stronę.`, "asteroid");
+      return skipped;
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  AJAX (v2.41.0) — rozmowa z grą jej własnymi endpointami
+  // ═══════════════════════════════════════════════════════════════
+  // OGameX jest open-source (lanedirt/OGameX) i jego routes/web.php wprost
+  // wymienia endpointy, których gra używa sama z siebie. Do 2.39.1 bot udawał
+  // człowieka klikającego w DOM nawet tam, gdzie gra ma gotowe API — stąd
+  // przeładowanie strony na każdy skanowany system i zgadywanie struktury
+  // wiadomości.
+  //
+  // Zasada, która obowiązuje przy KAŻDYM z tych endpointów: nowa droga musi
+  // umieć się poddać. Athena to FORK (asteroidy, Galleon, Falcon, Reaper nie
+  // istnieją w upstream), więc odpowiedź może wyglądać inaczej niż w źródle.
+  // Gdy endpoint nie odpowie albo odpowie czymś nieznanym, wracamy na starą
+  // ścieżkę zamiast zgadywać.
+  const Ajax = {
+    KEY_TOKEN: "ogamex_csrf_token",
+
+    // Token CSRF: z <meta>, z ukrytego pola, z globalnej zmiennej `token`
+    // (tak trzyma go sama gra), a w ostateczności z zapamiętanego
+    // `newAjaxToken` — każda odpowiedź AJAX gry zwraca świeży.
+    token() {
+      const meta = document.querySelector("meta[name='csrf-token']")?.content;
+      if (meta) return meta;
+      const input = document.querySelector("input[name='_token'], input[name='token']")?.value;
+      if (input) return input;
+      try { if (typeof unsafeWindow !== "undefined" && unsafeWindow.token) return unsafeWindow.token; } catch {}
+      try { if (typeof window !== "undefined" && window.token) return window.token; } catch {}
+      return GM_getValue(this.KEY_TOKEN, "") || "";
+    },
+
+    remember(t) { if (t && typeof t === "string") GM_setValue(this.KEY_TOKEN, t); },
+
+    async post(url, params = {}) {
+      const token = this.token();
+      const body = new URLSearchParams({ ...params, _token: token, token });
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        },
+        body: body.toString(),
+      });
+      if (!res.ok) return null;
+      const txt = await res.text();
+      try {
+        const json = JSON.parse(txt);
+        this.remember(json?.newAjaxToken);
+        return json;
+      } catch { return { _raw: txt }; }
+    },
+
+    async get(url) {
+      const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+      if (!res.ok) return null;
+      const txt = await res.text();
+      try { const json = JSON.parse(txt); this.remember(json?.newAjaxToken); return json; }
+      catch { return { _raw: txt }; }
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  THREAT MONITOR  (v2.15.0) — someone is flying at us
   // ═══════════════════════════════════════════════════════════════
   // Stage 1 of fleet-save: DETECT and SHOUT. It never moves a ship.
@@ -3119,6 +3306,7 @@
           if (res.ok) box = await res.json();
         } catch {}
         if (!box || !Number.isFinite(box.hostile)) return; // nie wiem → pasek zostaje awaryjnym źródłem
+        Ajax.remember(box.newAjaxToken); // każda odpowiedź gry niesie świeży token CSRF
         const out = { at: Date.now(), hostile: box.hostile, attacks: 0, spies: 0, classified: true, targets: [] };
         if (box.hostile > 0) {
           let html = "";
