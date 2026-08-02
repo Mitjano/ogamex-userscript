@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.35.0
+// @version      2.36.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2997,9 +2997,23 @@
 
     // An alert goes stale on its own: if we stop seeing foreign fleets for
     // 10 minutes the danger either landed or turned around.
+    // ── v2.36.0: brak odczytu to „nie wiem", a nie „bezpiecznie" ──
+    // Alarm wygasał po 10 minutach od ostatniego WIDZENIA obcych flot. Znacznik
+    // odświeża się tylko przy udanym odczycie, więc każda ślepota — jitter do
+    // 15 minut, strona bez paska misji — zdejmowała alarm SAMA. Skutek był
+    // gorszy niż brak obrony: atak przeczekiwał alarm, a auto-powrót ściągał
+    // flotę z refugium prosto pod uderzenie.
+    //
+    // Alarm zdejmuje teraz WYŁĄCZNIE potwierdzony odczyt „zero obcych" (gałąź
+    // niżej w check(), która czyści stan). Sam upływ czasu go nie zdejmie.
+    // BACKSTOP_MS istnieje tylko po to, żeby trwała ślepota nie zamroziła
+    // farmienia i ekspedycji na zawsze — to bezpiecznik, nie normalna droga.
+    BACKSTOP_MS: 3 * 60 * 60 * 1000,
     active() {
       const s = this.state();
-      return !!(s && s.count > 0 && Date.now() - s.seenAt < 10 * 60 * 1000);
+      if (!s || !(s.count > 0)) return false;
+      if (Date.now() - (s.firstAt || s.seenAt) > this.BACKSTOP_MS) return false;
+      return true;
     },
 
     clear() { GM_setValue(this.KEY, "null"); },
@@ -3608,10 +3622,23 @@
       // to stop a bounce loop, and under multi-wave it would block exactly the
       // re-save the returning fleets need.
       if (!manual && !sweep && !auto && this.recentlySaved()) return false;
+      // ── v2.36.0: ratunek WYWŁASZCZA, nie czeka w kolejce ──
+      // Dotąd odmawiał, gdy zajęty był wspólny slot pending_mission — a fala
+      // ekspedycji startuje co ~70 s i mining dorzuca swoje, więc slot bywa
+      // zajęty niemal ciągle. Slot wygasa dopiero po 5 minutach. Rzecz, która
+      // ma być najszybsza w całym programie, czekała za rutyną, która może
+      // poczekać zawsze.
+      // Utrata jednej fali ekspedycji kosztuje minuty. Utrata floty kosztuje
+      // wszystko. Porzucone zadanie nie zostawia śmieci: to tylko rekord
+      // w pending_mission, który zaraz nadpisujemy, a niedokończony formularz
+      // umiera wraz z nawigacją.
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") {
-        log("[MOON SAVE] another dispatch is mid-flow — retrying on the next tick.", "warn");
-        return false;
+        let kind = "inne zadanie";
+        try { kind = JSON.parse(pending)?.type || kind; } catch {}
+        log(`[RATUNEK] przerywam trwające zadanie (${kind}) — ratunek floty ma pierwszeństwo.`, "warn");
+        ThreatLog.add("RATUNEK", `Wywłaszczenie: przerwane zadanie ${kind}, żeby nie czekać na wolny slot.`);
+        GM_setValue("pending_mission", null);
       }
       this.running = true;
       try {
@@ -5745,23 +5772,10 @@
     // Handle any pending multi-page mission first
     await handlePendingMission();
 
-    // ── v2.21.0: DEFENCE RUNS BEFORE EVERY PAUSE ──
-    // This block used to sit below the coffee-break and night-sleep returns,
-    // which meant the bot was blind to an incoming fleet for 5-15 minutes at a
-    // time — and asleep for hours if a night window were set. A humanizer
-    // break is a pretence; an attack is not. Detection and the fleet save now
-    // run first, unconditionally. The one-shot LEARNING side-effects (galaxy
-    // visits to capture the moon link) stay behind the pause, because those
-    // are the parts that would make a "resting" bot navigate.
-    {
-      const resting = Humanizer.isOnBreak() || AntiDetection.isSleepTime();
-      ThreatMonitor.check({ emergencyOnly: resting });
-      // If a save is armed, keeping the base planet empty outranks mining,
-      // farming and expeditions — it navigates, so it wins the whole tick.
-      if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
-      if (await MoonSave.returnHome().catch(() => false)) return;
-      if (await MoonSave.keepPlanetEmpty().catch(() => false)) return;
-    }
+    // v2.36.0: obrona NIE jest już częścią ticku — ma własny zegar
+    // (startDefenceLoop). Powód w audycie: jitter śpi WEWNĄTRZ ticku, a łańcuch
+    // jest szeregowy, więc „przed każdą pauzą" nie chroniło przed pauzą, która
+    // zatrzymuje cały zegar.
 
     // v2.12.0: coffee breaks — full-bot pause with human macro-pacing.
     if (Humanizer.isOnBreak()) {
@@ -5897,6 +5911,53 @@
 
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  //  PĘTLA OBRONY  (v2.36.0) — własny zegar, poza schedulerem
+  // ═══════════════════════════════════════════════════════════════
+  // Audyt 2026-08-02, ustalenie krytyczne nr 1: blok obrony stał w ticku
+  // schedulera, a AntiDetection.jitter() robi `await sleep(5-15 min)` WEWNĄTRZ
+  // ticku. Łańcuch jest szeregowy (`await schedulerTick(); scheduleNext();`),
+  // więc jitter zatrzymywał cały zegar — i przez kilkanaście minut, kilka razy
+  // na godzinę, nie było ANI JEDNEGO odczytu paska misji. Przeniesienie obrony
+  // „przed pauzy" w v2.21.0 chroniło przed przerwą na kawę i snem, bo z nich
+  // tick wraca; z jitteru nie wraca.
+  //
+  // Własny setInterval nie da się zagłodzić: nie zależy od ticku, jitteru,
+  // przerw humanizera ani okna nocnego. To jedyny sposób, żeby „obrona działa
+  // 24 h" było prawdą, a nie deklaracją.
+  let defenceTimer = null;
+  let defenceRunning = false;
+  const DEFENCE_EVERY_MS = 30 * 1000;
+
+  async function defenceTick() {
+    if (defenceRunning) return;          // poprzedni przebieg jeszcze trwa
+    if (!CONFIG.enabled) return;
+    if (!requireLeader("defence")) return; // tylko karta-lider rusza flotą
+    defenceRunning = true;
+    try {
+      // Nauki jednorazowe (wizyty w galaktyce) zostają za pauzą — to one
+      // kazałyby „odpoczywającemu" botowi nawigować. Sam odczyt paska idzie
+      // zawsze, bo od niego zależy atak.
+      const resting = Humanizer.isOnBreak() || AntiDetection.isSleepTime();
+      ThreatMonitor.check({ emergencyOnly: resting });
+      if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
+      if (await MoonSave.returnHome().catch(() => false)) return;
+      await MoonSave.keepPlanetEmpty().catch(() => false);
+    } catch (err) {
+      log(`[RATUNEK] błąd pętli obrony: ${err.message}`, "error");
+      ThreatLog.add("BŁĄD", `Pętla obrony wyrzuciła wyjątek: ${err.message}`);
+    } finally {
+      defenceRunning = false;
+    }
+  }
+
+  function startDefenceLoop() {
+    if (defenceTimer) clearInterval(defenceTimer);
+    defenceTimer = setInterval(() => { defenceTick().catch(() => {}); }, DEFENCE_EVERY_MS);
+    setTimeout(() => { defenceTick().catch(() => {}); }, 1500); // pierwszy przebieg od razu
+    log(`Pętla obrony uruchomiona (co ${DEFENCE_EVERY_MS / 1000}s, niezależnie od przerw i jitteru).`, "info");
+  }
+
   function startScheduler() {
     if (schedulerTimer) clearTimeout(schedulerTimer);
     // Randomized interval: 50-90 seconds (not a fixed 60s heartbeat)
@@ -5918,6 +5979,11 @@
       scheduleNext();
     }, 3000 + Math.random() * 5000);
     log("Scheduler started", "info");
+  }
+
+  function stopDefenceLoop() {
+    if (defenceTimer) { clearInterval(defenceTimer); defenceTimer = null; }
+    log("Pętla obrony zatrzymana.", "info");
   }
 
   function stopScheduler() {
@@ -6243,9 +6309,11 @@
       btn.className = `toggle-btn ${CONFIG.enabled ? "on" : "off"}`;
       if (CONFIG.enabled) {
         startScheduler();
+        startDefenceLoop();
         log("Bot ENABLED", "success");
       } else {
         stopScheduler();
+        stopDefenceLoop();
         log("Bot DISABLED", "info");
       }
     });
@@ -7008,7 +7076,7 @@
       log("Another tab is running the bot — this tab stays PASSIVE (will take over if the active tab closes).", "warn");
       createUI();
       updateStatusUI();
-      if (CONFIG.enabled) startScheduler();
+      if (CONFIG.enabled) { startScheduler(); startDefenceLoop(); }
       return;
     }
     // Leader heartbeat, independent of the 50-90s scheduler cadence. When this
@@ -7305,6 +7373,7 @@
     // Auto-start scheduler if enabled
     if (CONFIG.enabled) {
       startScheduler();
+      startDefenceLoop();
     }
 
     // v2.10.10 watchdog: the scheduler is a chained setTimeout — if one tick
