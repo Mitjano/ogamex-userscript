@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.48.0
+// @version      2.49.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2086,18 +2086,40 @@
       // ajaxGetTabContents): /ajax/messages?tab=fleets&pagination=1. Raporty
       // z ekspedycji i wypraw górniczych siedzą w zakładce „fleets"; wcześniej
       // bot pobierał gołe /messages i lądował na „unknown message markup".
-      // v2.45.0: /ajax/messages na tym serwerze oddaje zwykłą stronę, nie
-      // treść zakładki (test 18:31 → 200 text/html z <style>). Zostaje samo
-      // /messages, czyli to, co bot czytał wcześniej.
-      for (const url of ["/messages"]) {
+      // ── v2.49.0: właściwe adresy raportów, złapane przez ApiSniffer ──
+      // Ten serwer to aplikacja .NET z własnym API wiadomości. Gra sama
+      // odpytuje je przy otwieraniu zakładek:
+      //   /messages/messagedata?MessageCategoryType=FLEET_OTHER&page=1
+      //   /messages/messagedata?MessageCategoryType=FLEET_EXPEDITION&page=1
+      // FLEET_OTHER niesie raporty z wypraw górniczych („Resources found"),
+      // FLEET_EXPEDITION — łupy z ekspedycji. Do tej pory bot pobierał gołe
+      // /messages i kończył na „unknown message markup", więc ładowność minera
+      // i spodziewany urobek uczyły się wyłącznie z przypadkowych wejść na
+      // stronę wiadomości. Dodatkowo /home/Partial_AsteroidJournal to gotowy
+      // dziennik wypraw — jeśli odpowie, jest najlepszym źródłem.
+      for (const url of [
+        "/home/Partial_AsteroidJournal",
+        "/messages/messagedata?MessageCategoryType=FLEET_OTHER&page=1",
+        "/messages/messagedata?MessageCategoryType=FLEET_EXPEDITION&page=1",
+        "/messages",
+      ]) {
+        if (!Ajax.supported(url)) continue;
         try {
           const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-          if (!res.ok) continue;
+          if (!res.ok) { Ajax.markUnsupported(url, res.status); continue; }
           const html = await res.text();
           if (res.redirected || /login|password/i.test(html.substring(0, 500))) continue; // session page, not messages
+          // v2.49.0: pierwszy raz z każdego źródła zrzuć próbkę — bez niej nie
+          // da się napisać parsera pod markup TEGO serwera, a zgadywanie już raz
+          // kosztowało pięć wersji.
+          const dumpKey = `ogamex_dump_${url.replace(/\W+/g, "_").slice(0, 60)}`;
+          if (GM_getValue(dumpKey, "") !== "1") {
+            GM_setValue(dumpKey, "1");
+            log(`[RAPORTY] ${url} → ${html.length} zn.: ${html.replace(/\s+/g, " ").slice(0, 1200)}`, "info");
+          }
           const doc = new DOMParser().parseFromString(html, "text/html");
           this.scanReports(doc, url);
-          return; // first endpoint that answered is enough
+          return; // pierwsze źródło, które odpowiedziało, wystarczy
         } catch {}
       }
     },
@@ -3176,7 +3198,7 @@
     // Odpytuje check-target o WŁASNĄ bazę (cel istniejący i nasz, więc żadna
     // walidacja nie kłuje w oczy) i zapamiętuje tabelę statków.
     async refreshShips(force = false) {
-      if (!Ajax.supported()) return this.data();
+      if (!Ajax.supported("/ajax/fleet/dispatch/check-target")) return this.data();
       const at = parseInt(GM_getValue(this.KEY_SHIPS_AT, "0")) || 0;
       if (!force && this.data() && Date.now() - at < this.SHIPS_TTL_MS) return this.data();
       const b = CONFIG.asteroidMining.minerBase;
@@ -3211,7 +3233,7 @@
     // czyli w złą stronę), ale to jedyny sposób, żeby cofnąć pomyłkową wysyłkę
     // bez czekania na powrót. Stąd: przycisk w panelu, nie automat.
     async recall(missionId) {
-      if (!Ajax.supported()) return { ok: false, error: "serwer nie ma endpointu odwołania" };
+      if (!Ajax.supported("/ajax/fleet/dispatch/recall-fleet")) return { ok: false, error: "serwer nie ma endpointu odwołania" };
       if (!missionId) return { ok: false, error: "brak numeru misji" };
       const json = await Ajax.post("/ajax/fleet/dispatch/recall-fleet", { fleet_mission_id: missionId }).catch(() => null);
       if (!json || json._raw) return { ok: false, error: "brak odpowiedzi z endpointu" };
@@ -3239,7 +3261,7 @@
     // ships: { ASTEROID_MINER: 2500000000, ... }; zwraca { ok, error }
     async send({ galaxy, system, position, type = 1, mission, ships = {}, speed = 10,
                  holdingtime = 0, metal = 0, crystal = 0, deuterium = 0 }) {
-      if (!Ajax.supported()) return { ok: false, error: "serwer nie ma endpointu wysyłki" };
+      if (!Ajax.supported("/ajax/fleet/dispatch/send-fleet")) return { ok: false, error: "serwer nie ma endpointu wysyłki" };
       if (!Number.isFinite(mission) || mission <= 0) return { ok: false, error: "brak numeru misji" };
       const params = {
         galaxy, system, position, type, mission, speed, holdingtime,
@@ -3459,7 +3481,7 @@
     COOLDOWN_MS: 10 * 60 * 1000,
 
     async scanAttacker() {
-      if (!Ajax.supported()) return false;
+      if (!Ajax.supported("/ajax/phalanx/scan")) return false;
       const ev = ThreatMonitor.events();
       const origin = ev?.origins?.[0];
       if (!origin || !(ev.attacks > 0)) return false;
@@ -3541,7 +3563,7 @@
 
     // Zwraca { usable, asteroid, ttl } — usable=false znaczy „nie wiem".
     async look(galaxy, system) {
-      if (this.off() || !Ajax.supported()) return { usable: false };
+      if (this.off() || !Ajax.supported("/ajax/galaxy")) return { usable: false };
       const json = await Ajax.post("/ajax/galaxy", { galaxy, system }).catch(() => null);
       if (!json || json._raw || json.success === false) {
         this.disable(json?._raw ? "endpoint zwrócił coś, co nie jest JSON-em" : "endpoint nie odpowiedział");
@@ -3618,13 +3640,32 @@
     // czysty ruch w tle bez żadnego pożytku, a każde 404 to ślad w logach
     // serwera. Bramka jest jednokierunkowa — raz wyłączona zostaje wyłączona,
     // aż do jawnego „Test API".
-    KEY_SUPPORT: "ogamex_api_support",
-    supported() { return GM_getValue(this.KEY_SUPPORT, "") !== "no"; },
-    markUnsupported(url, status) {
-      if (!this.supported()) return;
-      GM_setValue(this.KEY_SUPPORT, "no");
-      log(`[API] ${url} → ${status}. Ten serwer nie ma endpointów AJAX z upstream OGameX — wyłączam wszystkie ścieżki API i zostaję przy czytaniu stron. Użyj „Test API", jeśli chcesz sprawdzić ponownie.`, "warn");
+    // ── v2.49.0: martwy jest ADRES, nie cała idea ──
+    // 2.45.0 wyłączało wszystkie ścieżki API jedną bramką, bo endpointy
+    // z upstream OGameX dawały 404. Podsłuch (20:56) pokazał, że ten serwer
+    // ma własne, zupełnie inne adresy — to aplikacja .NET, nie Laravel:
+    //   /home/Partial_AsteroidJournal
+    //   /home/Partial_ExpeditionJournal
+    //   /messages/messagedata?MessageCategoryType=FLEET_EXPEDITION&page=1
+    //   /home/combatreport?id=<uuid>
+    // Jedna wspólna bramka kazałaby razem z martwymi adresami wyłączyć te
+    // żywe. Pamiętamy więc, KTÓRY adres oddał 404 — reszta działa dalej.
+    KEY_SUPPORT: "ogamex_api_dead_paths",
+    _dead() { try { return JSON.parse(GM_getValue(this.KEY_SUPPORT, "{}")); } catch { return {}; } },
+    supported(url) {
+      if (!url) return true;
+      const path = String(url).split("?")[0];
+      return !this._dead()[path];
     },
+    markUnsupported(url, status) {
+      const path = String(url).split("?")[0];
+      const dead = this._dead();
+      if (dead[path]) return;
+      dead[path] = { status, at: Date.now() };
+      GM_setValue(this.KEY_SUPPORT, JSON.stringify(dead));
+      log(`[API] ${path} → ${status}. Ten adres nie istnieje na tym serwerze — nie pytam o niego ponownie. Inne ścieżki działają dalej.`, "warn");
+    },
+    resetDead() { GM_setValue(this.KEY_SUPPORT, "{}"); },
 
     // Token CSRF: z <meta>, z ukrytego pola, z globalnej zmiennej `token`
     // (tak trzyma go sama gra), a w ostateczności z zapamiętanego
@@ -3682,6 +3723,11 @@
         ["POST", "/ajax/galaxy", { galaxy: CONFIG.asteroidMining.minerBase.galaxy, system: CONFIG.asteroidMining.minerBase.system }],
         ["POST", "/ajax/fleet/dispatch/check-target", { galaxy: CONFIG.asteroidMining.minerBase.galaxy, system: CONFIG.asteroidMining.minerBase.system, position: CONFIG.asteroidMining.minerBase.position, type: 1 }],
         ["GET", "/ajax/messages?tab=fleets&pagination=1"],
+        // v2.49.0: prawdziwe adresy tego serwera, złapane przez ApiSniffer
+        ["GET", "/home/Partial_AsteroidJournal"],
+        ["GET", "/home/Partial_ExpeditionJournal"],
+        ["GET", "/messages/messagedata?MessageCategoryType=FLEET_OTHER&page=1"],
+        ["GET", "/messages/messagedata?MessageCategoryType=FLEET_EXPEDITION&page=1"],
       ];
       for (const [method, url, params] of probes) {
         try {
@@ -3790,7 +3836,7 @@
       this._evFetching = true;
       try {
         const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
-        if (!Ajax.supported()) return;
+        if (!Ajax.supported("/ajax/fleet/eventbox/fetch")) return;
         let box = null;
         try {
           const res = await fetch("/ajax/fleet/eventbox/fetch", hdr);
@@ -7580,7 +7626,7 @@
         apiTestBtn.disabled = true;
         log("[API TEST] sprawdzam endpointy gry…", "info");
         ApiSniffer.dump();
-        GM_setValue(Ajax.KEY_SUPPORT, ""); // ręczny test zawsze otwiera bramkę
+        Ajax.resetDead(); // ręczny test zawsze otwiera bramki
         try { await Ajax.diagnose(); } catch (e) { log(`[API TEST] błąd: ${e.message}`, "error"); }
         finally { apiTestBtn.disabled = false; }
       });
