@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.47.0
+// @version      2.48.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -141,6 +141,9 @@
       // — jedna sztuka zamraża całą falę na prawie godzinę i zjada slot
       // ekspedycyjny, którego brakuje reszcie floty.
       excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR"],
+      // v2.48.0: ekspedycja potrafi trafić na obcych i zostawić pole złomu na
+      // pozycji 16 systemu bazy. To nasze własne surowce — zbieramy recyklerami.
+      collectDebris: true,
       // Base = where the combat fleet sits; target is position 16 of ITS system.
       // null → falls back to the asteroid-mining base.
       base: null,
@@ -3259,6 +3262,116 @@
       const err = (json.errors && json.errors[0] && (json.errors[0].message || json.errors[0].error))
         || json.message || JSON.stringify(json).slice(0, 200);
       return { ok: false, error: err };
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  DEBRIS COLLECTOR (v2.48.0) — złom po ekspedycjach
+  // ═══════════════════════════════════════════════════════════════
+  // Ekspedycja potrafi trafić na obcych i stracić część fali. To, co z niej
+  // zostanie, ląduje jako pole złomu na pozycji 16 systemu bazy — czyli tam,
+  // dokąd bot wysyła ekspedycje. Są to nasze własne surowce i leżą do zebrania
+  // recyklerami; nikt inny po nie nie przyleci, bo to nasz system.
+  //
+  // Trzy zasady, których się trzymam:
+  //   • Nie zgaduję numeru misji. Wiersz galaktyki ma gotowy link zbierania —
+  //     bierzemy go w całości, tak jak przy asteroidach (fork ma własną
+  //     numerację: ekspedycja to mission=1, asteroida mission=12).
+  //   • Recykling NIE jest lotem górniczym. Ma własną flagę, więc nie zjada
+  //     budżetu lotów ani nie ustawia pauzy skanu.
+  //   • Ustępuje wszystkiemu: ratunkowi floty, trwającej wysyłce i przerwom.
+  const DebrisCollector = {
+    KEY_AT: "ogamex_debris_check_at",
+    KEY_SENT: "ogamex_debris_sent_at",
+    KEY_DUMPED: "ogamex_debris_markup_dumped_v248",
+    CHECK_EVERY_MS: 20 * 60 * 1000,   // co tyle zaglądamy na galaktykę bazy
+    RESEND_GUARD_MS: 10 * 60 * 1000,  // po wysyłce nie próbuj drugi raz
+
+    base() { return CONFIG.asteroidMining.minerBase; },
+
+    // Wiersz pozycji 16 na ŻYWEJ stronie galaktyki. Zwraca link zbierania.
+    findDebrisLink() {
+      for (const item of document.querySelectorAll(".galaxy-item")) {
+        const idx = parseInt(item.querySelector(".planet-index")?.textContent || "0") || 0;
+        if (idx !== 16) continue;
+        const cell = item.querySelector(".col-debris, .galaxy-col.col-debris");
+        if (!cell) return null;
+        if (GM_getValue(this.KEY_DUMPED, "") !== "1" && (cell.innerHTML || "").trim().length > 0) {
+          GM_setValue(this.KEY_DUMPED, "1");
+          log(`[ZŁOM] markup pola złomu (poz. 16): ${(cell.innerHTML || "").replace(/\s+/g, " ").slice(0, 600)}`, "info");
+        }
+        const a = cell.querySelector("a[href*='/fleet']");
+        if (a) return a.getAttribute("href");
+        // Niektóre buildy wieszają zbieranie na elemencie bez <a> — wtedy
+        // zostaje sam fakt, że komórka nie jest pusta. Nie zgaduję misji:
+        // zapisuję markup (wyżej) i czekam na niego, zamiast wysyłać flotę
+        // w nieznane.
+        return null;
+      }
+      return null;
+    },
+
+    // Ile recyklerów jest w hangarze (strona floty / ostatni zwiad).
+    recyclersHome() {
+      for (const el of document.querySelectorAll("[data-ship-type='RECYCLER']")) {
+        const n = parseInt(el.dataset.shipQuantity || "0") || 0;
+        if (n > 0) return n;
+      }
+      try {
+        const recon = JSON.parse(GM_getValue("ogamex_fleet_recon", "null"));
+        return parseInt(recon?.ships?.RECYCLER || "0") || 0;
+      } catch { return 0; }
+    },
+
+    // Wywoływane, gdy bot STOI na stronie galaktyki systemu bazy.
+    tryCollectHere() {
+      if (!CONFIG.expeditions?.collectDebris) return false;
+      if (GM_getValue("pending_mission", null)) return false;
+      if (ThreatMonitor.active()) return false;             // ratunek ma pierwszeństwo
+      const last = parseInt(GM_getValue(this.KEY_SENT, "0")) || 0;
+      if (Date.now() - last < this.RESEND_GUARD_MS) return false;
+      const b = this.base();
+      const m = window.location.search.match(/[?&]x=(\d+)&y=(\d+)/);
+      if (!m || parseInt(m[1]) !== b.galaxy || parseInt(m[2]) !== b.system) return false;
+      const href = this.findDebrisLink();
+      if (!href) return false;
+      GM_setValue(this.KEY_SENT, String(Date.now()));
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "debris_recycle_direct",
+        recycle: true,               // NIE jest lotem górniczym
+        fleetUrl: href,
+        shipType: "RECYCLER",
+        quantity: 0,                 // 0 = wszystkie recyklery w hangarze
+        step: "select_ships_direct",
+        resumeScan: true,
+        timestamp: Date.now(),
+      }));
+      log(`[ZŁOM] pole złomu na [${b.galaxy}:${b.system}:16] — wysyłam recyklery (${href}).`, "success");
+      setTimeout(() => { window.location.href = href; }, 800 + Math.random() * 700);
+      return true;
+    },
+
+    // Okresowa wizyta na galaktyce bazy. Tylko gdy bot i tak nic nie robi.
+    shouldVisit() {
+      if (!CONFIG.expeditions?.collectDebris) return false;
+      if (GM_getValue("pending_mission", null)) return false;
+      if (ThreatMonitor.active()) return false;
+      if (Humanizer.isOnBreak() || AntiDetection.isSleepTime()) return false;
+      const last = parseInt(GM_getValue(this.KEY_AT, "0")) || 0;
+      if (Date.now() - last < this.CHECK_EVERY_MS) return false;
+      // Nie przerywamy skanu asteroid dla złomu: normalnie zaglądamy tylko
+      // wtedy, gdy minery i tak są w drodze i skan stoi. Dopiero po dwóch
+      // godzinach bez wizyty idziemy mimo wszystko — skaner umie się pozbierać
+      // („Scan stranded off galaxy page. Resuming at …"), ale to kosztuje.
+      const minersOut = (parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0) > Date.now();
+      return minersOut || Date.now() - last > 2 * 60 * 60 * 1000;
+    },
+
+    visit() {
+      const b = this.base();
+      GM_setValue(this.KEY_AT, String(Date.now()));
+      log(`[ZŁOM] zaglądam na galaktykę bazy [${b.galaxy}:${b.system}] po pole złomu z ekspedycji.`, "info");
+      scanNavigate(`/galaxy?x=${b.galaxy}&y=${b.system}`, "debris check");
     },
   };
 
@@ -6500,11 +6613,11 @@
               farm: !!mission.farm,
               expedition: !!mission.expedition,
             });
-            if (!mission.expedition && missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
+            if (!mission.expedition && !mission.recycle && missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
             // v2.39.1: osobny licznik NASZYCH lotow gorniczych (limit rownoleglych
             // lotow). Stemplujemy PRZED klikiem — nawigacja potrafi zabic wszystko,
             // co jest po nim.
-            if (!mission.expedition && !mission.farm && !mission.moonSave) {
+            if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle) {
               MiningFlights.add(missionCoord, capturedFlightMs);
             }
           }
@@ -6530,7 +6643,7 @@
             writeLastSent(null);
             // v2.39.1: ta flota nie wystartowala — zdejmij ja z licznika lotow
             // gorniczych, inaczej fantom zjadalby limit az do konca przelotu.
-            if (!mission.expedition && !mission.farm && !mission.moonSave) MiningFlights.dropLast();
+            if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle) MiningFlights.dropLast();
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
             if (mission.moonSave) ThreatLog.add(mission.moonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę.");
@@ -6553,13 +6666,13 @@
             // scanner then paused for an hour and a half waiting for "miners"
             // that were never sent. Observed live: "FLEET SENT! All miners
             // dispatched!" right after an expedition send to [3:269:16].
-            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave) {
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle) {
               // Round trip = flight time * 2, add 1 min buffer for processing
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               const minLeft = Math.ceil((returnTime - Date.now()) / 60000);
               log(`Fleet returns in ~${minLeft}min (flight: ${Math.round(capturedFlightMs/60000)}min × 2)`, "fleet");
-            } else if (!mission.farm && !mission.expedition && !mission.moonSave) {
+            } else if (!mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle) {
               // Fallback: try parsing from page, but only accept asteroid-type
               const returnTime = parseFleetReturnTime();
               if (returnTime) {
@@ -6581,7 +6694,7 @@
             GM_setValue("ogamex_last_switched_planet", "");
             dispatchOk = true; // assume success if no error
             // Still use captured flight time if available (mining only)
-            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave) {
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle) {
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               log(`Estimated return in ~${Math.ceil((capturedFlightMs * 2 + 60000) / 60000)}min`, "fleet");
@@ -6748,6 +6861,10 @@
     // and the scan self-heals from being interrupted — so preempting one scan
     // step every ~2min is the cheapest correct arrangement.
     if (CONFIG.expeditions.enabled && !ExpeditionRunner.running) {
+      // v2.48.0: złom po ekspedycjach leży na pozycji 16 systemu bazy i nikt
+      // po niego nie przyleci poza nami. Zbieranie ustępuje wszystkiemu innemu
+      // (patrz shouldVisit), więc nie konkuruje z miningiem.
+      if (DebrisCollector.shouldVisit()) { DebrisCollector.visit(); return; }
       await ExpeditionRunner.run();
       const pendingAfterExpo = GM_getValue("pending_mission", null);
       if (pendingAfterExpo && pendingAfterExpo !== "null") return; // wave in progress — mining waits one tick
@@ -8355,6 +8472,8 @@
     } else if (scanState?.active && GameState.getCurrentPage() === "galaxy" && CONFIG.enabled && CONFIG.asteroidMining.enabled) {
       log("Resuming galaxy scan...", "asteroid");
       // Delay to let the page fully render galaxy items
+      // v2.48.0: jeśli to galaktyka systemu bazy, najpierw sprawdź pole złomu.
+      try { if (DebrisCollector.tryCollectHere()) return; } catch {}
       setTimeout(() => AsteroidMiner.run(), 1500 + Math.random() * 1000); // v2.10.18: trimmed (galaxy items are server-rendered, present on load)
     } else if (CONFIG.enabled && CONFIG.inactiveFarming?.enabled && !CONFIG.asteroidMining.enabled
                && FarmState.load()?.active && GameState.getCurrentPage() === "galaxy") {
