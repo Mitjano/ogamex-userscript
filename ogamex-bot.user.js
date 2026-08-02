@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.39.1
+// @version      2.40.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3071,6 +3071,100 @@
     KEY_SEEN_AT: "ogamex_threat_last_seen_at",
     _fetching: false,
 
+    // ── v2.40.0: typ misji z serwera zamiast arytmetyki na pasku ──
+    // Do 2.39.1 zagrożenie liczyło się jako „wszystkie misje minus własne".
+    // Ta liczba nie mówi ani KTO leci, ani PO CO, ani DOKĄD, więc sześć sond
+    // wysłanych na inną kolonię wyglądało identycznie jak sześć fal ataku na
+    // bazę — i ewakuowało flotę bez powodu (2026-08-02, ~12:18).
+    //
+    // OGameX ma na to własne endpointy (routes/web.php):
+    //   /ajax/fleet/eventbox/fetch  → JSON { hostile, neutral, friendly, ... }
+    //   /ajax/fleet/eventlist/fetch → HTML z wierszami
+    //                                 <tr class="eventFleet" data-mission-type="N">
+    // Serwer liczy jako „hostile" typy misji 1, 2, 6, 9, 10 — czyli SZPIEGOWANIE
+    // (6) też. Dlatego sam licznik nie wystarcza: dopiero data-mission-type
+    // z listy rozdziela sondę od uderzenia.
+    KEY_EVENTS: "ogamex_threat_events",
+    KEY_EVENTS_DUMPED: "ogamex_eventlist_markup_dumped_v240",
+    ATTACK_TYPES: [1, 2, 9, 10],   // 1 atak, 2 atak ACS, 9 zniszczenie księżyca, 10 rakiety
+    ESPIONAGE_TYPE: 6,
+    EVENT_MAX_AGE_MS: 90 * 1000,   // starszy odczyt nie rządzi alarmem
+    _evFetching: false,
+
+    events() {
+      try { return JSON.parse(GM_getValue(this.KEY_EVENTS, "null")); } catch { return null; }
+    },
+
+    // Nasze ciała — z listy skrótów planet, obecnej na każdej stronie gry.
+    // Wiersz zdarzenia, którego ŹRÓDŁO jest nasze, jest nasz; reszta jest obca.
+    ownBodies() {
+      const set = new Set();
+      for (const opt of document.querySelectorAll("#planetShortcutSelect option[value]")) {
+        const m = String(opt.value).match(/^(PLANET|MOON)-(\d+)-(\d+)-(\d+)$/);
+        if (m) set.add(`${m[2]}:${m[3]}:${m[4]}`);
+      }
+      if (set.size) GM_setValue("ogamex_own_bodies", JSON.stringify([...set]));
+      else { try { for (const c of JSON.parse(GM_getValue("ogamex_own_bodies", "[]"))) set.add(c); } catch {} }
+      return set;
+    },
+
+    async refreshEvents() {
+      if (this._evFetching) return;
+      this._evFetching = true;
+      try {
+        const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
+        let box = null;
+        try {
+          const res = await fetch("/ajax/fleet/eventbox/fetch", hdr);
+          if (res.ok) box = await res.json();
+        } catch {}
+        if (!box || !Number.isFinite(box.hostile)) return; // nie wiem → pasek zostaje awaryjnym źródłem
+        const out = { at: Date.now(), hostile: box.hostile, attacks: 0, spies: 0, classified: true, targets: [] };
+        if (box.hostile > 0) {
+          let html = "";
+          try {
+            const res = await fetch("/ajax/fleet/eventlist/fetch", hdr);
+            if (res.ok) html = await res.text();
+          } catch {}
+          const rows = html ? [...new DOMParser().parseFromString(html, "text/html")
+            .querySelectorAll("tr.eventFleet[data-mission-type]")] : [];
+          if (!rows.length) {
+            // Nie umiem sklasyfikować — nie udaję, że wiem. Alarm leci po staremu
+            // (każda obca flota = zagrożenie), a markup ląduje w logu do naprawy.
+            out.classified = false;
+            if (html && GM_getValue(this.KEY_EVENTS_DUMPED, "") !== "1") {
+              GM_setValue(this.KEY_EVENTS_DUMPED, "1");
+              log(`[THREAT DOM] eventlist (${html.length}ch): ${html.replace(/\s+/g, " ").slice(0, 2000)}`, "error");
+            }
+          }
+          const own = this.ownBodies();
+          const coordIn = (el, fallback) => {
+            const m = String((el || fallback || "")).match(/(\d+:\d+:\d+)/);
+            return m ? m[1] : null;
+          };
+          for (const tr of rows) {
+            if (tr.dataset.returnFlight === "true") continue;   // nasz powrót
+            const type = parseInt(tr.dataset.missionType || "0") || 0;
+            // ŹRÓDŁO decyduje, czyja to misja; CEL mówi, którą kolonię ewakuować.
+            // Nie wolno pytać „czy w wierszu są nasze koordynaty" — atak NA nas
+            // ma nasze koordynaty w celu i wypadłby jako własny.
+            const all = [...(tr.textContent || "").matchAll(/(\d+:\d+:\d+)/g)].map(m => m[1]);
+            const origin = coordIn(tr.querySelector(".coordsOrigin")?.textContent, all[0]);
+            const dest = coordIn(tr.querySelector(".destCoords")?.textContent, all[all.length - 1]);
+            if (own.size && origin && own.has(origin)) continue; // nasza własna misja
+            if (type === this.ESPIONAGE_TYPE) { out.spies++; continue; }
+            if (this.ATTACK_TYPES.includes(type)) {
+              out.attacks++;
+              if (dest) out.targets.push(dest);
+            }
+          }
+        }
+        GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
+      } finally {
+        this._evFetching = false;
+      }
+    },
+
     state() {
       try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; }
     },
@@ -3309,7 +3403,21 @@
         this.maybeVisitBaseForMoon(); // only if the fetch path proved blind
       }
 
-      const r = this.read();
+      // ── v2.40.0: pierwszeństwo ma odczyt z serwera ──
+      // Pasek misji zostaje wyłącznie jako awaryjne źródło: gdy eventbox nie
+      // odpowiedział albo gdy listy zdarzeń nie da się sklasyfikować.
+      const bar = this.read();
+      const ev = this.events();
+      const evFresh = ev && Date.now() - ev.at < this.EVENT_MAX_AGE_MS;
+      let r = bar, evSrc = "";
+      if (evFresh && ev.classified) {
+        r = { total: bar?.total ?? 0, own: bar?.own ?? 0, foreign: ev.attacks };
+        evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
+          + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
+      } else if (evFresh && ev.hostile > 0) {
+        r = { total: bar?.total ?? 0, own: bar?.own ?? 0, foreign: ev.hostile };
+        evSrc = `zdarzenia BEZ klasyfikacji: ${ev.hostile} obcych (typu misji nie dało się odczytać — traktuję jak atak)`;
+      }
       // ── v2.29.0: powiedz, CO właściwie odczytałeś ──
       // 2026-08-01 23:30:20 obca flota (KARAGUMRUK z [3:307:7]) doleciała pod
       // planetę właściciela i zrobiła skan. Bot tykał o 23:30:38, :41 i :47 —
@@ -3321,7 +3429,9 @@
       // więc nie zaśmieca, a zostawia dowód.
       {
         const now = Date.now();
-        const seen = r ? `${r.total} misji / ${r.own} własnych → ${r.foreign} obcych` : "BRAK PASKA MISJI na tej stronie";
+        const seen = evSrc ? evSrc
+          : r ? `${r.total} misji / ${r.own} własnych → ${r.foreign} obcych`
+          : "BRAK PASKA MISJI na tej stronie";
         const lastSeen = GM_getValue(this.KEY_SEEN, "");
         const lastAt = parseInt(GM_getValue(this.KEY_SEEN_AT, "0")) || 0;
         if (seen !== lastSeen || now - lastAt > 10 * 60 * 1000) {
@@ -6121,6 +6231,9 @@
       // kazałyby „odpoczywającemu" botowi nawigować. Sam odczyt paska idzie
       // zawsze, bo od niego zależy atak.
       const resting = Humanizer.isOnBreak() || AntiDetection.isSleepTime();
+      // v2.40.0: najpierw serwer (typ misji + cel), potem decyzja. Dwa lekkie
+      // zapytania AJAX, te same, które robi sama gra co kilkanaście sekund.
+      await ThreatMonitor.refreshEvents().catch(() => {});
       ThreatMonitor.check({ emergencyOnly: resting });
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
