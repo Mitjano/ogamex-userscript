@@ -16,6 +16,13 @@
 > sprawdzenia, GDY poznamy prawdziwe adresy — do tego służy ApiSniffer, który
 > notuje zapytania wysyłane przez samą grę.
 >
+> **Podsłuch (18:35):** ApiSniffer, podpięty pod `fetch` i `XMLHttpRequest`
+> strony, złapał w czasie normalnej pracy bota dokładnie jeden adres:
+> `POST /cdn-cgi/rum?` — telemetrię Cloudflare. Żadnego zapytania gry. Ten
+> serwer jest renderowany po stronie serwera: każda zmiana to pełne
+> przeładowanie strony. Nie ma API do wykorzystania, więc ścieżka „przyspieszmy
+> bota endpointami" jest ZAMKNIĘTA. Zostaje DOM.
+>
 > Wniosek na przyszłość: przed budowaniem czegokolwiek na cudzym źródle trzeba
 > najpierw potwierdzić JEDEN endpoint na żywo. Zrobiliśmy to dopiero po pięciu
 > wersjach.
