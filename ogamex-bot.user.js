@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.54.0
+// @version      2.55.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4181,6 +4181,66 @@
     // Verified live on 2026-08-01 (18:51 dump listed A.moon-select.selected
     // while the planet entry had lost its .selected class).
     // null = page has no sidebar; callers fall back rather than guess.
+    // ── v2.55.0: przełączanie na atakowaną kolonię ──
+    // Formularz floty wysyła z planety AKTYWNEJ. Bez tego kroku ratunek innej
+    // kolonii wysyłałby flotę Z BAZY (błąd 2.52.0, cofnięty w 2.52.1).
+    //
+    // Adresu przełączania NIE zgaduję: klikam kotwicę kolonii na liście planet,
+    // dokładnie tak jak człowiek. Klik działa niezależnie od tego, czy pod
+    // spodem jest href, czy obsługa w JS.
+    KEY_SWITCH: "ogamex_moonsave_switch",
+
+    // Koordynaty ciała aktualnie wybranego w liście planet.
+    activeCoords() {
+      const sel = document.querySelector("a.planet-select.selected, a.moon-select.selected, .planet-select.selected, .moon-select.selected");
+      const row = sel?.closest("li, div, tr") || sel?.parentElement;
+      const m = String(row?.textContent || "").match(/(\d+:\d+:\d+)/);
+      return m ? m[1] : null;
+    },
+
+    // Kotwica planety o danych koordynatach (nie księżyca — wysyłamy Z planety).
+    planetAnchor(coords) {
+      for (const a of document.querySelectorAll("a.planet-select, .planet-select")) {
+        const row = a.closest("li, div, tr") || a.parentElement;
+        if (!row) continue;
+        if (!String(row.textContent || "").includes(coords)) continue;
+        return a;
+      }
+      return null;
+    },
+
+    // Zwraca true, gdy kliknięto (strona się przeładuje i ratunek wznowi się
+    // z zapamiętanego stanu). false = nie znaleziono kolonii → NIE ruszamy floty.
+    switchTo(coords, reason) {
+      const a = this.planetAnchor(coords);
+      if (!a) {
+        log(`[RATUNEK] nie znajduję kolonii [${coords}] na liście planet — NIE ruszam floty. Reaguj ręcznie.`, "error");
+        ThreatLog.add("BŁĄD", `Kolonii [${coords}] nie ma na liście planet — ewakuacja przerwana, flota nietknięta.`);
+        return false;
+      }
+      GM_setValue(this.KEY_SWITCH, JSON.stringify({ coords, at: Date.now(), reason: reason || "atak" }));
+      log(`[RATUNEK] przełączam się na [${coords}], żeby wysłać flotę Z TEJ kolonii.`, "warn");
+      ThreatLog.add("RATUNEK", `Przełączam aktywną planetę na [${coords}] — wysyłka musi wyjść z atakowanej kolonii.`);
+      a.click();
+      return true;
+    },
+
+    // Po przeładowaniu: jeśli jesteśmy tam, gdzie mieliśmy być, dokończ ratunek.
+    resumeAfterSwitch() {
+      let st = null;
+      try { st = JSON.parse(GM_getValue(this.KEY_SWITCH, "null")); } catch {}
+      if (!st?.coords) return false;
+      if (Date.now() - (st.at || 0) > 90 * 1000) { GM_setValue(this.KEY_SWITCH, "null"); return false; }
+      const now = this.activeCoords();
+      if (!now || now !== st.coords) return false; // jeszcze nie tu — poczekaj
+      GM_setValue(this.KEY_SWITCH, "null");
+      const [g, sy, pos] = st.coords.split(":").map(Number);
+      log(`[RATUNEK] jestem na [${st.coords}] — wysyłam flotę i surowce na drugie ciało.`, "warn");
+      this.run({ auto: true, where: { galaxy: g, system: sy, position: pos }, reason: st.reason || "atak" })
+        .catch(err => log(`[RATUNEK] błąd po przełączeniu: ${err.message}`, "error"));
+      return true;
+    },
+
     currentBody() {
       if (document.querySelector(".moon-select.selected, a.moon-select.selected")) return "moon";
       if (document.querySelector(".planet-select.selected, a.planet-select.selected")) return "planet";
@@ -4328,14 +4388,20 @@
       // więc flotę Z BAZY na księżyc tamtej kolonii — czyli sama wyprowadziłaby
       // flotę z bezpiecznego miejsca. Dopóki nie ma kroku „przełącz się na tę
       // planetę", ratujemy wyłącznie bazę, a o reszcie mówimy wprost.
-      const b = CONFIG.asteroidMining.minerBase;
-      const isBase = where && where.galaxy === b.galaxy && where.system === b.system && where.position === b.position;
-      if (where && !isBase) {
-        log(`[RATUNEK] atak leci na [${target}], nie na bazę. Nie ruszam floty: bot nie umie jeszcze wysłać z innej kolonii, a wysyłka z bazy wyprowadziłaby flotę z bezpiecznego miejsca. SPRAWDŹ GRĘ.`, "error");
-        ThreatLog.add("ATAK", `Cel: [${target}] — INNA KOLONIA niż baza. Flota bazy NIETKNIĘTA (ewakuacja innych kolonii jeszcze nie działa). Reaguj ręcznie.`);
-        return false;
+      // ── v2.55.0: ewakuujemy ciało, na które leci atak ──
+      // Warunkiem jest przełączenie się na nie: formularz wysyła z planety
+      // AKTYWNEJ, więc bez tego kroku ruszylibyśmy flotę z bazy (błąd 2.52.0).
+      if (where) {
+        const b = CONFIG.asteroidMining.minerBase;
+        const isBase = where.galaxy === b.galaxy && where.system === b.system && where.position === b.position;
+        ThreatLog.add("ATAK", `Cel ataku: [${target}]${isBase ? " (baza)" : " — ewakuuję TĘ kolonię"}.`);
+        const active = this.activeCoords();
+        if (active && active !== target) {
+          // Klik przeładuje stronę; ratunek dokończy się w resumeAfterSwitch().
+          if (this.switchTo(target, `AUTOMAT: atak na [${target}]`)) return true;
+          return false; // kolonii nie ma na liście — świadomie NIE ruszamy floty
+        }
       }
-      if (isBase) ThreatLog.add("ATAK", `Cel ataku: [${target}] — to baza, ewakuuję.`);
       return this.run({
         auto: true,
         where,
@@ -6851,6 +6917,8 @@
         }
       }
       ThreatMonitor.check({ emergencyOnly: resting });
+      // v2.55.0: jeśli poprzedni tick przełączył planetę, dokończ ratunek tutaj.
+      if (MoonSave.resumeAfterSwitch()) return;
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
       await MoonSave.keepPlanetEmpty().catch(() => false);
