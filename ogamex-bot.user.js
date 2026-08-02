@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.38.2
+// @version      2.38.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3229,8 +3229,13 @@
       // These three LEARN (and the last one navigates). Skipped while the bot
       // is on a humanizer break or in the night window — the mission-bar read
       // below still runs, because that is the part an attack depends on.
+      // v2.38.3: zrzut zdarzeń to CZYSTY odczyt DOM — zero nawigacji, zero
+      // zapytań. Nie ma powodu, żeby stał za bramką przerwy, a stał: właściciel
+      // zaktualizował bota w trakcie 13-minutowej przerwy na kawę, więc
+      // emergencyOnly było prawdą i zrzut nie ruszył ani razu. Wygląda to
+      // z zewnątrz jak „nic się nie zmieniło".
+      this.dumpEventsFromDom();
       if (!emergencyOnly) {
-        this.dumpEventsFromDom();   // v2.38.0: jednorazowo, gdy tabela jest na stronie
         this.dumpBaseRowOnce();
         this.fetchBaseRowOnce().catch(() => {}); // one-shot, no-op once captured
         this.maybeVisitBaseForMoon(); // only if the fetch path proved blind
@@ -7186,6 +7191,9 @@
       ThreatMonitor.dumpBaseRowOnce();
       MoonSave.resumeAfterLearn();
     }
+    // v2.38.3: blok zdarzeń jest na stronie floty — łap go przy wczytaniu,
+    // nie czekając na tick, który podczas przerwy i tak nic nie robi.
+    ThreatMonitor.dumpEventsFromDom();
 
     // v2.11.0: cache the fleet-slot TOTAL ("Fleets: X/37") — visible only on
     // the fleet page; the farmer's slot budget needs it on galaxy pages.
