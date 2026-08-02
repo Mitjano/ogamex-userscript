@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.38.0
+// @version      2.38.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3003,7 +3003,7 @@
 
   const ThreatMonitor = {
     KEY: "ogamex_threat",
-    KEY_DUMPED: "ogamex_threat_markup_dumped_v238",
+    KEY_DUMPED: "ogamex_threat_markup_dumped_v2381",
     KEY_CANDIDATE: "ogamex_threat_candidate", // v2.32.0: od kiedy widzimy obcych
     CONFIRM_MS: 25 * 1000,                    // tyle musi się utrzymać, zanim ruszymy flotą
     SELF_SEND_BLIND_MS: 20 * 1000,            // tyle po NASZEJ wysyłce pasek kłamie
@@ -3068,15 +3068,33 @@
     // flotą na chybił trafił.
     dumpEventsFromDom() {
       if (GM_getValue(this.KEY_DUMPED, "") === "1") return;
-      const box = document.querySelector("#eventContent, #eventbox, .event-list, [id*='event'], [class*='event']");
-      const txt = document.body.textContent || "";
-      if (!/Events/i.test(txt) && !box) return;
-      const host = box || document.body;
+      // v2.38.1: selektor [class*='event'] złapał SVG z wykresu — w logu
+      // właściciela wylądowało `<rect class="c3-event-rect...">` zamiast tabeli
+      // zdarzeń. Szukamy teraz po TREŚCI, tak jak przy raportach z wiadomości:
+      // wiersz zdarzenia zawsze niesie koordynaty w nawiasach kwadratowych,
+      // a wykres nigdy. Bierzemy NAJGŁĘBSZY element z co najmniej dwoma
+      // koordynatami — czyli sam blok zdarzeń, bez pół strony dookoła.
+      const COORD = /\[\d+:\d+:\d+\]/g;
+      const isRow = (t) => ((t || "").match(COORD) || []).length >= 2;
+      // Nie „najgłębszy z koordynatami" — to wybiera POJEDYNCZY wiersz zamiast
+      // całej tabeli. Chcemy element o NAJWIĘKSZEJ liczbie koordynatów (czyli
+      // obejmujący wszystkie wiersze), a przy remisie najkrótszy, żeby dostać
+      // sam blok zdarzeń, a nie pół strony dookoła niego.
+      const cand = [...document.querySelectorAll("div, table, tbody, section, ul")]
+        .filter(el => {
+          if (el.closest("svg") || /c3-|chart|graph/i.test(String(el.className || ""))) return false;
+          const t = el.textContent || "";
+          return t.length <= 8000 && isRow(t);
+        })
+        .map(el => ({ el, n: ((el.textContent || "").match(COORD) || []).length, len: (el.textContent || "").length }))
+        .sort((a, b) => (b.n - a.n) || (a.len - b.len));
+      if (!cand.length) return;
+      const host = cand[0].el;
       const html = (host.innerHTML || "").replace(/<script[\s\S]*?<\/script>/gi, "").replace(/\s+/g, " ").trim();
-      if (html.length < 80) return;
+      if (html.length < 60) return;
       GM_setValue(this.KEY_DUMPED, "1");
-      log(`[THREAT DOM] tabela Events (${html.length}ch): ${html.slice(0, 2500)}`, "error");
-      ThreatLog.add("odczyt", "Zrzucono markup tabeli Events — potrzebny do ochrony wszystkich planet.");
+      log(`[THREAT DOM] blok zdarzeń (${html.length}ch): ${html.slice(0, 2500)}`, "error");
+      ThreatLog.add("odczyt", "Zrzucono markup bloku zdarzeń — potrzebny do ochrony wszystkich planet.");
     },
 
     async dumpMarkupOnce(force = false) {
