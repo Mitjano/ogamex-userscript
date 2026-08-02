@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.53.0
+// @version      2.54.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -87,7 +87,6 @@
       bufferFactor: 1.15,           // over-provision factor vs the estimate (covers above-average asteroids)
       yieldSampleSize: 20,          // rolling window of "resources found" reports used for the estimate
       estimatePercentile: 85,       // size the fleet against this percentile of samples (not the mean) so big asteroids aren't under-served
-      ajaxGalaxyScan: true,         // v2.41.0: puste systemy odsiewaj przez POST /ajax/galaxy zamiast wchodzić na stronę
       learnFromReports: true,       // parse asteroid mining reports to learn expectedResources (see AsteroidYieldTracker)
       scanIntervalMin: 15, // minutes between range re-scans when a sweep found nothing NEW. (v2.10.12: was 45 — OGameX refreshes asteroid hints far sooner, so a full set of fresh ranges sat ignored for up to 45min. The immediate-rescan-on-new-ranges path handles the common case; this is just the genuinely-nothing-new fallback.)
       maxFlightMinutes: 45, // safety cap on one-way flight time; ranges beyond this are skipped. Formula max(11, ceil(11+Δ/15)) hits 45min at Δ=499 (max same-galaxy distance), so 45 ensures every range the game reports gets scanned. Lower values silently drop far ranges and the bot keeps spinning on a few empty close ones.
@@ -121,7 +120,6 @@
     // at most one wave, and there's a window to react.
     expeditions: {
       enabled: false,
-      apiSend: false,               // v2.42.0: wysyłaj fale przez POST /ajax/fleet/dispatch/send-fleet zamiast formularza (włącz po potwierdzeniu w logu)
       waves: 8,                 // split the fleet into this many flights
       holdingHours: 1,          // "Expedition duration" on the send page
       // Spacing between waves, randomised in this range. v2.15.1: owner
@@ -1880,11 +1878,9 @@
     cargoPerMiner() {
       const cfg = CONFIG.asteroidMining.cargoPerMiner || 0;
       if (cfg > 0) return cfg;
-      // v2.42.0: gra podaje ładowność wprost (check-target → shipsData →
-      // baseCargoCapacity, już z bonusami z badań). Wartość uczona z raportów
-      // zostaje jako zapasowa — na wypadek, gdyby fork nie oddał tego pola.
-      const fromGame = FleetApi.cargoFor("ASTEROID_MINER");
-      if (fromGame > 0) return fromGame;
+      // v2.54.0: check-target nie istnieje na tym serwerze (404), więc jedynym
+      // źródłem zostaje wartość uczona z raportów — i ona się zgadza: log
+      // wielokrotnie potwierdził 20 750 na minera.
       return parseInt(GM_getValue(this.CARGO_KEY, "0")) || 0;
     },
 
@@ -2646,9 +2642,6 @@
 
       // Check position 17 in live DOM
       const result = AsteroidScanner.checkCurrentPageForAsteroid();
-      // v2.41.0: kontrola szybkiego skanu — jeśli AJAX twierdził, że tu pusto,
-      // a strona pokazuje asteroidę, parser jest zły i tryb się wyłącza.
-      try { GalaxyAjax.confirmFromDom(current.galaxy, current.system, !!result?.found); } catch {}
 
       if (result.found) {
         // Skip if already dispatched to this asteroid
@@ -2759,12 +2752,7 @@
         return;
       }
 
-      // ── v2.41.0: puste systemy odsiewamy przez AJAX ──
-      // Kolejka potrafi mieć 87 pozycji, z czego asteroidę ma kilka. Każdy pusty
-      // system kosztował przeładowanie strony; teraz kosztuje jedno zapytanie.
-      await GalaxyAjax.skipEmptyAhead(scanState).catch(() => 0);
-      const target = scanState.queue[0] || next;
-      if (!scanState.queue[0]) { await this.finishSweep(scanState); return; }
+      const target = next;
 
       // Navigate to next system
       const scanDelay = humanScanDelayMs();
@@ -3183,121 +3171,6 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
-  //  FLEET API (v2.42.0) — dane statków i wysyłka bez formularza
-  // ═══════════════════════════════════════════════════════════════
-  // POST /ajax/fleet/dispatch/check-target zwraca `shipsData`: dla KAŻDEGO
-  // statku jego id, nazwę, prędkość, zużycie paliwa i — co najważniejsze —
-  // `baseCargoCapacity` policzone z uwzględnieniem badań gracza. Bot dotąd
-  // uczył się ładowności minera z raportów (20 750 na sztukę); tutaj gra podaje
-  // ją wprost. Przy tej samej okazji dostajemy mapę id statków, bez której nie
-  // da się złożyć wysyłki przez API (pola nazywają się `am` + id).
-  //
-  // POST /ajax/fleet/dispatch/send-fleet wysyła flotę jednym żądaniem. To ten
-  // sam endpoint, w który klika sama gra, więc serwerowo jest nieodróżnialny —
-  // ale zmienia najgłębszą ścieżkę w bocie, dlatego wchodzi etapami i sam
-  // weryfikuje wynik: odpowiedź mówi wprost, czy gra przyjęła flotę. Gdy nie
-  // przyjmie, wracamy na trzykrokowy formularz zamiast zgadywać.
-  const FleetApi = {
-    KEY_SHIPS: "ogamex_ships_data",
-    KEY_SHIPS_AT: "ogamex_ships_data_at",
-    SHIPS_TTL_MS: 12 * 60 * 60 * 1000,
-
-    _norm(name) { return String(name || "").trim().toUpperCase().replace(/\s+/g, "_"); },
-
-    data() { try { return JSON.parse(GM_getValue(this.KEY_SHIPS, "null")); } catch { return null; } },
-
-    // Odpytuje check-target o WŁASNĄ bazę (cel istniejący i nasz, więc żadna
-    // walidacja nie kłuje w oczy) i zapamiętuje tabelę statków.
-    async refreshShips(force = false) {
-      if (!Ajax.supported("/ajax/fleet/dispatch/check-target")) return this.data();
-      const at = parseInt(GM_getValue(this.KEY_SHIPS_AT, "0")) || 0;
-      if (!force && this.data() && Date.now() - at < this.SHIPS_TTL_MS) return this.data();
-      const b = CONFIG.asteroidMining.minerBase;
-      const json = await Ajax.post("/ajax/fleet/dispatch/check-target", {
-        galaxy: b.galaxy, system: b.system, position: b.position, type: 1,
-      }).catch(() => null);
-      const ships = json && !json._raw ? json.shipsData : null;
-      if (!ships || typeof ships !== "object") return this.data();
-      const byType = {};
-      for (const k of Object.keys(ships)) {
-        const sh = ships[k];
-        if (!sh || !sh.name) continue;
-        byType[this._norm(sh.name)] = {
-          id: parseInt(sh.id ?? k) || 0,
-          cargo: Number(sh.baseCargoCapacity) || 0,
-          speed: Number(sh.speed) || 0,
-          fuel: Number(sh.fuelConsumption) || 0,
-        };
-      }
-      if (!Object.keys(byType).length) return this.data();
-      GM_setValue(this.KEY_SHIPS, JSON.stringify(byType));
-      GM_setValue(this.KEY_SHIPS_AT, String(Date.now()));
-      log(`[FLEET API] tabela statków z gry: ${Object.keys(byType).length} typów (ładowność minera: ${byType.ASTEROID_MINER?.cargo?.toLocaleString?.() || "?"}).`, "info");
-      return byType;
-    },
-
-    idFor(type) { return this.data()?.[this._norm(type)]?.id || 0; },
-    cargoFor(type) { return this.data()?.[this._norm(type)]?.cargo || 0; },
-
-    // ── v2.43.0: odwołanie własnej floty w locie ──
-    // Wartość obronna jest żadna (odwołana flota wraca DO atakowanego ciała,
-    // czyli w złą stronę), ale to jedyny sposób, żeby cofnąć pomyłkową wysyłkę
-    // bez czekania na powrót. Stąd: przycisk w panelu, nie automat.
-    async recall(missionId) {
-      if (!Ajax.supported("/ajax/fleet/dispatch/recall-fleet")) return { ok: false, error: "serwer nie ma endpointu odwołania" };
-      if (!missionId) return { ok: false, error: "brak numeru misji" };
-      const json = await Ajax.post("/ajax/fleet/dispatch/recall-fleet", { fleet_mission_id: missionId }).catch(() => null);
-      if (!json || json._raw) return { ok: false, error: "brak odpowiedzi z endpointu" };
-      if (json.success === true) return { ok: true };
-      return { ok: false, error: json.message || JSON.stringify(json).slice(0, 200) };
-    },
-
-    // Najnowsza WŁASNA misja z listy zdarzeń (wiersz ma id="eventRow-{id}").
-    async lastOwnMissionId() {
-      const html = await fetch("/ajax/fleet/eventlist/fetch", { headers: { "X-Requested-With": "XMLHttpRequest" } })
-        .then(r => r.ok ? r.text() : "").catch(() => "");
-      if (!html) return 0;
-      const doc = new DOMParser().parseFromString(html, "text/html");
-      const own = ThreatMonitor.ownBodies();
-      let best = 0;
-      for (const tr of doc.querySelectorAll("tr.eventFleet[id^='eventRow-']")) {
-        const origin = (tr.querySelector(".coordsOrigin")?.textContent || "").match(/(\d+:\d+:\d+)/);
-        if (own.size && (!origin || !own.has(origin[1]))) continue;
-        const id = parseInt(String(tr.id).replace("eventRow-", "")) || 0;
-        if (id > best) best = id;
-      }
-      return best;
-    },
-
-    // ships: { ASTEROID_MINER: 2500000000, ... }; zwraca { ok, error }
-    async send({ galaxy, system, position, type = 1, mission, ships = {}, speed = 10,
-                 holdingtime = 0, metal = 0, crystal = 0, deuterium = 0 }) {
-      if (!Ajax.supported("/ajax/fleet/dispatch/send-fleet")) return { ok: false, error: "serwer nie ma endpointu wysyłki" };
-      if (!Number.isFinite(mission) || mission <= 0) return { ok: false, error: "brak numeru misji" };
-      const params = {
-        galaxy, system, position, type, mission, speed, holdingtime,
-        metal, crystal, deuterium, food: 0,
-        prioMetal: 2, prioCrystal: 3, prioDeuterium: 4, prioFood: 1,
-        retreatAfterDefenderRetreat: 0, lootFoodOnAttack: 0, union: 0,
-      };
-      let any = false;
-      for (const [shipType, qty] of Object.entries(ships)) {
-        const id = this.idFor(shipType);
-        if (!id || !(qty > 0)) continue;
-        params[`am${id}`] = qty;
-        any = true;
-      }
-      if (!any) return { ok: false, error: "nie znam identyfikatorów statków" };
-      const json = await Ajax.post("/ajax/fleet/dispatch/send-fleet", params).catch(() => null);
-      if (!json || json._raw) return { ok: false, error: "brak odpowiedzi z endpointu" };
-      const ok = json.success === true || json.status === "success" || json.redirectUrl || json.fleetId;
-      if (ok) return { ok: true, raw: json };
-      const err = (json.errors && json.errors[0] && (json.errors[0].message || json.errors[0].error))
-        || json.message || JSON.stringify(json).slice(0, 200);
-      return { ok: false, error: err };
-    },
-  };
-
   // ═══════════════════════════════════════════════════════════════
   //  DEBRIS COLLECTOR (v2.48.0) — złom po ekspedycjach
   // ═══════════════════════════════════════════════════════════════
@@ -3535,154 +3408,7 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
-  //  PHALANX (v2.43.0) — co właściwie na nas leci
   // ═══════════════════════════════════════════════════════════════
-  // POST /ajax/phalanx/scan { galaxy, system, position } zwraca ruchy flot
-  // skanowanej planety: skład, czas przylotu, liczbę flot. To jest ta
-  // informacja, o którą pytał właściciel („sondy max 10 000 sztuk, atak to
-  // setki tysięcy") i której pasek misji nigdy nie poda.
-  //
-  // Dwa twarde warunki gry: skan idzie WYŁĄCZNIE z księżyca z Sensor Phalanx
-  // i kosztuje deuter. Dlatego nie skanujemy profilaktycznie — tylko przy
-  // potwierdzonym ataku, tylko gdy aktywnym ciałem jest księżyc (czyli
-  // naturalnie po ewakuacji, bo wtedy bot i tak na nim stoi) i tylko raz na
-  // dany atak.
-  const Phalanx = {
-    KEY_LAST: "ogamex_phalanx_last",
-    COOLDOWN_MS: 10 * 60 * 1000,
-
-    async scanAttacker() {
-      if (!Ajax.supported("/ajax/phalanx/scan")) return false;
-      const ev = ThreatMonitor.events();
-      const origin = ev?.origins?.[0];
-      if (!origin || !(ev.attacks > 0)) return false;
-      if (MoonSave.currentBody?.() !== "moon") return false; // falanga działa tylko z księżyca
-      const last = GM_getValue(this.KEY_LAST, "");
-      const stamp = `${origin}@${Math.floor((ev.at || 0) / 60000)}`;
-      if (last === stamp) return false;
-      const [g, sy, pos] = origin.split(":").map(Number);
-      if (!Number.isFinite(g) || !Number.isFinite(sy) || !Number.isFinite(pos)) return false;
-      const json = await Ajax.post("/ajax/phalanx/scan", { galaxy: g, system: sy, position: pos }).catch(() => null);
-      GM_setValue(this.KEY_LAST, stamp);
-      if (!json || json._raw || json.success !== true) {
-        const why = json?.error_message || json?.errorMessage || "brak odpowiedzi";
-        log(`[FALANGA] skan [${origin}] nieudany: ${why}`, "warn");
-        ThreatLog.add("odczyt", `Falanga na [${origin}] nieudana: ${why}`);
-        return false;
-      }
-      const txt = String(json.content_html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      log(`[FALANGA] [${origin}] — ${json.fleet_count} ruch(ów) floty, koszt ${json.scan_cost} deuteru: ${txt.slice(0, 400)}`, "error");
-      ThreatLog.add("ATAK", `Falanga na [${origin}] (${json.target?.player_name || "?"}): ${json.fleet_count} ruch(ów). ${txt.slice(0, 600)}`);
-      return true;
-    },
-  };
-
-  // ═══════════════════════════════════════════════════════════════
-  //  GALAXY AJAX (v2.41.0) — skan systemów bez przeładowania strony
-  // ═══════════════════════════════════════════════════════════════
-  // Skaner asteroid nawigował do /galaxy?x=&y= osobno dla KAŻDEGO z ~87
-  // systemów: pełne przeładowanie, 3–6 s na system, do tego stały stan „Scan
-  // stranded off galaxy page. Resuming at …". Gra ma na to własny endpoint
-  // (GalaxyController@ajax): POST /ajax/galaxy { galaxy, system }.
-  //
-  // Używamy go jako PRZEDFILTRA, nie zamiennika: gdy odpowiedź mówi „w tym
-  // systemie nie ma asteroidy", pomijamy system bez wchodzenia na stronę.
-  // Fałszywe „nie ma" kosztuje pominiętą asteroidę, fałszywe „jest" kosztuje
-  // jedno przeładowanie, czyli tyle co dziś. Żadna wysyłka floty nie opiera
-  // się na tym odczycie — decyzję o locie nadal podejmuje DOM.
-  //
-  // Athena to fork (upstream OGameX nie zna asteroid), więc parser musi umieć
-  // się poddać: przy pierwszym niezgodnym odczycie tryb wyłącza się na stałe
-  // i bot wraca do nawigacji.
-  const GalaxyAjax = {
-    KEY_MODE: "ogamex_galaxy_ajax_mode",     // "" nieznany, "on", "off"
-    KEY_DUMPED: "ogamex_galaxy_ajax_dump_v241",
-    KEY_VERDICTS: "ogamex_galaxy_ajax_verdicts",
-    MAX_SKIP_PER_STEP: 12,                   // dłuższy ciąg = ludzka przerwa
-
-    mode() { return GM_getValue(this.KEY_MODE, ""); },
-    off() { return this.mode() === "off"; },
-
-    disable(why) {
-      if (this.off()) return;
-      GM_setValue(this.KEY_MODE, "off");
-      log(`[GALAXY AJAX] wyłączam szybki skan: ${why}. Wracam do nawigacji po stronie galaktyki.`, "warn");
-    },
-
-    // Werdykty trzymamy krótko — służą wyłącznie do wychwycenia rozjazdu
-    // „AJAX mówił pusto, a DOM znalazł asteroidę".
-    _verdicts() { try { return JSON.parse(GM_getValue(this.KEY_VERDICTS, "{}")); } catch { return {}; } },
-    _remember(key, asteroid) {
-      const v = this._verdicts();
-      v[key] = { asteroid, at: Date.now() };
-      const now = Date.now();
-      for (const k of Object.keys(v)) if (now - (v[k].at || 0) > 30 * 60 * 1000) delete v[k];
-      GM_setValue(this.KEY_VERDICTS, JSON.stringify(v));
-    },
-
-    // Wywoływane przez skaner DOM, gdy asteroida JEST na stronie. Jeśli AJAX
-    // twierdził, że tego systemu nie warto odwiedzać, parser jest zły — i to
-    // jest jedyny moment, w którym możemy to zauważyć.
-    confirmFromDom(galaxy, system, found) {
-      if (this.off()) return;
-      const v = this._verdicts()[`${galaxy}:${system}`];
-      if (!v) return;
-      if (found && v.asteroid === false) {
-        this.disable(`AJAX zgłosił brak asteroidy w [${galaxy}:${system}], a strona ją pokazała`);
-      }
-    },
-
-    // Zwraca { usable, asteroid, ttl } — usable=false znaczy „nie wiem".
-    async look(galaxy, system) {
-      if (this.off() || !Ajax.supported("/ajax/galaxy")) return { usable: false };
-      const json = await Ajax.post("/ajax/galaxy", { galaxy, system }).catch(() => null);
-      if (!json || json._raw || json.success === false) {
-        this.disable(json?._raw ? "endpoint zwrócił coś, co nie jest JSON-em" : "endpoint nie odpowiedział");
-        return { usable: false };
-      }
-      const txt = JSON.stringify(json);
-      if (this.mode() !== "on" && GM_getValue(this.KEY_DUMPED, "") !== "1") {
-        GM_setValue(this.KEY_DUMPED, "1");
-        log(`[GALAXY AJAX] odpowiedź dla [${galaxy}:${system}] (${txt.length}ch): ${txt.slice(0, 2000)}`, "error");
-      }
-      // Fork trzyma asteroidę w tym samym wierszu co strona: przycisk
-      // „Find asteroids" = pusto, licznik „disappear" = jest.
-      const noAsteroid = /find[-_]?asteroid/i.test(txt);
-      const ttlMatch = txt.match(/disappear\D{0,12}(\d{2,7})/i);
-      const hasAsteroid = !!ttlMatch || /mission=12/.test(txt);
-      if (!noAsteroid && !hasAsteroid) {
-        // Ani jednego znanego znacznika — nie zgadujemy.
-        this.disable("w odpowiedzi nie ma żadnego znanego znacznika asteroidy");
-        return { usable: false };
-      }
-      if (this.mode() !== "on") {
-        GM_setValue(this.KEY_MODE, "on");
-        log("[GALAXY AJAX] szybki skan włączony — puste systemy pomijam bez przeładowania strony.", "success");
-      }
-      const asteroid = hasAsteroid && !noAsteroid;
-      this._remember(`${galaxy}:${system}`, asteroid);
-      return { usable: true, asteroid, ttl: ttlMatch ? parseInt(ttlMatch[1]) : 0 };
-    },
-
-    // Przewija kolejkę przez systemy, o których AJAX mówi „pusto". Zwraca
-    // liczbę pominiętych. Nie rusza kolejki, gdy tryb jest wyłączony.
-    async skipEmptyAhead(scanState) {
-      if (this.off() || !CONFIG.asteroidMining.ajaxGalaxyScan) return 0;
-      let skipped = 0;
-      while (skipped < this.MAX_SKIP_PER_STEP) {
-        const next = scanState.queue[0];
-        if (!next) break;
-        const r = await this.look(next.galaxy, next.system);
-        if (!r.usable || r.asteroid) break;
-        ScanState.advance(scanState);
-        skipped++;
-        await AntiDetection.sleep(400 + Math.random() * 900); // tempo zbliżone do klikania
-      }
-      if (skipped) log(`[GALAXY AJAX] pominięto ${skipped} pustych system(ów) bez wchodzenia na stronę.`, "asteroid");
-      return skipped;
-    },
-  };
-
   // ═══════════════════════════════════════════════════════════════
   //  AJAX (v2.41.0) — rozmowa z grą jej własnymi endpointami
   // ═══════════════════════════════════════════════════════════════
@@ -3759,26 +3485,6 @@
 
     remember(t) { if (t && typeof t === "string") GM_setValue(this.KEY_TOKEN, t); },
 
-    async post(url, params = {}) {
-      const token = this.token();
-      const body = new URLSearchParams({ ...params, _token: token, token });
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "X-Requested-With": "XMLHttpRequest",
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        },
-        body: body.toString(),
-      });
-      if (!res.ok) return null;
-      const txt = await res.text();
-      try {
-        const json = JSON.parse(txt);
-        this.remember(json?.newAjaxToken);
-        return json;
-      } catch { return { _raw: txt }; }
-    },
-
     // ── v2.44.0: powiedz, CO odpowiada, a co nie ──
     // 2026-08-02 18:22 log właściciela: „[GALAXY AJAX] endpoint zwrócił coś,
     // co nie jest JSON-em", a odczyty zagrożenia dalej miały format paska —
@@ -3788,18 +3494,16 @@
     async diagnose() {
       const tok = this.token();
       log(`[API TEST] token CSRF: ${tok ? `${tok.slice(0, 8)}… (${tok.length} zn.)` : "BRAK — to najpewniej przyczyna"}`, tok ? "info" : "error");
+      // v2.54.0: lista skrócona do adresów, które mają sens na TYM serwerze.
+      // Trasy z upstream OGameX (eventbox, eventlist, check-target, /ajax/galaxy)
+      // oddały 404 albo stronę HTML — trzymanie ich w teście tylko dokładałoby
+      // szumu i pukania do nieistniejących drzwi.
       const probes = [
-        ["GET", "/ajax/fleet/eventbox/fetch"],
-        ["GET", "/ajax/fleet/eventlist/fetch"],
-        ["POST", "/ajax/galaxy", { galaxy: CONFIG.asteroidMining.minerBase.galaxy, system: CONFIG.asteroidMining.minerBase.system }],
-        ["POST", "/ajax/fleet/dispatch/check-target", { galaxy: CONFIG.asteroidMining.minerBase.galaxy, system: CONFIG.asteroidMining.minerBase.system, position: CONFIG.asteroidMining.minerBase.position, type: 1 }],
-        ["GET", "/ajax/messages?tab=fleets&pagination=1"],
-        // v2.49.0: prawdziwe adresy tego serwera, złapane przez ApiSniffer
+        ["GET", "/home/fleetmovementlist"],
         ["GET", "/home/Partial_AsteroidJournal"],
         ["GET", "/home/Partial_ExpeditionJournal"],
         ["GET", "/messages/messagedata?MessageCategoryType=FLEET_OTHER&page=1"],
         ["GET", "/messages/messagedata?MessageCategoryType=FLEET_EXPEDITION&page=1"],
-        ["GET", "/home/fleetmovementlist"],
       ];
       for (const [method, url, params] of probes) {
         try {
@@ -3826,13 +3530,6 @@
       }
     },
 
-    async get(url) {
-      const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-      if (!res.ok) return null;
-      const txt = await res.text();
-      try { const json = JSON.parse(txt); this.remember(json?.newAjaxToken); return json; }
-      catch { return { _raw: txt }; }
-    },
   };
 
   // ═══════════════════════════════════════════════════════════════
@@ -5129,33 +4826,6 @@
         }
 
         const b = this.base();
-
-        // ── v2.42.0: najpierw spróbuj wysłać falę jednym żądaniem ──
-        // Formularz to cztery przeładowania strony i ~20 s, z wyścigami w rodzaju
-        // „Clicked Next (btn-continue disabled) → Step 3 never loaded" (fala
-        // przepadła 2026-08-02 12:47). Endpoint gry robi to jednym POST-em i sam
-        // mówi, czy przyjął flotę. Numer misji bierzemy z linku, który wystawia
-        // sama gra — nie zgadujemy numeracji forka.
-        if (cfg.apiSend) {
-          const plan = expeditionShipPlan(Math.max(1, cfg.waves || 1));
-          const missionNo = parseInt((url.match(/[?&]mission=(\d+)/) || [])[1] || "0") || 0;
-          if (plan?.length && missionNo) {
-            await FleetApi.refreshShips().catch(() => null);
-            const ships = {};
-            for (const it of plan) ships[it.type] = it.qty;
-            const res = await FleetApi.send({
-              galaxy: b.galaxy, system: b.system, position: 16, type: 1,
-              mission: missionNo, ships, speed: 10,
-              holdingtime: Math.max(1, cfg.holdingHours || 1),
-            }).catch(e => ({ ok: false, error: e.message }));
-            if (res.ok) {
-              this.afterSend(); // ta sama księgowość co po wysyłce z formularza
-              log(`EXPEDITION wave → [${b.galaxy}:${b.system}:16] przez API (bez formularza), ${cfg.holdingHours}h, ${plan.length} typ(ów) statków.`, "success");
-              return;
-            }
-            log(`[FLEET API] wysyłka przez API nie przeszła (${res.error}) — wracam na formularz.`, "warn");
-          }
-        }
 
         GM_setValue("pending_mission", JSON.stringify({
           type: "expedition_direct",
@@ -7168,7 +6838,6 @@
       // v2.40.0: najpierw serwer (typ misji + cel), potem decyzja. Dwa lekkie
       // zapytania AJAX, te same, które robi sama gra co kilkanaście sekund.
       await ThreatMonitor.refreshEvents().catch(() => {});
-      FleetApi.refreshShips().catch(() => {}); // raz na 12 h, sam się dławi
       // v2.44.0: jeśli po minucie pracy nadal nie mamy ANI JEDNEGO odczytu
       // zdarzeń z serwera, zrób jednorazową diagnostykę — inaczej cisza wygląda
       // tak samo jak spokój.
@@ -7185,9 +6854,6 @@
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
       await MoonSave.keepPlanetEmpty().catch(() => false);
-      // v2.43.0: stoimy na księżycu i mamy potwierdzony atak → sprawdź falangą,
-      // co właściwie leci. Raz na atak, tylko z księżyca, tylko za deuter.
-      await Phalanx.scanAttacker().catch(() => false);
 
       // ── v2.39.0: gdy COŚ widzimy, patrz częściej ──
       // Potwierdzenie wymaga dwóch odczytów, a pętla chodzi co 30 s — więc
@@ -7470,10 +7136,6 @@
               <input id="ogx-expo-waves" type="number" min="1" step="1" value="${CONFIG.expeditions.waves}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Wysyłaj fale jednym żądaniem do endpointu gry zamiast klikać przez trzykrokowy formularz. Szybciej i bez wyścigów o stan formularza; przy odmowie serwera bot i tak wraca na formularz.">Wysyłka przez API</span>
-              <button class="mini-btn" id="ogx-expo-api">${CONFIG.expeditions.apiSend ? "ON" : "OFF"}</button>
-            </label>
-            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Czas postoju w kosmosie („Expedition duration" na stronie wysyłki).">Długość ekspedycji (h)</span>
               <input id="ogx-expo-hours" type="number" min="1" max="24" step="1" value="${CONFIG.expeditions.holdingHours}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -7540,7 +7202,6 @@
           <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
           <button class="mini-btn" id="ogx-api-test" title="Odpytuje po kolei endpointy gry (eventbox, eventlist, galaxy, check-target, messages) i wypisuje do logu status HTTP oraz początek odpowiedzi. Od tego zależy, czy szybki skan i wysyłka przez API mogą działać.">Test API</button>
-          <button class="mini-btn" id="ogx-recall" title="Odwołuje NAJNOWSZĄ własną misję z listy zdarzeń gry (endpoint recall-fleet). Do cofania pomyłkowych wysyłek — obronnie bezużyteczne, bo odwołana flota wraca do atakowanego ciała.">Odwołaj wysyłkę</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
         </div>
 
@@ -7747,13 +7408,6 @@
           updateStatusUI();
         });
       };
-      const apiBtn = document.getElementById("ogx-expo-api");
-      if (apiBtn) apiBtn.addEventListener("click", () => {
-        CONFIG.expeditions.apiSend = !CONFIG.expeditions.apiSend;
-        apiBtn.textContent = CONFIG.expeditions.apiSend ? "ON" : "OFF";
-        saveConfig(CONFIG);
-        log(`Wysyłka ekspedycji przez API: ${CONFIG.expeditions.apiSend ? "WŁĄCZONA" : "wyłączona"}.`, "info");
-      });
       bindExpo("ogx-expo-waves", "waves", "Expedition waves", { min: 1 });
       bindExpo("ogx-expo-hours", "holdingHours", "Expedition duration (h)", { min: 1 });
       bindExpo("ogx-expo-gapmin", "waveGapMinSec", "Wave gap min (s)", { min: 10 });
@@ -7783,21 +7437,6 @@
         GM_setValue("ogamex_yield_fetch_at", "0"); // i zdejmuje 30-minutowy dławik raportów
         try { await Ajax.diagnose(); } catch (e) { log(`[API TEST] błąd: ${e.message}`, "error"); }
         finally { apiTestBtn.disabled = false; }
-      });
-      const recallBtn = document.getElementById("ogx-recall");
-      if (recallBtn) recallBtn.addEventListener("click", async () => {
-        recallBtn.disabled = true;
-        try {
-          const id = await FleetApi.lastOwnMissionId();
-          if (!id) { log("[RECALL] nie znalazłem własnej misji na liście zdarzeń.", "warn"); return; }
-          const res = await FleetApi.recall(id);
-          log(res.ok ? `[RECALL] misja #${id} odwołana — flota wraca.` : `[RECALL] misja #${id}: ${res.error}`,
-              res.ok ? "success" : "error");
-        } catch (e) {
-          log(`[RECALL] błąd: ${e.message}`, "error");
-        } finally {
-          recallBtn.disabled = false;
-        }
       });
       const recon = document.getElementById("ogx-fleet-recon");
       if (recon) recon.addEventListener("click", () => {
