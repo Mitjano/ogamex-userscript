@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.43.0
+// @version      2.44.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3351,6 +3351,12 @@
       if (input) return input;
       try { if (typeof unsafeWindow !== "undefined" && unsafeWindow.token) return unsafeWindow.token; } catch {}
       try { if (typeof window !== "undefined" && window.token) return window.token; } catch {}
+      // v2.44.0: gra wstawia token w skryptach inline (`{{ csrf_token() }}`
+      // w szablonach). Szukamy go tam, zanim sięgniemy po zapamiętany.
+      for (const sc of document.querySelectorAll("script:not([src])")) {
+        const m = String(sc.textContent || "").match(/(?:_token|csrf[_-]?token|["']token["']|\btoken)\s*[:=]\s*["']([A-Za-z0-9]{20,})["']/);
+        if (m) { this.remember(m[1]); return m[1]; }
+      }
       return GM_getValue(this.KEY_TOKEN, "") || "";
     },
 
@@ -3374,6 +3380,44 @@
         this.remember(json?.newAjaxToken);
         return json;
       } catch { return { _raw: txt }; }
+    },
+
+    // ── v2.44.0: powiedz, CO odpowiada, a co nie ──
+    // 2026-08-02 18:22 log właściciela: „[GALAXY AJAX] endpoint zwrócił coś,
+    // co nie jest JSON-em", a odczyty zagrożenia dalej miały format paska —
+    // czyli MILCZAŁY WSZYSTKIE nowe endpointy, nie tylko galaktyka. Bez statusu
+    // HTTP i początku odpowiedzi nie da się odróżnić 404 (fork nie ma tej
+    // trasy) od 419 (brak tokenu CSRF) od przekierowania na logowanie.
+    async diagnose() {
+      const tok = this.token();
+      log(`[API TEST] token CSRF: ${tok ? `${tok.slice(0, 8)}… (${tok.length} zn.)` : "BRAK — to najpewniej przyczyna"}`, tok ? "info" : "error");
+      const probes = [
+        ["GET", "/ajax/fleet/eventbox/fetch"],
+        ["GET", "/ajax/fleet/eventlist/fetch"],
+        ["POST", "/ajax/galaxy", { galaxy: CONFIG.asteroidMining.minerBase.galaxy, system: CONFIG.asteroidMining.minerBase.system }],
+        ["POST", "/ajax/fleet/dispatch/check-target", { galaxy: CONFIG.asteroidMining.minerBase.galaxy, system: CONFIG.asteroidMining.minerBase.system, position: CONFIG.asteroidMining.minerBase.position, type: 1 }],
+        ["GET", "/ajax/messages?tab=fleets&pagination=1"],
+      ];
+      for (const [method, url, params] of probes) {
+        try {
+          const res = method === "GET"
+            ? await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+            : await fetch(url, {
+                method: "POST",
+                headers: {
+                  "X-Requested-With": "XMLHttpRequest",
+                  "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                },
+                body: new URLSearchParams({ ...(params || {}), _token: tok, token: tok }).toString(),
+              });
+          const ct = res.headers.get("content-type") || "?";
+          const txt = (await res.text()).replace(/\s+/g, " ").trim();
+          log(`[API TEST] ${method} ${url} → ${res.status} ${ct.split(";")[0]} :: ${txt.slice(0, 220)}`, res.ok ? "info" : "error");
+        } catch (e) {
+          log(`[API TEST] ${method} ${url} → wyjątek: ${e.message}`, "error");
+        }
+        await new Promise(r => setTimeout(r, 700));
+      }
     },
 
     async get(url) {
@@ -6635,6 +6679,18 @@
       // zapytania AJAX, te same, które robi sama gra co kilkanaście sekund.
       await ThreatMonitor.refreshEvents().catch(() => {});
       FleetApi.refreshShips().catch(() => {}); // raz na 12 h, sam się dławi
+      // v2.44.0: jeśli po minucie pracy nadal nie mamy ANI JEDNEGO odczytu
+      // zdarzeń z serwera, zrób jednorazową diagnostykę — inaczej cisza wygląda
+      // tak samo jak spokój.
+      {
+        const ticks = (parseInt(GM_getValue("ogamex_defence_ticks", "0")) || 0) + 1;
+        GM_setValue("ogamex_defence_ticks", String(ticks));
+        if (ticks >= 3 && !ThreatMonitor.events() && GM_getValue("ogamex_api_diag_done", "") !== "1") {
+          GM_setValue("ogamex_api_diag_done", "1");
+          log("[API TEST] po kilku przebiegach nadal brak odczytu zdarzeń z serwera — sprawdzam endpointy.", "warn");
+          Ajax.diagnose().catch(() => {});
+        }
+      }
       ThreatMonitor.check({ emergencyOnly: resting });
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
       if (await MoonSave.returnHome().catch(() => false)) return;
@@ -6993,6 +7049,7 @@
           </div>
           <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
+          <button class="mini-btn" id="ogx-api-test" title="Odpytuje po kolei endpointy gry (eventbox, eventlist, galaxy, check-target, messages) i wypisuje do logu status HTTP oraz początek odpowiedzi. Od tego zależy, czy szybki skan i wysyłka przez API mogą działać.">Test API</button>
           <button class="mini-btn" id="ogx-recall" title="Odwołuje NAJNOWSZĄ własną misję z listy zdarzeń gry (endpoint recall-fleet). Do cofania pomyłkowych wysyłek — obronnie bezużyteczne, bo odwołana flota wraca do atakowanego ciała.">Odwołaj wysyłkę</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
         </div>
@@ -7226,6 +7283,13 @@
         if (sec) sec.className = `section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}`;
         log(`Online bonus auto-claim ${CONFIG.onlineBonus.enabled ? "enabled" : "disabled"}`, "info");
         updateStatusUI();
+      });
+      const apiTestBtn = document.getElementById("ogx-api-test");
+      if (apiTestBtn) apiTestBtn.addEventListener("click", async () => {
+        apiTestBtn.disabled = true;
+        log("[API TEST] sprawdzam endpointy gry…", "info");
+        try { await Ajax.diagnose(); } catch (e) { log(`[API TEST] błąd: ${e.message}`, "error"); }
+        finally { apiTestBtn.disabled = false; }
       });
       const recallBtn = document.getElementById("ogx-recall");
       if (recallBtn) recallBtn.addEventListener("click", async () => {
