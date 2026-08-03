@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.1
+// @version      2.66.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6705,6 +6705,49 @@
           log(`[${label}] Buttons: ${btns.join(", ")} | URL: ${window.location.pathname}`, "fleet");
         };
 
+        // ── v2.66.2: NIE klikaj wyłączonego przycisku ──
+        // Dwa razy w logach (02.08 12:47 i 03.08 23:21) bot kliknął „Next"
+        // z klasą `disabled` — gra jeszcze przeliczała wybór statków (fala to
+        // kilkanaście typów wpisywanych po kolei). Klik w martwy przycisk nic
+        // nie robi, następny krok nigdy nie wstaje, 12 s timeoutu i fala
+        // przepada. Czekamy, aż przycisk ożyje, z twardym limitem czasu.
+        const isDisabled = (el) => !el ? true
+          : (el.disabled || el.classList.contains("disabled") || el.getAttribute("aria-disabled") === "true");
+        const findButton = (text) => {
+          const fleetArea = document.querySelector("#content, .content, main, #fleet, .fleet-content, .fleet-form") || document.body;
+          let btn = Array.from(fleetArea.querySelectorAll("a, button, input[type='submit']")).find(
+            el => el.textContent.trim() === text && el.offsetParent !== null
+          );
+          if (!btn) btn = fleetArea.querySelector(`input[value="${text}"]`);
+          if (!btn) {
+            btn = Array.from(document.querySelectorAll("a, button, input[type='submit']")).find(
+              el => el.textContent.trim() === text && el.offsetParent !== null &&
+                    !el.closest(".sidebar, nav, .planet-list, #ogx-bot-panel") &&
+                    !el.classList.contains("text-item") && !el.classList.contains("resource-item")
+            );
+          }
+          return btn || null;
+        };
+        const clickButtonWhenEnabled = async (text, label, maxWaitMs = 9000) => {
+          const start = Date.now();
+          let waited = false;
+          while (Date.now() - start < maxWaitMs) {
+            const btn = findButton(text);
+            if (btn && !isDisabled(btn)) {
+              if (waited) log(`Przycisk "${text}" ożył po ${((Date.now() - start) / 1000).toFixed(1)}s — klikam.`, "fleet");
+              btn.click();
+              log(`Clicked "${text}" (${btn.tagName}.${btn.className} id=${btn.id}) [${label}]`, "fleet");
+              return true;
+            }
+            if (btn && !waited) {
+              waited = true;
+              log(`Przycisk "${text}" jest wyłączony (gra jeszcze liczy) — czekam, zamiast klikać w martwy element.`, "fleet");
+            }
+            await AntiDetection.sleep(400);
+          }
+          return false;
+        };
+
         // ── Helper: find button and click with multiple methods ──
         const clickButton = (text, label) => {
           const fleetArea = document.querySelector("#content, .content, main, #fleet, .fleet-content, .fleet-form") || document.body;
@@ -7041,7 +7084,7 @@
         await AntiDetection.sleep(1000 + Math.random() * 1500);
 
         // Click "Next" — step 1 → step 2
-        if (!clickButton("Next", "step1→2")) {
+        if (!await clickButtonWhenEnabled("Next", "step1→2")) {
           dumpButtons("step1-fail");
           log("Cannot find Next button (step 1)", "error");
           GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
@@ -7254,7 +7297,7 @@
           // BEZ dotykania „Send fleet" — i próbujemy odczytać czas tam.
           // Nadal nic → zrzut kroku 3 do logu i uczciwa odmowa.
           if (mission.fsMeasure && !(capturedFlightMs > 0)) {
-            if (clickButton("Next", "fs-measure step2→3")) {
+            if (await clickButtonWhenEnabled("Next", "fs-measure step2→3")) {
               await waitForStepChange(() => Array.from(document.querySelectorAll("a, button, input[type='submit'], input[type='button']")).some(el => {
                 if (el.offsetParent === null) return false;
                 const txt = (el.value || el.textContent || "").trim().toLowerCase();
@@ -7310,7 +7353,7 @@
         await AntiDetection.sleep(800 + Math.random() * 1200);
 
         // Click "Next" — step 2 → step 3
-        if (!clickButton("Next", "step2→3")) {
+        if (!await clickButtonWhenEnabled("Next", "step2→3")) {
           dumpButtons("step2-fail");
           log("Cannot find Next button (step 2)", "error");
           GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
