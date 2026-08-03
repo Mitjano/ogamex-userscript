@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.62.1
+// @version      2.63.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -663,7 +663,10 @@
         const p = decodeURIComponent(m[1]);
         // accept only same-origin relative game paths; never bounce back to
         // an Error/ page or to login (/home).
-        if (/^\/[A-Za-z0-9]/.test(p) && !/^\/(Error|home)\b/i.test(p)) specificTarget = p;
+        // v2.63.0: /overview też odpada — NA TYM SERWERZE NIE ISTNIEJE (404 za
+        // każdym razem; to on stał za wszystkimi stronami błędu z
+        // aspxerrorpath=/overview). Przegląd gry żyje pod "/".
+        if (/^\/[A-Za-z0-9]/.test(p) && !/^\/(Error|home|overview)\b/i.test(p)) specificTarget = p;
       } catch {}
     }
 
@@ -689,11 +692,11 @@
         } else {
           btn.click();
           // safety net: if the click didn't navigate, force it.
-          setTimeout(() => { if (isOGameXErrorPage()) window.location.href = "/overview"; }, 5000);
+          setTimeout(() => { if (isOGameXErrorPage()) window.location.href = "/"; }, 5000);
         }
         return;
       }
-      window.location.href = "/overview"; // last resort
+      window.location.href = "/"; // last resort
     }, backoff);
 
     // ── v2.61.0: strażnik strony błędu ──
@@ -719,7 +722,7 @@
           const btn = findBackToGameButton();
           if (btn && btn.tagName === "A" && btn.href) window.location.href = btn.href;
           else if (btn) btn.click();
-          else window.location.href = "/overview";
+          else window.location.href = "/";
         } catch {}
       }, 60 * 1000);
     }
@@ -3209,7 +3212,7 @@
         if (wander > 0 && Math.random() < wander) {
           log("Farm: wandering via Overview (human-like detour).", "delay");
           await AntiDetection.sleep(humanScanDelayMs());
-          scanNavigate("/overview", "farm wander");
+          scanNavigate("/", "farm wander");
           return;
         }
         await AntiDetection.sleep(humanScanDelayMs());
@@ -6276,7 +6279,7 @@
           mission.timestamp = Date.now();
           GM_setValue("pending_mission", JSON.stringify(mission));
           await AntiDetection.sleep(500 + Math.random() * 500);
-          window.location.href = "/overview";
+          window.location.href = "/";
           return;
         }
         if (here === want) {
@@ -6910,7 +6913,7 @@
               log("[FS] bez przełącznika księżyca NIE wysyłam — flota zostaje w domu.", "error");
               GM_setValue("pending_mission", null);
               await AntiDetection.sleep(600 + Math.random() * 600);
-              window.location.href = "/overview";
+              window.location.href = "/";
               return;
             }
           }
@@ -6958,10 +6961,21 @@
               .find(e => e.offsetParent !== null && (e.textContent || "").trim() === `${pct}%`);
             if (el) { el.click(); speedSet = true; }
           }
-          if (!speedSet && GM_getValue("ogamex_fs_speed_dumped", "") !== "1") {
-            GM_setValue("ogamex_fs_speed_dumped", "1");
-            const panel = document.querySelector("#fleet2, .fleet2, [class*='fleet-form'], form") || document.body;
-            log(`[FS DOM] krok 2 (szukam suwaka prędkości): ${(panel.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 2000)}`, "error");
+          // v2.63.0: poprzedni zrzut łapał NAGŁÓWEK strony (selektor trafiał
+          // w document.body) — bezużyteczny. Kotwicą jest panel celu
+          // (#target_planet_type_container — potwierdzony na żywo 16:36),
+          // zrzucamy jego okolicę + listę wszystkiego, co wygląda jak "NN%".
+          if (!speedSet && GM_getValue("ogamex_fs_speed_dumped", "") !== "2") {
+            GM_setValue("ogamex_fs_speed_dumped", "2");
+            const dest = document.getElementById("target_planet_type_container");
+            const host = (dest && (dest.closest("form") || dest.parentElement?.parentElement?.parentElement))
+              || document.querySelector("#content, .content") || document.body;
+            log(`[FS DOM] krok 2 — okolica formularza (szukam suwaka prędkości): ${(host.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 3000)}`, "error");
+            const pctEls = [...document.querySelectorAll("a, span, div, li, button, option, label")]
+              .filter(e => /^\s*\d{1,3}\s*%\s*$/.test(e.textContent || "")).slice(0, 12);
+            log(pctEls.length
+              ? `[FS DOM] elementy z "%": ${pctEls.map(e => `${e.tagName}.${String(e.className).split(" ")[0] || "-"}#${e.id || "-"}[${(e.textContent || "").trim()}]`).join(", ")}`
+              : "[FS DOM] na stronie nie ma ŻADNEGO elementu z samym \"NN%\" — suwak może być na innym kroku albo mieć inną formę.", "error");
           }
           log(`[FS] prędkość ${pct}%: ${speedSet ? "ustawiona" : "NIE ustawiona (markup w logu — przyślij go). Gra poleci z domyślną."}`, speedSet ? "fleet" : "warn");
           // pozwól grze przeliczyć czas lotu po zmianie prędkości
@@ -7029,6 +7043,35 @@
         // Nie mieści się (albo to tylko pomiar) → NIE wysyłamy, T zapisany,
         // planer od teraz liczy start bez wchodzenia w formularz.
         if (mission.fleetSave) {
+          // v2.63.0: pomiar 16:36 pokazał, że krok 2 tego forka NIE pokazuje
+          // czasu lotu tam, gdzie czyta go mining (capturedFlightMs=0).
+          // Przy pomiarze wchodzimy więc na krok 3 (misja + podsumowanie) —
+          // BEZ dotykania „Send fleet" — i próbujemy odczytać czas tam.
+          // Nadal nic → zrzut kroku 3 do logu i uczciwa odmowa.
+          if (mission.fsMeasure && !(capturedFlightMs > 0)) {
+            if (clickButton("Next", "fs-measure step2→3")) {
+              await waitForStepChange(() => Array.from(document.querySelectorAll("a, button, input[type='submit'], input[type='button']")).some(el => {
+                if (el.offsetParent === null) return false;
+                const txt = (el.value || el.textContent || "").trim().toLowerCase();
+                return txt.includes("send fleet");
+              }), 12000);
+              const t3 = document.body.textContent;
+              const m3 = t3.match(/(?:[Ff]light\s*(?:time|duration)|[Dd]uration|[Cc]zas\s*lotu)[\s:]*(\d{1,2}):(\d{2}):(\d{2})/);
+              if (m3) capturedFlightMs = (parseInt(m3[1]) * 3600 + parseInt(m3[2]) * 60 + parseInt(m3[3])) * 1000;
+              if (!(capturedFlightMs > 0)) {
+                const el3 = document.querySelector("[class*='flight'], [class*='duration'], [id*='duration' i], [id*='flight' i]");
+                const tm3 = el3 && (el3.textContent || "").match(/(\d{1,2}):(\d{2}):(\d{2})/);
+                if (tm3) capturedFlightMs = (parseInt(tm3[1]) * 3600 + parseInt(tm3[2]) * 60 + parseInt(tm3[3])) * 1000;
+              }
+              if (capturedFlightMs > 0) {
+                log(`[FS] czas lotu odczytany na kroku 3: ${Math.round(capturedFlightMs / 60000)} min.`, "info");
+              } else if (GM_getValue("ogamex_fs_step3_dumped", "") !== "1") {
+                GM_setValue("ogamex_fs_step3_dumped", "1");
+                const host3 = document.querySelector("#content, .content") || document.body;
+                log(`[FS DOM] krok 3 (szukam czasu lotu): ${(host3.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 3000)}`, "error");
+              }
+            }
+          }
           if (capturedFlightMs > 0) FleetSave.noteFlightMs(capturedFlightMs);
           const windowMs = (mission.returnAtMs || 0) - Date.now();
           const maxMs = capturedFlightMs > 0 ? 2 * capturedFlightMs - 2 * FleetSave.LAUNCH_MARGIN_MS : 0;
@@ -7036,7 +7079,9 @@
           if (mission.fsMeasure || !fits) {
             const hhmm = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
             const why = mission.fsMeasure
-              ? `pomiar zakończony — czas lotu ${Math.round(capturedFlightMs / 60000)} min, maksymalny FS ${Math.round(Math.max(0, maxMs) / 60000)} min`
+              ? (capturedFlightMs > 0
+                ? `pomiar zakończony — czas lotu ${Math.round(capturedFlightMs / 60000)} min, maksymalny FS ${Math.round(Math.max(0, maxMs) / 60000)} min`
+                : "pomiar NIE odczytał czasu lotu na kroku 2 ani 3 — przyślij linie [FS DOM] z logu")
               : !(capturedFlightMs > 0) ? "nie odczytałem czasu lotu z formularza (zrzut prędkości wyżej w logu)"
               : windowMs <= 0 ? "godzina powrotu już minęła"
               : `okno ${Math.round(windowMs / 60000)} min > maks. ${Math.round(maxMs / 60000)} min — start opłaca się o ${hhmm((mission.returnAtMs || 0) - maxMs)}`;
@@ -7047,7 +7092,7 @@
             log(`[FS] NIE wysyłam: ${why}.`, mission.fsMeasure ? "success" : "warn");
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
-            window.location.href = "/overview";
+            window.location.href = "/";
             return;
           }
           // wysyłamy — zapisz zmierzony T w misji, żeby stempel po wysyłce
@@ -7157,7 +7202,7 @@
             log(`[FS] brak misji stacjonowania na kroku 3 — NIE wysyłam. Dostępne: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"}`, "error");
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
-            window.location.href = "/overview";
+            window.location.href = "/";
             return;
           }
           log(`[FS] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${matched})`, "fleet");
@@ -7504,7 +7549,7 @@
         log("Keepalive: no page load for >12min — reloading to keep session alive.", "info");
         if (window.location.href.includes("fleetSendSuccessfully")) {
           // Don't re-trigger the post-send handler with stale dispatch data
-          window.location.href = "/overview";
+          window.location.href = "/";
         } else {
           window.location.reload();
         }
