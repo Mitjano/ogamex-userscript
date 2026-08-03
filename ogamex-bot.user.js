@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.63.2
+// @version      2.63.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2260,7 +2260,9 @@
           // v2.49.0: pierwszy raz z każdego źródła zrzuć próbkę — bez niej nie
           // da się napisać parsera pod markup TEGO serwera, a zgadywanie już raz
           // kosztowało pięć wersji.
-          const dumpKey = `ogamex_dump_${url.replace(/\W+/g, "_").slice(0, 60)}`;
+          // v2.63.3: klucz podbity — zrzut z 2 sierpnia przepadł z logu, a bez
+          // markupu dziennika wypraw nie da się napisać parsera urobku.
+          const dumpKey = `ogamex_dump2_${url.replace(/\W+/g, "_").slice(0, 60)}`;
           if (GM_getValue(dumpKey, "") !== "1") {
             GM_setValue(dumpKey, "1");
             log(`[RAPORTY] ${url} → ${html.length} zn.: ${html.replace(/\s+/g, " ").slice(0, 1200)}`, "info");
