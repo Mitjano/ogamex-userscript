@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.65.0
+// @version      2.65.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7935,9 +7935,11 @@
         #ogx-bot-panel .strip-row.busy .val { color: #f2b25c; }
         #ogx-bot-panel .strip-row.alert .val { color: #ff6b6b; font-weight: 700; }
         #ogx-bot-panel .strip-row.dim .val { color: #7f8c8d; }
+        /* v2.65.1: sekcje = ustawienia, nie stan. Slim: 44px → ~26px na
+           zwiniętą sekcję; stan pokazuje pasek na górze. */
         #ogx-bot-panel .section {
-          margin-bottom: 8px;
-          padding: 8px;
+          margin-bottom: 4px;
+          padding: 4px 8px;
           background: rgba(255,255,255,0.03);
           border-radius: 4px;
           border-left: 3px solid #1a5276;
@@ -7945,12 +7947,16 @@
         #ogx-bot-panel .section.active { border-left-color: #27ae60; }
         #ogx-bot-panel .section.inactive { border-left-color: #7f8c8d; }
         #ogx-bot-panel .section-title {
-          font-weight: bold;
-          margin-bottom: 4px;
+          font-weight: normal;
+          font-size: 11px;
+          color: #b9c9d4;
+          margin-bottom: 2px;
           display: flex;
           justify-content: space-between;
+          align-items: center;
         }
-        #ogx-bot-panel .status { font-size: 11px; color: #999; }
+        #ogx-bot-panel .section-title .mini-btn { padding: 1px 7px; font-size: 10px; }
+        #ogx-bot-panel .status { font-size: 11px; color: #b7c4cd; }
         #ogx-bot-panel .status.on { color: #27ae60; }
         #ogx-bot-panel .status.off { color: #e74c3c; }
         #ogx-bot-panel .log-area {
@@ -8028,7 +8034,7 @@
       <div class="body" id="ogx-body">
         <div class="section ${CONFIG.asteroidMining.enabled ? "active" : "inactive"}" id="ogx-asteroid-section">
           <div class="section-title">
-            <span>Asteroid Mining</span>
+            <span>Ustawienia: Mining</span>
             <button class="mini-btn" id="ogx-asteroid-toggle">${CONFIG.asteroidMining.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-asteroid-status">Idle</div>
@@ -8057,7 +8063,7 @@
 
         <div class="section ${CONFIG.inactiveFarming.enabled ? "active" : "inactive"}" id="ogx-farm-section">
           <div class="section-title">
-            <span>Inactive Farming</span>
+            <span>Ustawienia: Farmienie</span>
             <button class="mini-btn" id="ogx-farm-toggle">${CONFIG.inactiveFarming.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-farm-status">Idle</div>
@@ -8086,7 +8092,7 @@
 
         <div class="section" id="ogx-threat-section">
           <div class="section-title">
-            <span>Alarm: obca flota</span>
+            <span>Ustawienia: Obrona</span>
             <button class="mini-btn" id="ogx-threat-toggle">${CONFIG.threatAlarm.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-threat-status">—</div>
@@ -8115,7 +8121,7 @@
 
         <div class="section ${CONFIG.fleetSave?.enabled ? "active" : "inactive"}" id="ogx-fs-section">
           <div class="section-title">
-            <span>Fleet Save (nocny)</span>
+            <span>Ustawienia: Fleet Save</span>
             <button class="mini-btn" id="ogx-fs-toggle">${CONFIG.fleetSave?.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-fs-status">—</div>
@@ -8139,7 +8145,7 @@
 
         <div class="section ${CONFIG.expeditions.enabled ? "active" : "inactive"}" id="ogx-expo-section">
           <div class="section-title">
-            <span>Expeditions</span>
+            <span>Ustawienia: Ekspedycje</span>
             <button class="mini-btn" id="ogx-expo-toggle">${CONFIG.expeditions.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-expo-status">Idle</div>
@@ -8174,7 +8180,7 @@
 
         <div class="section ${CONFIG.onlineBonus.enabled ? "active" : "inactive"}" id="ogx-bonus-section">
           <div class="section-title">
-            <span>Online Bonus</span>
+            <span>Ustawienia: Bonus</span>
             <button class="mini-btn" id="ogx-bonus-toggle">${CONFIG.onlineBonus.enabled ? "ON" : "OFF"}</button>
           </div>
           <div class="status" id="ogx-bonus-status">—</div>
@@ -8183,7 +8189,7 @@
 
         <div class="section">
           <div class="section-title">
-            <span>Anti-Detection</span>
+            <span>Anty-detekcja</span>
             <span class="status ${AntiDetection.isSleepTime() ? "off" : "on"}">${AntiDetection.isSleepTime() ? "SLEEP" : "ACTIVE"}</span>
           </div>
           <div class="status">Delay: ${CONFIG.antiDetection.minDelaySeconds}-${CONFIG.antiDetection.maxDelaySeconds}s | Sleep: ${CONFIG.antiDetection.sleepStartHour}:00-${CONFIG.antiDetection.sleepEndHour}:00 (czas lokalny, ±20min/dzień)</div>
@@ -8210,25 +8216,21 @@
 
         <div class="section">
           <div class="section-title">
-            <span>Quick Actions</span>
+            <span>Szybkie akcje</span>
           </div>
           <button class="mini-btn" id="ogx-scan-now">Scan Asteroids</button>
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
           <button class="mini-btn" id="ogx-api-test" title="Odpytuje po kolei endpointy gry (eventbox, eventlist, galaxy, check-target, messages) i wypisuje do logu status HTTP oraz początek odpowiedzi. Od tego zależy, czy szybki skan i wysyłka przez API mogą działać.">Test API</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
           <button class="mini-btn" id="ogx-flights" title="Pokazuje rejestr własnych lotów górniczych (to on wyznacza budżet równoległych wysyłek) i porównuje go z liczbą misji, którą widzi gra. Shift+klik czyści rejestr awaryjnie, gdy budżet stoi mimo pustego nieba.">Loty</button>
-        </div>
-
-        <!-- v2.64.2: własny wiersz — wstawiony w środek flexowego nagłówka
-             loga rozsadzał mu układ (label 100% szerokości między napisem
-             „Log (persisted)" a przyciskami Copy/Clear). -->
-        <div style="border-top:1px solid #1a5276;margin-top:6px;padding-top:6px;">
-          <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;">
-            <span title="Klucz API Google AI Studio (aistudio.google.com/apikey). Model czyta TYLKO raporty z misji (urobek z asteroid) tam, gdzie zwykłe parsery nie rozumieją formatu strony. Nigdy nie podejmuje decyzji o flocie. Klucz zostaje lokalnie w Tampermonkey — nie trafia do repozytorium ani do gry.">Gemini API</span>
+        
+          <label style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:10px;color:#bbb;" title="Klucz API Google AI Studio (aistudio.google.com/apikey). Model czyta TYLKO raporty z misji (urobek z asteroid) tam, gdzie zwykłe parsery nie rozumieją formatu strony. Nigdy nie podejmuje decyzji o flocie. Klucz zostaje lokalnie w Tampermonkey.">
+            <span>Gemini API</span>
             <input id="ogx-llm-key" type="password" placeholder="klucz AIza…/AQ…" value="" style="width:130px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
           </label>
-          <div class="status" id="ogx-llm-status" style="font-size:9px;color:#7f8c8d;margin-top:2px;"></div>
+          <div class="status" id="ogx-llm-status" style="font-size:9px;margin-top:2px;"></div>
         </div>
+
 
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
@@ -8774,7 +8776,19 @@
     // crowded; click a title to fold a section (ON/OFF buttons still work —
     // clicks on buttons don't toggle). Collapsed set persists across pages.
     try {
-      const collapsed = new Set(JSON.parse(GM_getValue("ogx_ui_collapsed", "[]")));
+      // v2.65.1: sekcje to ustawienia — domyślnie ZWINIĘTE (stan pokazuje
+      // pasek na górze). Nowe polskie tytuły = stary zapis zwinięć nie pasuje,
+      // więc przy braku NOWEGO klucza zwijamy wszystko poza Szybkimi akcjami.
+      let collapsed;
+      {
+        const raw = GM_getValue("ogx_ui_collapsed_v2", null);
+        if (raw) collapsed = new Set(JSON.parse(raw));
+        else {
+          collapsed = new Set([...panel.querySelectorAll(".section .section-title span")]
+            .map(el => (el.textContent || "").trim())
+            .filter(n => n && n !== "Szybkie akcje"));
+        }
+      }
       panel.querySelectorAll(".section").forEach(sec => {
         const title = sec.querySelector(".section-title");
         if (!title) return;
@@ -8796,7 +8810,7 @@
         title.addEventListener("click", (e) => {
           if (e.target.closest("button, input")) return; // toggles/inputs keep working
           if (collapsed.has(name)) collapsed.delete(name); else collapsed.add(name);
-          GM_setValue("ogx_ui_collapsed", JSON.stringify([...collapsed]));
+          GM_setValue("ogx_ui_collapsed_v2", JSON.stringify([...collapsed]));
           apply();
         });
       });
