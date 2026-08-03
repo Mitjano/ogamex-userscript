@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.59.0
+// @version      2.60.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3480,33 +3480,266 @@
       log(`[FS] czas lotu tej trasy przy ${this.cfg().speedPercent}% prędkości: ${Math.round(ms / 60000)} min → maksymalny FS ${Math.round(ms / 30000)} min.`, "info");
     },
 
+    // ── v2.60.0: godzina powrotu jako "HH:MM" = NAJBLIŻSZE takie wskazanie ──
+    // Właściciel ustawia raz "09:00" i FS powtarza się co dobę: po zakończonym
+    // cyklu następne "09:00" znów jest w przyszłości, więc planer sam liczy
+    // kolejny wieczór. ISO (pełna data) nadal działa jako jednorazówka.
+    returnAtMs(now = Date.now()) {
+      const c = this.cfg();
+      const raw = String(c.returnAt || "");
+      const hm = raw.match(/^(\d{1,2}):(\d{2})$/);
+      if (hm) {
+        const d = new Date(now);
+        d.setHours(parseInt(hm[1]), parseInt(hm[2]), 0, 0);
+        if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+        return d.getTime();
+      }
+      const t = Date.parse(raw);
+      return Number.isFinite(t) ? t : NaN;
+    },
+
+    // Margines: zawrócenie musi wypaść wyraźnie PRZED dolotem (delay ≤ T − margines),
+    // bo po dolocie flota stacjonuje i zawracać nie ma czego.
+    LAUNCH_MARGIN_MS: 3 * 60 * 1000,
+    MEASURE_COOLDOWN_MS: 15 * 60 * 1000, // pomiar (wejście w formularz bez wysyłki) max co tyle
+    RECALL_RETRY_MS: 60 * 1000,
+    RECALL_MAX_TRIES: 3,
+
     // Zwraca plan albo powód, dla którego go nie ma.
     plan(now = Date.now()) {
       const c = this.cfg();
       if (!c.enabled) return { ok: false, why: "FS wyłączony" };
-      const at = c.returnAt ? Date.parse(c.returnAt) : NaN;
+      const at = this.returnAtMs(now);
       if (!Number.isFinite(at)) return { ok: false, why: "nie ustawiono godziny powrotu" };
       if (at <= now) return { ok: false, why: "godzina powrotu już minęła" };
       const T = this.flightMs();
-      if (!T) return { ok: false, why: "nie znam jeszcze czasu lotu tej trasy — pierwszy FS trzeba wysłać ręcznie albo pozwolić botowi zmierzyć" };
+      if (!T) return { ok: false, why: "nie znam czasu lotu tej trasy — kliknij „Zmierz trasę (bez wysyłki)”", measure: true };
       const window = at - now;
-      if (window > 2 * T) {
+      const maxMs = 2 * T - 2 * this.LAUNCH_MARGIN_MS;
+      if (window > maxMs) {
         return {
           ok: false,
-          why: `okno ${Math.round(window / 60000)} min przekracza maksimum ${Math.round(T / 30000)} min dla tej trasy. Zmniejsz prędkość albo wybierz dalszy księżyc.`,
-          maxMs: 2 * T,
+          why: `start ok. ${new Date(at - maxMs).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })} (okno ${Math.round(window / 60000)} min > maks. ${Math.round(maxMs / 60000)} min). Wolniej albo dalszy księżyc = dłuższy możliwy FS.`,
+          maxMs, launchDueAt: at - maxMs,
         };
       }
       // Startujemy jak najpóźniej: mniej czasu w powietrzu = mniej okazji.
-      const delay = Math.floor(window / 2);        // ≤ T, bo window ≤ 2T
+      const delay = Math.floor(window / 2);        // ≤ T − margines, bo window ≤ 2T − 2·margines
       return { ok: true, launchAt: now, recallAt: now + delay, returnAt: at, delayMs: delay, flightMs: T };
     },
 
     describe() {
+      const st = this.state();
+      const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+      if (st?.phase === "launched") return `FS: flota W DRODZE, zawrócenie ${f(st.recallAt)}, powrót ${f(st.returnAt)}`;
+      if (st?.phase === "recalled") return `FS: ZAWRÓCONA, powrót ~${f(st.returnAt)}`;
+      if (st?.phase === "recall_failed") return `FS: ZAWRACANIE NIEUDANE — flota doleci na cel i tam zostanie. Sprawdź log.`;
       const p = this.plan();
       if (!p.ok) return `FS: ${p.why}`;
-      const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
       return `FS: start ${f(p.launchAt)} → zawrócenie ${f(p.recallAt)} → powrót ${f(p.returnAt)}`;
+    },
+
+    // ═══ v2.60.0: WYSYŁKA — maszyna stanów ═══
+    // idle → (okno pasuje) launched → (recallAt) recalled → (po returnAt) idle.
+    // Wołane z pętli obrony (co 30 s, odporna na przerwy/jitter/okno nocne —
+    // zawrócenie o 4:00 rano MUSI zadziałać, więc nie może wisieć na schedulerze,
+    // który śpi w oknie nocnym).
+    running: false,
+
+    async tick() {
+      const st = this.state() || {};
+      if (st.phase === "launched") {
+        if (Date.now() >= (st.recallAt || 0)) await this.attemptRecall(st);
+        return;
+      }
+      if (st.phase === "recalled" || st.phase === "recall_failed") {
+        // Cykl domknięty 10 min po planowym powrocie; przy "HH:MM" następny
+        // wieczór planer sam wystawi kolejny start.
+        if (Date.now() > (st.returnAt || 0) + 10 * 60 * 1000) {
+          this.save(null);
+          log(`[FS] cykl zamknięty (${st.phase === "recalled" ? "flota wróciła" : "flota została na celu — ściągnij ręcznie"}).`, st.phase === "recalled" ? "success" : "warn");
+        }
+        return;
+      }
+      // faza idle — czy pora startować?
+      const c = this.cfg();
+      if (!CONFIG.enabled || !c.enabled || this.running) return;
+      // Alarm ma bezwzględne pierwszeństwo: gdy MoonSave ewakuuje/pilnuje bazy,
+      // FS nie zabiera mu floty spod ręki.
+      if (ThreatMonitor.active() || MoonSave.watch().armed) return;
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return; // FS może poczekać 30 s, rutyna nie musi być wywłaszczana
+      const p = this.plan();
+      if (!p.ok && !p.measure) return;           // za wcześnie / wyłączony / brak godziny
+      if (!p.ok && p.measure) {
+        // Nie znamy T: wejdź w formularz, zmierz i NIE wysyłaj (bramka w kroku 2
+        // odmówi, bo okno >> 2T przy nieznanym T zawsze kończy się odmową albo
+        // pomiarem). Rzadko — to nawigacja z wypełnianiem formularza.
+        const lastTry = parseInt(GM_getValue("ogamex_fs_measure_at", "0")) || 0;
+        if (Date.now() - lastTry < this.MEASURE_COOLDOWN_MS) return;
+        GM_setValue("ogamex_fs_measure_at", String(Date.now()));
+        return this.launch({ measure: true });
+      }
+      return this.launch({});
+    },
+
+    // Start: przełącz aktywne ciało na bazowy KSIĘŻYC (formularz wysyła z ciała
+    // aktywnego — ten sam mechanizm co powrót ratunku), potem formularz na cel.
+    launch({ measure = false } = {}) {
+      const c = this.cfg();
+      const from = c.from, to = c.to;
+      if (!from || !to || !Number.isFinite(to.galaxy)) { log("[FS] brak trasy (from/to) w konfiguracji.", "error"); return false; }
+      const at = this.returnAtMs();
+      if (!measure && !Number.isFinite(at)) return false;
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "fleet_save_direct",
+        fleetSave: true,
+        fsMeasure: measure,
+        atCoords: from,
+        launchBody: "moon",
+        targetBody: "moon",
+        fleetUrl: `/fleet?x=${to.galaxy}&y=${to.system}&z=${to.position}`,
+        returnAtMs: at || 0,
+        speedPercent: c.speedPercent,
+        step: "switch_to_body",
+        timestamp: Date.now(),
+      }));
+      log(measure
+        ? `[FS] pomiar trasy [${from.galaxy}:${from.system}:${from.position}]→[${to.galaxy}:${to.system}:${to.position}] przy ${c.speedPercent}% — wypełnię formularz, odczytam czas lotu i WYJDĘ bez wysyłki.`
+        : `[FS] startuję: księżyc [${from.galaxy}:${from.system}:${from.position}] → księżyc [${to.galaxy}:${to.system}:${to.position}], stacjonuj z zawróceniem, powrót ${new Date(at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`, "info");
+      if (!measure) ThreatLog.add("FS", `Start FS na [${to.galaxy}:${to.system}:${to.position}], powrót ${new Date(at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`);
+      return true;
+    },
+
+    // Stemplowane po POTWIERDZONEJ wysyłce (finishDispatch albo strona
+    // fleetSendSuccessfully). recallAt liczone od TERAZ: powrót = teraz + okno,
+    // zawrócenie w połowie okna.
+    markLaunched(pm) {
+      const sentAt = Date.now();
+      const returnAt = pm.returnAtMs || this.returnAtMs();
+      const recallAt = sentAt + Math.floor(Math.max(0, returnAt - sentAt) / 2);
+      this.save({ phase: "launched", sentAt, recallAt, returnAt, flightMs: pm.capturedFlightMs || 0, tries: 0, to: this.cfg().to });
+      const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+      log(`[FS] WYSŁANE. Zawrócenie ${f(recallAt)}, powrót ~${f(returnAt)}.`, "success");
+      ThreatLog.add("FS", `Flota w drodze. Zawrócenie ${f(recallAt)}, powrót ~${f(returnAt)}.`);
+      try { updateStatusUI(); } catch {}
+    },
+
+    // ═══ ZAWRACANIE ═══
+    // Kontrolki zawracania nikt jeszcze nie widział (zrzut czeka w
+    // FleetMovements.fetch). Szukamy jej po ZNACZENIU (recall/callback/retreat/
+    // revoke/cancel/zawróć) w NASZYM wierszu; nic nie pasuje → zrzut + głośny
+    // błąd + flota DOLECI na nasz własny księżyc i tam zostanie (stacjonowanie
+    // = bezpieczna porażka; transport odrzucamy już przy wysyłce).
+    RECALL_RX: /recall|call.?back|revoke|retreat|withdraw|cancel|abort|zawr[oó]|cofnij/i,
+    _recalling: false,
+
+    _findOurRow(doc) {
+      const c = this.cfg();
+      const fromS = `${c.from?.galaxy}:${c.from?.system}:${c.from?.position}`;
+      const toS = `${c.to?.galaxy}:${c.to?.system}:${c.to?.position}`;
+      for (const tr of doc.querySelectorAll("tr[class*='row-mission-type-']")) {
+        const t = tr.textContent || "";
+        if (t.includes(`[${fromS}]`) && t.includes(`[${toS}]`)) return tr;
+      }
+      return null;
+    },
+
+    async attemptRecall(st) {
+      if (this._recalling) return;
+      this._recalling = true;
+      try {
+        let html = "";
+        try {
+          const res = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          if (res.ok) html = await res.text();
+        } catch {}
+        if (!html) { this._recallFail(st, "lista ruchów flot nie odpowiada"); return; }
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const row = this._findOurRow(doc);
+        if (!row) {
+          // Wiersza nie ma: flota już doleciała (za późno) albo już zawrócona.
+          this._recallFail(st, "nie znajduję naszego lotu na liście ruchów (doleciała? już zawrócona?)");
+          return;
+        }
+        const fleetId = row.getAttribute("data-fleet-id") || "";
+        const etaBefore = parseInt(row.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0;
+        // kontrolka: link, formularz albo element z data-atrybutem
+        const link = [...row.querySelectorAll("a[href]")].find(a =>
+          this.RECALL_RX.test(a.getAttribute("href") || "") || this.RECALL_RX.test(String(a.className || ""))
+          || this.RECALL_RX.test(a.getAttribute("data-tooltip-content") || "") || this.RECALL_RX.test(a.textContent || ""));
+        const form = [...row.querySelectorAll("form")].find(f => this.RECALL_RX.test(f.getAttribute("action") || ""));
+        const dataEl = link || form ? null : [...row.querySelectorAll("[data-url], [data-href], [data-action]")].find(el =>
+          this.RECALL_RX.test(el.getAttribute("data-url") || el.getAttribute("data-href") || el.getAttribute("data-action") || ""));
+        if (!link && !form && !dataEl) {
+          // Zasada z noty: markupu nie zgadujemy. Zrzut końca wiersza do logu
+          // (wymuszony, nie one-shot) i głośna porażka.
+          log(`[FS] NIE ZNAJDUJĘ kontrolki zawracania w wierszu lotu. Koniec wiersza: ${(row.innerHTML || "").replace(/\s+/g, " ").slice(-1200)}`, "error");
+          this._recallFail(st, "brak kontrolki zawracania w markupli wiersza (zrzut w logu — przyślij go, dopiszę selektor)");
+          return;
+        }
+        const target = link ? link.getAttribute("href")
+          : form ? form.getAttribute("action")
+          : (dataEl.getAttribute("data-url") || dataEl.getAttribute("data-href") || dataEl.getAttribute("data-action"));
+        log(`[FS] zawracam flotę (${link ? "link" : form ? "formularz" : "data-atrybut"}: ${target}).`, "info");
+        try {
+          if (form) {
+            const params = new URLSearchParams();
+            for (const inp of form.querySelectorAll("input[name]")) params.set(inp.getAttribute("name"), inp.getAttribute("value") || "");
+            const tok = Ajax.token(); if (tok && !params.has("_token")) params.set("_token", tok);
+            await fetch(target, {
+              method: (form.getAttribute("method") || "POST").toUpperCase(),
+              headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+              body: params.toString(), credentials: "same-origin",
+            });
+          } else {
+            await fetch(target, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+          }
+        } catch (e) { this._recallFail(st, `zapytanie zawracania padło: ${e.message}`); return; }
+        // ── weryfikacja: zawrócony lot ZMIENIA wiersz ──
+        await AntiDetection.sleep(4000);
+        let ok = false;
+        try {
+          const res2 = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          const doc2 = res2.ok ? new DOMParser().parseFromString(await res2.text(), "text/html") : null;
+          const row2 = doc2 && (fleetId ? doc2.querySelector(`tr[data-fleet-id="${fleetId}"]`) : this._findOurRow(doc2));
+          if (!row2) ok = true;                                        // wiersz przekluczony/zniknął
+          else if (/return|powr|zawr/i.test(row2.className + " " + (row2.textContent || ""))) ok = true;
+          else {
+            const etaAfter = parseInt(row2.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0;
+            // normalny lot: eta spadła o ~5s; zawrócony: eta PRZESKAKUJE na czas powrotu
+            if (Math.abs(etaAfter - (etaBefore - 5)) > 30) ok = true;
+          }
+        } catch {}
+        if (ok) {
+          this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
+          const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+          log(`[FS] ZAWRÓCONA — powrót ~${f(st.returnAt)}.`, "success");
+          ThreatLog.add("FS", `Flota zawrócona, powrót ~${f(st.returnAt)}.`);
+          try { updateStatusUI(); } catch {}
+        } else {
+          this._recallFail(st, "po zawróceniu wiersz lotu wygląda tak samo — zawrócenie najpewniej NIE zadziałało");
+        }
+      } finally {
+        this._recalling = false;
+      }
+    },
+
+    _recallFail(st, why) {
+      const tries = (st.tries || 0) + 1;
+      if (tries < this.RECALL_MAX_TRIES) {
+        this.save({ ...st, tries, recallAt: Date.now() + this.RECALL_RETRY_MS });
+        log(`[FS] zawracanie nieudane (${tries}/${this.RECALL_MAX_TRIES}): ${why}. Ponawiam za ${Math.round(this.RECALL_RETRY_MS / 1000)}s.`, "warn");
+        return;
+      }
+      this.save({ ...st, phase: "recall_failed", tries });
+      log(`[FS] ZAWRACANIE NIEUDANE po ${tries} próbach: ${why}. Flota DOLECI na nasz księżyc i tam zostanie (stacjonowanie) — ściągnij ją ręcznie albo przyciskiem, gdy wstaniesz.`, "error");
+      ThreatLog.add("BŁĄD", `FS: zawracanie nieudane (${why}). Flota zostanie na celu — bezpieczna, ale nie wróci sama.`);
+      try {
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("OGameX: FS — zawracanie nieudane", { body: "Flota doleci na cel i tam zostanie. Sprawdź log.", tag: "ogamex-fs" });
+        }
+      } catch {}
     },
   };
 
@@ -6024,7 +6257,7 @@
         // waves 2..N as "duplicates".
         const SEND_GUARD_MS = 10 * 60 * 1000;
         const missionCoord = coordsFromFleetUrl(mission.fleetUrl);
-        if (!mission.expedition && !mission.moonSave) try {
+        if (!mission.expedition && !mission.moonSave && !mission.fleetSave) try {
           const lastSent = readLastSent(); // v2.10.25: GM + localStorage, newest wins
           const sameTarget = lastSent && (
             (missionCoord && lastSent.coord && lastSent.coord === missionCoord) ||
@@ -6046,7 +6279,7 @@
         // v2.10.25: server-truth check — catches a fleet launched seconds ago
         // by another tab, another browser or another machine, which no local
         // storage guard can see. Expeditions skip it for the same reason as above.
-        const alreadyFlying = (mission.expedition || mission.moonSave) ? null : await fleetAlreadyFlyingTo(missionCoord);
+        const alreadyFlying = (mission.expedition || mission.moonSave || mission.fleetSave) ? null : await fleetAlreadyFlyingTo(missionCoord);
         if (alreadyFlying) {
           log(`DUPLICATE BLOCKED (server events via ${alreadyFlying}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
           GM_setValue("pending_mission", null);
@@ -6078,6 +6311,11 @@
           // the mining wait timers (a 1h expedition would pause the scanner).
           if (mission.moonSave) {
             if (dispatchOk) log("[MOON SAVE] fleet and resources are on the moon.", "success");
+            return;
+          }
+          if (mission.fleetSave) {
+            if (dispatchOk) FleetSave.markLaunched(mission);
+            else log("[FS] wysyłka nie doszła do skutku — planer spróbuje ponownie, dopóki okno pasuje.", "warn");
             return;
           }
           if (mission.expedition) {
@@ -6297,6 +6535,36 @@
           ThreatLog.add("RATUNEK", `Załadowano: ${loaded.join(", ")}`);
         } else
 
+        // ── v2.60.0: Fleet Save — wszystko POZA wykluczeniami (minery zostają) ──
+        // Ta sama mechanika co ratunek (natywny setter + input/change), tylko
+        // z filtrem: excludeTypes z konfiguracji FS (domyślnie ASTEROID_MINER —
+        // minery pracują nocą i nie mają czego szukać na FS).
+        if (mission.fleetSave) {
+          const exclude = (CONFIG.fleetSave?.excludeTypes || ["ASTEROID_MINER"]).map(t => String(t).toUpperCase());
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+          const loaded = [];
+          for (const el of document.querySelectorAll("[data-ship-type]")) {
+            const type = el.dataset.shipType;
+            const available = parseInt(el.dataset.shipQuantity || "0") || 0;
+            if (!type || available <= 0) continue;
+            if (exclude.includes(type.toUpperCase())) continue;
+            const item = el.closest(".ship-item") || el.parentElement;
+            const input = item?.querySelector("input.numberFormatInput, input[type='text']");
+            if (!input) continue;
+            if (nativeSetter) nativeSetter.call(input, available); else input.value = available;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            loaded.push(`${type}×${available}`);
+            await AntiDetection.sleep(120 + Math.random() * 380);
+          }
+          if (!loaded.length) {
+            log(`[FS] na księżycu startowym nie ma floty do wysłania (poza wykluczeniami) — nic nie robię. Ships: ${shipDump}`, "warn");
+            GM_setValue("pending_mission", null);
+            return;
+          }
+          log(`[FS] załadowane: ${loaded.join(", ")}${mission.fsMeasure ? " (pomiar — wysyłki nie będzie)" : ""}`, "fleet");
+        } else
+
         // ── v2.14.0: expeditions fill MANY types in one go ──
         // Mining/farming send a single ship type; an expedition takes the whole
         // combat fleet split into `waves`. Same input-writing mechanics as
@@ -6506,11 +6774,13 @@
         // There is no moon link in the galaxy row to learn — which is why the
         // fleet save sat "cel nieznany" through every visit. Target the base
         // coords like any other fleet and pick the body here.
-        if (mission.moonSave) {
+        if (mission.moonSave || mission.fleetSave) {
           // v2.28.0: the target body is decided at dispatch time and carried on
           // the mission, because "flee" and "home" are no longer fixed to moon
           // and planet — either can be the base. Old missions without the field
           // keep the pre-2.28 meaning.
+          // v2.60.0: Fleet Save używa tego samego, sprawdzonego na żywo
+          // przełącznika ciała (data-planet-type=2) — cel FS to zawsze księżyc.
           const wantMoon = mission.targetBody ? mission.targetBody === "moon" : !mission.moonReturn;
           const panel = document.querySelector("#fleet2, .fleet2, .destination, [class*='destination']") || document.body;
           if (GM_getValue("ogamex_step2_markup_dumped", "") !== "1") {
@@ -6543,7 +6813,69 @@
           } else {
             log(`[MOON SAVE] NIE ZNALAZŁEM przełącznika ${wantMoon ? "księżyca" : "planety"} na kroku 2 — lecę z domyślnym celem (to jest PLANETA). Zrzut panelu wyżej: przyślij go, dopiszę selektor.`, "error");
             ThreatLog.add("BŁĄD", `Nie znalazłem przełącznika ${wantMoon ? "księżyca" : "planety"} na kroku 2 — cel domyślny (PLANETA).`);
+            // v2.60.0: dla ratunku (te same koordy, oba ciała nasze) lot z celem
+            // domyślnym to świadoma kontynuacja. Dla FS cel domyślny = PLANETA
+            // na OBCYCH koordach — tam nie wolno niczego wysłać. Przerwij.
+            if (mission.fleetSave) {
+              log("[FS] bez przełącznika księżyca NIE wysyłam — flota zostaje w domu.", "error");
+              GM_setValue("pending_mission", null);
+              await AntiDetection.sleep(600 + Math.random() * 600);
+              window.location.href = "/overview";
+              return;
+            }
           }
+        }
+
+        // ── v2.60.0: FS — prędkość lotu (główna dźwignia długości FS) ──
+        // Markupu suwaka NIKT jeszcze nie widział (nota: „trzeba zrzucić
+        // osobno"), więc: najpierw próby po ZNACZENIU (select z opcjami %,
+        // input[type=range], klikalne „10%"), zawsze zrzut okolic formularza
+        // do logu, a o skutku i tak decyduje bramka niżej — na czasie lotu,
+        // który pokazuje SAMA GRA. Nieustawiona prędkość ≠ zła wysyłka:
+        // najwyżej okno nie zmieści się w 2×T i bot odmówi startu.
+        if (mission.fleetSave) {
+          const pct = Math.max(10, Math.min(100, parseInt(mission.speedPercent) || 100));
+          let speedSet = false;
+          // 1) select, którego opcje wyglądają jak procenty (wzorzec „po tekście”
+          //    — ten sam, którym ustawiamy czas trwania ekspedycji)
+          for (const sel of document.querySelectorAll("select")) {
+            const opts = [...sel.options];
+            if (!opts.some(o => /%/.test(o.textContent || ""))) continue;
+            const hit = opts.find(o => ((o.textContent || "").replace(/\s+/g, "").match(/^(\d{1,3})%$/) || [])[1] === String(pct));
+            if (!hit) continue;
+            sel.value = hit.value;
+            sel.dispatchEvent(new Event("input", { bubbles: true }));
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            speedSet = true;
+            break;
+          }
+          // 2) suwak: skala 1-10 (klasyczne 10%-100%) albo 10-100
+          if (!speedSet) {
+            const r = document.querySelector("input[type='range']");
+            if (r) {
+              const min = parseFloat(r.min || "1"), max = parseFloat(r.max || "10");
+              const value = max <= 10 ? Math.max(min, Math.round(pct / 10)) : Math.max(min, Math.min(max, pct));
+              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+              if (setter) setter.call(r, value); else r.value = value;
+              r.dispatchEvent(new Event("input", { bubbles: true }));
+              r.dispatchEvent(new Event("change", { bubbles: true }));
+              speedSet = true;
+            }
+          }
+          // 3) klikalny element z dokładnym tekstem „NN%"
+          if (!speedSet) {
+            const el = [...document.querySelectorAll("a, button, span, div, label")]
+              .find(e => e.offsetParent !== null && (e.textContent || "").trim() === `${pct}%`);
+            if (el) { el.click(); speedSet = true; }
+          }
+          if (!speedSet && GM_getValue("ogamex_fs_speed_dumped", "") !== "1") {
+            GM_setValue("ogamex_fs_speed_dumped", "1");
+            const panel = document.querySelector("#fleet2, .fleet2, [class*='fleet-form'], form") || document.body;
+            log(`[FS DOM] krok 2 (szukam suwaka prędkości): ${(panel.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 2000)}`, "error");
+          }
+          log(`[FS] prędkość ${pct}%: ${speedSet ? "ustawiona" : "NIE ustawiona (markup w logu — przyślij go). Gra poleci z domyślną."}`, speedSet ? "fleet" : "warn");
+          // pozwól grze przeliczyć czas lotu po zmianie prędkości
+          await AntiDetection.sleep(1200 + Math.random() * 800);
         }
 
         // ── v2.10.0: learn cargo-per-miner from the confirmation page ──
@@ -6596,6 +6928,43 @@
               log(`Captured flight time from element: ${tm[1]}h${tm[2]}m${tm[3]}s`, "fleet");
             }
           }
+        }
+
+        // ── v2.60.0: FS — bramka arytmetyki na PRAWDZIWYM czasie lotu ──
+        // To jest serce bezpieczeństwa FS: decyzja nie zapada na szacunku ani
+        // na niezweryfikowanym markupli, tylko na czasie lotu, który gra sama
+        // pokazuje w kroku 2 (capturedFlightMs — ten sam odczyt, którego mining
+        // używa od miesięcy). Zawrócona flota wraca po 2×opóźnieniu, więc okno
+        // do powrotu musi mieścić się w 2×T minus margines na samo zawrócenie.
+        // Nie mieści się (albo to tylko pomiar) → NIE wysyłamy, T zapisany,
+        // planer od teraz liczy start bez wchodzenia w formularz.
+        if (mission.fleetSave) {
+          if (capturedFlightMs > 0) FleetSave.noteFlightMs(capturedFlightMs);
+          const windowMs = (mission.returnAtMs || 0) - Date.now();
+          const maxMs = capturedFlightMs > 0 ? 2 * capturedFlightMs - 2 * FleetSave.LAUNCH_MARGIN_MS : 0;
+          const fits = capturedFlightMs > 0 && windowMs > 0 && windowMs <= maxMs;
+          if (mission.fsMeasure || !fits) {
+            const hhmm = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+            const why = mission.fsMeasure
+              ? `pomiar zakończony — czas lotu ${Math.round(capturedFlightMs / 60000)} min, maksymalny FS ${Math.round(Math.max(0, maxMs) / 60000)} min`
+              : !(capturedFlightMs > 0) ? "nie odczytałem czasu lotu z formularza (zrzut prędkości wyżej w logu)"
+              : windowMs <= 0 ? "godzina powrotu już minęła"
+              : `okno ${Math.round(windowMs / 60000)} min > maks. ${Math.round(maxMs / 60000)} min — start opłaca się o ${hhmm((mission.returnAtMs || 0) - maxMs)}`;
+            // Nieudany odczyt czasu lotu nie może napędzać pomiaru co 15 min
+            // (2 nawigacje + formularz za każdym razem) — automat odsunięty,
+            // przycisk „Zmierz trasę" działa od ręki.
+            if (!(capturedFlightMs > 0)) GM_setValue("ogamex_fs_measure_at", String(Date.now() + 3 * 60 * 60 * 1000));
+            log(`[FS] NIE wysyłam: ${why}.`, mission.fsMeasure ? "success" : "warn");
+            GM_setValue("pending_mission", null);
+            await AntiDetection.sleep(600 + Math.random() * 600);
+            window.location.href = "/overview";
+            return;
+          }
+          // wysyłamy — zapisz zmierzony T w misji, żeby stempel po wysyłce
+          // (markLaunched) miał go pod ręką także na ścieżce z nawigacją
+          mission.capturedFlightMs = capturedFlightMs;
+          mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
         }
 
         await AntiDetection.sleep(800 + Math.random() * 1200);
@@ -6679,6 +7048,36 @@
           await AntiDetection.sleep(400 + Math.random() * 400);
         }
 
+        // ── v2.60.0: FS — misja Stacjonuj + surowce z księżyca ──
+        // Ten sam sprawdzony wzorzec co ratunek (mission-item po klasie/tekście,
+        // btn-all-res), ale TRANSPORT tu odpada twardo: gdy zawrócenie zawiedzie,
+        // stacjonująca flota zostaje bezpieczna na naszym księżycu, a transport
+        // rozładowałby się i wrócił do domu w środku nocy — dokładnie w okno,
+        // przed którym FS ma chronić.
+        if (mission.fleetSave) {
+          const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
+          const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
+          let picked = null, matched = null;
+          for (const want of MoonSave.MISSION_CANDIDATES) {
+            if (want === "TRANSPORT") break; // dla FS transport nie jest zapasem
+            picked = missions.find(m => nameOf(m).includes(want));
+            if (picked) { matched = want; break; }
+          }
+          if (!picked) {
+            log(`[FS] brak misji stacjonowania na kroku 3 — NIE wysyłam. Dostępne: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"}`, "error");
+            GM_setValue("pending_mission", null);
+            await AntiDetection.sleep(600 + Math.random() * 600);
+            window.location.href = "/overview";
+            return;
+          }
+          log(`[FS] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${matched})`, "fleet");
+          picked.click();
+          await AntiDetection.sleep(500 + Math.random() * 500);
+          const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
+          if (allRes) { allRes.click(); log("[FS] surowce z księżyca załadowane.", "fleet"); }
+          await AntiDetection.sleep(400 + Math.random() * 400);
+        }
+
         // ── v2.14.0: expedition holding time ──
         // Step 3 of an expedition carries an extra "Expedition duration"
         // dropdown ("1 Hours", …). Match by the option TEXT, not by index or
@@ -6754,7 +7153,7 @@
           // start of the 3-step flow, ~10s ago — another machine/browser can
           // have sent a fleet in that window. Fetch-only (skipDom — the step-3
           // page may render our own chosen target as text).
-          const flyingNow = (mission.expedition || mission.moonSave) ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
+          const flyingNow = (mission.expedition || mission.moonSave || mission.fleetSave) ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
           if (flyingNow) {
             log(`DUPLICATE BLOCKED (pre-click, server events via ${flyingNow}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
             GM_setValue("pending_mission", null);
@@ -6778,17 +7177,18 @@
             // like a duplicate. Record the kind and drop the coord.
             writeLastSent({
               url: mission.fleetUrl,
-              coord: mission.expedition ? null : missionCoord,
+              coord: (mission.expedition || mission.fleetSave) ? null : missionCoord,
               at: Date.now(),
-              releaseAt: mission.expedition ? Date.now() : releaseAt,
+              releaseAt: (mission.expedition || mission.fleetSave) ? Date.now() : releaseAt,
               farm: !!mission.farm,
               expedition: !!mission.expedition,
+              fleetSave: !!mission.fleetSave,
             });
-            if (!mission.expedition && !mission.recycle && missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
+            if (!mission.expedition && !mission.recycle && !mission.fleetSave && missionCoord && releaseAt) DispatchedAsteroids.release(missionCoord, releaseAt);
             // v2.39.1: osobny licznik NASZYCH lotow gorniczych (limit rownoleglych
             // lotow). Stemplujemy PRZED klikiem — nawigacja potrafi zabic wszystko,
             // co jest po nim.
-            if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle) {
+            if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle && !mission.fleetSave) {
               MiningFlights.add(missionCoord, capturedFlightMs);
             }
           }
@@ -6814,7 +7214,7 @@
             writeLastSent(null);
             // v2.39.1: ta flota nie wystartowala — zdejmij ja z licznika lotow
             // gorniczych, inaczej fantom zjadalby limit az do konca przelotu.
-            if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle) MiningFlights.dropLast();
+            if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle && !mission.fleetSave) MiningFlights.dropLast();
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
             if (mission.moonSave) ThreatLog.add(mission.moonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę.");
@@ -6837,13 +7237,13 @@
             // scanner then paused for an hour and a half waiting for "miners"
             // that were never sent. Observed live: "FLEET SENT! All miners
             // dispatched!" right after an expedition send to [3:269:16].
-            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle) {
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle && !mission.fleetSave) {
               // Round trip = flight time * 2, add 1 min buffer for processing
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               const minLeft = Math.ceil((returnTime - Date.now()) / 60000);
               log(`Fleet returns in ~${minLeft}min (flight: ${Math.round(capturedFlightMs/60000)}min × 2)`, "fleet");
-            } else if (!mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle) {
+            } else if (!mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle && !mission.fleetSave) {
               // Fallback: try parsing from page, but only accept asteroid-type
               const returnTime = parseFleetReturnTime();
               if (returnTime) {
@@ -6865,7 +7265,7 @@
             GM_setValue("ogamex_last_switched_planet", "");
             dispatchOk = true; // assume success if no error
             // Still use captured flight time if available (mining only)
-            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle) {
+            if (capturedFlightMs > 0 && !mission.farm && !mission.expedition && !mission.moonSave && !mission.recycle && !mission.fleetSave) {
               const returnTime = Date.now() + capturedFlightMs * 2 + 60000;
               GM_setValue("ogamex_fleet_return_at", String(returnTime));
               log(`Estimated return in ~${Math.ceil((capturedFlightMs * 2 + 60000) / 60000)}min`, "fleet");
@@ -7159,6 +7559,12 @@
       if (await MoonSave.returnHome().catch(() => false)) return;
       await MoonSave.keepPlanetEmpty().catch(() => false);
 
+      // v2.60.0: Fleet Save żyje w pętli obrony z tego samego powodu, dla
+      // którego ona istnieje: zawrócenie w środku nocy nie może zależeć od
+      // schedulera, który śpi w oknie nocnym i staje na jitterze. Ratunek ma
+      // pierwszeństwo — tick FS sam ustępuje przy aktywnym alarmie.
+      await FleetSave.tick().catch((e) => { log(`[FS] błąd ticku: ${e.message}`, "error"); });
+
       // ── v2.39.0: gdy COŚ widzimy, patrz częściej ──
       // Potwierdzenie wymaga dwóch odczytów, a pętla chodzi co 30 s — więc
       // decyzja mogła zająć nawet minutę. Przy locie liczonym w minutach to
@@ -7426,6 +7832,30 @@
             </div>
           </div>
           <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Czyta pasek misji: gdy „N Missions" &gt; „M Own", ktoś leci na Ciebie. Wstrzymuje farmienie i fale ekspedycji, NIE rusza flotą. Mining zostaje — wysyła minerów z planety.</div>
+        </div>
+
+        <div class="section ${CONFIG.fleetSave?.enabled ? "active" : "inactive"}" id="ogx-fs-section">
+          <div class="section-title">
+            <span>Fleet Save (nocny)</span>
+            <button class="mini-btn" id="ogx-fs-toggle">${CONFIG.fleetSave?.enabled ? "ON" : "OFF"}</button>
+          </div>
+          <div class="status" id="ogx-fs-status">—</div>
+          <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="O tej godzinie flota ma być z powrotem na bazowym księżycu. Samo HH:MM znaczy NAJBLIŻSZE takie wskazanie zegara — ustawione raz, działa co dobę.">Powrót o (HH:MM)</span>
+              <input id="ogx-fs-return" type="text" placeholder="09:00" value="${String(CONFIG.fleetSave?.returnAt || "").match(/^\d{1,2}:\d{2}$/) ? CONFIG.fleetSave.returnAt : ""}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Księżyc docelowy (g:s:p). Wysyłka zawsze Z bazowego księżyca. Dalszy cel = dłuższy lot = dłuższy możliwy FS.">Cel (księżyc g:s:p)</span>
+              <input id="ogx-fs-target" type="text" value="${CONFIG.fleetSave?.to ? `${CONFIG.fleetSave.to.galaxy}:${CONFIG.fleetSave.to.system}:${CONFIG.fleetSave.to.position}` : ""}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Prędkość lotu w %. Wolniej = dłuższy lot = dłuższy możliwy FS (przy 10% lot trwa 10× dłużej). Maksymalny FS = 2× czas lotu w jedną stronę.">Prędkość (%)</span>
+              <input id="ogx-fs-speed" type="number" min="10" max="100" step="10" value="${CONFIG.fleetSave?.speedPercent || 10}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <button class="mini-btn" id="ogx-fs-measure" style="width:100%;margin-top:4px;" title="Wchodzi w formularz wysyłki, ustawia prędkość, odczytuje czas lotu pokazany przez grę i WYCHODZI BEZ WYSYŁKI. Od tego momentu planer zna trasę i sam wyliczy godzinę startu.">Zmierz trasę (bez wysyłki)</button>
+          </div>
+          <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Z bazowego księżyca na inny księżyc, misja Stacjonuj, zawrócona w połowie tak, by wrócić o zadanej godzinie. Statki: wszystko poza ${(CONFIG.fleetSave?.excludeTypes || ["ASTEROID_MINER"]).join(", ")} + surowce z księżyca. Zawracanie nieudane = flota zostaje bezpieczna na celu.</div>
         </div>
 
         <div class="section ${CONFIG.expeditions.enabled ? "active" : "inactive"}" id="ogx-expo-section">
@@ -7719,6 +8149,56 @@
       bindExpo("ogx-expo-gapmax", "waveGapMaxSec", "Wave gap max (s)", { min: 10 });
       bindExpo("ogx-expo-hc", "heavyCargoPerWave", "Heavy Cargo per wave", { min: 0 });
       bindExpo("ogx-expo-reserve", "slotReserve", "Expedition slot reserve", { min: 0 });
+    }
+
+    // v2.60.0: Fleet Save controls
+    {
+      const fsBtn = document.getElementById("ogx-fs-toggle");
+      if (fsBtn) fsBtn.addEventListener("click", () => {
+        CONFIG.fleetSave.enabled = !CONFIG.fleetSave.enabled;
+        saveConfig(CONFIG);
+        fsBtn.textContent = CONFIG.fleetSave.enabled ? "ON" : "OFF";
+        const sec = document.getElementById("ogx-fs-section");
+        if (sec) sec.className = `section ${CONFIG.fleetSave.enabled ? "active" : "inactive"}`;
+        if (CONFIG.fleetSave.enabled && !FleetSave.flightMs()) {
+          log("[FS] włączony, ale trasa niezmierzona — kliknij „Zmierz trasę (bez wysyłki)”, żeby planer poznał czas lotu.", "warn");
+        }
+        log(`Fleet Save ${CONFIG.fleetSave.enabled ? "włączony" : "wyłączony"}`, "info");
+        updateStatusUI();
+      });
+      const fsReturn = document.getElementById("ogx-fs-return");
+      if (fsReturn) fsReturn.addEventListener("change", () => {
+        const v = fsReturn.value.trim();
+        if (v && !/^\d{1,2}:\d{2}$/.test(v)) { log(`[FS] „${v}" to nie godzina — podaj HH:MM, np. 09:00.`, "error"); return; }
+        CONFIG.fleetSave.returnAt = v || null;
+        saveConfig(CONFIG);
+        log(v ? `[FS] powrót ustawiony na najbliższe ${v}.` : "[FS] godzina powrotu wyczyszczona.", "info");
+        updateStatusUI();
+      });
+      const fsTarget = document.getElementById("ogx-fs-target");
+      if (fsTarget) fsTarget.addEventListener("change", () => {
+        const m = fsTarget.value.trim().match(/^(\d+):(\d+):(\d+)$/);
+        if (!m) { log(`[FS] „${fsTarget.value}" to nie koordynaty — podaj g:s:p, np. 3:269:5.`, "error"); return; }
+        CONFIG.fleetSave.to = { galaxy: +m[1], system: +m[2], position: +m[3] };
+        saveConfig(CONFIG);
+        log(`[FS] cel: księżyc [${m[1]}:${m[2]}:${m[3]}]. Trasę trzeba zmierzyć od nowa (inna odległość = inny czas lotu).`, "info");
+        updateStatusUI();
+      });
+      const fsSpeed = document.getElementById("ogx-fs-speed");
+      if (fsSpeed) fsSpeed.addEventListener("change", () => {
+        const v = Math.max(10, Math.min(100, parseInt(fsSpeed.value) || 10));
+        fsSpeed.value = v;
+        CONFIG.fleetSave.speedPercent = v;
+        saveConfig(CONFIG);
+        log(`[FS] prędkość ${v}%. Trasę trzeba zmierzyć od nowa (inna prędkość = inny czas lotu).`, "info");
+        updateStatusUI();
+      });
+      const fsMeasure = document.getElementById("ogx-fs-measure");
+      if (fsMeasure) fsMeasure.addEventListener("click", () => {
+        if (!window.confirm("Zmierzyć trasę FS? Bot wejdzie w formularz wysyłki, ustawi prędkość, odczyta czas lotu i WYJDZIE BEZ WYSYŁKI. Żadna flota nie poleci.")) return;
+        GM_setValue("ogamex_fs_measure_at", String(Date.now()));
+        FleetSave.launch({ measure: true });
+      });
     }
 
     // v2.13.0: online-bonus toggle (independent of mining/farming)
@@ -8167,6 +8647,16 @@
       }
     }
 
+    // v2.60.0: Fleet Save status line
+    const fsStatus = document.getElementById("ogx-fs-status");
+    if (fsStatus) {
+      const st = FleetSave.state();
+      fsStatus.textContent = CONFIG.fleetSave?.enabled || st ? FleetSave.describe() : "Off";
+      fsStatus.style.color = st?.phase === "recall_failed" ? "#e74c3c"
+        : st?.phase === "launched" || st?.phase === "recalled" ? "#2ecc71"
+        : CONFIG.fleetSave?.enabled ? "#e67e22" : "#7f8c8d";
+    }
+
     // v2.14.0: expedition status line
     const expoStatus = document.getElementById("ogx-expo-status");
     if (expoStatus) {
@@ -8400,6 +8890,7 @@
     let parallelKeepScanning = false;
     let wasExpoSend = false; // v2.15.2: read by the fleet-timer block below
     let wasRecycleSend = false; // v2.59.0: dto — złom nie jest lotem górniczym
+    let wasFsSend = false;      // v2.60.0: dto — Fleet Save
     if (window.location.href.includes("fleetSendSuccessfully")) {
       // v2.11.0: was this a FARM send? The browser navigated here before
       // finishDispatch could run, so pending_mission still carries the type.
@@ -8414,6 +8905,7 @@
         wasMoonSend = !!pm?.moonSave;
         wasMoonReturn = !!pm?.moonReturn;
         wasRecycleSend = !!pm?.recycle;
+        wasFsSend = !!pm?.fleetSave;
       } catch {}
       // v2.14.0: slow-navigation twin of the farm check below — if
       // finishDispatch already cleared pending_mission, the send stamp still
@@ -8450,6 +8942,15 @@
         GM_setValue("ogamex_inflight_fleets", String(storedExp + 1));
         GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
         ExpeditionRunner.afterSend();
+      } else if (wasFsSend) {
+        // v2.60.0: gra przyjęła wysyłkę FS i przerzuciła nas tutaj, zanim
+        // finishDispatch zdążył ruszyć — stempluj stan FS z misji, ZANIM
+        // pending_mission zostanie wyczyszczone.
+        try {
+          const pm = JSON.parse(GM_getValue("pending_mission", "null"));
+          if (pm?.fleetSave) FleetSave.markLaunched(pm);
+        } catch {}
+        GM_setValue("pending_mission", null);
       } else if (wasRecycleSend) {
         // v2.59.0: lot po złom nie jest lotem górniczym — bez tej gałęzi
         // wpadał niżej do decyzji równoległej mininga ze STARYMI liczbami
@@ -8546,8 +9047,8 @@
     //     away — the scanner then hunts asteroids it has no ships to reach.
     // An expedition changes nothing about where the miners are, so the honest
     // move is to leave mining's state exactly as it was.
-    if (wasExpoSend || wasRecycleSend) {
-      log(`${wasExpoSend ? "Expedition" : "Recycle"} send — mining fleet timers left untouched.`, "fleet");
+    if (wasExpoSend || wasRecycleSend || wasFsSend) {
+      log(`${wasExpoSend ? "Expedition" : wasRecycleSend ? "Recycle" : "Fleet Save"} send — mining fleet timers left untouched.`, "fleet");
     } else {
       const storedReturnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0"));
       const headerText = document.body.textContent;

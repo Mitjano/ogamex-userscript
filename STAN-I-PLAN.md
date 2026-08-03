@@ -116,30 +116,36 @@ numeracji forka (w linkach galaktyki ekspedycja to `mission=1`, asteroida
 
 ## DO WDROŻENIA
 
-### 1. Fleet Save — dokończyć (v2.57.1 ma sam planer)
+### 1. Fleet Save — WDROŻONE w v2.60.0 (2026-08-03), czeka na pierwszy przebieg
 
-Właściciel chce: wysyłka Z KSIĘŻYCA `3:269:8` na inny księżyc (np. `3:269:5`)
-misją **Stacjonuj**, **zawrócona w połowie**, żeby wróciła o zadanej godzinie
-(np. jutro 9:00). Wszystkie statki **poza minerami**.
+Cały cykl jest w kodzie: panel (sekcja „Fleet Save (nocny)": godzina powrotu
+HH:MM — **najbliższe wskazanie zegara, powtarza się co dobę**; cel g:s:p;
+prędkość %; przycisk „Zmierz trasę (bez wysyłki)"), tick w PĘTLI OBRONY
+(odporny na noc/przerwy — zawrócenie o 4:00 musi zadziałać), wysyłka przez
+sprawdzony na żywo formularz (ciało=moon `data-planet-type=2`, misja DEPLOY,
+`btn-all-res`), statki wszystkie poza `excludeTypes` (ASTEROID_MINER).
 
-Arytmetyka jest gotowa i przetestowana (`FleetSave` w kodzie):
-```
-powrót = start + 2 × opóźnienie zawrócenia,   opóźnienie ≤ czas lotu T
-maksymalny FS z jednego lotu = 2 × T
-```
-Bot startuje jak najpóźniej. `T` zależy od trasy, składu i **prędkości** —
-przy 10% lot trwa 10× dłużej, więc na nocny FS trzeba albo bardzo wolno,
-albo dalszego księżyca. Bot odmawia z podpowiedzią, gdy okno > 2T.
+Jak obeszliśmy dwa brakujące markupy — **nic nie leci na zgadywanym markupie**:
+- **prędkość (krok 2):** trzy próby po znaczeniu (select z opcjami %,
+  input[type=range], klikalne „NN%") + jednorazowy zrzut okolic formularza do
+  logu (`[FS DOM] krok 2`). Nieustawiona prędkość nie psuje niczego, bo…
+- **bramka arytmetyki:** przed Send bot czyta czas lotu, który pokazuje SAMA
+  GRA (`capturedFlightMs`) i wysyła TYLKO gdy okno ≤ 2×T − 2×3 min. Nie pasuje
+  → odmowa + zapis T (planer odtąd liczy godzinę startu bez formularza).
+  „Zmierz trasę" robi dokładnie to samo i zawsze kończy bez wysyłki.
+- **zawracanie:** o `recallAt` fetch listy ruchów, nasz wiersz po koordach
+  from/to, kontrolka po znaczeniu (recall/callback/revoke/retreat/cancel/zawróć
+  w href/action/data-*), wykonanie + WERYFIKACJA (wiersz zniknął / return /
+  eta przeskoczyła). 3 próby co 60 s; porażka = zrzut końca wiersza + głośny
+  błąd + powiadomienie — a flota **doleci na nasz księżyc i tam zostanie**
+  (stacjonowanie = bezpieczna porażka; TRANSPORT jest dla FS odrzucany twardo,
+  bo rozładowałby się i wrócił w środku nocy).
 
-**Czego brakuje (dwa markupy, bez nich nie zaczynać):**
-- **kontrolka zawracania floty** — zrzut czeka w kodzie, w logu pojawi się jako
-  `[RUCHY FLOT] koniec 1. wiersza (szukam zawracania): …`
-- **suwak prędkości** na formularzu floty (krok 2) — trzeba zrzucić osobno.
-
-Potem: pole na godzinę powrotu w panelu, wysyłka (wszystkie typy poza
-`ASTEROID_MINER`), ustawienie prędkości, zapamiętanie zmierzonego `T`
-(gra pokazuje czas lotu w kroku 2 — bot już go czyta jako `capturedFlightMs`),
-zawrócenie o wyliczonej godzinie.
+**Pierwsze uruchomienie:** kliknij „Zmierz trasę" (pozna T), ustaw powrót
+(np. 09:00), włącz. Pierwszy pełny cykl przeczytać w logu/dzienniku — zwłaszcza
+czy zawrócenie znalazło kontrolkę (jak nie: zrzut wiersza jest w logu, dopisać
+selektor). UWAGA operacyjna: FS zabiera to, co stoi na bazowym KSIĘŻYCU w
+chwili startu — fale ekspedycji wracające w nocy na planetę są poza FS.
 
 ### 2. MoonSave na maszynę stanu (dług z audytu, WYSOKIE 4)
 
