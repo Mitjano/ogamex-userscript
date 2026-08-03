@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.65.3
+// @version      2.66.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3453,6 +3453,11 @@
     URL: "/home/fleetmovementlist",
     ATTACK: /(ATTACK|MISSILE|DESTRUCT|DESTROY|BOMBARD|INVAS)/i,
     SPY: /(ESPIONAGE|SPY|PROBE|SCAN)/i,
+    // v2.66.0: typy, które fizycznie nie mogą uderzyć (transport nie atakuje,
+    // stacjonowanie nie celuje w obcych, powrót leci do siebie). Obca misja
+    // spoza WSZYSTKICH trzech list to typ, którego nie znamy — traktujemy jak
+    // ATAK, bo przegapiony atak kosztuje flotę, a fałszywy alarm dwa przeloty.
+    SAFE: /(TRANSPORT|DEPLOY|STATION|RETURN|EXPEDITION|COLONI|HARVEST|RECYCL|ASTEROID|HOLD|ACS.?DEFEND|FEDERATION)/i,
 
     // Zwraca { ok, rows } — ok=false znaczy „nie wiem", a nie „bezpiecznie".
     async fetch() {
@@ -3488,12 +3493,15 @@
         const tip = tr.querySelector("[data-tooltip-content*='Ships']")?.getAttribute("data-tooltip-content") || "";
         const ships = [...tip.matchAll(/>([A-Za-z ]+?)\s*:\s*<\/td>\s*<td[^>]*>([\d.\s]+)</g)]
           .map(m => `${m[1].trim()} ${m[2].trim()}`);
+        const isSpy = this.SPY.test(type);
+        const isAttack = this.ATTACK.test(type) || (!isSpy && !this.SAFE.test(type));
         rows.push({
           id: tr.getAttribute("data-fleet-id") || "",
           type, src, dst, eta,
           mine: !!(src && own.size && own.has(src)),
-          attack: this.ATTACK.test(type),
-          spy: this.SPY.test(type),
+          attack: isAttack,
+          unknownType: isAttack && !this.ATTACK.test(type),
+          spy: isSpy,
           ships,
         });
       }
@@ -3630,6 +3638,9 @@
       if (ThreatMonitor.active() || MoonSave.watch().armed) return;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") return; // FS może poczekać 30 s, rutyna nie musi być wywłaszczana
+      // v2.66.0: nieudany start (np. pusty księżyc) nie jest ponawiany co tick.
+      const failAt = parseInt(GM_getValue("ogamex_fs_fail_at", "0")) || 0;
+      if (Date.now() - failAt < 10 * 60 * 1000) return;
       const p = this.plan();
       if (!p.ok && !p.measure) return;           // za wcześnie / wyłączony / brak godziny
       if (!p.ok && p.measure) {
@@ -3879,6 +3890,31 @@
           ontimeout: () => resolve(null),
         });
       });
+    },
+
+    // ── v2.66.0: druga para oczu dla obrony — WYŁĄCZNIE eskalacja ──
+    // Wołane tylko, gdy deterministyczna klasyfikacja mówi „obce floty są,
+    // ale żadna nie jest atakiem". Model może wtedy PODNIEŚĆ alarm (fałszywy
+    // alarm kosztuje dwa przeloty), ale nigdy go nie zdejmuje i nigdy nie
+    // rusza flotą — odpowiedź „to nie atak" niczego nie zmienia.
+    KEY_DEF_SEEN: "ogamex_llm_def_seen",
+    async classifyThreat(rowsHtml, signature) {
+      if (!this.enabled()) return null;
+      if (this._usedToday() >= this.DAILY_LIMIT) return null;
+      let seen = [];
+      try { seen = JSON.parse(GM_getValue(this.KEY_DEF_SEEN, "[]")); } catch {}
+      if (seen.includes(signature)) return null;   // ten obraz już oceniony
+      GM_setValue(this.KEY_DEF_SEEN, JSON.stringify([...seen, signature].slice(-40)));
+      this._bumpUsed();
+      const out = await this._call(
+        "Poniżej wiersze z listy ruchów flot w grze typu OGame. To są CUDZE floty "
+        + "lecące w stronę gracza. Oceń, czy KTÓRAKOLWIEK z tych misji może być wrogim "
+        + "atakiem na gracza (atak, rakiety, zniszczenie księżyca). Szpiegowanie i handel "
+        + "NIE są atakiem. Zwróć wyłącznie JSON: {\"attack\":true/false,\"target\":\"g:s:p lub null\",\"why\":\"krótko\"}.\n\nHTML:\n"
+        + String(rowsHtml || "").replace(/\s+/g, " ").slice(0, 12000)
+      );
+      if (!out || typeof out.attack !== "boolean") return null;
+      return out;
     },
 
     // HTML dziennika/wiadomości → [{id, resources}] dla misji górniczych.
@@ -4236,6 +4272,25 @@
           // wstaje. Pasek misji liczy floty na całym koncie, więc rozbieżność
           // „pasek widzi obcych, lista nie" jest jedynym sygnałem, jaki mamy.
           // W razie rozbieżności wygrywa pasek — mniej wie, ale wie na pewno.
+          // ── v2.66.0: Gemini jako drugie oko (tylko eskalacja) ──
+          // Deterministyka mówi „obcy są, ale to nie atak" — poproś model
+          // o niezależną ocenę. „Atak" od modelu podnosi kandydata alarmu;
+          // „nie atak" NIE zmienia niczego.
+          if (foreign.length > 0 && attacks.length === 0 && LlmParser.enabled()) {
+            const sig = foreign.map(r => `${r.type}|${r.src}|${r.dst}`).sort().join(";");
+            const rowsHtml = foreign.map(r => `<row type="${r.type}" from="${r.src}" to="${r.dst}" eta="${r.eta}s" ships="${(r.ships || []).join(", ")}"/>`).join("\n");
+            LlmParser.classifyThreat(rowsHtml, sig).then(v => {
+              if (v?.attack) {
+                log(`[GEMINI] drugie oko widzi ATAK (${v.why || "bez uzasadnienia"}, cel: ${v.target || "?"}) — podnoszę kandydata alarmu.`, "error");
+                ThreatLog.add("ATAK", `GEMINI eskalacja: ${v.why || ""} cel ${v.target || "?"} (deterministyka nie sklasyfikowała ataku).`);
+                const prev = { ...(this.events() || {}) };
+                prev.attacks = Math.max(1, prev.attacks || 0);
+                if (v.target && /^\d+:\d+:\d+$/.test(v.target)) prev.targets = [v.target];
+                prev.at = Date.now();
+                GM_setValue(this.KEY_EVENTS, JSON.stringify(prev));
+              }
+            }).catch(() => {});
+          }
           const barNow = this.read();
           if (barNow && barNow.foreign > 0 && foreign.length === 0) {
             if (GM_getValue("ogamex_fml_blind_warned", "") !== "1") {
@@ -6734,6 +6789,32 @@
             // fleet save is exactly the moment a real player also hammers it.
           }
           if (!loaded.length) {
+            // ── v2.66.0: pusty hangar przy AKTYWNYM alarmie = flota stoi na
+            // DRUGIM ciele tych samych koordynatów. Dotąd ratunek kończył się
+            // tu słowem „aborting" — a wielka flota zostawała na atakowanym
+            // księżycu, podczas gdy bot z czystym sumieniem ratował pustą
+            // planetę. Przełączamy się na drugie ciało i ratujemy STAMTĄD
+            // (kierunek odwraca się sam: from=ciało aktywne po przełączeniu).
+            // Jedna próba — jeśli i tam pusto, flota jest w powietrzu i nie ma
+            // czego ratować.
+            if (!mission.moonReturn && !mission.flippedBody && ThreatMonitor.active()) {
+              const here = MoonSave.currentBody() || "planet";
+              const other = here === "moon" ? "planet" : "moon";
+              log(`[MOON SAVE] hangar na ${here === "moon" ? "księżycu" : "planecie"} PUSTY, a alarm trwa — flota stoi na ${other === "moon" ? "księżycu" : "planecie"}. Przełączam się i ratuję stamtąd.`, "warn");
+              ThreatLog.add("RATUNEK", `Hangar ${here} pusty przy alarmie → flota na ${other}. Przełączam ciało i ratuję ${other} → ${here}.`);
+              mission.flippedBody = true;
+              mission.launchBody = other;
+              mission.targetBody = here;
+              mission.step = "switch_to_body";
+              mission.timestamp = Date.now();
+              GM_setValue("pending_mission", JSON.stringify(mission));
+              // Straż musi wiedzieć, gdzie jest dom, żeby powrót szedł w dobrą stronę.
+              const w = MoonSave.watch();
+              MoonSave.saveWatch({ ...w, homeBody: other, refugeBody: here });
+              await AntiDetection.sleep(500 + Math.random() * 500);
+              window.location.href = "/";
+              return;
+            }
             log("[MOON SAVE] nothing on this planet to save — aborting.", "warn");
             GM_setValue("pending_mission", null);
             // v2.34.0: przy POWROCIE pusto na refugium znaczy, że nie ma czego
@@ -6772,6 +6853,9 @@
             await AntiDetection.sleep(120 + Math.random() * 380);
           }
           if (!loaded.length) {
+            // v2.66.0: bez tego stempla tick ponawiał start co 30 s przez całe
+            // okno — nawigacyjny młyn przy księżycu bez floty.
+            GM_setValue("ogamex_fs_fail_at", String(Date.now()));
             log(`[FS] na księżycu startowym nie ma floty do wysłania (poza wykluczeniami) — nic nie robię. Ships: ${shipDump}`, "warn");
             GM_setValue("pending_mission", null);
             return;
