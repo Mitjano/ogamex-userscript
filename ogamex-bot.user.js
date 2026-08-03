@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.64.0
+// @version      2.64.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3857,7 +3857,10 @@
       return new Promise((resolve) => {
         const body = JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0, responseMimeType: "application/json" },
+          // v2.64.1: thinkingBudget 0 — do wyciągania liczb z HTML „myślenie"
+          // modelu nic nie wnosi, a na płatnym tierze liczy się jak tokeny
+          // wyjściowe (najdroższe). Krótsza odpowiedź = niższy koszt i latencja.
+          generationConfig: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } },
         });
         GM_xmlhttpRequest({
           method: "POST",
