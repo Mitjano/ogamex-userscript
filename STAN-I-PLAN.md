@@ -1,4 +1,4 @@
-# OGameX Assistant — stan na 2 sierpnia 2026, 22:30 (v2.57.1)
+# OGameX Assistant — stan na 3 sierpnia 2026, 22:45 (v2.66.1)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
@@ -202,3 +202,33 @@ minerów na lot, czyli wprost większy urobek.
 - `AUDYT-2026-08-02.md` — audyt poranny (v2.35.0)
 - `ENDPOINTY-OGAMEX-2026-08-02.md` — analiza endpointów z nagłówkiem o tym,
   dlaczego większość nie dotyczy tego serwera
+
+
+---
+
+## AKTUALIZACJA 3 sierpnia wieczorem (v2.58 → v2.66.1)
+
+Zrobione od czasu noty powyżej:
+- **P0 (2.59.0):** alarm nigdy nie był zdejmowany — `clear()` wróciło na
+  miejsce; auto-powrót działa. Recyklery zostają w domu (zbieranie złomu).
+- **Fleet Save (2.60–2.63):** pełny cykl start→stacjonuj→zawróć→powrót,
+  planer z 3-min marginesem, pomiar trasy na kroku 3, strona błędu nie
+  zostawia martwego bota, `/overview` → `/` (nie istnieje na athenie).
+  NIEPRZETESTOWANE NA ŻYWO: kontrolka zawracania i suwak prędkości (zrzuty
+  czekają w kodzie). Przed nocnym użyciem: JEDEN nadzorowany test.
+- **Gemini (2.64.x):** klucz w panelu, czyta raporty urobku z
+  Partial_AsteroidJournal — POTWIERDZONE NA ŻYWO 22:16 (`odczytano 1 raport`,
+  próbka 18,2 bln zgodna z ładownością). Strażnik ładowności (odrzut >3×).
+  Twarda zasada: model tylko czyta / eskaluje, nigdy nie decyduje o flocie.
+- **UX panelu (2.65.x):** pasek stanu 5 linii (Obrona/Mining/Ekspedycje/FS/
+  Gemini), slim sekcje PL zwinięte domyślnie, log 1-liniowy, szerokość 232px.
+- **Audyt obrony (2.66.0):** flota na KSIĘŻYCU nie była chroniona (ratunek
+  szedł z ciała aktywnego = planety, „nothing to save", flota zostawała pod
+  atakiem) — naprawione flipem na drugie ciało przy pustym hangarze i alarmie.
+  Nieznany typ obcej misji = ATAK (było: nie podnosił alarmu). Gemini jako
+  drugie oko obrony (wyłącznie eskalacja). Jitter dostał przełącznik (2.66.1).
+
+Otwarte (kolejność):
+1. Nadzorowany test FS (~40 min okno) — odblokuje selektory zawracania+prędkości.
+2. Pierwszy prawdziwy atak — zweryfikuje wrogie wiersze w fleetmovementlist.
+3. MoonSave → maszyna stanu (po pierwszym potwierdzonym ratunku).
