@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.64.2
+// @version      2.65.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7919,6 +7919,22 @@
           color: #5dade2;
         }
         #ogx-bot-panel .body { padding: 10px 12px; }
+        /* v2.65.0: pasek stanu — 5 linii odpowiada na 5 pytań bez klikania */
+        #ogx-bot-panel .strip {
+          padding: 8px 12px 6px;
+          border-bottom: 1px solid #1a5276;
+          font-size: 12px;
+          line-height: 1.7;
+        }
+        #ogx-bot-panel .strip-row { display: flex; gap: 7px; align-items: baseline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #ogx-bot-panel .strip-row .ico { width: 16px; flex: none; text-align: center; }
+        #ogx-bot-panel .strip-row .lbl { width: 78px; flex: none; color: #8fa8b8; }
+        #ogx-bot-panel .strip-row .val { color: #d7e2ea; overflow: hidden; text-overflow: ellipsis; }
+        #ogx-bot-panel .strip-row .val b { color: #fff; font-weight: 600; }
+        #ogx-bot-panel .strip-row.ok .val { color: #6fcf97; }
+        #ogx-bot-panel .strip-row.busy .val { color: #f2b25c; }
+        #ogx-bot-panel .strip-row.alert .val { color: #ff6b6b; font-weight: 700; }
+        #ogx-bot-panel .strip-row.dim .val { color: #7f8c8d; }
         #ogx-bot-panel .section {
           margin-bottom: 8px;
           padding: 8px;
@@ -8001,6 +8017,13 @@
           <button id="ogx-toggle" class="toggle-btn ${CONFIG.enabled ? "on" : "off"}">${CONFIG.enabled ? "ON" : "OFF"}</button>
           <span class="minimize" id="ogx-minimize">_</span>
         </div>
+      </div>
+      <div class="strip" id="ogx-strip">
+        <div class="strip-row" id="ogx-strip-def"><span class="ico">🛡</span><span class="lbl">Obrona</span><span class="val">—</span></div>
+        <div class="strip-row" id="ogx-strip-min"><span class="ico">⛏</span><span class="lbl">Mining</span><span class="val">—</span></div>
+        <div class="strip-row" id="ogx-strip-exp"><span class="ico">🚀</span><span class="lbl">Ekspedycje</span><span class="val">—</span></div>
+        <div class="strip-row" id="ogx-strip-fs"><span class="ico">🌙</span><span class="lbl">Fleet Save</span><span class="val">—</span></div>
+        <div class="strip-row" id="ogx-strip-llm"><span class="ico">🤖</span><span class="lbl">Gemini</span><span class="val">—</span></div>
       </div>
       <div class="body" id="ogx-body">
         <div class="section ${CONFIG.asteroidMining.enabled ? "active" : "inactive"}" id="ogx-asteroid-section">
@@ -8818,7 +8841,63 @@
     }
   }
 
+  // ── v2.65.0: pasek stanu — dane już są liczone, tu tylko je POKAZUJEMY ──
+  function updateStatusStrip() {
+    const set = (id, cls, html) => {
+      const row = document.getElementById(id);
+      if (!row) return;
+      row.className = `strip-row ${cls}`;
+      row.querySelector(".val").innerHTML = html;
+    };
+    try {
+      // 🛡 Obrona
+      const ts = ThreatMonitor.state();
+      const active = ThreatMonitor.active();
+      const s12 = ThreatLog.summary(12);
+      if (!CONFIG.threatAlarm?.enabled) set("ogx-strip-def", "dim", "wyłączona");
+      else if (active) set("ogx-strip-def", "alert", `ALARM — <b>${ts?.count ?? "?"}</b> obcych flot`);
+      else set("ogx-strip-def", "ok", `czysto · 12h: ${s12.alarms ? `<b>${s12.alarms}</b> alarm(ów)${s12.saves ? `, <b>${s12.saves}</b>× ratunek` : ""}${s12.returns ? `, <b>${s12.returns}</b>× powrót` : ""}` : "spokój"}`);
+
+      // ⛏ Mining
+      const scan = ScanState.load();
+      const flights = MiningFlights.count();
+      const maxF = maxMiningFleets();
+      const flightsStr = `loty <b>${flights}</b>/${maxF > 0 ? maxF : "∞"}`;
+      const returnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0;
+      if (!CONFIG.asteroidMining.enabled) set("ogx-strip-min", "dim", "wyłączony");
+      else if (Humanizer.isOnBreak()) set("ogx-strip-min", "dim", `przerwa (kawa) · ${flightsStr}`);
+      else if (AntiDetection.isSleepTime()) set("ogx-strip-min", "dim", `okno nocne · ${flightsStr}`);
+      else if (scan?.active) {
+        const next = scan.queue?.[0];
+        set("ogx-strip-min", "busy", `skan <b>${scan.scannedCount ?? "?"}</b>/${scan.totalCount ?? "?"}${next ? ` · [${next.galaxy}:${next.system}]` : ""} · ${flightsStr}`);
+      } else if (returnAt > Date.now()) {
+        set("ogx-strip-min", "busy", `czekam na flotę ~<b>${Math.max(1, Math.ceil((returnAt - Date.now()) / 60000))}</b> min · ${flightsStr}`);
+      } else set("ogx-strip-min", "ok", `czuwa · ${flightsStr}`);
+
+      // 🚀 Ekspedycje
+      const slots = ExpeditionRunner.slots();
+      const est = ExpeditionState.load();
+      const gapLeft = est?.lastSendAt ? Math.max(0, Math.round(((est.lastSendAt + (est.nextGapMs || 0)) - Date.now()) / 1000)) : null;
+      if (!CONFIG.expeditions.enabled) set("ogx-strip-exp", "dim", "wyłączone");
+      else set("ogx-strip-exp", slots.used >= (slots.total || 14) ? "ok" : "busy",
+        `<b>${slots.used ?? "?"}</b>/${slots.total || "?"} w powietrzu${gapLeft !== null && slots.used < (slots.total || 14) ? ` · następna ~<b>${gapLeft}</b> s` : ""} · dziś ${est?.sentToday ?? 0}`);
+
+      // 🌙 Fleet Save
+      const fsSt = FleetSave.state();
+      if (!CONFIG.fleetSave?.enabled) set("ogx-strip-fs", "dim", "wyłączony");
+      else if (fsSt?.phase === "launched") set("ogx-strip-fs", "busy", FleetSave.describe().replace(/^FS:\s*/, ""));
+      else if (fsSt?.phase === "recalled") set("ogx-strip-fs", "ok", FleetSave.describe().replace(/^FS:\s*/, ""));
+      else if (fsSt?.phase === "recall_failed") set("ogx-strip-fs", "alert", "zawracanie NIEUDANE — sprawdź log");
+      else set("ogx-strip-fs", "ok", FleetSave.describe().replace(/^FS:\s*/, ""));
+
+      // 🤖 Gemini
+      if (!LlmParser.enabled()) set("ogx-strip-llm", "dim", "brak klucza");
+      else set("ogx-strip-llm", "ok", `aktywny · dziś <b>${LlmParser._usedToday()}</b>/${LlmParser.DAILY_LIMIT}`);
+    } catch {}
+  }
+
   function updateStatusUI() {
+    updateStatusStrip();
     const astStatus = document.getElementById("ogx-asteroid-status");
     if (!astStatus) return;
 
