@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.62.0
+// @version      2.62.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8288,6 +8288,10 @@
         if (!window.confirm("Zmierzyć trasę FS? Bot wejdzie w formularz wysyłki, ustawi prędkość, odczyta czas lotu i WYJDZIE BEZ WYSYŁKI. Żadna flota nie poleci.")) return;
         GM_setValue("ogamex_fs_measure_at", String(Date.now()));
         FleetSave.launch({ measure: true });
+        // v2.62.1: nie czekaj na tick schedulera (50-90 s) — klik ma działać od
+        // razu. Gdy ta karta nie jest liderem, handlePendingMission sam powie
+        // „PAUSED — another tab is running the bot", co też jest odpowiedzią.
+        setTimeout(() => { handlePendingMission().catch(() => {}); }, 1200);
       });
     }
 
