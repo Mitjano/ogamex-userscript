@@ -34,6 +34,11 @@ Martwe (404 albo strona HTML): wszystko z `/ajax/fleet/*`, `/ajax/galaxy`,
 `/ajax/messages`, `/ajax/phalanx/scan`. Kod, który na nich stał, usunięty
 w 2.54.0. Nie wskrzeszać.
 
+**`/overview` NIE ISTNIEJE na tym serwerze** (ustalone 2026-08-03: każda
+strona błędu miała `aspxerrorpath=/overview` — to bot sam na nią wchodził).
+Przegląd gry żyje pod `/` (logo ma `href="/"`). Wszystkie nawigacje
+podmienione w 2.63.0; nowy kod ma używać `/`.
+
 Markup wiersza listy ruchów flot:
 ```html
 <tr data-fleet-id="4649f6fc-…" class="row-mission-type-EXPEDITION">
