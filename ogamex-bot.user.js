@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.63.0
+// @version      2.63.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3037,24 +3037,6 @@
     has(coord) { return this._load().some(e => e.coord === coord); },
     count() { return this._load().length; },
 
-    // ── v2.58.0: KONFRONTACJA Z GRA ──
-    // Rejestr byl jedynym zrodlem prawdy o wlasnych lotach i nikt go nigdy nie
-    // sprawdzal z rzeczywistoscia. Kazdy wpis z zawyzonym returnAt (nieznany czas
-    // lotu, przerwana wysylka, restart przegladarki w trakcie) wisial do wygasniecia
-    // i zjadal slot budzetu. Gra podaje liczbe WSZYSTKICH wlasnych misji ("M Own") —
-    // to twarda GORNA granica liczby naszych lotow gorniczych (mining to podzbior).
-    // Jesli mamy wiecej wpisow niz gra widzi misji, nadmiar to duchy: kasujemy
-    // najstarsze, bo one najpewniej juz wrocily. Zwraca liczbe usunietych.
-    reconcile(ownMissions) {
-      if (!(ownMissions >= 0)) return 0;           // brak paska misji na tej stronie
-      const entries = this._load();
-      if (entries.length <= ownMissions) return 0;
-      entries.sort((a, b) => (a.at || 0) - (b.at || 0));   // najstarsze pierwsze
-      const ghosts = entries.length - ownMissions;
-      const kept = entries.slice(ghosts);
-      GM_setValue(this.KEY, JSON.stringify(kept));
-      return ghosts;
-    },
   };
 
   const FarmState = {
