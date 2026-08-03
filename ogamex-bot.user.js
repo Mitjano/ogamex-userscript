@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.61.0
+// @version      2.62.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5185,6 +5185,15 @@
     const frozen = ExpeditionState.load().burst;
     const sameShape = frozen && frozen.waves === divisor && frozen.sizes;
     const useFrozen = sameShape && (frozen.sent || 0) < divisor;
+    // ── v2.62.0: OSTATNIA fala serii zabiera CAŁY hangar ──
+    // Udział fali to floor do 2 cyfr znaczących (humanRoundDown), więc po
+    // wysłaniu wszystkich fal w hangarze zostawała reszta z zaokrąglenia —
+    // przy flocie liczonej w miliardach potrafiło to być ~10% floty stojące
+    // bezużytecznie do powrotu serii (właściciel: 14/14 ekspedycji w locie,
+    // a flota nadal na planecie). Seria z założenia commit-uje CAŁĄ flotę
+    // („flota ÷ fale"), więc ostatnia fala domyka ją do zera: bierze wszystko,
+    // co zostało z typów ekspedycyjnych, zamiast zamrożonego udziału.
+    const lastOfBurst = divisor === 1 || (useFrozen && (frozen.sent || 0) >= divisor - 1);
     // Re-sizing is only safe because the basis is the FLEET, not the hangar.
     // With 7 of 8 waves away the hangar holds an eighth of the fleet, and
     // dividing that by eight is the decaying tail v2.16.0 froze the numbers to
@@ -5216,7 +5225,8 @@
       if (useFrozen) {
         // Utnij do tego, co realnie jest; typ, którego zabrakło, po prostu
         // wypada z pozostałych fal serii zamiast ją blokować.
-        const want = frozen.sizes[type] || 0;
+        // v2.62.0: ostatnia fala = cały hangar (patrz lastOfBurst wyżej).
+        const want = lastOfBurst ? available : (frozen.sizes[type] || 0);
         const qty = Math.min(want, available);
         if (qty > 0) plan.push({ type, qty, available });
         else empty.push(type);
@@ -5226,7 +5236,9 @@
       // zamrażany; `qty` to tyle, ile hangar może dać w tej chwili. Zamrożenie
       // liczby przyciętej zabetonowałoby pusty hangar na kolejne `waves` wysyłek.
       const fleet = available + inAir(type);
-      let share = fleet > 0 ? Math.max(1, humanRoundDown(fleet / divisor)) : 0;
+      // v2.62.0: przy 1 fali nie ma czego dzielić — bez tego humanRoundDown
+      // ścinał całą flotę do 2 cyfr znaczących i reszta zostawała w hangarze.
+      let share = fleet > 0 ? (divisor === 1 ? fleet : Math.max(1, humanRoundDown(fleet / divisor))) : 0;
       if (share === 0 && roster[type] > 0) share = roster[type]; // cały typ w powietrzu
       if (share > 0) shares[type] = share;
       const qty = Math.min(share, available);
@@ -5259,6 +5271,9 @@
       ExpeditionState.save(st);
       const basis = wavesInAir > 0 ? ` (fleet = hangar + ${wavesInAir} wave(s) still in the air)` : "";
       log(`Expedition burst sized${basis}: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")} — the next ${divisor} wave(s) are identical.`, "fleet");
+    }
+    if (useFrozen && lastOfBurst && plan.length) {
+      log(`Ostatnia fala serii (${divisor}/${divisor}) — zabieram CAŁY hangar: ${plan.map(p => `${p.type}×${p.qty}`).join(", ")}. Reszta z zaokrąglenia nie zostaje już na planecie.`, "fleet");
     }
     return { plan, skipped, empty, frozen: !!useFrozen };
   }
