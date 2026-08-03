@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.64.1
+// @version      2.64.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8196,15 +8196,21 @@
           <button class="mini-btn" id="ogx-flights" title="Pokazuje rejestr własnych lotów górniczych (to on wyznacza budżet równoległych wysyłek) i porównuje go z liczbą misji, którą widzi gra. Shift+klik czyści rejestr awaryjnie, gdy budżet stoi mimo pustego nieba.">Loty</button>
         </div>
 
+        <!-- v2.64.2: własny wiersz — wstawiony w środek flexowego nagłówka
+             loga rozsadzał mu układ (label 100% szerokości między napisem
+             „Log (persisted)" a przyciskami Copy/Clear). -->
+        <div style="border-top:1px solid #1a5276;margin-top:6px;padding-top:6px;">
+          <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;">
+            <span title="Klucz API Google AI Studio (aistudio.google.com/apikey). Model czyta TYLKO raporty z misji (urobek z asteroid) tam, gdzie zwykłe parsery nie rozumieją formatu strony. Nigdy nie podejmuje decyzji o flocie. Klucz zostaje lokalnie w Tampermonkey — nie trafia do repozytorium ani do gry.">Gemini API</span>
+            <input id="ogx-llm-key" type="password" placeholder="klucz AIza…/AQ…" value="" style="width:130px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+          </label>
+          <div class="status" id="ogx-llm-status" style="font-size:9px;color:#7f8c8d;margin-top:2px;"></div>
+        </div>
+
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
           <span style="font-size:11px; color:#999;">Log (persisted)</span>
           <div style="display:flex;gap:4px;">
-          <label style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px;font-size:10px;color:#bbb;width:100%;">
-            <span title="Klucz API Google AI Studio (aistudio.google.com/apikey). Model czyta TYLKO raporty z misji (urobek z asteroid) tam, gdzie zwykłe parsery nie rozumieją formatu strony. Nigdy nie podejmuje decyzji o flocie. Klucz zostaje lokalnie w Tampermonkey — nie trafia do repozytorium ani do gry.">Gemini API</span>
-            <input id="ogx-llm-key" type="password" placeholder="klucz AIza…/AQ…" value="" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
-          </label>
-          <div class="status" id="ogx-llm-status" style="font-size:9px;color:#7f8c8d;width:100%;"></div>
             <button class="mini-btn" id="ogx-copy-logs" style="font-size:10px;">Copy</button>
             <button class="mini-btn" id="ogx-clear-logs" style="font-size:10px;">Clear</button>
           </div>
