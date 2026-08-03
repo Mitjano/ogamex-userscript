@@ -85,6 +85,22 @@ numeracji forka (w linkach galaktyki ekspedycja to `mission=1`, asteroida
 - Klasyfikacja sonda/atak nadal niepotwierdzona na prawdziwym ataku
   (pkt „CO JEST WDROŻONE, ALE NIEPOTWIERDZONE").
 
+## v2.61.0 (2026-08-03 wieczór) — strona błędu nie zabija już bota
+
+Incydent ×2: OGameX oddał `/Error/NotFound` i bot stał na niej GODZINAMI —
+całe odzyskiwanie wisiało na jednym setTimeout, a przeglądarka w karcie w tle
+dławi/gubi timery (oszczędzanie pamięci). Naprawy:
+- **strażnik interwałowy** (60 s) ponawia powrót do gry aż do skutku,
+  po 6 próbach eskalacja na lobby `/` (init umie kliknąć Play);
+- **pętla obrony startuje TAKŻE na stronie błędu** — odczyt zagrożeń idzie
+  fetchem (lista ruchów), ratunek nawiguje prosto do formularza;
+- epizod strony błędu jest **widoczny w dzienniku obrony** (start + czas trwania);
+- `markUnsupported` hartowany: tylko 404/405 i NIGDY dla adresu, który już
+  kiedyś działał (czkawka 404 podczas awarii nie wyłączy fleetmovementlist).
+Czego kod nie naprawi: **całkowicie uśpiona/odzyskana karta** (browser
+discard) nie wykonuje ŻADNEGO JS. Właściciel ma wyłączyć usypianie kart dla
+athena.ogamex.net i trzymać bota w osobnym oknie.
+
 ## CO DZIAŁA I JEST POTWIERDZONE NA ŻYWO
 
 - **Mining asteroid** — główny dochód. Własny licznik lotów (`MiningFlights`),

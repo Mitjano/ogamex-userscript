@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.60.0
+// @version      2.61.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -625,7 +625,23 @@
     if (!isOGameXErrorPage()) {
       // On a real game page → reset the consecutive-error streak.
       GM_setValue("ogamex_error_recover_streak", "0");
+      // v2.61.0: koniec epizodu strony błędu → policz i zapisz, jak długo bot
+      // był ślepy. Bez tego wpisu okno ślepoty było niewidoczne w dzienniku —
+      // właściciel odkrył je przypadkiem, patrząc na zawieszony ekran.
+      const epStart = parseInt(GM_getValue("ogamex_error_episode_at", "0")) || 0;
+      if (epStart) {
+        GM_setValue("ogamex_error_episode_at", "0");
+        const min = Math.round((Date.now() - epStart) / 60000);
+        log(`Powrót do gry po ${min} min strony błędu OGameX.`, min >= 3 ? "warn" : "info");
+        ThreatLog.add("koniec", `Powrót do gry po ${min} min strony błędu — obrona znów widzi.`);
+      }
       return false;
+    }
+
+    // v2.61.0: początek epizodu → ślad w dzienniku obrony (raz na epizod).
+    if (!(parseInt(GM_getValue("ogamex_error_episode_at", "0")) || 0)) {
+      GM_setValue("ogamex_error_episode_at", String(Date.now()));
+      ThreatLog.add("BŁĄD", "OGameX serwuje stronę błędu — bot ślepy do czasu powrotu do gry. Odzyskiwanie uruchomione.");
     }
 
     // ── backoff: count recoveries that happen <90s apart as a "streak" ──
@@ -679,6 +695,42 @@
       }
       window.location.href = "/overview"; // last resort
     }, backoff);
+
+    // ── v2.61.0: strażnik strony błędu ──
+    // Incydent 2026-08-03 (×2): bot stał na tej stronie GODZINAMI, bo cała
+    // ścieżka odzyskiwania wisiała na JEDNYM setTimeout — a przeglądarka
+    // w karcie w tle dławi timery do ~1/min, a przy oszczędzaniu pamięci
+    // potrafi je gubić. Jeden zgubiony timer = martwy bot do ręcznego F5.
+    // Interwał ponawia próbę co ~60 s tak długo, jak strona błędu stoi;
+    // 70-sekundowa zapora nie dubluje próby, którą timeout wyżej ma w drodze.
+    // Po 6 nieudanych podejściach eskalacja na "/" — stronę lobby init umie
+    // obsłużyć osobno (klik w Play), więc to wyjście z pętli overview→404.
+    if (!window.__ogxErrWatch) {
+      window.__ogxErrWatch = setInterval(() => {
+        try {
+          if (!isOGameXErrorPage()) { clearInterval(window.__ogxErrWatch); window.__ogxErrWatch = null; return; }
+          const lastTry = parseInt(GM_getValue("ogamex_error_recover_at", "0")) || 0;
+          if (Date.now() - lastTry < 70 * 1000) return;
+          const streakNow = (parseInt(GM_getValue("ogamex_error_recover_streak", "0")) || 0) + 1;
+          GM_setValue("ogamex_error_recover_at", String(Date.now()));
+          GM_setValue("ogamex_error_recover_streak", String(streakNow));
+          log(`Strażnik strony błędu: ponawiam powrót do gry (próba ${streakNow}).`, "warn");
+          if (streakNow >= 6) { window.location.href = "/"; return; }
+          const btn = findBackToGameButton();
+          if (btn && btn.tagName === "A" && btn.href) window.location.href = btn.href;
+          else if (btn) btn.click();
+          else window.location.href = "/overview";
+        } catch {}
+      }, 60 * 1000);
+    }
+
+    // v2.61.0: pętla obrony startuje TAKŻE tutaj. Strona błędu nie znaczy, że
+    // cały serwer leży — /overview potrafi oddawać 404, gdy reszta tras żyje.
+    // Odczyt zagrożeń idzie fetchem (lista ruchów flot), więc działa bez
+    // paska misji, a ratunek nawiguje prosto do formularza floty. W najgorszym
+    // razie fetch pada i pętla jest tania w bezczynności; w najlepszym — bot
+    // broni floty nawet wtedy, gdy strona pod nim się wysypała.
+    if (CONFIG.enabled) { try { startDefenceLoop(); } catch {} }
 
     return true;
   }
@@ -1891,6 +1943,7 @@
       try {
         const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
         if (!res.ok) { Ajax.markUnsupported(url, res.status); continue; }
+        Ajax.markWorking(url);
         const txt = await res.text();
         if (txt.includes(needle)) return url;
       } catch {}
@@ -3401,6 +3454,7 @@
       try {
         const res = await fetch(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
         if (!res.ok) { Ajax.markUnsupported(this.URL, res.status); return { ok: false, rows: [] }; }
+        Ajax.markWorking(this.URL); // v2.61.0: sprawdzony adres nie umrze od jednej czkawki 404
         html = await res.text();
       } catch { return { ok: false, rows: [] }; }
       if (!html) return { ok: false, rows: [] };
@@ -3850,14 +3904,35 @@
     // Jedna wspólna bramka kazałaby razem z martwymi adresami wyłączyć te
     // żywe. Pamiętamy więc, KTÓRY adres oddał 404 — reszta działa dalej.
     KEY_SUPPORT: "ogamex_api_dead_paths",
+    // v2.61.0: adresy, które choć raz odpowiedziały poprawnie. Podczas awarii
+    // (strona błędu, restart aplikacji .NET) KAŻDA trasa potrafi chwilowo oddać
+    // 404 — trwałe wyłączenie po jednej czkawce zabrałoby obronie jej główne
+    // źródło (fleetmovementlist) na zawsze i to dokładnie wtedy, gdy jest
+    // najbardziej potrzebne. Sprawdzony adres nie może umrzeć od jednego 404.
+    KEY_PROVEN: "ogamex_api_proven_paths",
     _dead() { try { return JSON.parse(GM_getValue(this.KEY_SUPPORT, "{}")); } catch { return {}; } },
+    _proven() { try { return JSON.parse(GM_getValue(this.KEY_PROVEN, "{}")); } catch { return {}; } },
     supported(url) {
       if (!url) return true;
       const path = String(url).split("?")[0];
       return !this._dead()[path];
     },
+    markWorking(url) {
+      const path = String(url).split("?")[0];
+      const ok = this._proven();
+      if (ok[path]) return;
+      ok[path] = Date.now();
+      GM_setValue(this.KEY_PROVEN, JSON.stringify(ok));
+    },
     markUnsupported(url, status) {
       const path = String(url).split("?")[0];
+      // Tylko 404/405 znaczy „trasa nie istnieje". 5xx / przekierowanie /
+      // timeout to awaria chwilowa, nie wyrok.
+      if (status !== 404 && status !== 405) return;
+      if (this._proven()[path]) {
+        log(`[API] ${path} → ${status}, ale ten adres już wcześniej działał — traktuję jako czkawkę serwera, NIE wyłączam go.`, "warn");
+        return;
+      }
       const dead = this._dead();
       if (dead[path]) return;
       dead[path] = { status, at: Date.now() };
