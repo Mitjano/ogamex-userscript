@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.63.3
+// @version      2.64.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -9,6 +9,8 @@
 // @downloadURL  https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @connect      generativelanguage.googleapis.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -2257,6 +2259,12 @@
           if (!res.ok) { Ajax.markUnsupported(url, res.status); continue; }
           const html = await res.text();
           if (res.redirected || /login|password/i.test(html.substring(0, 500))) continue; // session page, not messages
+          // v2.64.0: zanim stare parsery zaczną zgadywać — jeśli jest klucz,
+          // model czyta HTML wprost. Porażka LLM = cicha kontynuacja po staremu.
+          try {
+            const n = await LlmParser.extractYields(html, url);
+            if (n > 0) return;
+          } catch {}
           // v2.49.0: pierwszy raz z każdego źródła zrzuć próbkę — bez niej nie
           // da się napisać parsera pod markup TEGO serwera, a zgadywanie już raz
           // kosztowało pięć wersji.
@@ -3793,6 +3801,120 @@
           new Notification("OGameX: FS — zawracanie nieudane", { body: "Flota doleci na cel i tam zostanie. Sprawdź log.", tag: "ogamex-fs" });
         }
       } catch {}
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  LLM PARSER (v2.64.0) — Gemini czyta to, czego parsery nie rozumieją
+  // ═══════════════════════════════════════════════════════════════
+  // Powracający ból tego projektu to markup: „unknown message markup",
+  // zgadywanie struktur, pięć wersji do kosza. LLM dostaje surowy HTML
+  // i zwraca liczby — niezależnie od formatu, w jakim fork je renderuje.
+  //
+  // TWARDA ZASADA: model TYLKO CZYTA. Żadna decyzja o flocie (ratunek,
+  // powrót, FS, dobór minerów w locie) nie przechodzi przez LLM — obrona
+  // i wysyłka są deterministyczne i takie zostają. Model zasila wyłącznie
+  // statystykę urobku, którą i tak wygładza percentyl z 20 próbek.
+  //
+  // Klucz: pole w panelu → GM storage. NIGDY w repo — skrypt jest publicznie
+  // serwowany przez auto-update, wpisany na stałe klucz byłby jawny.
+  const LlmParser = {
+    KEY_API: "ogamex_llm_key",
+    KEY_USED: "ogamex_llm_used",     // { day: "YYYY-MM-DD", n }
+    KEY_SEEN: "ogamex_llm_seen",     // hashe już rozliczonych raportów
+    MODEL: "gemini-2.5-flash",
+    DAILY_LIMIT: 40,                  // darmowy limit to ~1500/dzień; nam starcza ułamek
+    TIMEOUT_MS: 25 * 1000,
+
+    apiKey() { return (GM_getValue(this.KEY_API, "") || "").trim(); },
+    enabled() { return !!this.apiKey(); },
+
+    _usedToday() {
+      try {
+        const u = JSON.parse(GM_getValue(this.KEY_USED, "null"));
+        const today = new Date().toISOString().slice(0, 10);
+        return u?.day === today ? (u.n || 0) : 0;
+      } catch { return 0; }
+    },
+    _bumpUsed() {
+      const today = new Date().toISOString().slice(0, 10);
+      GM_setValue(this.KEY_USED, JSON.stringify({ day: today, n: this._usedToday() + 1 }));
+    },
+
+    // Prosty hash — do odróżniania raportów już policzonych od nowych.
+    _hash(t) {
+      let h = 0;
+      for (let i = 0; i < t.length; i++) { h = ((h << 5) - h + t.charCodeAt(i)) | 0; }
+      return String(h);
+    },
+    _seen() { try { return JSON.parse(GM_getValue(this.KEY_SEEN, "[]")); } catch { return []; } },
+    _markSeen(ids) {
+      const all = [...new Set([...this._seen(), ...ids])].slice(-300);
+      GM_setValue(this.KEY_SEEN, JSON.stringify(all));
+    },
+
+    _call(prompt) {
+      return new Promise((resolve) => {
+        const body = JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0, responseMimeType: "application/json" },
+        });
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: `https://generativelanguage.googleapis.com/v1beta/models/${this.MODEL}:generateContent?key=${encodeURIComponent(this.apiKey())}`,
+          headers: { "Content-Type": "application/json" },
+          data: body,
+          timeout: this.TIMEOUT_MS,
+          onload: (res) => {
+            try {
+              const j = JSON.parse(res.responseText);
+              const txt = j?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+              resolve(txt ? JSON.parse(txt) : null);
+            } catch { resolve(null); }
+          },
+          onerror: () => resolve(null),
+          ontimeout: () => resolve(null),
+        });
+      });
+    },
+
+    // HTML dziennika/wiadomości → [{id, resources}] dla misji górniczych.
+    // Zwraca liczbę NOWO zapisanych próbek urobku (0 = nic nowego / porażka).
+    async extractYields(html, sourceLabel) {
+      if (!this.enabled()) return 0;
+      if (this._usedToday() >= this.DAILY_LIMIT) return 0;
+      const trimmed = String(html || "").replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/\s+/g, " ").slice(0, 28000);
+      if (trimmed.length < 100) return 0;
+      // Dławik na źródło: ten sam HTML nie leci do modelu drugi raz.
+      const pageHash = `page:${this._hash(trimmed)}`;
+      if (this._seen().includes(pageHash)) return 0;
+      this._bumpUsed();
+      const out = await this._call(
+        "Poniżej HTML z dziennika misji w grze przeglądarkowej (fork OGame). "
+        + "Wypisz WSZYSTKIE raporty z wypraw górniczych na asteroidy (asteroid mining), "
+        + "które zawierają zebrane surowce. Dla każdego policz SUMĘ metal+kryształ+deuter. "
+        + "Zwróć wyłącznie JSON: {\"reports\":[{\"id\":\"<data lub unikalny fragment>\",\"resources\":<liczba>}]}. "
+        + "Liczby w grze używają kropek/spacji jako separatorów tysięcy. "
+        + "Pomiń raporty bojowe, szpiegowskie i ekspedycyjne. Jeśli nic nie ma: {\"reports\":[]}.\n\nHTML:\n" + trimmed
+      );
+      if (!out || !Array.isArray(out.reports)) {
+        log(`[LLM] ${sourceLabel}: model nie zwrócił poprawnego JSON — zostaję przy starych parserach.`, "warn");
+        return 0;
+      }
+      const seen = this._seen();
+      const fresh = [];
+      for (const r of out.reports) {
+        const res = Number(r?.resources);
+        if (!Number.isFinite(res) || res <= 0 || res > 1e18) continue;
+        const id = `rep:${this._hash(String(r.id || "") + "|" + res)}`;
+        if (seen.includes(id)) continue;
+        fresh.push({ id, res });
+      }
+      this._markSeen([pageHash, ...fresh.map(f => f.id)]);
+      for (const f of fresh) AsteroidYieldTracker.recordYield(f.res);
+      if (fresh.length) log(`[LLM] ${sourceLabel}: odczytano ${fresh.length} nowy(ch) raport(ów) urobku (użycia dziś: ${this._usedToday()}/${this.DAILY_LIMIT}).`, "success");
+      return fresh.length;
     },
   };
 
@@ -8075,6 +8197,11 @@
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
           <span style="font-size:11px; color:#999;">Log (persisted)</span>
           <div style="display:flex;gap:4px;">
+          <label style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px;font-size:10px;color:#bbb;width:100%;">
+            <span title="Klucz API Google AI Studio (aistudio.google.com/apikey). Model czyta TYLKO raporty z misji (urobek z asteroid) tam, gdzie zwykłe parsery nie rozumieją formatu strony. Nigdy nie podejmuje decyzji o flocie. Klucz zostaje lokalnie w Tampermonkey — nie trafia do repozytorium ani do gry.">Gemini API</span>
+            <input id="ogx-llm-key" type="password" placeholder="klucz AIza…/AQ…" value="" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+          </label>
+          <div class="status" id="ogx-llm-status" style="font-size:9px;color:#7f8c8d;width:100%;"></div>
             <button class="mini-btn" id="ogx-copy-logs" style="font-size:10px;">Copy</button>
             <button class="mini-btn" id="ogx-clear-logs" style="font-size:10px;">Clear</button>
           </div>
@@ -8551,6 +8678,34 @@
       body.style.display = body.style.display === "none" ? "block" : "none";
     });
 
+    // v2.64.0: klucz Gemini — zapis przy każdej zmianie, status pokazuje stan
+    {
+      const llmKey = document.getElementById("ogx-llm-key");
+      const llmStatus = document.getElementById("ogx-llm-status");
+      const paintLlm = () => {
+        if (!llmStatus) return;
+        const k = LlmParser.apiKey();
+        llmStatus.textContent = k
+          ? `LLM aktywny (klucz …${k.slice(-6)}, użycia dziś: ${LlmParser._usedToday()}/${LlmParser.DAILY_LIMIT})`
+          : "LLM wyłączony — wklej klucz z aistudio.google.com/apikey";
+        llmStatus.style.color = k ? "#27ae60" : "#7f8c8d";
+      };
+      if (llmKey) {
+        // Nie wstawiamy klucza w value w HTML (trafiłby do zrzutów DOM w logu);
+        // pole pokazuje tylko, CZY klucz jest.
+        if (LlmParser.apiKey()) llmKey.placeholder = "klucz zapisany ✓";
+        llmKey.addEventListener("change", () => {
+          const v = llmKey.value.trim();
+          if (!v) return;
+          GM_setValue(LlmParser.KEY_API, v);
+          llmKey.value = "";
+          llmKey.placeholder = "klucz zapisany ✓";
+          log("[LLM] klucz Gemini zapisany lokalnie. Model będzie czytał raporty urobku tam, gdzie zwykłe parsery nie rozumieją strony.", "success");
+          paintLlm();
+        });
+      }
+      paintLlm();
+    }
     document.getElementById("ogx-clear-logs").addEventListener("click", () => {
       logEntries = [];
       GM_setValue(LOG_STORAGE_KEY, "[]");
