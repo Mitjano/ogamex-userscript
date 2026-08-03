@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.65.2
+// @version      2.65.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7895,7 +7895,9 @@
           position: fixed;
           top: 10px;
           left: 10px;
-          width: 260px;
+          /* v2.65.3: 260px zasłaniało przyciski menu gry (Overview, Resources…)
+             na 13,6-calowym ekranie właściciela. 232px kończy się przed menu. */
+          width: 232px;
           background: rgba(0, 10, 30, 0.92);
           border: 1px solid #1a5276;
           border-radius: 8px;
@@ -7921,14 +7923,14 @@
         #ogx-bot-panel .body { padding: 10px 12px; }
         /* v2.65.0: pasek stanu — 5 linii odpowiada na 5 pytań bez klikania */
         #ogx-bot-panel .strip {
-          padding: 8px 12px 6px;
+          padding: 7px 10px 5px;
           border-bottom: 1px solid #1a5276;
-          font-size: 12px;
-          line-height: 1.7;
+          font-size: 11px;
+          line-height: 1.65;
         }
-        #ogx-bot-panel .strip-row { display: flex; gap: 7px; align-items: baseline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #ogx-bot-panel .strip-row { display: flex; gap: 5px; align-items: baseline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #ogx-bot-panel .strip-row .ico { width: 16px; flex: none; text-align: center; }
-        #ogx-bot-panel .strip-row .lbl { width: 78px; flex: none; color: #8fa8b8; }
+        #ogx-bot-panel .strip-row .lbl { width: 62px; flex: none; color: #8fa8b8; }
         #ogx-bot-panel .strip-row .val { color: #d7e2ea; overflow: hidden; text-overflow: ellipsis; }
         #ogx-bot-panel .strip-row .val b { color: #fff; font-weight: 600; }
         #ogx-bot-panel .strip-row.ok .val { color: #6fcf97; }
@@ -8905,7 +8907,7 @@
       const s12 = ThreatLog.summary(12);
       if (!CONFIG.threatAlarm?.enabled) set("ogx-strip-def", "dim", "wyłączona");
       else if (active) set("ogx-strip-def", "alert", `ALARM — <b>${ts?.count ?? "?"}</b> obcych flot`);
-      else set("ogx-strip-def", "ok", `czysto · 12h: ${s12.alarms ? `<b>${s12.alarms}</b> alarm(ów)${s12.saves ? `, <b>${s12.saves}</b>× ratunek` : ""}${s12.returns ? `, <b>${s12.returns}</b>× powrót` : ""}` : "spokój"}`);
+      else set("ogx-strip-def", "ok", `czysto · 12h: ${s12.alarms ? `<b>${s12.alarms}</b> alarm${s12.saves ? `, <b>${s12.saves}</b> ratunek` : ""}${s12.returns ? `, <b>${s12.returns}</b> powrót` : ""}` : "spokój"}`);
 
       // ⛏ Mining
       const scan = ScanState.load();
@@ -8929,7 +8931,7 @@
       const gapLeft = est?.lastSendAt ? Math.max(0, Math.round(((est.lastSendAt + (est.nextGapMs || 0)) - Date.now()) / 1000)) : null;
       if (!CONFIG.expeditions.enabled) set("ogx-strip-exp", "dim", "wyłączone");
       else set("ogx-strip-exp", slots.used >= (slots.total || 14) ? "ok" : "busy",
-        `<b>${slots.used ?? "?"}</b>/${slots.total || "?"} w powietrzu${gapLeft !== null && slots.used < (slots.total || 14) ? ` · następna ~<b>${gapLeft}</b> s` : ""} · dziś ${est?.sentToday ?? 0}`);
+        `<b>${slots.used ?? "?"}</b>/${slots.total || "?"}${gapLeft !== null && slots.used < (slots.total || 14) ? ` · nast. ~<b>${gapLeft}</b> s` : ""} · dziś ${est?.sentToday ?? 0}`);
 
       // 🌙 Fleet Save
       const fsSt = FleetSave.state();
