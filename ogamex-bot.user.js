@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.57.1
+// @version      2.58.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1604,6 +1604,10 @@
   // Bot sam wysyla te floty, wiec sam moze je policzyc. Wpis zyje przez CALY
   // przelot tam i z powrotem (DispatchedAsteroids kasuje swoj wpis juz przy
   // przylocie, bo tam chodzi o blokade koordynatow, nie o slot floty).
+  // Szacunek round-tripu, gdy gra nie poda czasu lotu: 15 min (typowy lot na
+  // asteroide to 3-8 min w jedna strone). Patrz komentarz przy add().
+  const FALLBACK_ROUNDTRIP_MS = 15 * 60 * 1000;
+
   const MiningFlights = {
     KEY: "ogamex_mining_flights",
 
@@ -1615,16 +1619,43 @@
     },
 
     // flightMs = czas lotu w jedna strone z formularza gry (moze byc nieznany)
+    // ── v2.58.0: fallback byl KATASTROFALNIE dlugi ──
+    // Gdy czasu lotu nie dalo sie odczytac, wpis dostawal maxFlightMinutes*2 =
+    // 90 MINUT (a przy starych configach nawet wiecej). Realny lot na asteroide
+    // trwa ~3-8 min, wiec taki wpis-duch blokowal slot budzetu przez godzine z
+    // okladem: log pokazywal "flight budget reached (3/3)" przy DWOCH realnych
+    // misjach w grze. Autor kodu sam zapisal zasade: pomylka "za krotko" kosztuje
+    // najwyzej jeden lot ponad limit (sam sie rozejdzie), a "za dlugo" kosztuje
+    // przestoj na glownym zrodle dochodu. Wiec szacujemy krotko.
     add(coord, flightMs) {
       const roundTrip = flightMs > 0
         ? flightMs * 2 + 60000
-        : (CONFIG.asteroidMining.maxFlightMinutes || 90) * 2 * 60 * 1000;
+        : FALLBACK_ROUNDTRIP_MS;
       const entries = this._load();
       entries.push({ coord: coord || "?", at: Date.now(), returnAt: Date.now() + roundTrip });
       GM_setValue(this.KEY, JSON.stringify(entries));
     },
 
     count() { return this._load().length; },
+
+    // ── v2.58.0: KONFRONTACJA Z GRA ──
+    // Rejestr byl jedynym zrodlem prawdy o wlasnych lotach i nikt go nigdy nie
+    // sprawdzal z rzeczywistoscia. Kazdy wpis z zawyzonym returnAt (nieznany czas
+    // lotu, przerwana wysylka, restart przegladarki w trakcie) wisial do wygasniecia
+    // i zjadal slot budzetu. Gra podaje liczbe WSZYSTKICH wlasnych misji ("M Own") —
+    // to twarda GORNA granica liczby naszych lotow gorniczych (mining to podzbior).
+    // Jesli mamy wiecej wpisow niz gra widzi misji, nadmiar to duchy: kasujemy
+    // najstarsze, bo one najpewniej juz wrocily. Zwraca liczbe usunietych.
+    reconcile(ownMissions) {
+      if (!(ownMissions >= 0)) return 0;           // brak paska misji na tej stronie
+      const entries = this._load();
+      if (entries.length <= ownMissions) return 0;
+      entries.sort((a, b) => (a.at || 0) - (b.at || 0));   // najstarsze pierwsze
+      const ghosts = entries.length - ownMissions;
+      const kept = entries.slice(ghosts);
+      GM_setValue(this.KEY, JSON.stringify(kept));
+      return ghosts;
+    },
 
     // wysylka odrzucona przez gre → skasuj ostatni wpis (flota nie wystartowala)
     dropLast() {
@@ -2921,6 +2952,25 @@
     },
     has(coord) { return this._load().some(e => e.coord === coord); },
     count() { return this._load().length; },
+
+    // ── v2.58.0: KONFRONTACJA Z GRA ──
+    // Rejestr byl jedynym zrodlem prawdy o wlasnych lotach i nikt go nigdy nie
+    // sprawdzal z rzeczywistoscia. Kazdy wpis z zawyzonym returnAt (nieznany czas
+    // lotu, przerwana wysylka, restart przegladarki w trakcie) wisial do wygasniecia
+    // i zjadal slot budzetu. Gra podaje liczbe WSZYSTKICH wlasnych misji ("M Own") —
+    // to twarda GORNA granica liczby naszych lotow gorniczych (mining to podzbior).
+    // Jesli mamy wiecej wpisow niz gra widzi misji, nadmiar to duchy: kasujemy
+    // najstarsze, bo one najpewniej juz wrocily. Zwraca liczbe usunietych.
+    reconcile(ownMissions) {
+      if (!(ownMissions >= 0)) return 0;           // brak paska misji na tej stronie
+      const entries = this._load();
+      if (entries.length <= ownMissions) return 0;
+      entries.sort((a, b) => (a.at || 0) - (b.at || 0));   // najstarsze pierwsze
+      const ghosts = entries.length - ownMissions;
+      const kept = entries.slice(ghosts);
+      GM_setValue(this.KEY, JSON.stringify(kept));
+      return ghosts;
+    },
   };
 
   const FarmState = {
@@ -5667,6 +5717,19 @@
   // dokładna liczba naszych misji górniczych w drodze — bez zgadywania, bez
   // zależności od tego, co jeszcze robi człowiek na koncie.
   function miningInflightCount() {
+    // Najpierw skasuj duchy (wpisy, ktorych gra juz nie widzi), potem policz.
+    const m = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
+    if (m) {
+      const own = parseInt(m[2]);
+      // swiezo wyslana flota moze jeszcze nie byc na liscie gry (~30 s) —
+      // wtedy nie przycinaj, bo skasowalibysmy realny lot
+      const sinceSend = Date.now() - (parseInt(GM_getValue("ogamex_last_dispatch_at", "0")) || 0);
+      if (sinceSend > 30000) {
+        const dropped = MiningFlights.reconcile(own);
+        if (dropped > 0)
+          log(`Rejestr lotow: skasowano ${dropped} wpis(y)-duchy (gra widzi ${own} misji) — budzet odblokowany.`, "asteroid");
+      }
+    }
     return MiningFlights.count();
   }
 
@@ -7378,6 +7441,7 @@
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
           <button class="mini-btn" id="ogx-api-test" title="Odpytuje po kolei endpointy gry (eventbox, eventlist, galaxy, check-target, messages) i wypisuje do logu status HTTP oraz początek odpowiedzi. Od tego zależy, czy szybki skan i wysyłka przez API mogą działać.">Test API</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
+          <button class="mini-btn" id="ogx-flights" title="Pokazuje rejestr własnych lotów górniczych (to on wyznacza budżet równoległych wysyłek) i porównuje go z liczbą misji, którą widzi gra. Shift+klik czyści rejestr awaryjnie, gdy budżet stoi mimo pustego nieba.">Loty</button>
         </div>
 
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
@@ -7626,6 +7690,26 @@
         const exp = FleetRecon.learnExpeditionLink() || FleetRecon.expeditionLink();
         log(exp ? `[EXPO] link: ${exp.href} (mission=${exp.mission ?? "?"})`
                 : "[EXPO] link unknown — open any Galaxy page once so row 16 can be read.", exp ? "info" : "warn");
+      });
+
+      // v2.58.0: podglad/awaryjny reset rejestru lotow gorniczych. Rejestr wyznacza
+      // budzet rownoleglych wysylek, wiec gdy wisi w nim duch — kopanie stoi.
+      const flightsBtn = document.getElementById("ogx-flights");
+      if (flightsBtn) flightsBtn.addEventListener("click", (ev) => {
+        const mm = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
+        const own = mm ? parseInt(mm[2]) : -1;
+        if (ev.shiftKey) {
+          MiningFlights.clear();
+          GM_setValue("ogamex_fleet_return_at", "0");
+          log("Rejestr lotow wyczyszczony recznie (Shift) — budzet wolny, skan wznowiony.", "asteroid");
+          return;
+        }
+        const list = MiningFlights.list();
+        log(`Rejestr lotow: ${list.length} wpis(ow); gra widzi ${own < 0 ? "?" : own} wlasnych misji.`, "asteroid");
+        const now = Date.now();
+        list.forEach(e => log(`  - ${e.coord} — powrot za ${Math.ceil((e.returnAt - now) / 60000)} min`, "asteroid"));
+        if (list.length === 0) log("  (pusty — budzet nie blokuje wysylek)", "asteroid");
+        log("Shift+klik = wyczysc rejestr awaryjnie.", "asteroid");
       });
       const bnNow = document.getElementById("ogx-bonus-now");
       if (bnNow) bnNow.addEventListener("click", () => {
