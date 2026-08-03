@@ -48,6 +48,43 @@ numeracji forka (w linkach galaktyki ekspedycja to `mission=1`, asteroida
 
 ---
 
+## AUDYT 2026-08-03 (v2.59.0) — co naprawiono
+
+1. **P0, alarm:** od 2.32.0 potwierdzony alarm NIGDY nie był zdejmowany —
+   `this.clear()` wypadło z gałęzi „obce floty zniknęły" (zostało tylko
+   w nieosiągalnej gałęzi kandydata). Skutek: `active()` trzymało 3 h
+   (BACKSTOP), auto-powrót z refugium nie odpalał, ekspedycje/farmienie
+   stały, straż zamiatała co 90 s, log „alarm zdjęty" spamował co 30 s.
+   Naprawione — clear() wrócił na miejsce.
+2. **Ekspedycje:** RECYCLER dopisany do wykluczeń (domyślne + migracja
+   zapisanej konfiguracji). Recyklery zostają w domu do zbierania złomu.
+3. **Złom (latentny):** misja `debris_recycle_direct` w kroku 1 formularza
+   wpadała do gałęzi górniczej i załadowałaby MINERY zamiast recyklerów
+   (pierwszy realny złom = flota górnicza na polu złomu). Naprawione +
+   recycle wypięty z księgowości mininga (finishDispatch, init handler,
+   ogamex_last_dispatch).
+4. **Alarm, czułość:** 20-sekundowe okno ślepoty po własnej wysyłce dotyczy
+   teraz TYLKO odczytu z paska — sklasyfikowany odczyt z listy ruchów flot
+   nie może pomylić własnej floty z obcą (fale co 60-90 s zjadały ~25%
+   czasu czuwania).
+5. **Dziennik:** wpis „ATAK" z refreshEvents dławiony (zmiana obrazu albo
+   5 min) — wcześniej 120×/h przy trwającym ataku, groziło wypchnięciem
+   ważnych wpisów z limitu 600.
+6. **404:** `fleetAlreadyFlyingTo` odpytywał martwe `/ajax/fleet/*` przy
+   każdej wysyłce górniczej (ominięte przy sprzątaniu 2.54.0). Teraz
+   najpierw potwierdzony `/home/fleetmovementlist`, martwe adresy za bramką
+   `Ajax.supported`.
+
+**Znane luki zgłoszone, ale NIE ruszone (świadomie):**
+- Ratunek kolonii zawsze wysyła Z PLANETY (`switchTo` klika kotwicę
+  planety). Jeśli flota kolonii stoi na jej księżycu, a atak leci na
+  księżyc — ratunek zastanie pustą planetę i zakończy się „nothing to
+  save", flota zostanie na atakowanym księżycu. Cel z listy ruchów flot
+  to gołe koordy, bez rozróżnienia planeta/księżyc. Do przemyślenia razem
+  z maszyną stanu MoonSave (pkt 2 niżej).
+- Klasyfikacja sonda/atak nadal niepotwierdzona na prawdziwym ataku
+  (pkt „CO JEST WDROŻONE, ALE NIEPOTWIERDZONE").
+
 ## CO DZIAŁA I JEST POTWIERDZONE NA ŻYWO
 
 - **Mining asteroid** — główny dochód. Własny licznik lotów (`MiningFlights`),

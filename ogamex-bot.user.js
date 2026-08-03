@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.58.0
+// @version      2.59.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -152,7 +152,11 @@
       // najwolniejszej jednostki, a GS to 26 minut w jedną stronę zamiast kilku
       // — jedna sztuka zamraża całą falę na prawie godzinę i zjada slot
       // ekspedycyjny, którego brakuje reszcie floty.
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR"],
+      // v2.59.0: RECYCLER też zostaje w domu (decyzja właściciela 2026-08-03).
+      // Na ekspedycji nic nie wnosi, a jest jedynym statkiem, którym
+      // DebrisCollector może zebrać złom po ekspedycjach — wysyłanie go falami
+      // zostawiało zbieranie bez narzędzia.
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER"],
       // v2.48.0: ekspedycja potrafi trafić na obcych i zostawić pole złomu na
       // pozycji 16 systemu bazy. To nasze własne surowce — zbieramy recyklerami.
       collectDebris: true,
@@ -304,6 +308,24 @@
               merged.expeditions.excludeTypes = [...ex, "DEATH_STAR"];
               saveConfig(merged);
               setTimeout(() => log("Gwiazda Smierci nie lata juz na ekspedycje — fala leci z predkoscia najwolniejszej jednostki, a GS to 26 min w jedna strone.", "info"), 1500);
+            }
+          }
+        }
+      }
+
+      // v2.59.0: konfiguracja jest zapisana u gracza, więc sama zmiana wartości
+      // domyślnej nic nie da (ten sam mechanizm co przy GS w 2.46.0) — trzeba
+      // dopisać RECYCLER do jego listy wykluczeń ekspedycji.
+      {
+        const RC_KEY = "ogamex_migration_no_recycler_expo_v259";
+        if (GM_getValue(RC_KEY, "0") !== "1") {
+          GM_setValue(RC_KEY, "1");
+          if (merged.expeditions) {
+            const ex = (merged.expeditions.excludeTypes || []).map(t => String(t).toUpperCase());
+            if (!ex.includes("RECYCLER")) {
+              merged.expeditions.excludeTypes = [...ex, "RECYCLER"];
+              saveConfig(merged);
+              setTimeout(() => log("Recyklery nie lataja juz na ekspedycje — zostaja w domu do zbierania zlomu (DebrisCollector).", "info"), 1500);
             }
           }
         }
@@ -1859,10 +1881,16 @@
         .join(" ");
       if (pageText.includes(needle)) return "page-events";
     } catch {}
-    for (const url of ["/ajax/fleet/eventlist", "/ajax/fleet/eventbox"]) {
+    // v2.59.0: pierwszy w kolejce jest POTWIERDZONY endpoint tego serwera
+    // (lista ruchów flot podaje cel każdej misji jako [g:s:p] w treści wiersza).
+    // Stare /ajax/* z upstream OGameX tu nie istnieją (404) — sprzątanie 2.54.0
+    // ominęło to miejsce i każda wysyłka górnicza zostawiała dwa 404 w logach
+    // serwera. Bramka Ajax.supported wyłącza martwy adres po pierwszym 404.
+    for (const url of ["/home/fleetmovementlist", "/ajax/fleet/eventlist", "/ajax/fleet/eventbox"]) {
+      if (!Ajax.supported(url)) continue;
       try {
         const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-        if (!res.ok) continue;
+        if (!res.ok) { Ajax.markUnsupported(url, res.status); continue; }
         const txt = await res.text();
         if (txt.includes(needle)) return url;
       } catch {}
@@ -3789,9 +3817,20 @@
           if (attacks.length) {
             const first = attacks.sort((a, b) => (a.eta || 1e9) - (b.eta || 1e9))[0];
             const mins = first.eta ? Math.max(0, Math.round(first.eta / 60)) : null;
-            ThreatLog.add("ATAK", `${attacks.length}× ${first.type} z [${first.src}] na [${first.dst}]`
-              + (mins !== null ? `, przylot za ~${mins} min` : "")
-              + (first.ships?.length ? ` | flota: ${first.ships.slice(0, 8).join(", ")}` : ""));
+            // v2.59.0: pętla obrony chodzi co 30 s, więc bez dławienia ten wpis
+            // wpadał do dziennika 120×/h przez cały czas trwania ataku — i przy
+            // limicie 600 potrafiłby wypchnąć wpisy, dla których dziennik istnieje.
+            // Nowy wpis tylko, gdy obraz się ZMIENIŁ (liczba/źródło/cel) albo
+            // minęło 5 minut — ślad ciągłości zostaje, spam nie.
+            const sig = `${attacks.length}|${first.type}|${first.src}|${first.dst}`;
+            let lastSig = null;
+            try { lastSig = JSON.parse(GM_getValue("ogamex_threat_atk_sig", "null")); } catch {}
+            if (!lastSig || lastSig.sig !== sig || Date.now() - (lastSig.at || 0) > 5 * 60 * 1000) {
+              GM_setValue("ogamex_threat_atk_sig", JSON.stringify({ sig, at: Date.now() }));
+              ThreatLog.add("ATAK", `${attacks.length}× ${first.type} z [${first.src}] na [${first.dst}]`
+                + (mins !== null ? `, przylot za ~${mins} min` : "")
+                + (first.ships?.length ? ` | flota: ${first.ships.slice(0, 8).join(", ")}` : ""));
+            }
           }
           return;
           }
@@ -4177,7 +4216,11 @@
         parseInt(GM_getValue("ogamex_last_dispatch_at", "0")) || 0,
         (() => { try { return JSON.parse(GM_getValue("ogamex_expo_state", "null"))?.lastSendAt || 0; } catch { return 0; } })()
       );
-      if (r.foreign > 0 && Date.now() - lastOwnSend < this.SELF_SEND_BLIND_MS) {
+      // v2.59.0: okno ślepoty dotyczy TYLKO odczytu z paska (artefakt „total
+      // rośnie przed Own"). Odczyt z listy ruchów flot klasyfikuje po ŹRÓDLE,
+      // więc własna wysyłka nie może w nim wyjść jako obca — a fale ekspedycji
+      // idą co 60-90 s, czyli pasek-owe 20 s ślepoty zjadało ~25% czasu czuwania.
+      if (!evSrc && r.foreign > 0 && Date.now() - lastOwnSend < this.SELF_SEND_BLIND_MS) {
         ThreatLog.add("odczyt", `${r.foreign} „obcych" tuż po NASZEJ wysyłce (${Math.round((Date.now() - lastOwnSend) / 1000)}s) — to własna flota w trakcie dopisywania do paska. Ignoruję.`);
         return;
       }
@@ -4206,6 +4249,15 @@
         }
       } else if (prev && prev.count > 0) {
         GM_setValue(this.KEY_CANDIDATE, "0");
+        // ── v2.59.0: this.clear() wróciło na miejsce ──
+        // Wypadło stąd w 2.32.0 (przeprowadzka do gałęzi niepotwierdzonego
+        // kandydata niżej — która przy AKTYWNYM alarmie jest nieosiągalna, bo
+        // ta gałąź łapie wcześniej). Skutek: po każdym potwierdzonym alarmie
+        // active() zostawało true aż do 3-godzinnego BACKSTOPU — auto-powrót
+        // z refugium nie odpalał (returnHome wymaga !active()), ekspedycje
+        // i farmienie stały, straż zamiatała planetę co 90 s, a ta linia
+        // logowała „alarm zdjęty" co 30 s, nie zdejmując niczego.
+        this.clear();
         log("Incoming fleets gone — threat alert cleared.", "success");
         ThreatLog.add("koniec", "Obce floty zniknęły z paska misji — alarm zdjęty.");
       } else if (r.foreign === 0 && (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0)) {
@@ -6037,6 +6089,15 @@
             }
             return;
           }
+          // v2.59.0: recykling ma własną flagę od 2.48.0, ale finishDispatch
+          // o niej nie wiedział — po locie po złom przechodził do księgowości
+          // MININGA i (przy porażce) ustawiał pauzę skanera z czasu lotu
+          // recyklerów. Złom niczego nie mówi o tym, gdzie są minery.
+          if (mission.recycle) {
+            if (dispatchOk) log("[ZŁOM] recyklery wysłane po pole złomu.", "success");
+            else log("[ZŁOM] wysyłka recyklerów nie doszła do skutku — spróbuję przy następnej wizycie.", "warn");
+            return;
+          }
           if (mission.farm) {
             if (dispatchOk) {
               // Same in-flight bump as the fleetSendSuccessfully farm branch
@@ -6281,7 +6342,10 @@
         // Find the ship to send. Farm missions name their ship explicitly
         // (HEAVY_CARGO); asteroid missions try configured types first, then
         // fall back to ASTEROID/MINER naming.
-        const shipTypesToTry = mission.farm
+        // v2.59.0: recycle też nazywa swój statek (RECYCLER). Bez tego warunku
+        // lot po złom wpadał do gałęzi górniczej i ładował MINERY — czyli
+        // pierwszy prawdziwy złom wysłałby flotę górniczą zamiast recyklerów.
+        const shipTypesToTry = (mission.farm || mission.recycle)
           ? [mission.shipType]
           : [
               ...(CONFIG.asteroidMining.minerShipTypes || []),
@@ -6316,7 +6380,9 @@
           // real count. Above the cap store nothing: minersHomeAfterLastDispatch
           // returns "unknown", the designed fail-open path (keep scanning,
           // verify with the live ship count at dispatch time).
-          if (!mission.farm) {
+          // v2.59.0: recycle dołącza do farm — zapis liczby RECYCLERÓW jako
+          // „minerów w domu" psułby decyzję równoległą mininga.
+          if (!mission.farm && !mission.recycle) {
             const AVAIL_SANITY_CAP = 1_000_000_000_000; // 1e12
             if (available <= AVAIL_SANITY_CAP) {
               GM_setValue("ogamex_last_dispatch", JSON.stringify({ available, toSend, at: Date.now() }));
@@ -6334,7 +6400,7 @@
             input.dispatchEvent(new Event("change", { bubbles: true }));
             log(`Selected ${toSend}/${available} Asteroid Miners (input: ${input.className})`, "fleet");
           } else {
-            log(`No ${mission.farm ? "Heavy Cargo" : "Asteroid Miners"} available (found: ${available}, input: ${!!input})`, "error");
+            log(`No ${mission.farm || mission.recycle ? mission.shipType : "Asteroid Miners"} available (found: ${available}, input: ${!!input})`, "error");
             GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
             // v2.11.1: farm with 0 HC on the active planet would otherwise
             // burn through the whole target queue (each retry stamps a target
@@ -8333,6 +8399,7 @@
     // re-pausing the scan we just decided to continue.
     let parallelKeepScanning = false;
     let wasExpoSend = false; // v2.15.2: read by the fleet-timer block below
+    let wasRecycleSend = false; // v2.59.0: dto — złom nie jest lotem górniczym
     if (window.location.href.includes("fleetSendSuccessfully")) {
       // v2.11.0: was this a FARM send? The browser navigated here before
       // finishDispatch could run, so pending_mission still carries the type.
@@ -8346,6 +8413,7 @@
         wasExpoSend = !!pm?.expedition;
         wasMoonSend = !!pm?.moonSave;
         wasMoonReturn = !!pm?.moonReturn;
+        wasRecycleSend = !!pm?.recycle;
       } catch {}
       // v2.14.0: slow-navigation twin of the farm check below — if
       // finishDispatch already cleared pending_mission, the send stamp still
@@ -8382,6 +8450,12 @@
         GM_setValue("ogamex_inflight_fleets", String(storedExp + 1));
         GM_setValue("ogamex_last_dispatch_at", String(Date.now()));
         ExpeditionRunner.afterSend();
+      } else if (wasRecycleSend) {
+        // v2.59.0: lot po złom nie jest lotem górniczym — bez tej gałęzi
+        // wpadał niżej do decyzji równoległej mininga ze STARYMI liczbami
+        // minerów i podbijał liczniki.
+        GM_setValue("pending_mission", null);
+        log("[ZŁOM] recyklery w drodze po pole złomu — liczniki mininga nietknięte.", "fleet");
       } else if (wasFarmSend) {
         GM_setValue("pending_mission", null);
         // v2.11.1: bump the in-flight floor + stamp, exactly like the mining
@@ -8472,8 +8546,8 @@
     //     away — the scanner then hunts asteroids it has no ships to reach.
     // An expedition changes nothing about where the miners are, so the honest
     // move is to leave mining's state exactly as it was.
-    if (wasExpoSend) {
-      log("Expedition send — mining fleet timers left untouched.", "fleet");
+    if (wasExpoSend || wasRecycleSend) {
+      log(`${wasExpoSend ? "Expedition" : "Recycle"} send — mining fleet timers left untouched.`, "fleet");
     } else {
       const storedReturnAt = parseInt(GM_getValue("ogamex_fleet_return_at", "0"));
       const headerText = document.body.textContent;
