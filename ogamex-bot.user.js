@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.63.1
+// @version      2.63.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2000,6 +2000,18 @@
       if (!Number.isFinite(minersSelected) || minersSelected <= 0) return;
       const per = Math.round(totalCargo / minersSelected);
       if (per <= 0) return;
+      // ── v2.63.2: strażnik rozsądku ──
+      // 2026-08-03 18:08:20 parser kroku 2 złapał ze strony LICZBĘ LEKKICH
+      // TRANSPORTOWCÓW (4 777 288 823 — co do cyfry stan hangaru) zamiast
+      // ładowności i „nauczył się" 4 zamiast 20 750. Przez 28 s minersNeeded
+      // liczyło się od wartości 5000× za małej. Fizyczna ładowność minera
+      // zmienia się wyłącznie z badaniami — nigdy skokiem o rzędy wielkości.
+      // Nowa wartość odbiegająca >3× od znanej to śmieciowy odczyt, nie wiedza.
+      const prev = parseInt(GM_getValue(this.CARGO_KEY, "0")) || 0;
+      if (prev > 0 && (per > prev * 3 || per < prev / 3)) {
+        log(`Odrzucam odczyt ładowności ${per.toLocaleString()}/minera (znane: ${prev.toLocaleString()}) — parser złapał złą liczbę ze strony.`, "warn");
+        return;
+      }
       GM_setValue(this.CARGO_KEY, String(per));
       log(`Learned cargo/miner: ${per.toLocaleString()} (total ${totalCargo.toLocaleString()} ÷ ${minersSelected} miners)`, "fleet");
     },
