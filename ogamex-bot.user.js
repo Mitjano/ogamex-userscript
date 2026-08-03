@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.0
+// @version      2.66.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8286,6 +8286,10 @@
               <button class="mini-btn" id="ogx-hum-breaks">${CONFIG.humanizer.breaks ? "ON" : "OFF"}</button>
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="10% szans na 5–15 min bezczynności w środku pracy — symuluje gracza, który odszedł od klawiatury. OFF = zero losowych pauz.">Pauzy losowe (jitter)</span>
+              <button class="mini-btn" id="ogx-jitter-toggle">${CONFIG.antiDetection.jitterEnabled ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Hard cap of farm attacks per UTC day. 0 = unlimited. Volume is what admins see first.">Max attacks / day (0=∞)</span>
               <input id="ogx-hum-maxatk" type="number" min="0" step="10" value="${CONFIG.humanizer.maxAttacksPerDay}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -8677,6 +8681,13 @@
         if (!CONFIG.humanizer.breaks) GM_setValue("ogamex_break_until", "0"); // end an active break
         log(`Coffee breaks ${CONFIG.humanizer.breaks ? "enabled" : "disabled"}`, "info");
         updateStatusUI();
+      });
+      const jitBtn = document.getElementById("ogx-jitter-toggle");
+      if (jitBtn) jitBtn.addEventListener("click", () => {
+        CONFIG.antiDetection.jitterEnabled = !CONFIG.antiDetection.jitterEnabled;
+        saveConfig(CONFIG);
+        jitBtn.textContent = CONFIG.antiDetection.jitterEnabled ? "ON" : "OFF";
+        log(`Pauzy losowe (jitter): ${CONFIG.antiDetection.jitterEnabled ? "włączone" : "WYŁĄCZONE"}.`, "info");
       });
       const mAtk = document.getElementById("ogx-hum-maxatk");
       if (mAtk) mAtk.addEventListener("change", () => {
