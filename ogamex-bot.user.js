@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.2
+// @version      2.66.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6728,11 +6728,19 @@
           }
           return btn || null;
         };
-        const clickButtonWhenEnabled = async (text, label, maxWaitMs = 9000) => {
+        // v2.66.3: 9 s nie starczało — ostatnia fala serii (CAŁY hangar,
+        // 23:26 w logu: 33,7 mld myśliwców w jednym formularzu) trzyma Next
+        // martwym dłużej, bo gra waliduje gigantyczne liczby po stronie
+        // serwera. 25 s + na koniec mówimy PRAWDĘ: „był, ale martwy przez
+        // cały czas" to co innego niż „nie było go wcale", i zrzucamy tekst
+        // okolicy formularza — jeśli gra wypisała powód (np. brak deuteru),
+        // będzie w logu.
+        const clickButtonWhenEnabled = async (text, label, maxWaitMs = 25000) => {
           const start = Date.now();
-          let waited = false;
+          let waited = false, lastSeen = null;
           while (Date.now() - start < maxWaitMs) {
             const btn = findButton(text);
+            lastSeen = btn;
             if (btn && !isDisabled(btn)) {
               if (waited) log(`Przycisk "${text}" ożył po ${((Date.now() - start) / 1000).toFixed(1)}s — klikam.`, "fleet");
               btn.click();
@@ -6745,6 +6753,11 @@
             }
             await AntiDetection.sleep(400);
           }
+          const formTxt = (document.querySelector("#content, .content, form") || document.body)
+            .textContent.replace(/\s+/g, " ").trim();
+          log(lastSeen
+            ? `Przycisk "${text}" przez ${Math.round(maxWaitMs / 1000)}s pozostał WYŁĄCZONY [${label}] — gra nie przyjmuje tej floty. Tekst formularza: …${formTxt.slice(-400)}`
+            : `Przycisk "${text}" w ogóle nie istnieje na stronie [${label}].`, "error");
           return false;
         };
 
@@ -6941,7 +6954,10 @@
           }
           if (!filled.length) {
             log("Expedition: could not fill any ship input — aborting wave.", "error");
-            GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
             GM_setValue("pending_mission", null);
             return;
           }
@@ -7010,7 +7026,10 @@
             log(`Selected ${toSend}/${available} Asteroid Miners (input: ${input.className})`, "fleet");
           } else {
             log(`No ${mission.farm || mission.recycle ? mission.shipType : "Asteroid Miners"} available (found: ${available}, input: ${!!input})`, "error");
-            GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
             // v2.11.1: farm with 0 HC on the active planet would otherwise
             // burn through the whole target queue (each retry stamps a target
             // cooldown and navigates for nothing). Pause the sweep instead.
@@ -7074,7 +7093,10 @@
               return;
             }
             log(`Asteroid Miner not found on ANY planet! Ships: ${shipDump}`, "error");
-            GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
             await finishDispatch(false);
             return;
           }
@@ -7087,7 +7109,10 @@
         if (!await clickButtonWhenEnabled("Next", "step1→2")) {
           dumpButtons("step1-fail");
           log("Cannot find Next button (step 1)", "error");
-          GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           await finishDispatch(false);
           return;
         }
@@ -7101,7 +7126,10 @@
         if (!step2Ready) {
           dumpButtons("step2-timeout");
           log("Step 2 never loaded (no Back button after 8s)", "error");
-          GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           await finishDispatch(false);
           return;
         }
@@ -7356,7 +7384,10 @@
         if (!await clickButtonWhenEnabled("Next", "step2→3")) {
           dumpButtons("step2-fail");
           log("Cannot find Next button (step 2)", "error");
-          GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           await finishDispatch(false);
           return;
         }
@@ -7372,7 +7403,10 @@
         if (!step3Ready) {
           dumpButtons("step3-timeout");
           log("Step 3 never loaded (no Send fleet button after 12s)", "error");
-          GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           await finishDispatch(false);
           return;
         }
@@ -7598,7 +7632,10 @@
             // v2.39.1: ta flota nie wystartowala — zdejmij ja z licznika lotow
             // gorniczych, inaczej fantom zjadalby limit az do konca przelotu.
             if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle && !mission.fleetSave) MiningFlights.dropLast();
-            GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
             if (mission.moonSave) ThreatLog.add(mission.moonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę.");
             if (mission.moonReturn) MoonSave.disarm("flota i surowce wróciły na planetę bazową");
@@ -7658,7 +7695,10 @@
           dumpButtons("step3-no-send");
           log("Cannot find 'Send fleet' button (step 3)", "error");
           if (mission.moonSave) ThreatLog.add("BŁĄD", "Brak przycisku Send fleet na kroku 3 — ratunek NIE poleciał.");
-          GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
+            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
+            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
+            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
         }
 
         // dispatchOk=true → all miners sent, stop scanning (wait for return)
