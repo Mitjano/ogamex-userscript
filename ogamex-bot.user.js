@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.65.1
+// @version      2.65.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8233,14 +8233,18 @@
 
 
         <div id="ogx-log-pinned" class="log-pinned" style="display:none;"></div>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
-          <span style="font-size:11px; color:#999;">Log (persisted)</span>
+        <!-- v2.65.2: log domyślnie zwinięty do 1 linii; klik na nagłówek
+             rozwija pełną listę. Przypięty log alarmowy wyżej rządzi się sam
+             (pokazuje się tylko, gdy ma treść). -->
+        <div id="ogx-log-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px; cursor:pointer;">
+          <span style="font-size:11px; color:#8fa8b8;"><span id="ogx-log-chev">▸</span> Log</span>
           <div style="display:flex;gap:4px;">
             <button class="mini-btn" id="ogx-copy-logs" style="font-size:10px;">Copy</button>
             <button class="mini-btn" id="ogx-clear-logs" style="font-size:10px;">Clear</button>
           </div>
         </div>
-        <div class="log-area" id="ogx-log"></div>
+        <div id="ogx-log-last" style="font-size:10px;font-family:monospace;color:#9fb2bf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 2px;">—</div>
+        <div class="log-area" id="ogx-log" style="display:none;"></div>
         <textarea id="ogx-log-textarea" style="width:100%;height:120px;font-size:9px;font-family:monospace;background:rgba(0,0,0,0.5);color:#aaa;border:1px solid #333;border-radius:4px;padding:4px;margin-top:4px;resize:vertical;display:none;box-sizing:border-box;" readonly placeholder="Kliknij Copy żeby załadować logi..."></textarea>
       </div>
     `;
@@ -8740,6 +8744,28 @@
       }
       paintLlm();
     }
+    // v2.65.2: klik na nagłówek loga rozwija/zwija pełną listę
+    {
+      const lh = document.getElementById("ogx-log-header");
+      const la = document.getElementById("ogx-log");
+      const lastLine = document.getElementById("ogx-log-last");
+      const chev = document.getElementById("ogx-log-chev");
+      if (lh && la) {
+        const openStored = GM_getValue("ogx_log_open", "0") === "1";
+        const paint = (open) => {
+          la.style.display = open ? "block" : "none";
+          if (lastLine) lastLine.style.display = open ? "none" : "block";
+          if (chev) chev.textContent = open ? "▾" : "▸";
+        };
+        paint(openStored);
+        lh.addEventListener("click", (e) => {
+          if (e.target.closest("button, input")) return; // Copy/Clear działają normalnie
+          const open = la.style.display === "none";
+          GM_setValue("ogx_log_open", open ? "1" : "0");
+          paint(open);
+        });
+      }
+    }
     document.getElementById("ogx-clear-logs").addEventListener("click", () => {
       logEntries = [];
       GM_setValue(LOG_STORAGE_KEY, "[]");
@@ -8834,6 +8860,15 @@
   function updateLogUI() {
     const logArea = document.getElementById("ogx-log");
     if (!logArea) return;
+
+    // v2.65.2: skrót — zawsze widoczna ostatnia linia, bez rozwijania
+    const last = document.getElementById("ogx-log-last");
+    if (last && logEntries[0]) {
+      const e = logEntries[0];
+      last.textContent = `${e.time} ${e.msg}`;
+      last.className = `log-entry ${e.type}`;
+      last.style.cssText = "font-size:10px;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 2px;";
+    }
 
     // All logs in main area (increased limit)
     logArea.innerHTML = logEntries
