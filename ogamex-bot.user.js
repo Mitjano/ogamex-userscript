@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.9
+// @version      2.67.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4314,6 +4314,30 @@
       if (this._evFetching) return;
       this._evFetching = true;
       try {
+        // ── v2.67.0: SYMULACJA ATAKU (przycisk w panelu) ──
+        // Obawa właściciela po zawracaniu FS: „automatyczne podnoszenie floty
+        // też może nie zadziałać". Czytanie kodu tego nie rozstrzygnie —
+        // symulacja przepuszcza syntetyczny atak na bazę przez PRAWDZIWĄ
+        // maszynerię: kandydat → potwierdzenie 25 s → alarm → autoSaveOnThreat
+        // → realna ewakuacja → po wygaśnięciu okna prawdziwe odczyty gaszą
+        // alarm → auto-powrót. Jedyne, czego nie testuje, to parsowanie
+        // wrogiego wiersza HTML — a ten sam parser poprawnie rozczytał sondę
+        // szpiegowską 04.08 09:49.
+        {
+          const simUntil = parseInt(GM_getValue("ogamex_threat_sim_until", "0")) || 0;
+          if (Date.now() < simUntil) {
+            const b = CONFIG.asteroidMining.minerBase;
+            GM_setValue(this.KEY_EVENTS, JSON.stringify({
+              at: Date.now(), hostile: 1, attacks: 1, spies: 0, classified: true,
+              targets: [`${b.galaxy}:${b.system}:${b.position}`], origins: [], sim: true,
+            }));
+            return;
+          }
+          if (simUntil) {
+            GM_setValue("ogamex_threat_sim_until", "0");
+            log("[TEST] symulacja ataku zakończona — obrona wraca na prawdziwe odczyty. Alarm powinien zaraz zgasnąć, a flota wrócić automatycznie.", "info");
+          }
+        }
         const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
         // ── v2.51.0: prawdziwe źródło — lista ruchów flot ──
         // Wiersz podaje typ misji NAZWĄ (row-mission-type-ATTACK / ESPIONAGE /
@@ -8435,6 +8459,7 @@
               <button class="mini-btn" id="ogx-auto-return">${CONFIG.threatAlarm.autoReturn ? "ON" : "OFF"}</button>
             </label>
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
+            <button class="mini-btn" id="ogx-threat-sim" style="width:100%;margin-top:4px;" title="Przepuszcza SYNTETYCZNY atak na bazę przez prawdziwą maszynerię obrony: kandydat → potwierdzenie ~25-35 s → EWAKUACJA całej floty i surowców na drugie ciało → po ~2 min alarm gaśnie i flota wraca automatycznie. Koszt: kilka minut miningu i dwa krótkie przeloty. To jest pełna próba generalna automatu bez czekania na wroga.">TEST ALARMU (symulacja ataku)</button>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
             <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
               <div class="status" id="ogx-threatlog-status" style="font-size:10px;color:#e67e22;">Dziennik obrony: —</div>
@@ -8721,6 +8746,22 @@
         ThreatLog.clear();
         log("Dziennik obrony wyczyszczony.", "info");
         updateStatusUI();
+      });
+
+      // v2.67.0: próba generalna automatu obrony — patrz tooltip przycisku.
+      const simBtn = document.getElementById("ogx-threat-sim");
+      if (simBtn) simBtn.addEventListener("click", () => {
+        if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) { log("[TEST] najpierw włącz bota i alarm obcej floty.", "error"); return; }
+        if (!window.confirm(
+          "SYMULACJA ATAKU na bazę?\n\n" +
+          "Przez 90 s obrona będzie widzieć 1 wrogi atak i przejdzie PEŁNĄ ścieżkę naprawdę:\n" +
+          "• potwierdzenie ~25-35 s,\n" +
+          "• EWAKUACJA całej floty i surowców na drugie ciało (planeta ↔ księżyc),\n" +
+          "• po ~2 min alarm gaśnie i flota wraca automatycznie.\n\n" +
+          "Koszt: kilka minut miningu i dwa krótkie przeloty. Kontynuować?")) return;
+        GM_setValue("ogamex_threat_sim_until", String(Date.now() + 90 * 1000));
+        log("[TEST] SYMULACJA ATAKU uruchomiona (90 s). Obserwuj sekwencję: kandydat → ALARM → RATUNEK → koniec alarmu → POWRÓT. Wszystko poniżej to prawdziwa maszyneria obrony.", "error");
+        ThreatLog.add("odczyt", "TEST: symulacja ataku uruchomiona przez operatora (90 s).");
       });
 
       const mbBtn = document.getElementById("ogx-moonback-now");
