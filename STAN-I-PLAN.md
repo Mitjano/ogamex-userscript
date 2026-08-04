@@ -251,3 +251,15 @@ Otwarte (kolejność):
   floty (połowa wielkiej niewiadomej obrony rozstrzygnięta na TAK).
 - Ekspedycje: fala zapełniająca ostatni slot zabiera CAŁY hangar (2.66.7);
   krok 2 poprawia koordy celu, gdy formularz zgubi parametry URL (2.66.5).
+
+## AKTUALIZACJA 4 sierpnia późny wieczór (v2.68.0–2.68.1)
+
+- **v2.68.0 Wake Lock**: bot ON = Screen Wake Lock (macOS i Windows bez
+  admina); karta z grą musi być widoczna, klapa otwarta. Bot OFF zdejmuje.
+- **v2.68.1 złom z ekspedycji** (zgłoszenie: „złom leży na 16 i nikt nie
+  leci"): wizyta po złom co 20 min zawsze przy bezczynności (stary warunek
+  „minery w locie" nie zachodził nigdy przy pustych skanach — to była
+  główna przyczyna); bramka na pusty hangar recyklerów; krok 2 jawnie klika
+  Debris (data-planet-type=3), krok 3 jawnie klika COLLECT albo NIE wysyła.
+  DO POTWIERDZENIA na żywo: pierwszy log `[ZŁOM] misja: "Collect"` po
+  przegranej ekspedycji.
