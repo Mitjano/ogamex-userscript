@@ -232,3 +232,22 @@ Otwarte (kolejność):
 1. Nadzorowany test FS (~40 min okno) — odblokuje selektory zawracania+prędkości.
 2. Pierwszy prawdziwy atak — zweryfikuje wrogie wiersze w fleetmovementlist.
 3. MoonSave → maszyna stanu (po pierwszym potwierdzonym ratunku).
+
+## AKTUALIZACJA 4 sierpnia (v2.66.5–2.66.9) — FS przeszedł pierwszy żywy cykl
+
+- **Pierwszy żywy FS 14:36**: pomiar → wysyłka → Deploy+surowce z księżyca →
+  zawrócenie. Prędkość = RZĄD GOŁYCH LICZB bez „%" (Speed: 3 5 10 … 100);
+  czas lotu = „Duration of flight (one way): MM:SS" (wzorzec wspólny — mining
+  też czyta teraz czas z formularza). Trasa 3:269:8→5 przy 10% = 263 min
+  w jedną stronę (GS spowalnia flotę) → maks. FS ~8,7 h — **bliski księżyc
+  wystarcza na całą noc**.
+- **Kontrolka zawracania ZŁAPANA na żywo**: `a.x_btn_fleet_return
+  [data-fleet-id]`, href="#" (handler JS) → klik w żywym DOM na /fleet
+  (panel „Fleet movements", rozwinięcie przy wielu flotach), auto-confirm.
+  Pierwsze zawrócenie wykonane RĘCZNIE przez ownera (wykrywacz nie znał
+  klasy — naprawione w 2.66.9); wiersz powrotny bez przycisku = sukces.
+  KLIK NA ŻYWO jeszcze niepotwierdzony — sprawdzić przy następnym cyklu FS.
+- Sonda szpiegowska 09:49 zignorowana poprawnie — lista ruchów POKAZUJE obce
+  floty (połowa wielkiej niewiadomej obrony rozstrzygnięta na TAK).
+- Ekspedycje: fala zapełniająca ostatni slot zabiera CAŁY hangar (2.66.7);
+  krok 2 poprawia koordy celu, gdy formularz zgubi parametry URL (2.66.5).
