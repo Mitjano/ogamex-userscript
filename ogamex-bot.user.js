@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.8
+// @version      2.66.9
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3744,38 +3744,100 @@
         }
         const fleetId = row.getAttribute("data-fleet-id") || "";
         const etaBefore = parseInt(row.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0;
-        // kontrolka: link, formularz albo element z data-atrybutem
+        // ── v2.66.9: PRAWDZIWA kontrolka, złapana na żywo 15:33 ──
+        //   <a href="#" class="x_btn_fleet_return tooltip" data-fleet-id="…">
+        // href="#" = czysty handler JS, więc fetch nic nie da — trzeba KLIKNĄĆ
+        // w żywym DOM (lista renderuje się w panelu „Fleet movements" na
+        // /fleet). Wcześniejszy wykrywacz celowo nie szukał po słowie „return"
+        // (myliłoby się z lotami powrotnymi) — i dlatego przegapił klasę
+        // x_btn_fleet_return.
+        const returnBtnInRow = row.querySelector("a.x_btn_fleet_return, [class*='btn_fleet_return'], [class*='fleet_return']");
+        // Lot już wraca (np. zawrócony ręcznie): wiersz bez przycisku zawracania
+        // + znacznik powrotu = nie ma czego zawracać, cel osiągnięty.
+        if (!returnBtnInRow && /data-return-flight="true"|\(R\)|return/i.test(row.outerHTML)) {
+          this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
+          log("[FS] lot już jest w drodze powrotnej (zawrócony — możliwe, że ręcznie). Uznaję zawrócenie za wykonane.", "success");
+          ThreatLog.add("FS", "Lot wykryty jako powrotny — zawrócenie wykonane (być może ręcznie).");
+          try { updateStatusUI(); } catch {}
+          return;
+        }
+        // kontrolka fallback: link z realnym href, formularz albo data-atrybut
         const link = [...row.querySelectorAll("a[href]")].find(a =>
-          this.RECALL_RX.test(a.getAttribute("href") || "") || this.RECALL_RX.test(String(a.className || ""))
-          || this.RECALL_RX.test(a.getAttribute("data-tooltip-content") || "") || this.RECALL_RX.test(a.textContent || ""));
+          (a.getAttribute("href") || "#") !== "#" && (
+            this.RECALL_RX.test(a.getAttribute("href") || "") || this.RECALL_RX.test(String(a.className || ""))
+            || this.RECALL_RX.test(a.getAttribute("data-tooltip-content") || "") || this.RECALL_RX.test(a.textContent || "")));
         const form = [...row.querySelectorAll("form")].find(f => this.RECALL_RX.test(f.getAttribute("action") || ""));
         const dataEl = link || form ? null : [...row.querySelectorAll("[data-url], [data-href], [data-action]")].find(el =>
           this.RECALL_RX.test(el.getAttribute("data-url") || el.getAttribute("data-href") || el.getAttribute("data-action") || ""));
-        if (!link && !form && !dataEl) {
+        if (!returnBtnInRow && !link && !form && !dataEl) {
           // Zasada z noty: markupu nie zgadujemy. Zrzut końca wiersza do logu
           // (wymuszony, nie one-shot) i głośna porażka.
           log(`[FS] NIE ZNAJDUJĘ kontrolki zawracania w wierszu lotu. Koniec wiersza: ${(row.innerHTML || "").replace(/\s+/g, " ").slice(-1200)}`, "error");
           this._recallFail(st, "brak kontrolki zawracania w markupli wiersza (zrzut w logu — przyślij go, dopiszę selektor)");
           return;
         }
-        const target = link ? link.getAttribute("href")
-          : form ? form.getAttribute("action")
-          : (dataEl.getAttribute("data-url") || dataEl.getAttribute("data-href") || dataEl.getAttribute("data-action"));
-        log(`[FS] zawracam flotę (${link ? "link" : form ? "formularz" : "data-atrybut"}: ${target}).`, "info");
-        try {
-          if (form) {
-            const params = new URLSearchParams();
-            for (const inp of form.querySelectorAll("input[name]")) params.set(inp.getAttribute("name"), inp.getAttribute("value") || "");
-            const tok = Ajax.token(); if (tok && !params.has("_token")) params.set("_token", tok);
-            await fetch(target, {
-              method: (form.getAttribute("method") || "POST").toUpperCase(),
-              headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-              body: params.toString(), credentials: "same-origin",
-            });
-          } else {
-            await fetch(target, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+        if (link || form || dataEl) {
+          // ścieżka HTTP — na wypadek, gdyby inny build dawał realny adres
+          const target = link ? link.getAttribute("href")
+            : form ? form.getAttribute("action")
+            : (dataEl.getAttribute("data-url") || dataEl.getAttribute("data-href") || dataEl.getAttribute("data-action"));
+          log(`[FS] zawracam flotę (${link ? "link" : form ? "formularz" : "data-atrybut"}: ${target}).`, "info");
+          try {
+            if (form) {
+              const params = new URLSearchParams();
+              for (const inp of form.querySelectorAll("input[name]")) params.set(inp.getAttribute("name"), inp.getAttribute("value") || "");
+              const tok = Ajax.token(); if (tok && !params.has("_token")) params.set("_token", tok);
+              await fetch(target, {
+                method: (form.getAttribute("method") || "POST").toUpperCase(),
+                headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+                body: params.toString(), credentials: "same-origin",
+              });
+            } else {
+              await fetch(target, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+            }
+          } catch (e) { this._recallFail(st, `zapytanie zawracania padło: ${e.message}`); return; }
+        } else {
+          // ── klik w żywym DOM ──
+          const btnId = returnBtnInRow.getAttribute("data-fleet-id") || fleetId;
+          const findLive = () => (btnId
+            ? document.querySelector(`a.x_btn_fleet_return[data-fleet-id="${btnId}"]`)
+            : document.querySelector("a.x_btn_fleet_return"));
+          let live = findLive();
+          if (!live) {
+            // Przy wielu flotach lista jest zwinięta — rozwiń panel „Fleet
+            // movements" (przycisk na stronie floty), jak zrobiłby człowiek.
+            const toggle = [...document.querySelectorAll("a, button, div, span")]
+              .find(e => e.offsetParent !== null && !e.closest("#ogx-bot-panel")
+                && /fleet\s*movements/i.test((e.textContent || "").trim()));
+            if (toggle) { toggle.click(); await AntiDetection.sleep(1500); live = findLive(); }
           }
-        } catch (e) { this._recallFail(st, `zapytanie zawracania padło: ${e.message}`); return; }
+          if (!live) {
+            // Zła strona (lista tylko w danych) — przejdź na /fleet i spróbuj
+            // w następnym przebiegu pętli obrony. Max 2 nawigacje na cykl.
+            const navs = (st.recallNavs || 0) + 1;
+            if (navs <= 2) {
+              this.save({ ...st, recallNavs: navs });
+              log(`[FS] przycisk zawracania jest w danych, ale nie na tej stronie — przechodzę na /fleet (${navs}/2), żeby go kliknąć.`, "info");
+              window.location.href = "/fleet";
+              return;
+            }
+            this._recallFail(st, "przycisk x_btn_fleet_return jest w danych listy, ale nie mogę go dosięgnąć w żywym DOM");
+            return;
+          }
+          log(`[FS] klikam zawracanie (a.x_btn_fleet_return, lot ${(btnId || "?").slice(0, 8)}…).`, "info");
+          // Gdyby gra pytała natywnym confirm(), klik by na nim stanął —
+          // na czas kliknięcia odpowiadamy „tak".
+          const w = (typeof unsafeWindow !== "undefined" && unsafeWindow) || window;
+          const origConfirm = w.confirm;
+          try { w.confirm = () => true; live.click(); await AntiDetection.sleep(800); }
+          finally { try { w.confirm = origConfirm; } catch {} }
+          // Dialog potwierdzenia w DOM (jeśli jest) — klik tylko w obrębie modala.
+          const confirmBtn = [...document.querySelectorAll("button, a, input[type='button'], input[type='submit']")]
+            .find(e => e.offsetParent !== null && !e.closest("#ogx-bot-panel")
+              && e.closest("[class*='modal'], [class*='dialog'], [class*='popup'], [class*='confirm']")
+              && /^(ok|yes|tak|confirm|potwierd)/i.test((e.value || e.textContent || "").trim()));
+          if (confirmBtn) { confirmBtn.click(); await AntiDetection.sleep(500); }
+        }
         // ── weryfikacja: zawrócony lot ZMIENIA wiersz ──
         await AntiDetection.sleep(4000);
         let ok = false;
