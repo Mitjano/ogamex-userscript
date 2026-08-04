@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.67.0
+// @version      2.67.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3511,6 +3511,10 @@
           unknownType: isAttack && !this.ATTACK.test(type),
           spy: isSpy,
           ships,
+          // v2.67.1: surowy HTML wiersza — materiał dowodowy na pierwszy atak.
+          // Bez niego zły odczyt wrogiego wiersza byłby nie do zdiagnozowania
+          // (stare one-shot zrzuty zużyły się na NASZYCH flotach).
+          html: (tr.outerHTML || "").replace(/\s+/g, " ").slice(0, 1800),
         });
       }
       return { ok: true, rows };
@@ -4349,6 +4353,22 @@
           const foreign = fm.rows.filter(r => !r.mine);
           const attacks = foreign.filter(r => r.attack);
           const spies = foreign.filter(r => r.spy);
+          // ── v2.67.1: materiał dowodowy — surowy HTML wrogich wierszy ──
+          // Jednorazowo na każdy NOWY obraz wrogich flot (nie co 30 s): to,
+          // czego będzie trzeba do naprawy, gdyby klasyfikacja źle odczytała
+          // prawdziwy atak. Sondy pomijamy — ich odczyt jest już potwierdzony.
+          if (attacks.length) {
+            const sigH = attacks.map(r => r.id || `${r.type}|${r.src}|${r.dst}`).sort().join(";");
+            let seenH = null;
+            try { seenH = JSON.parse(GM_getValue("ogamex_atk_dom_sig", "null")); } catch {}
+            if (!seenH || seenH.sig !== sigH) {
+              GM_setValue("ogamex_atk_dom_sig", JSON.stringify({ sig: sigH, at: Date.now() }));
+              for (const r of attacks.slice(0, 3)) {
+                log(`[ATAK DOM] wrogi wiersz (${r.type}${r.unknownType ? " — TYP SPOZA ZNANYCH LIST" : ""}): ${r.html || "(brak html)"}`, "error");
+              }
+              ThreatLog.add("ATAK", `Zrzucono surowy HTML ${Math.min(attacks.length, 3)} wrogiego(-ich) wiersza(-y) do logu głównego — materiał do weryfikacji klasyfikacji.`);
+            }
+          }
           const out = {
             at: Date.now(),
             hostile: foreign.length,
