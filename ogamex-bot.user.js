@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.67.2
+// @version      2.68.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -533,6 +533,52 @@
         if (this._throttled("POWRÓT")) return;
         this.push("✅ Flota wróciła na bazę", m, "min", "white_check_mark");
       }
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  WAKE LOCK (v2.68.0) — bot ON = komputer nie zasypia
+  // ═══════════════════════════════════════════════════════════════
+  // Obrona działa tylko, póki karta żyje — a uśpiony laptop ją zabija.
+  // Screen Wake Lock API trzyma ekran zapalony, więc system nie wchodzi
+  // w sen z bezczynności; działa tak samo na macOS i Windows, bez
+  // caffeinate i bez grzebania w ustawieniach zasilania (ważne w pracy,
+  // gdzie nie ma praw admina). Uczciwe ograniczenia: karta z grą musi
+  // być WIDOCZNA (schowana/zminimalizowana = system odbiera blokadę;
+  // odzyskujemy ją, gdy karta wraca), a zamknięcie klapy i tak usypia.
+  const WakeLock = {
+    _lock: null,
+    _wired: false,
+    supported() { return !!navigator.wakeLock?.request; },
+    async acquire() {
+      if (!CONFIG.enabled || !this.supported()) return;
+      if (this._lock && !this._lock.released) return;
+      try {
+        this._lock = await navigator.wakeLock.request("screen");
+        log("[WAKE] blokada uśpienia aktywna — komputer nie zaśnie, póki karta z grą jest widoczna.", "info");
+      } catch (e) {
+        log(`[WAKE] nie udało się zablokować uśpienia: ${e.message}`, "warn");
+      }
+    },
+    release() {
+      if (!this._lock) return;
+      try { this._lock.release(); } catch {}
+      this._lock = null;
+      log("[WAKE] blokada uśpienia zdjęta (bot OFF) — komputer może zasnąć normalnie.", "info");
+    },
+    wire() {
+      if (this._wired) return;
+      this._wired = true;
+      if (!this.supported()) {
+        log("[WAKE] przeglądarka nie zna Wake Lock API — uśpienie pilnuj systemowo (caffeinate).", "warn");
+        return;
+      }
+      // Przeglądarka zwalnia blokadę przy każdym schowaniu karty — jedyny
+      // legalny moment na odzyskanie jej to powrót widoczności.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") this.acquire();
+      });
+      this.acquire();
     },
   };
 
@@ -8728,10 +8774,12 @@
       if (CONFIG.enabled) {
         startScheduler();
         startDefenceLoop();
+        WakeLock.acquire();
         log("Bot ENABLED", "success");
       } else {
         stopScheduler();
         stopDefenceLoop();
+        WakeLock.release();
         log("Bot DISABLED", "info");
       }
     });
@@ -9760,6 +9808,11 @@
       }
     } catch {}
     log(`OGameX Assistant v${SCRIPT_VERSION} loaded`, "info");
+
+    // v2.68.0: przed bramką pasywnej karty — blokadę uśpienia trzyma każda
+    // karta z grą (i tak liczy się ta widoczna), więc lider może się zmienić
+    // bez utraty ochrony przed snem.
+    try { WakeLock.wire(); } catch {}
 
     // v2.10.10: timestamp of the last real page load — read by the scheduler
     // keepalive to detect long stretches with no navigation (session risk).
