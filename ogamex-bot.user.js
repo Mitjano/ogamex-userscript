@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.68.0
+// @version      2.68.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3526,6 +3526,12 @@
       if (!m || parseInt(m[1]) !== b.galaxy || parseInt(m[2]) !== b.system) return false;
       const href = this.findDebrisLink();
       if (!href) return false;
+      // v2.68.1: pusty hangar (recyklery na księżycu po ratunku/FS) palił
+      // 10-minutową blokadę ponowienia bez żadnej wysyłki.
+      if (this.recyclersHome() <= 0) {
+        log("[ZŁOM] pole złomu jest, ale w hangarze zero recyklerów — spróbuję, gdy wrócą.", "warn");
+        return false;
+      }
       GM_setValue(this.KEY_SENT, String(Date.now()));
       GM_setValue("pending_mission", JSON.stringify({
         type: "debris_recycle_direct",
@@ -3543,19 +3549,21 @@
     },
 
     // Okresowa wizyta na galaktyce bazy. Tylko gdy bot i tak nic nie robi.
+    // ── v2.68.1: złom leżał na 16 godzinami ──
+    // Wizyta odpalała się tylko, gdy minery były W LOCIE (albo raz na 2 h) —
+    // a przy pustych skanach minery siedzą w domu i warunek nie zachodził
+    // nigdy. Teraz rytm jest prosty: co 20 minut, gdy bot nie ma nic
+    // pilniejszego; trwający skan asteroid przeżywa złom najwyżej 2 godziny.
     shouldVisit() {
       if (!CONFIG.expeditions?.collectDebris) return false;
       if (GM_getValue("pending_mission", null)) return false;
       if (ThreatMonitor.active()) return false;
       if (Humanizer.isOnBreak() || AntiDetection.isSleepTime()) return false;
+      if (this.recyclersHome() <= 0) return false; // bez recyklerów wizyta nic nie da
       const last = parseInt(GM_getValue(this.KEY_AT, "0")) || 0;
       if (Date.now() - last < this.CHECK_EVERY_MS) return false;
-      // Nie przerywamy skanu asteroid dla złomu: normalnie zaglądamy tylko
-      // wtedy, gdy minery i tak są w drodze i skan stoi. Dopiero po dwóch
-      // godzinach bez wizyty idziemy mimo wszystko — skaner umie się pozbierać
-      // („Scan stranded off galaxy page. Resuming at …"), ale to kosztuje.
-      const minersOut = (parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0) > Date.now();
-      return minersOut || Date.now() - last > 2 * 60 * 60 * 1000;
+      const scanActive = !!ScanState.load()?.active;
+      return !scanActive || Date.now() - last > 2 * 60 * 60 * 1000;
     },
 
     visit() {
@@ -7479,6 +7487,24 @@
           }
         }
 
+        // ── v2.68.1: złom — cel „pole złomu" wybieram SAM, nie ufam URL-owi ──
+        // Link zbierania powinien ustawić typ celu, ale formularz potrafi
+        // zgubić parametry URL (incydent 09:50 4.08 — poprawka [CEL] wyżej
+        // ratuje wtedy tylko koordy). Przełącznik ciała znamy z żywego zrzutu
+        // ratunku: data-planet-type 1=Planet, 2=Moon, 3=Debris.
+        if (mission.recycle) {
+          const panel = document.querySelector("#fleet2, .fleet2, .destination, [class*='destination']") || document.body;
+          const inSidebar = (el) => !!el.closest(".planet-select, .moon-select, .sidebar, nav, #ogx-bot-panel");
+          const debrisBtn = [...panel.querySelectorAll("[data-planet-type='3']")].filter(el => !inSidebar(el))[0];
+          if (debrisBtn) {
+            debrisBtn.click();
+            log("[ZŁOM] cel: POLE ZŁOMU — kliknięto przełącznik data-planet-type=3.", "fleet");
+            await AntiDetection.sleep(400 + Math.random() * 400);
+          } else {
+            log(`[ZŁOM] brak przełącznika pola złomu na kroku 2 — liczę na parametry linku. Panel: ${(panel.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 400)}`, "warn");
+          }
+        }
+
         // ── v2.60.0: FS — prędkość lotu (główna dźwignia długości FS) ──
         // Markupu suwaka NIKT jeszcze nie widział (nota: „trzeba zrzucić
         // osobno"), więc: najpierw próby po ZNACZENIU (select z opcjami %,
@@ -7821,6 +7847,26 @@
           const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
           if (allRes) { allRes.click(); log("[FS] surowce z księżyca załadowane.", "fleet"); }
           await AntiDetection.sleep(400 + Math.random() * 400);
+        }
+
+        // ── v2.68.1: złom — misja „Collect" klikana jawnie, albo wcale ──
+        // Ten build ma A.mission-item.COLLECT (widziane na żywo w zrzucie
+        // step3-clickables 4.08 22:12). Bez trafienia NIE wysyłam: domyślna
+        // misja z całym hangarem recyklerów to loteria, a złom poczeka.
+        if (mission.recycle) {
+          const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
+          const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
+          const picked = missions.find(m => /COLLECT|HARVEST|RECYCL/.test(nameOf(m)));
+          if (!picked) {
+            log(`[ZŁOM] brak misji Collect/Harvest na kroku 3 — NIE wysyłam. Dostępne: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"}`, "error");
+            GM_setValue("pending_mission", null);
+            await AntiDetection.sleep(600 + Math.random() * 600);
+            window.location.href = "/";
+            return;
+          }
+          log(`[ZŁOM] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
+          picked.click();
+          await AntiDetection.sleep(500 + Math.random() * 500);
         }
 
         // ── v2.14.0: expedition holding time ──
