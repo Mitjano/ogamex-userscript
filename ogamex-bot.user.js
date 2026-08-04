@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.5
+// @version      2.66.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7116,7 +7116,11 @@
         // Click "Next" — step 1 → step 2
         if (!await clickButtonWhenEnabled("Next", "step1→2")) {
           dumpButtons("step1-fail");
-          log("Cannot find Next button (step 1)", "error");
+          // v2.66.6: bez zabytkowego „Cannot find Next button" — powód porażki
+          // (martwy przycisk vs brak przycisku) wypisał już clickButtonWhenEnabled
+          // linijkę wyżej; drugi komunikat twierdził, że przycisku „nie było",
+          // także wtedy, gdy stał na stronie wyłączony (mylił właściciela 09:51).
+          log("Krok 1 nieudany — wycofuję wysyłkę (szczegóły wyżej).", "error");
           // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
             // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
             // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
@@ -7419,7 +7423,8 @@
         // Click "Next" — step 2 → step 3
         if (!await clickButtonWhenEnabled("Next", "step2→3")) {
           dumpButtons("step2-fail");
-          log("Cannot find Next button (step 2)", "error");
+          // v2.66.6: jak w kroku 1 — prawdziwy powód jest linijkę wyżej.
+          log("Krok 2 nieudany — wycofuję wysyłkę (szczegóły wyżej).", "error");
           // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
             // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
             // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
