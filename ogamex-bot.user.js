@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.67.1
+// @version      2.67.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @connect      generativelanguage.googleapis.com
+// @connect      ntfy.sh
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -458,6 +459,83 @@
   // wpadają raz na 10 minut, więc 600 wpisów to ponad cztery doby ciszy —
   // i znacznie więcej historii, jeśli coś się dzieje, bo wtedy liczą się
   // minuty wokół zdarzenia, a nie tygodnie.
+  // ═══════════════════════════════════════════════════════════════
+  //  NOTIFIER (v2.67.0) — push na telefon przez ntfy.sh
+  // ═══════════════════════════════════════════════════════════════
+  // Druga linia obrony na wypadek, gdyby automatyczne podnoszenie floty
+  // zawiodło (padnięta przeglądarka tego nie wyśle, ale wszystko, co bot
+  // ZDĄŻY wykryć, trafia też na telefon). ntfy.sh: darmowe, bez konta —
+  // temat o losowej nazwie działa jak sekret, a apka na telefonie
+  // subskrybuje go po nazwie.
+  //
+  // Co idzie na telefon (przez hak w ThreatLog.add — dziennik już wie, co
+  // jest ważne): ATAK (pilne), RATUNEK wysłany, BŁĄD obrony (wysokie),
+  // porażka FS (wysokie), POWRÓT (cicho). Rutynowe odczyty — nigdy.
+  const Notifier = {
+    KEY_TOPIC: "ogamex_ntfy_topic",
+    KEY_ON: "ogamex_ntfy_on",
+    KEY_LAST: "ogamex_ntfy_last",   // { "<kind>": ts } — dławik na rodzaj
+    THROTTLE_MS: { "ATAK": 5 * 60 * 1000, "RATUNEK": 2 * 60 * 1000, "POWRÓT": 5 * 60 * 1000, "BŁĄD": 5 * 60 * 1000, "FS": 5 * 60 * 1000 },
+
+    topic() {
+      let t = GM_getValue(this.KEY_TOPIC, "");
+      if (!t) {
+        // 12 losowych znaków = temat-nieodgadnięty; prefiks mówi, co to jest.
+        t = "ogamex-mch-" + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8);
+        GM_setValue(this.KEY_TOPIC, t);
+      }
+      return t;
+    },
+    enabled() { return GM_getValue(this.KEY_ON, "1") === "1"; },
+
+    _throttled(kind) {
+      let last = {};
+      try { last = JSON.parse(GM_getValue(this.KEY_LAST, "{}")); } catch {}
+      const win = this.THROTTLE_MS[kind] || 5 * 60 * 1000;
+      if (Date.now() - (last[kind] || 0) < win) return true;
+      last[kind] = Date.now();
+      GM_setValue(this.KEY_LAST, JSON.stringify(last));
+      return false;
+    },
+
+    push(title, msg, priority = "default", tags = "") {
+      if (!this.enabled()) return;
+      try {
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: "https://ntfy.sh/" + this.topic(),
+          headers: { Title: title, Priority: priority, Tags: tags },
+          data: String(msg).slice(0, 600),
+          timeout: 15000,
+          onload: () => {},
+          onerror: () => log("[PUSH] ntfy.sh nie odpowiedziało — powiadomienie nie wyszło.", "warn"),
+          ontimeout: () => log("[PUSH] ntfy.sh timeout — powiadomienie nie wyszło.", "warn"),
+        });
+      } catch (e) { log(`[PUSH] błąd: ${e.message}`, "warn"); }
+    },
+
+    // Hak z dziennika obrony: rodzaj wpisu decyduje o tym, czy i jak głośno.
+    fromJournal(kind, msg) {
+      const m = String(msg || "");
+      if (kind === "ATAK") {
+        if (this._throttled("ATAK")) return;
+        this.push("⚔️ ATAK na Twoje konto OGameX!", m, "urgent", "rotating_light");
+      } else if (kind === "RATUNEK" && /WYS[ŁL]ANE/i.test(m)) {
+        if (this._throttled("RATUNEK")) return;
+        this.push("🛟 Flota ewakuowana", m, "default", "shield");
+      } else if (kind === "BŁĄD") {
+        if (this._throttled("BŁĄD")) return;
+        this.push("⚠️ Obrona zgłasza BŁĄD — sprawdź grę!", m, "high", "warning");
+      } else if (kind === "FS" && /NIEUDANE|zosta/i.test(m)) {
+        if (this._throttled("FS")) return;
+        this.push("🌙 Fleet Save: problem", m, "high", "warning");
+      } else if (kind === "POWRÓT" && /WYS[ŁL]ANE/i.test(m)) {
+        if (this._throttled("POWRÓT")) return;
+        this.push("✅ Flota wróciła na bazę", m, "min", "white_check_mark");
+      }
+    },
+  };
+
   const ThreatLog = {
     KEY: "ogamex_threat_journal",
     MAX: 600,
@@ -488,6 +566,7 @@
       const list = this.all();
       list.unshift({ t: stamp, at: Date.now(), k: kind, m: String(msg).slice(0, 400) });
       GM_setValue(this.KEY, JSON.stringify(this._prune(list)));
+      try { Notifier.fromJournal(kind, msg); } catch {}  // v2.67.0: push na telefon
       try { updateStatusUI(); } catch {}
     },
 
@@ -8480,6 +8559,14 @@
             </label>
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
             <button class="mini-btn" id="ogx-threat-sim" style="width:100%;margin-top:4px;" title="Przepuszcza SYNTETYCZNY atak na bazę przez prawdziwą maszynerię obrony: kandydat → potwierdzenie ~25-35 s → EWAKUACJA całej floty i surowców na drugie ciało → po ~2 min alarm gaśnie i flota wraca automatycznie. Koszt: kilka minut miningu i dwa krótkie przeloty. To jest pełna próba generalna automatu bez czekania na wroga.">TEST ALARMU (symulacja ataku)</button>
+            <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
+              <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;">
+                <span title="Push na telefon przez ntfy.sh przy ataku, ewakuacji, błędzie obrony i powrocie. Zainstaluj apkę ntfy (Google Play / App Store), dodaj subskrypcję tematu widocznego niżej — i tyle. Temat o losowej nazwie działa jak hasło: nie udostępniaj go.">Push na telefon (ntfy)</span>
+                <button class="mini-btn" id="ogx-ntfy-toggle">—</button>
+              </label>
+              <div class="status" id="ogx-ntfy-topic" style="font-size:9px;user-select:text;cursor:pointer;" title="Kliknij, żeby skopiować nazwę tematu do schowka.">—</div>
+              <button class="mini-btn" id="ogx-ntfy-test" style="width:100%;margin-top:3px;" title="Wysyła próbne powiadomienie na temat ntfy. Jeśli telefon nie zawibruje w kilka sekund — sprawdź subskrypcję w apce.">Wyślij testowe powiadomienie</button>
+            </div>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
             <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
               <div class="status" id="ogx-threatlog-status" style="font-size:10px;color:#e67e22;">Dziennik obrony: —</div>
@@ -8916,6 +9003,30 @@
         try { await Ajax.diagnose(); } catch (e) { log(`[API TEST] błąd: ${e.message}`, "error"); }
         finally { apiTestBtn.disabled = false; }
       });
+      // v2.67.0: powiadomienia ntfy — temat, przełącznik, test
+      {
+        const nBtn = document.getElementById("ogx-ntfy-toggle");
+        const nTopic = document.getElementById("ogx-ntfy-topic");
+        const nTest = document.getElementById("ogx-ntfy-test");
+        const paint = () => {
+          if (nBtn) nBtn.textContent = Notifier.enabled() ? "ON" : "OFF";
+          if (nTopic) nTopic.textContent = `temat: ${Notifier.topic()}`;
+          if (nTopic) nTopic.style.color = Notifier.enabled() ? "#27ae60" : "#7f8c8d";
+        };
+        if (nBtn) nBtn.addEventListener("click", () => {
+          GM_setValue(Notifier.KEY_ON, Notifier.enabled() ? "0" : "1");
+          log(`Push na telefon: ${Notifier.enabled() ? "WŁĄCZONE" : "wyłączone"}.`, "info");
+          paint();
+        });
+        if (nTopic) nTopic.addEventListener("click", () => {
+          try { navigator.clipboard.writeText(Notifier.topic()); nTopic.textContent = "skopiowano ✓"; setTimeout(paint, 1200); } catch {}
+        });
+        if (nTest) nTest.addEventListener("click", () => {
+          Notifier.push("🔔 Test powiadomień OGameX", `Działa! Temat: ${Notifier.topic()}. Bot wyśle tu alarm o ataku, ewakuacji i błędach obrony.`, "default", "bell");
+          log(`[PUSH] wysłano testowe powiadomienie na temat ${Notifier.topic()} — telefon powinien zawibrować w kilka sekund.`, "success");
+        });
+        paint();
+      }
       const recon = document.getElementById("ogx-fleet-recon");
       if (recon) recon.addEventListener("click", () => {
         // On the fleet page take a fresh reading; elsewhere show what the last
