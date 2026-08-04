@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.7
+// @version      2.66.8
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7290,6 +7290,27 @@
               .find(e => e.offsetParent !== null && (e.textContent || "").trim() === `${pct}%`);
             if (el) { el.click(); speedSet = true; }
           }
+          // 4) v2.66.8: NA TYM FORKU suwak to rząd GOŁYCH liczb, bez znaku % —
+          // zrzut właściciela (04.08, krok 2, sekcja Briefing): „Speed:
+          // 3 5 10 20 30 40 50 60 70 80 90 100" z podświetloną setką.
+          // Rząd rozpoznajemy po komplecie wartości (rodzic, którego dzieci
+          // mają teksty „3", „10" i „50") — samo „10" występuje na stronie
+          // w tysiącu innych miejsc i klikanie po gołym tekście byłoby ruletką.
+          if (!speedSet) {
+            const txt = (e) => (e.textContent || "").trim();
+            const hundreds = [...document.querySelectorAll("a, span, button, div, td, li")]
+              .filter(e => txt(e) === "100" && e.offsetParent !== null && !e.closest("#ogx-bot-panel"));
+            for (const h of hundreds) {
+              const row = h.parentElement;
+              if (!row) continue;
+              const kids = [...row.children];
+              const texts = kids.map(txt);
+              if (!(texts.includes("3") && texts.includes("10") && texts.includes("50"))) continue;
+              const target = kids.find(k => txt(k) === String(pct));
+              if (target) { target.click(); speedSet = true; }
+              break;
+            }
+          }
           // v2.63.0: poprzedni zrzut łapał NAGŁÓWEK strony (selektor trafiał
           // w document.body) — bezużyteczny. Kotwicą jest panel celu
           // (#target_planet_type_container — potwierdzony na żywo 16:36),
@@ -7340,6 +7361,21 @@
           capturedFlightMs = (parseInt(ftMatch[1]) * 3600 + parseInt(ftMatch[2]) * 60 + parseInt(ftMatch[3])) * 1000;
           log(`Captured flight time from step 2: ${ftMatch[1]}h${ftMatch[2]}m${ftMatch[3]}s`, "fleet");
         }
+        // v2.66.8: ten fork podpisuje czas lotu „Duration of flight (one way):
+        // 00:35" — format MM:SS (jeden dwukropek), więc wzorzec HH:MM:SS wyżej
+        // NIGDY go nie łapał. Dotyczy WSZYSTKICH misji: mining też wreszcie
+        // dostaje czas lotu z formularza, zamiast odtwarzać go z paska po
+        // wysyłce. Przy dłuższych lotach gra może pokazać H:MM:SS — trzeci
+        // człon jest opcjonalny.
+        if (!capturedFlightMs) {
+          const fm2 = step2Text.match(/Duration\s*of\s*flight[^0-9]{0,40}?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
+          if (fm2) {
+            capturedFlightMs = fm2[3] !== undefined
+              ? (parseInt(fm2[1]) * 3600 + parseInt(fm2[2]) * 60 + parseInt(fm2[3])) * 1000
+              : (parseInt(fm2[1]) * 60 + parseInt(fm2[2])) * 1000;
+            log(`Captured flight time (Duration of flight): ${fm2[1]}:${fm2[2]}${fm2[3] !== undefined ? ":" + fm2[3] : ""} → ${Math.round(capturedFlightMs / 1000)}s one-way`, "fleet");
+          }
+        }
         // Also check for data attributes with flight duration
         if (!capturedFlightMs) {
           const durationEl = document.querySelector("[data-duration], [data-flight-time], [data-flight-duration]");
@@ -7387,6 +7423,13 @@
               const t3 = document.body.textContent;
               const m3 = t3.match(/(?:[Ff]light\s*(?:time|duration)|[Dd]uration|[Cc]zas\s*lotu)[\s:]*(\d{1,2}):(\d{2}):(\d{2})/);
               if (m3) capturedFlightMs = (parseInt(m3[1]) * 3600 + parseInt(m3[2]) * 60 + parseInt(m3[3])) * 1000;
+              // v2.66.8: format tego forka — „Duration of flight … MM:SS"
+              if (!(capturedFlightMs > 0)) {
+                const m3b = t3.match(/Duration\s*of\s*flight[^0-9]{0,40}?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
+                if (m3b) capturedFlightMs = m3b[3] !== undefined
+                  ? (parseInt(m3b[1]) * 3600 + parseInt(m3b[2]) * 60 + parseInt(m3b[3])) * 1000
+                  : (parseInt(m3b[1]) * 60 + parseInt(m3b[2])) * 1000;
+              }
               if (!(capturedFlightMs > 0)) {
                 const el3 = document.querySelector("[class*='flight'], [class*='duration'], [id*='duration' i], [id*='flight' i]");
                 const tm3 = el3 && (el3.textContent || "").match(/(\d{1,2}):(\d{2}):(\d{2})/);
