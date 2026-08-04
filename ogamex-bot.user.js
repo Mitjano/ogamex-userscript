@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.66.4
+// @version      2.66.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7143,6 +7143,34 @@
         }
         log("Step 2 loaded (destination)", "fleet");
         dumpButtons("step2");
+
+        // ── v2.66.5: sprawdź, czy formularz CELUJE tam, gdzie misja ──
+        // Incydent 2026-08-04 09:50: formularz wczytał się BEZ parametrów
+        // z URL — cel został domyślny (własna planeta 3:269:8 zamiast
+        // 3:269:16), cel=źródło, gra wyszarzyła Next i fala przepadła po 25 s
+        // czekania. Zrzut właściciela pokazał to wprost. Koordy celu siedzą
+        // w polach #fleet2_target_x/y/z (markup potwierdzony na żywo przy
+        // pomiarze FS) — porównaj z celem misji i popraw, ZANIM klikniemy.
+        try {
+          const wantCoord = coordsFromFleetUrl(mission.fleetUrl);
+          const fx = document.getElementById("fleet2_target_x");
+          const fy = document.getElementById("fleet2_target_y");
+          const fz = document.getElementById("fleet2_target_z");
+          if (wantCoord && wantCoord.split(":").length === 3 && fx && fy && fz) {
+            const [wg, ws, wp] = wantCoord.split(":");
+            const have = `${fx.value}:${fy.value}:${fz.value}`;
+            if (have !== `${wg}:${ws}:${wp}`) {
+              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+              for (const [el, v] of [[fx, wg], [fy, ws], [fz, wp]]) {
+                if (setter) setter.call(el, v); else el.value = v;
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              log(`[CEL] formularz pokazywał [${have}], a misja leci na [${wg}:${ws}:${wp}] — poprawiłem pola celu (URL nie zaaplikował parametrów).`, "warn");
+              await AntiDetection.sleep(700 + Math.random() * 500); // niech gra przeliczy trasę
+            }
+          }
+        } catch {}
 
         // ── v2.26.0: the moon is a DESTINATION TYPE, not a link ──
         // Owner walked the form by hand and showed what the game actually does:
