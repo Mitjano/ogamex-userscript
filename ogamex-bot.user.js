@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.72.2
+// @version      2.73.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -108,7 +108,10 @@
       // Base planet from which miners ALWAYS launch. Set to null to fall back
       // to min-over-all-planets behavior. Per-host storage means each universe
       // remembers its own base independently (set via UI or saved config).
-      minerBase: { galaxy: 3, system: 269, position: 8 },
+      // v2.73.0: 05.08 ~22:30 właściciel PRZENIÓSŁ bazę na [3:272:7]
+      // (agresor przeskoczył do starego układu, 3 min lotu od bazy; nowy
+      // układ jest pełny — nikt się już nie wciśnie).
+      minerBase: { galaxy: 3, system: 272, position: 7 },
     },
     // ── v2.15.0: incoming-attack alarm ──
     // ── v2.57.0: Fleet Save (FS) ──
@@ -119,8 +122,8 @@
     // zawrócić. Minery zostają w domu — one pracują.
     fleetSave: {
       enabled: false,
-      from: { galaxy: 3, system: 269, position: 8 },  // bazowy księżyc
-      to: { galaxy: 3, system: 269, position: 5 },    // cel (też księżyc)
+      from: { galaxy: 3, system: 272, position: 7 },  // bazowy księżyc (przenosiny 05.08)
+      to: null,                // cel do PONOWNEGO wyboru po przenosinach (stary 3:269:5 nieaktualny)
       returnAt: null,          // ISO, godzina powrotu ustawiona przez właściciela
       speedPercent: 10,        // wolniej = dłuższy lot = dłuższy możliwy FS
       excludeTypes: ["ASTEROID_MINER"],
@@ -366,6 +369,39 @@
               setTimeout(() => log("AVATAR nie lata juz na ekspedycje — zostaje w domu.", "info"), 1500);
             }
           }
+        }
+      }
+
+      // ── v2.73.0 migration: PRZENOSINY BAZY [3:269:8] → [3:272:7] (05.08 ~22:30) ──
+      // Właściciel przeniósł planetę główną i księżyc (agresor wskoczył do
+      // starego układu na 3 min lotu). Zapisany config trzymałby starą bazę —
+      // a prom co 2 h wysłałby CAŁĄ flotę Deployem w nieistniejące [3:269:8].
+      // Reset bazy + całej nauczonej wiedzy o starym księżycu i starych tras.
+      {
+        const MB_KEY = "ogamex_migration_base_3272_v273";
+        if (GM_getValue(MB_KEY, "0") !== "1") {
+          GM_setValue(MB_KEY, "1");
+          merged.asteroidMining.minerBase = { galaxy: 3, system: 272, position: 7 };
+          if (merged.fleetSave) {
+            merged.fleetSave.from = { galaxy: 3, system: 272, position: 7 };
+            merged.fleetSave.to = null; // stary cel 3:269:5 nieaktualny — wybrać nowy
+          }
+          saveConfig(merged);
+          // Wiedza o STARYM księżycu: link celu ratunku, flagi nauki wiersza
+          // galaktyki — wszystko uczy się od nowa z wiersza [3:272:7].
+          GM_setValue("ogamex_moon_link", "null");
+          GM_setValue("ogamex_moon_fetch_dead", "");
+          GM_setValue("ogamex_moon_fetch_tries", "0");
+          GM_setValue("ogamex_moon_visit_at", "0");
+          GM_setValue("ogamex_moon_markup_dumped_v2253", "");
+          // Kolejki zbudowane na starej bazie (odległości liczone od 3:269).
+          GM_setValue("ogamex_scan_state", null);
+          GM_setValue("ogamex_farm_scan", "null");
+          GM_setValue("ogamex_fs_flight_ms", "{}");
+          // Prom: pierwszy kurs z NOWEJ bazy od razu (konsolidacja na nowym księżycu).
+          GM_setValue("ogamex_ferry_at", "0");
+          console.log("[OGameX v2.73.0] migration: baza przeniesiona na [3:272:7], wiedza o starym księżycu wyczyszczona");
+          setTimeout(() => log("PRZENOSINY: baza bota ustawiona na [3:272:7] (planeta+księżyc). Cel ratunku nauczy się z nowego wiersza galaktyki; cel Fleet Save do ponownego wyboru.", "success"), 1500);
         }
       }
 
