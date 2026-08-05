@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.0
+// @version      2.74.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7930,7 +7930,7 @@
         // który pokazuje SAMA GRA. Nieustawiona prędkość ≠ zła wysyłka:
         // najwyżej okno nie zmieści się w 2×T i bot odmówi startu.
         if (mission.fleetSave) {
-          const pct = Math.max(10, Math.min(100, parseInt(mission.speedPercent) || 100));
+          const pct = Math.max(1, Math.min(100, parseInt(mission.speedPercent) || 100)); // v2.74.1: fork ma też 3% i 5%
           let speedSet = false;
           // 1) select, którego opcje wyglądają jak procenty (wzorzec „po tekście”
           //    — ten sam, którym ustawiamy czas trwania ekspedycji)
@@ -9168,7 +9168,7 @@
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Prędkość lotu w %. Wolniej = dłuższy lot = dłuższy możliwy FS (przy 10% lot trwa 10× dłużej). Maksymalny FS = 2× czas lotu w jedną stronę.">Prędkość (%)</span>
-              <input id="ogx-fs-speed" type="number" min="10" max="100" step="10" value="${CONFIG.fleetSave?.speedPercent || 10}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+              <input id="ogx-fs-speed" type="number" min="1" max="100" step="1" value="${CONFIG.fleetSave?.speedPercent || 10}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <button class="mini-btn" id="ogx-fs-measure" style="width:100%;margin-top:4px;" title="Wchodzi w formularz wysyłki, ustawia prędkość, odczytuje czas lotu pokazany przez grę i WYCHODZI BEZ WYSYŁKI. Od tego momentu planer zna trasę i sam wyliczy godzinę startu.">Zmierz trasę (bez wysyłki)</button>
           </div>
@@ -9572,7 +9572,7 @@
       });
       const fsSpeed = document.getElementById("ogx-fs-speed");
       if (fsSpeed) fsSpeed.addEventListener("change", () => {
-        const v = Math.max(10, Math.min(100, parseInt(fsSpeed.value) || 10));
+        const v = Math.max(1, Math.min(100, parseInt(fsSpeed.value) || 10)); // v2.74.1: 3%/5% dozwolone (dłuższy lot = dłuższy FS)
         fsSpeed.value = v;
         CONFIG.fleetSave.speedPercent = v;
         saveConfig(CONFIG);
