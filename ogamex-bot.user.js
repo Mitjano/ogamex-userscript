@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.70.3
+// @version      2.71.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3506,6 +3506,53 @@
   //   • Recykling NIE jest lotem górniczym. Ma własną flagę, więc nie zjada
   //     budżetu lotów ani nie ustawia pauzy skanu.
   //   • Ustępuje wszystkiemu: ratunkowi floty, trwającej wysyłce i przerwom.
+  // ═══════════════════════════════════════════════════════════════
+  //  MOON FERRY (v2.71.0) — prom planeta → księżyc (tryb księżycowy)
+  // ═══════════════════════════════════════════════════════════════
+  // W trybie księżycowym flota MIESZKA na księżycu, ale planeta stale coś
+  // gromadzi: produkcję stoczni, deuter i surowce z kopalń — a czasem całą
+  // flotę po nietypowym epizodzie (05.08 16:24: powrót po zepsutym flipie
+  // odstawił wszystko na planetę i nic nie miało podstawy tego naprawić).
+  // Prom co 2 h przewozi WSZYSTKO z planety na księżyc misją Deploy — tą
+  // samą maszynerią co ratunek. Pusta planeta = cichy koniec („nothing to
+  // save"). Ustępuje wszystkiemu: alarmowi, straży, trwającej wysyłce,
+  // przerwom i oknu nocnemu.
+  const MoonFerry = {
+    KEY_AT: "ogamex_ferry_at",
+    EVERY_MS: 2 * 60 * 60 * 1000,
+
+    due() {
+      if (CONFIG.baseBody !== "moon" || !CONFIG.enabled) return false;
+      if (ThreatMonitor.active() || MoonSave.watch().armed) return false;
+      const p = GM_getValue("pending_mission", null);
+      if (p && p !== "null") return false;
+      if (Humanizer.isOnBreak() || AntiDetection.isSleepTime()) return false;
+      return Date.now() - (parseInt(GM_getValue(this.KEY_AT, "0")) || 0) > this.EVERY_MS;
+    },
+
+    async run() {
+      if (!this.due()) return false;
+      const b = CONFIG.asteroidMining.minerBase;
+      if (!b) return false;
+      GM_setValue(this.KEY_AT, String(Date.now()));
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "moon_ferry_direct",
+        moonSave: true,       // ta sama obsługa formularza co ratunek
+        ferry: true,          // …ale własne wpisy w logu/dzienniku
+        sweep: true,          // NIGDY nie flipuj na drugie ciało (v2.70.3)
+        atCoords: b,
+        launchBody: "planet",
+        targetBody: "moon",
+        homeBody: "moon",
+        fleetUrl: `/fleet?x=${b.galaxy}&y=${b.system}&z=${b.position}`,
+        step: "switch_to_body",
+        timestamp: Date.now(),
+      }));
+      log("[PROM] planeta → księżyc: przewożę wszystko, co stoi na planecie (produkcja, surowce, zabłąkana flota). Pusta planeta = nic się nie stanie.", "info");
+      return true;
+    },
+  };
+
   const DebrisCollector = {
     KEY_AT: "ogamex_debris_check_at",
     KEY_SENT: "ogamex_debris_sent_at",
@@ -7328,7 +7375,8 @@
             return;
           }
           log(`[MOON SAVE] loading everything: ${loaded.join(", ")}`, "success");
-          ThreatLog.add("RATUNEK", `Załadowano: ${loaded.join(", ")}`);
+          // v2.71.0: prom to logistyka — wpis "odczyt" nie zaburza liczników obrony.
+          ThreatLog.add(mission.ferry ? "odczyt" : "RATUNEK", `${mission.ferry ? "PROM załadowany" : "Załadowano"}: ${loaded.join(", ")}`);
         } else
 
         // ── v2.60.0: Fleet Save — wszystko POZA wykluczeniami (minery zostają) ──
@@ -8207,7 +8255,7 @@
             // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
             if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
           } else if (successMsg || fleetMovement) {
-            if (mission.moonSave) ThreatLog.add(mission.moonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę.");
+            if (mission.moonSave) ThreatLog.add(mission.ferry ? "odczyt" : mission.moonReturn ? "POWRÓT" : "RATUNEK", mission.ferry ? "PROM: planeta → księżyc wysłany." : "WYSŁANE — gra przyjęła flotę.");
             if (mission.moonReturn) MoonSave.disarm("flota i surowce wróciły na planetę bazową");
             log(mission.moonReturn ? "POWRÓT ZAKOŃCZONY — flota i surowce lecą z księżyca na planetę. Mining i ekspedycje wracają do pracy."
               : mission.moonSave ? "FLEET SAVED — everything moved to the moon."
@@ -8390,6 +8438,13 @@
     // 15min inside the tick) so a visible bonus is taken promptly. No-ops in
     // ~microseconds when the button isn't there (single textContent scan).
     await OnlineBonus.run().catch(() => {});
+
+    // v2.71.0: PROM planeta→księżyc — w trybie księżycowym co 2 h przewozi
+    // wszystko, co uzbierało się na planecie (produkcja stoczni, deuter,
+    // flota po nietypowym epizodzie). due() sam sprawdza alarm/straż/pending/
+    // przerwy, więc tu wystarczy jedno wywołanie. Jeśli utworzył misję —
+    // kończymy tick, handlePendingMission przejmie od następnego przebiegu.
+    if (await MoonFerry.run().catch(() => false)) return;
 
     // v2.10.10 keepalive: guarantee a REAL page load at least every ~12min.
     // After "scan complete — no asteroids" the bot used to sit 45min on one
@@ -10186,12 +10241,14 @@
       let wasFarmSend = false;
       let wasMoonSend = false;
       let wasMoonReturn = false;
+      let wasFerry = false;
       try {
         const pm = JSON.parse(GM_getValue("pending_mission", "null"));
         wasFarmSend = !!pm?.farm;
         wasExpoSend = !!pm?.expedition;
         wasMoonSend = !!pm?.moonSave;
         wasMoonReturn = !!pm?.moonReturn;
+        wasFerry = !!pm?.ferry;
         wasRecycleSend = !!pm?.recycle;
         wasFsSend = !!pm?.fleetSave;
       } catch {}
@@ -10222,8 +10279,15 @@
         // o 09:26:19, a potem próby o 09:27:45, 09:29:11, 09:30:23, 09:30:36
         // i 09:32:26 — wszystkie w pustkę, bo flota była już w drodze.
         if (wasMoonReturn) MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
-        ThreatLog.add(wasMoonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę (potwierdzone po przeładowaniu).");
-        log("Ratunek/powrót floty wysłany — liczniki mininga nietknięte.", "fleet");
+        if (wasFerry) {
+          // v2.71.0: prom to logistyka, nie obrona — bez wpisu RATUNEK/POWRÓT
+          // w dzienniku (zafałszowałby liczniki epizodów obrony).
+          ThreatLog.add("odczyt", "PROM: planeta → księżyc wysłany (przewóz produkcji/surowców/floty).");
+          log("[PROM] wysłany — wszystko z planety leci na księżyc.", "success");
+        } else {
+          ThreatLog.add(wasMoonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę (potwierdzone po przeładowaniu).");
+          log("Ratunek/powrót floty wysłany — liczniki mininga nietknięte.", "fleet");
+        }
       } else if (wasExpoSend) {
         GM_setValue("pending_mission", null);
         const storedExp = parseInt(GM_getValue("ogamex_inflight_fleets", "0")) || 0;
