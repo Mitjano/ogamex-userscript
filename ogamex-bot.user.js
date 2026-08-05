@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.2
+// @version      2.74.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3949,13 +3949,16 @@
       const window = at - now;
       const maxMs = 2 * T - 2 * this.LAUNCH_MARGIN_MS;
       if (window > maxMs) {
-        return {
-          ok: false,
-          why: `start ok. ${new Date(at - maxMs).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })} (okno ${Math.round(window / 60000)} min > maks. ${Math.round(maxMs / 60000)} min). Wolniej albo dalszy księżyc = dłuższy możliwy FS.`,
-          maxMs, launchDueAt: at - maxMs,
-        };
+        // ── v2.74.3: NIE czekamy na „opłacalne" okno — decyzja właściciela
+        // 05.08: „FS ma być wysyłany natychmiast, flota na księżycu = cel".
+        // Za długie okno = lecimy ŁAŃCUCHEM pełnych rund: start OD RAZU,
+        // zawrócenie po pełnym locie (T − margines), powrót po 2T; po nim
+        // planer wystawi kolejną rundę, aż ostatnia zmieści się w oknie
+        // i wróci o zadanej godzinie. Flota jest w powietrzu cały czas.
+        return { ok: true, launchAt: now, recallAt: now + Math.floor(maxMs / 2),
+                 returnAt: now + maxMs, delayMs: Math.floor(maxMs / 2), flightMs: T, chained: true };
       }
-      // Startujemy jak najpóźniej: mniej czasu w powietrzu = mniej okazji.
+      // Ostatnia (albo jedyna) runda: zawrócenie w połowie okna = powrót o zadanej godzinie.
       const delay = Math.floor(window / 2);        // ≤ T − margines, bo window ≤ 2T − 2·margines
       return { ok: true, launchAt: now, recallAt: now + delay, returnAt: at, delayMs: delay, flightMs: T };
     },
@@ -4036,16 +4039,18 @@
         GM_setValue("ogamex_fs_measure_at", String(Date.now()));
         return this.launch({ measure: true });
       }
-      return this.launch({});
+      return this.launch({ plan: p });
     },
 
     // Start: przełącz aktywne ciało na bazowy KSIĘŻYC (formularz wysyła z ciała
     // aktywnego — ten sam mechanizm co powrót ratunku), potem formularz na cel.
-    launch({ measure = false } = {}) {
+    // v2.74.3: plan z ticka niesie returnAt RUNDY (przy łańcuchu ≠ finalna
+    // godzina z panelu) — bramka 2T na kroku 2 i markLaunched liczą na nim.
+    launch({ measure = false, plan = null } = {}) {
       const c = this.cfg();
       const from = c.from, to = c.to;
       if (!from || !to || !Number.isFinite(to.galaxy)) { log("[FS] brak trasy (from/to) w konfiguracji.", "error"); return false; }
-      const at = this.returnAtMs();
+      const at = (plan && plan.returnAt) || this.returnAtMs();
       if (!measure && !Number.isFinite(at)) return false;
       GM_setValue("pending_mission", JSON.stringify({
         type: "fleet_save_direct",
