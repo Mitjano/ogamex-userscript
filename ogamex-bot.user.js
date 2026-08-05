@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.70.0
+// @version      2.70.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4599,6 +4599,9 @@
             // v2.70.0: w KTÓRE ciało leci atak (ikona przy celu w wierszu) —
             // pozwala nie ruszać floty stojącej po bezpiecznej stronie.
             targetBody: (attacks.find(r => r.dstBody) || {}).dstBody || null,
+            // v2.70.1: najkrótszy czas dolotu ataku — blitz z sąsiedniego
+            // układu (<2 min) nie może czekać na pełne potwierdzenie.
+            minEta: attacks.length ? Math.min(...attacks.map(r => r.eta || 9e9)) : null,
           };
           // ── v2.53.0: kontrola krzyżowa z paskiem misji ──
           // /home/fleetmovementlist zweryfikowałem WYŁĄCZNIE na naszych własnych
@@ -5051,13 +5054,25 @@
       }
       if (r.foreign > 0) {
         const pendingSince = parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0;
+        // ── v2.70.1: BLITZ — sklasyfikowany ATAK z dolotem <2 min nie czeka ──
+        // Potwierdzenie 25 s chroni przed artefaktem PASKA (własna flota
+        // policzona jako obca) — sklasyfikowany wiersz ATTACK z listy ruchów
+        // nie ma tego problemu, a łowca z księżycem w sąsiednim układzie leci
+        // <60 s: pełne potwierdzenie zjadłoby cały margines ewakuacji.
+        // Koszt pomyłki = dwa 81-sekundowe przeloty; koszt spóźnienia = flota.
+        const blitz = evSrc && ev?.attacks > 0 && Number.isFinite(ev.minEta) && ev.minEta < 120;
         if (!pendingSince) {
           GM_setValue(this.KEY_CANDIDATE, String(Date.now()));
-          log(`[THREAT] ${r.foreign} obcą flotę widzę pierwszy raz — potwierdzam przez ${Math.round(this.CONFIRM_MS / 1000)}s, zanim ruszę flotą.`, "warn");
-          ThreatLog.add("odczyt", `Kandydat na alarm: ${r.foreign} obcych (${r.own}/${r.total}). Czekam na potwierdzenie ${Math.round(this.CONFIRM_MS / 1000)}s.`);
-          return;
+          if (!blitz) {
+            log(`[THREAT] ${r.foreign} obcą flotę widzę pierwszy raz — potwierdzam przez ${Math.round(this.CONFIRM_MS / 1000)}s, zanim ruszę flotą.`, "warn");
+            ThreatLog.add("odczyt", `Kandydat na alarm: ${r.foreign} obcych (${r.own}/${r.total}). Czekam na potwierdzenie ${Math.round(this.CONFIRM_MS / 1000)}s.`);
+            return;
+          }
+          log(`[THREAT] BLITZ: atak z dolotem ~${ev.minEta}s — alarm NATYCHMIAST, bez potwierdzania.`, "error");
+          ThreatLog.add("ATAK", `BLITZ: dolot ~${ev.minEta}s — potwierdzanie pominięte, ratunek rusza od razu.`);
+        } else if (Date.now() - pendingSince < this.CONFIRM_MS && !blitz) {
+          return; // jeszcze się nie potwierdziło
         }
-        if (Date.now() - pendingSince < this.CONFIRM_MS) return; // jeszcze się nie potwierdziło
         const first = !prev || !(prev.count > 0);
         GM_setValue(this.KEY, JSON.stringify({
           count: r.foreign,
