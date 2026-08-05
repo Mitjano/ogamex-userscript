@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.73.0
+// @version      2.73.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6968,6 +6968,25 @@
       GM_setValue("pending_mission", null);
       _handlingMission = false; // v2.10.10: same — a leaked flag made this fn a no-op until next reload
       return;
+    }
+
+    // ── v2.73.1: misja ratunku/promu celująca w ciało, którego już NIE MAMY ──
+    // Incydent 22:25 05.08: właściciel przeniósł bazę [3:269:8]→[3:272:7]
+    // W TRAKCIE alarmu. Wiszący ratunek celował w stare koordy i PĘTLIŁ się
+    // (przełączanie ciał odświeża timestamp, więc 5-minutowe wygasanie go
+    // nie łapało). Ratunek zawsze celuje w NASZE ciało — jeśli koordów misji
+    // nie ma na liście planet, ta misja jest miną z poprzedniej bazy.
+    if (mission.moonSave && mission.atCoords) {
+      const planets = GameState.getPlanets();
+      const c = mission.atCoords;
+      const ours = planets.some(p => `${p.galaxy}:${p.system}:${p.position}` === `${c.galaxy}:${c.system}:${c.position}`);
+      if (planets.length && !ours) {
+        log(`[RATUNEK] porzucam wiszącą misję ${mission.type} → [${c.galaxy}:${c.system}:${c.position}] — nie mamy tam żadnego ciała (przenosiny bazy).`, "warn");
+        ThreatLog.add("BŁĄD", `Porzucona misja ${mission.type} na nieistniejące ciało [${c.galaxy}:${c.system}:${c.position}] (baza przeniesiona).`);
+        GM_setValue("pending_mission", null);
+        _handlingMission = false;
+        return;
+      }
     }
 
     // ── v2.68.4: bot OFF przerywa RUTYNOWE misje w toku ──
