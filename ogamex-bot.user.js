@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.1
+// @version      2.74.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6960,6 +6960,42 @@
   // ═══════════════════════════════════════════════════════════════
 
   let _handlingMission = false;
+  // ── v2.74.2: WERYFIKACJA pól statków po wpisaniu (ratunek/FS) ──
+  // Formularz floty przelicza się po każdym input/change i potrafi WYZEROWAĆ
+  // pole wpisane chwilę wcześniej. Incydent 05.08 23:22: log mówił
+  // „załadowane: … BATTLE_CRUISER×1381054574 …", a 1,38 mld BC zostało
+  // w domu. Po wpisaniu czytamy więc każde pole Z POWROTEM, dopisujemy braki
+  // (2 rundy) i dopiero to uznajemy za załadowane.
+  async function verifyShipInputs(tag, excludeUpper = []) {
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    for (let round = 1; round <= 2; round++) {
+      await AntiDetection.sleep(600 + Math.random() * 300);
+      const bad = [];
+      for (const el of document.querySelectorAll("[data-ship-type]")) {
+        const type = el.dataset.shipType;
+        const want = parseInt(el.dataset.shipQuantity || "0") || 0;
+        if (!type || want <= 0 || excludeUpper.includes(type.toUpperCase())) continue;
+        const item = el.closest(".ship-item") || el.parentElement;
+        const input = item?.querySelector("input.numberFormatInput, input[type='text']");
+        if (!input) continue;
+        const have = parseInt((input.value || "0").replace(/[^\d]/g, "")) || 0;
+        if (have < want) {
+          bad.push(`${type} (${have.toLocaleString()}/${want.toLocaleString()})`);
+          if (nativeSetter) nativeSetter.call(input, want); else input.value = want;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      if (!bad.length) {
+        if (round > 1) log(`[${tag}] weryfikacja pól statków: komplet po dopisaniu.`, "fleet");
+        return true;
+      }
+      log(`[${tag}] weryfikacja pól statków (runda ${round}): formularz zgubił ${bad.join(", ")} — wpisuję ponownie.`, "warn");
+    }
+    log(`[${tag}] UWAGA: po 2 rundach dopisywania formularz wciąż gubił pola — lecę z tym, co stoi w formularzu (szczegóły wyżej).`, "error");
+    return false;
+  }
+
   // ── v2.74.0: rezerwa deuteru przy ratunku/FS ──
   // Wywoływane PO kliknięciu btn-all-res na kroku 3: zdejmuje z pola deuteru
   // kwotę rezerwy, żeby ciało nie zostało z zerem paliwa (flota wracająca
@@ -7548,6 +7584,7 @@
             return;
           }
           log(`[MOON SAVE] loading everything: ${loaded.join(", ")}`, "success");
+          await verifyShipInputs("MOON SAVE"); // v2.74.2: formularz gubi pola
           // v2.71.0: prom to logistyka — wpis "odczyt" nie zaburza liczników obrony.
           ThreatLog.add(mission.ferry ? "odczyt" : "RATUNEK", `${mission.ferry ? "PROM załadowany" : "Załadowano"}: ${loaded.join(", ")}`);
         } else
@@ -7583,6 +7620,7 @@
             return;
           }
           log(`[FS] załadowane: ${loaded.join(", ")}${mission.fsMeasure ? " (pomiar — wysyłki nie będzie)" : ""}`, "fleet");
+          await verifyShipInputs("FS", exclude); // v2.74.2: formularz gubi pola (BC 23:22)
         } else
 
         // ── v2.14.0: expeditions fill MANY types in one go ──
