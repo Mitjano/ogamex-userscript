@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.3
+// @version      2.74.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7599,7 +7599,12 @@
         // z filtrem: excludeTypes z konfiguracji FS (domyślnie ASTEROID_MINER —
         // minery pracują nocą i nie mają czego szukać na FS).
         if (mission.fleetSave) {
-          const exclude = (CONFIG.fleetSave?.excludeTypes || ["ASTEROID_MINER"]).map(t => String(t).toUpperCase());
+          // v2.74.4: minery zostają w domu TYLKO gdy mining pracuje (po to tam
+          // są). Mining wyłączony = 7,5 mld minerów to zwykły cel na księżycu
+          // (właściciel 05.08: „minery zostały na moonie") — lecą z FS-em.
+          const excludeCfg = (CONFIG.fleetSave?.excludeTypes || ["ASTEROID_MINER"]).map(t => String(t).toUpperCase());
+          const exclude = CONFIG.asteroidMining?.enabled ? excludeCfg : excludeCfg.filter(t => t !== "ASTEROID_MINER");
+          if (excludeCfg.length !== exclude.length) log("[FS] mining wyłączony — minery NIE zostają, lecą z flotą.", "fleet");
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
           const loaded = [];
           for (const el of document.querySelectorAll("[data-ship-type]")) {
@@ -9215,7 +9220,7 @@
             </label>
             <button class="mini-btn" id="ogx-fs-measure" style="width:100%;margin-top:4px;" title="Wchodzi w formularz wysyłki, ustawia prędkość, odczytuje czas lotu pokazany przez grę i WYCHODZI BEZ WYSYŁKI. Od tego momentu planer zna trasę i sam wyliczy godzinę startu.">Zmierz trasę (bez wysyłki)</button>
           </div>
-          <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Z bazowego księżyca na inny księżyc, misja Stacjonuj, zawrócona w połowie tak, by wrócić o zadanej godzinie. Statki: wszystko poza ${(CONFIG.fleetSave?.excludeTypes || ["ASTEROID_MINER"]).join(", ")} + surowce z księżyca. Zawracanie nieudane = flota zostaje bezpieczna na celu.</div>
+          <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Z bazowego księżyca na inny księżyc, misja Stacjonuj, start OD RAZU (za długie okno = łańcuch pełnych rund). Statki: wszystko; minery zostają tylko przy WŁĄCZONYM miningu. Surowce z księżyca minus rezerwa deuteru. Zawracanie nieudane = flota zostaje bezpieczna na celu.</div>
         </div>
 
         <div class="section ${CONFIG.expeditions.enabled ? "active" : "inactive"}" id="ogx-expo-section">
