@@ -117,6 +117,19 @@ athena.ogamex.net i trzymać bota w osobnym oknie.
 - **Dziennik ataków**: zdarzenia ważne żyją 12 h, rutynowe odczyty mają własny
   limit 60 i nie mogą ich wypchnąć. Podsumowanie w panelu i raz na godzinę w logu.
 
+## ✅ POTWIERDZONE BOJOWO 05.08.2026 15:09-15:13 — PEŁNA AUTOMATYCZNA OBRONA
+
+Drugi atak dnia (gracz HOME z księżyca [3:254:9], 4 floty: 98 mld Reaperów +
+93 mld pancerników, przylot ~6 min) — bot obronił się CAŁKOWICIE SAM:
+wykrycie 15:09:35 (wiersze `row-mission-type-ATTACK row-hostile-mission`
+sklasyfikowane, surowy HTML w logu przez [ATAK DOM]) → RATUNEK w 24 s od
+wykrycia (całość z księżyca na planetę, lot 81 s) → napastnik ZAWRÓCIŁ
+wszystkie floty 15:11 → alarm zszedł natychmiast (fix P0) → auto-POWRÓT
+na księżyc 15:12:55 → straż rozbrojona → [BAZA=KSIĘŻYC] przywrócił start
+z księżyca → ekspedycje pojechały dalej. ZERO STRAT. Punkty 1 (klasyfikacja)
+z sekcji niżej są tym samym potwierdzone na żywo. Kontrast z porankiem
+(11:00, bot OFF, −11,2 bln) jest ostatecznym argumentem: bot ma być ON.
+
 ## CO JEST WDROŻONE, ALE NIEPOTWIERDZONE NA PRAWDZIWYM ATAKU
 
 1. **Klasyfikacja sonda/atak** (2.51.0). Parser listy ruchów flot sprawdzony
