@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.69.0
+// @version      2.69.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -877,7 +877,7 @@
     // paska misji, a ratunek nawiguje prosto do formularza floty. W najgorszym
     // razie fetch pada i pętla jest tania w bezczynności; w najlepszym — bot
     // broni floty nawet wtedy, gdy strona pod nim się wysypała.
-    if (CONFIG.enabled) { try { startDefenceLoop(); } catch {} }
+    try { startDefenceLoop(); } catch {} // v2.69.1: obserwator czuwa też przy OFF
 
     return true;
   }
@@ -8393,7 +8393,14 @@
 
   async function defenceTick() {
     if (defenceRunning) return;          // poprzedni przebieg jeszcze trwa
-    if (!CONFIG.enabled) return;
+    // ── v2.69.1: WIEŻA PATRZY ZAWSZE — bot OFF to tryb obserwatora ──
+    // Atak 05.08 (487 mld statków) przeszedł przy przypadkowo wyłączonym
+    // bocie i NIE zostawił po sobie żadnych danych: zrzuty [ATAK DOM],
+    // dziennik i push żyły w pętli, którą OFF zatrzymywał. Detekcja jest
+    // czysto odczytowa — nie ma powodu, żeby gasła. Przy OFF pętla dalej
+    // czyta listę ruchów, pisze dziennik, zrzuca wrogie wiersze i wysyła
+    // powiadomienia — ale NIE dotyka floty (aktuatory za bramką niżej;
+    // każdy z nich i tak sam wymaga CONFIG.enabled).
     if (!requireLeader("defence")) return; // tylko karta-lider rusza flotą
     defenceRunning = true;
     try {
@@ -8417,6 +8424,10 @@
         }
       }
       ThreatMonitor.check({ emergencyOnly: resting });
+      // v2.69.1: przy bocie OFF kończymy na detekcji — flota nietknięta.
+      // returnHome nie sprawdza CONFIG.enabled samodzielnie, więc bramka
+      // musi być tutaj, zanim cokolwiek zdąży ruszyć.
+      if (!CONFIG.enabled) return;
       // v2.55.0: jeśli poprzedni tick przełączył planetę, dokończ ratunek tutaj.
       if (MoonSave.resumeAfterSwitch()) return;
       if (await MoonSave.autoSaveOnThreat().catch(() => false)) return;
@@ -8883,6 +8894,14 @@
 
     // Event handlers
     document.getElementById("ogx-toggle").addEventListener("click", () => {
+      // v2.69.1: wyłączanie przy widocznych OBCYCH flotach wymaga potwierdzenia
+      // — 05.08 atak przeszedł przy przypadkowo wyłączonym bocie.
+      if (CONFIG.enabled) {
+        const ev = ThreatMonitor.events();
+        const bar = ThreatMonitor.read();
+        const foreignNow = Math.max(ev && Date.now() - ev.at < 120000 ? (ev.hostile || 0) : 0, bar ? bar.foreign : 0);
+        if (foreignNow > 0 && !window.confirm(`UWAGA: w powietrzu są ${foreignNow} obce floty!\n\nWyłączenie bota zatrzyma AUTOMATYCZNĄ OBRONĘ (ewakuację floty). Detekcja i dziennik będą dalej działać, ale flotą nikt nie ruszy.\n\nNa pewno wyłączyć?`)) return;
+      }
       CONFIG.enabled = !CONFIG.enabled;
       saveConfig(CONFIG);
       const btn = document.getElementById("ogx-toggle");
@@ -8895,9 +8914,10 @@
         log("Bot ENABLED", "success");
       } else {
         stopScheduler();
-        stopDefenceLoop();
+        // v2.69.1: pętla obrony NIE gaśnie — przechodzi w tryb obserwatora
+        // (detekcja, dziennik, zrzuty [ATAK DOM], push; zero ruszania flotą).
         WakeLock.release();
-        log("Bot DISABLED", "info");
+        log("Bot DISABLED — obrona przechodzi w TRYB OBSERWATORA: wykrywa i alarmuje, ale flotą nie rusza.", "warn");
       }
     });
 
@@ -9973,7 +9993,10 @@
       log("Another tab is running the bot — this tab stays PASSIVE (will take over if the active tab closes).", "warn");
       createUI();
       updateStatusUI();
-      if (CONFIG.enabled) { startScheduler(); startDefenceLoop(); }
+      // v2.69.1: obrona-obserwator czuwa też w karcie pasywnej (requireLeader
+      // i tak dopuszcza do działania tylko lidera — to jest gotowość przejęcia).
+      if (CONFIG.enabled) startScheduler();
+      startDefenceLoop();
       return;
     }
     // Leader heartbeat, independent of the 50-90s scheduler cadence. When this
@@ -10292,10 +10315,11 @@
     }
 
     // Auto-start scheduler if enabled
-    if (CONFIG.enabled) {
-      startScheduler();
-      startDefenceLoop();
-    }
+    // v2.69.1: pętla obrony startuje ZAWSZE — przy bocie OFF w trybie
+    // obserwatora (detekcja+dziennik+push, zero ruszania flotą).
+    if (CONFIG.enabled) startScheduler();
+    startDefenceLoop();
+    if (!CONFIG.enabled) log("Bot OFF — obrona czuwa w TRYBIE OBSERWATORA (wykrywa i alarmuje, flotą nie rusza).", "info");
 
     // v2.10.10 watchdog: the scheduler is a chained setTimeout — if one tick
     // ever throws an uncaught error (or the chain dies any other way), the
