@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.69.1
+// @version      2.69.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -168,7 +168,9 @@
       // Na ekspedycji nic nie wnosi, a jest jedynym statkiem, którym
       // DebrisCollector może zebrać złom po ekspedycjach — wysyłanie go falami
       // zostawiało zbieranie bez narzędzia.
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER"],
+      // v2.69.2: AVATAR nie lata na ekspedycje (decyzja właściciela 05.08) —
+      // jednostka unikatowa (1 szt.), nie ma czego szukać w kosmosie.
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"],
       // v2.48.0: ekspedycja potrafi trafić na obcych i zostawić pole złomu na
       // pozycji 16 systemu bazy. To nasze własne surowce — zbieramy recyklerami.
       collectDebris: true,
@@ -338,6 +340,24 @@
               merged.expeditions.excludeTypes = [...ex, "RECYCLER"];
               saveConfig(merged);
               setTimeout(() => log("Recyklery nie lataja juz na ekspedycje — zostaja w domu do zbierania zlomu (DebrisCollector).", "info"), 1500);
+            }
+          }
+        }
+      }
+
+      // v2.69.2: AVATAR do wykluczeń ekspedycji (decyzja właściciela 05.08) —
+      // ten sam mechanizm migracji co GS/RECYCLER: zapisany config gracza
+      // trzyma starą listę, sama zmiana domyślnej nic nie da.
+      {
+        const AV_KEY = "ogamex_migration_no_avatar_expo_v2692";
+        if (GM_getValue(AV_KEY, "0") !== "1") {
+          GM_setValue(AV_KEY, "1");
+          if (merged.expeditions) {
+            const ex = (merged.expeditions.excludeTypes || []).map(t => String(t).toUpperCase());
+            if (!ex.includes("AVATAR")) {
+              merged.expeditions.excludeTypes = [...ex, "AVATAR"];
+              saveConfig(merged);
+              setTimeout(() => log("AVATAR nie lata juz na ekspedycje — zostaje w domu.", "info"), 1500);
             }
           }
         }
