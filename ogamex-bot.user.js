@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.69.3
+// @version      2.70.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3511,22 +3511,26 @@
 
     // Wiersz pozycji 16 na ŻYWEJ stronie galaktyki. Zwraca link zbierania.
     findDebrisLink() {
+      // v2.70.0: oprócz poz. 16 (złom po ekspedycjach) sprawdzamy też POZYCJĘ
+      // BAZY — po bitwie obronnej złom leży przy samej planecie (05.08 rano:
+      // 4,3 bld surowców na [3:269:8], a zbieracz patrzył tylko na 16).
+      const b = this.base();
+      const wanted = [16, b?.position].filter(n => Number.isFinite(n));
       for (const item of document.querySelectorAll(".galaxy-item")) {
         const idx = parseInt(item.querySelector(".planet-index")?.textContent || "0") || 0;
-        if (idx !== 16) continue;
+        if (!wanted.includes(idx)) continue;
         const cell = item.querySelector(".col-debris, .galaxy-col.col-debris");
-        if (!cell) return null;
-        if (GM_getValue(this.KEY_DUMPED, "") !== "1" && (cell.innerHTML || "").trim().length > 0) {
+        // (było: return null przy pustej komórce poz. 16 — ucinało sprawdzenie
+        // pozycji bazy; teraz idziemy dalej po liście)
+        if (!cell || !(cell.innerHTML || "").trim()) continue;
+        if (GM_getValue(this.KEY_DUMPED, "") !== "1") {
           GM_setValue(this.KEY_DUMPED, "1");
-          log(`[ZŁOM] markup pola złomu (poz. 16): ${(cell.innerHTML || "").replace(/\s+/g, " ").slice(0, 600)}`, "info");
+          log(`[ZŁOM] markup pola złomu (poz. ${idx}): ${(cell.innerHTML || "").replace(/\s+/g, " ").slice(0, 600)}`, "info");
         }
         const a = cell.querySelector("a[href*='/fleet']");
         if (a) return a.getAttribute("href");
-        // Niektóre buildy wieszają zbieranie na elemencie bez <a> — wtedy
-        // zostaje sam fakt, że komórka nie jest pusta. Nie zgaduję misji:
-        // zapisuję markup (wyżej) i czekam na niego, zamiast wysyłać flotę
-        // w nieznane.
-        return null;
+        // Niektóre buildy wieszają zbieranie na elemencie bez <a> — nie
+        // zgadujemy misji: markup w logu (wyżej), sprawdzamy kolejny wiersz.
       }
       return null;
     },
@@ -3665,7 +3669,27 @@
           .map(m => `${m[1].trim()} ${m[2].trim()}`);
         const isSpy = this.SPY.test(type);
         const isAttack = this.ATTACK.test(type) || (!isSpy && !this.SAFE.test(type));
+        // ── v2.70.0: ciało i nazwa przy KOŃCACH trasy ──
+        // Zrzuty [ATAK DOM] z 05.08 pokazały, że wiersz niesie ikonę
+        // (moon-icon) i nazwę ciała obok koordynatów obu końców. Ciało CELU
+        // pozwala uciekać deterministycznie na przeciwne ciało zamiast
+        // zgadywać z heurystyki „aktywne ciało"; nazwa źródła to wywiad.
+        const tdOf = (coordStr) => {
+          if (!coordStr) return null;
+          const a = [...tr.querySelectorAll("a")].find(x => (x.textContent || "").includes(`[${coordStr}]`));
+          return a ? a.closest("td") : null;
+        };
+        const bodyOf = (td) => {
+          if (!td) return null;
+          return (td.querySelector("img[src*='moon-icon']") || /\bMoon\b/i.test(td.textContent || "")) ? "moon" : "planet";
+        };
+        const srcTd = (srcEl && srcEl.closest("td")) || tdOf(src);
+        const dstTd = tdOf(dst);
+        const srcName = srcTd ? ((srcTd.textContent || "").replace(`[${src}]`, "").replace(/\s+/g, " ").trim() || null) : null;
         rows.push({
+          srcBody: bodyOf(srcTd),
+          srcName,
+          dstBody: bodyOf(dstTd),
           id: tr.getAttribute("data-fleet-id") || "",
           type, src, dst, eta,
           mine: !!(src && own.size && own.has(src)),
@@ -4572,6 +4596,9 @@
             classified: true,
             targets: [...new Set(attacks.map(r => r.dst).filter(Boolean))],
             origins: [...new Set(attacks.map(r => r.src).filter(Boolean))],
+            // v2.70.0: w KTÓRE ciało leci atak (ikona przy celu w wierszu) —
+            // pozwala nie ruszać floty stojącej po bezpiecznej stronie.
+            targetBody: (attacks.find(r => r.dstBody) || {}).dstBody || null,
           };
           // ── v2.53.0: kontrola krzyżowa z paskiem misji ──
           // /home/fleetmovementlist zweryfikowałem WYŁĄCZNIE na naszych własnych
@@ -4623,7 +4650,9 @@
             try { lastSig = JSON.parse(GM_getValue("ogamex_threat_atk_sig", "null")); } catch {}
             if (!lastSig || lastSig.sig !== sig || Date.now() - (lastSig.at || 0) > 5 * 60 * 1000) {
               GM_setValue("ogamex_threat_atk_sig", JSON.stringify({ sig, at: Date.now() }));
-              ThreatLog.add("ATAK", `${attacks.length}× ${first.type} z [${first.src}] na [${first.dst}]`
+              // v2.70.0: wywiad — skąd (ciało+nazwa) i w które ciało leci.
+              const bodyPl = (b, big) => b === "moon" ? (big ? "KSIĘŻYC" : "księżyca") : b === "planet" ? (big ? "PLANETĘ" : "planety") : "?";
+              ThreatLog.add("ATAK", `${attacks.length}× ${first.type} z ${bodyPl(first.srcBody)}${first.srcName ? ` „${first.srcName}"` : ""} [${first.src}] na ${bodyPl(first.dstBody, true)} [${first.dst}]`
                 + (mins !== null ? `, przylot za ~${mins} min` : "")
                 + (first.ships?.length ? ` | flota: ${first.ships.slice(0, 8).join(", ")}` : ""));
             }
@@ -5384,6 +5413,21 @@
         const b = CONFIG.asteroidMining.minerBase;
         const isBase = where.galaxy === b.galaxy && where.system === b.system && where.position === b.position;
         ThreatLog.add("ATAK", `Cel ataku: [${target}]${isBase ? " (baza)" : " — ewakuuję TĘ kolonię"}.`);
+        // ── v2.70.0: STRAŻNIK BEZPIECZNEJ STRONY ──
+        // Wiersz ataku mówi, w KTÓRE ciało leci (ikona przy celu). Jeśli flota
+        // stoi już na ciele PRZECIWNYM do atakowanego, ratunek „z aktywnego na
+        // przeciwne" przeniósłby ją PROSTO POD UDERZENIE (np. atak na planetę
+        // po łup z kopalń, gdy flota mieszka na księżycu — tryb księżycowy
+        // czyni ten scenariusz głównym). Wtedy nie ruszamy niczego.
+        const atkBody = ev?.targetBody || null;
+        if (isBase && atkBody) {
+          const cur = this.currentBody();
+          if (cur && cur !== atkBody) {
+            this._sayOnce("safeside", `[RATUNEK] atak celuje w ${atkBody === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${target}], a flota stoi na ${cur === "moon" ? "księżycu" : "planecie"} — po bezpiecznej stronie. NIE ruszam floty (ruch wprowadziłby ją pod atak).`);
+            ThreatLog.add("ATAK", `Cel: ${atkBody === "moon" ? "księżyc" : "planeta"}; flota na przeciwnym ciele — zostaje na miejscu.`);
+            return false;
+          }
+        }
         const active = this.activeCoords();
         if (active && active !== target) {
           // Klik przeładuje stronę; ratunek dokończy się w resumeAfterSwitch().
