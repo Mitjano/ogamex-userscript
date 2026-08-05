@@ -6,6 +6,30 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 05.08 ~23:40 (dom) — przenosiny bazy + FS potwierdzony
+
+**BAZA PRZENIESIONA: [3:269:8] → [3:272:7]** (agresor „Ay"/Sniper wskoczył do
+starego układu na 3 min lotu; 40 mld Reaperów odparte o 22:21 automatem).
+Migracja v2.73.0 + bezpiecznik misji-min v2.73.1/2 (misja ratunku na ciało
+spoza listy planet = porzucenie + zdjęcie straży). W nowym układzie na
+poz. 15 siedzi Sniper Nova (i) — na razie nieaktywny, ale to sąsiad-ryzyko.
+
+**FS DZIAŁA end-to-end** (3 cykle na żywo): wysyłka → auto-zawrócenie klikiem
+(x_btn_fleet_return; bot sam rozwija listę flot od v2.74.0) → powrót.
+Trasa [3:272:7]→[3:272:2] (księżyc Colony 27): 10% = 263 min (maks FS 8,7 h),
+**3% = 878 min (maks FS ~29 h — całonocny)**; 3%/5% dozwolone od v2.74.1.
+
+Nowe w v2.72–2.74.2: farmienie z jawnym ATTACK + wybór statku (LC/HC/BS),
+alarm głosowy + syrena 10 s na laptopie, wersja w nagłówku panelu,
+**rezerwa deuteru** (domyślnie 1 mld zostaje przy ratunku/FS — paliwo dla
+flot wracających z ekspedycji, pole w Obronie), **weryfikacja pól statków
+po wpisaniu** (formularz gubi pojedyncze pola po re-renderze — 23:22
+BATTLE_CRUISER 1,38 mld został w domu; teraz odczyt zwrotny + dopisanie).
+
+OTWARTE: event idle farming (planeta po przenosinach ma ~30 min blokady
+misji ofensywnych; farmienie nieprzetestowane na żywo — patrz sekcja
+FARMIENIE), pierwszy atak w nowym układzie = test v2.70.3.
+
 ## PRZECZYTAJ NAJPIERW — PRZEKAZANIE 05.08 (praca → dom)
 
 **Priorytet ownera, wprost: „Obrona floty jest najważniejsza i nie może raz
