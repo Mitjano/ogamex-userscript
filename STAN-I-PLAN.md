@@ -98,6 +98,25 @@ się sam najpóźniej po 2 h.
 
 ---
 
+## FARMIENIE (EVENT IDLE FARMING) — audyt + v2.72.0 (05.08 wieczór, dom)
+
+Audyt przed eventem wykazał: farmienie NIGDY nie biegło na żywo (zero kluczy
+`ogamex_farm*` w GM storage), a misja szła w ciemno na `mission=8` z URL-a —
+parametr niepotwierdzony na tym forku (numeracja własna: ekspedycja=1,
+asteroida=12) i formularz potrafi gubić parametry (incydent 09:50 4.08).
+
+v2.72.0: (1) krok 3 klika misję **ATTACK jawnie** po klasie/tekście
+mission-item — bez trafienia NIE wysyła (zrzut dostępnych misji do logu,
+sweep pauza 30 min); (2) **wybór statku** w Ustawienia: Farmienie
+(LIGHT_CARGO / HEAVY_CARGO / BATTLESHIP, klucz `inactiveFarming.shipType`) —
+taktyka eventowa: szybszy statek = slot szybciej wolny, BS na wypadek obrony;
+(3) start ze złego ciała naprawia istniejący chokepoint v2.69.0 (baza=księżyc).
+Zabezpieczenia nietknięte: alarm wstrzymuje farmienie, mining wygrywa z farmą.
+
+**Pierwszy atak farmy obserwować w logu**: `[FARM DOM] first target row`
+(weryfikacja parsera statusów (i)/(I)) i `[FARM] misja: …` (weryfikacja
+ATTACK). Jeśli „brak misji Attack na kroku 3" — przysłać zrzut z logu.
+
 ## ZASADA, KTÓREJ NIE WOLNO ZŁAMAĆ
 
 **Nie buduj niczego na endpointach, których nie potwierdziłeś na żywo.**

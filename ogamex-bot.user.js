@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.71.0
+// @version      2.72.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -184,7 +184,13 @@
     // asteroids). Mutually exclusive with asteroidMining (mining wins).
     inactiveFarming: {
       enabled: false,
-      hcPerFlight: 100,          // Heavy Cargo per attack (manual, like miners per flight)
+      hcPerFlight: 100,          // ships per attack (manual, like miners per flight)
+      // v2.72.0: statek do wyboru (event „idle farming"). LIGHT_CARGO i
+      // BATTLESHIP bywają szybsze od HEAVY_CARGO (krótszy lot = slot szybciej
+      // wolny = więcej ataków), a BATTLESHIP przeżyje resztki obrony na
+      // planecie nieaktywnego. Nazwy potwierdzone na żywo: to dokładnie
+      // data-ship-type z formularza floty (ten sam słownik co roster ekspedycji).
+      shipType: "HEAVY_CARGO",   // LIGHT_CARGO | HEAVY_CARGO | BATTLESHIP
       ranges: "",                // e.g. "3:100-200, 3:250-300" — scanned system by system
       targetCooldownMin: 180,    // don't re-attack the same planet within this window
       slotReserve: 2,            // keep this many fleet slots free (manual play / mining)
@@ -3443,13 +3449,16 @@
       }
       FarmedTargets.add(t.coord); // stamp at initiation, same as asteroids
       const hc = Math.max(1, CONFIG.inactiveFarming.hcPerFlight || 1);
+      const ship = CONFIG.inactiveFarming.shipType || "HEAVY_CARGO";
       const fleetUrl = `/fleet?x=${t.galaxy}&y=${t.system}&z=${t.position}&planet=1&mission=8`;
-      log(`FARM ATTACK → [${t.coord}] with ${hc} Heavy Cargo`, "success");
+      log(`FARM ATTACK → [${t.coord}] with ${hc} ${ship}`, "success");
+      // Start ze złego ciała naprawia chokepoint v2.69.0 w select_ships_direct
+      // (baza=księżyc → przełącz przed formularzem) — bez własnej logiki tutaj.
       GM_setValue("pending_mission", JSON.stringify({
         type: "inactive_farm_direct",
         farm: true,
         fleetUrl,
-        shipType: "HEAVY_CARGO",
+        shipType: ship,
         quantity: hc,
         step: "select_ships_direct",
         resumeScan: false,
@@ -7529,7 +7538,7 @@
             if (mission.farm) {
               FarmState.clear();
               GM_setValue("ogamex_farm_cooldown_until", String(Date.now() + 10 * 60 * 1000));
-              log("Farm: no Heavy Cargo on the active planet — sweep paused 10min.", "warn");
+              log(`Farm: no ${mission.shipType} on the active body — sweep paused 10min.`, "warn");
               GM_setValue("pending_mission", null);
               return;
             }
@@ -8109,6 +8118,31 @@
             return;
           }
           log(`[ZŁOM] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
+          picked.click();
+          await AntiDetection.sleep(500 + Math.random() * 500);
+        }
+
+        // ── v2.72.0: farma — misja ATTACK klikana jawnie, albo wcale ──
+        // Dotąd farma ufała parametrowi mission=8 z URL-a, a ten formularz
+        // potrafi zgubić parametry (incydent 09:50 4.08 — cel domyślny mimo
+        // koordów w URL). mission=8 nigdy nie było potwierdzone na żywo na tym
+        // forku (numeracja jest własna: ekspedycja=1, asteroida=12). Zła misja
+        // = flota leci nie wiadomo po co. Wzorzec sprawdzony przy złomie:
+        // mission-item po klasie/tekście, bez trafienia NIE wysyłamy + zrzut.
+        if (mission.farm) {
+          const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
+          const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
+          const picked = missions.find(m => /ATTACK|ATAK/.test(nameOf(m)) && !/ACS|MISSILE|DESTR/.test(nameOf(m)));
+          if (!picked) {
+            log(`[FARM] brak misji Attack na kroku 3 — NIE wysyłam. Dostępne: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"}`, "error");
+            FarmState.clear();
+            GM_setValue("ogamex_farm_cooldown_until", String(Date.now() + 30 * 60 * 1000));
+            GM_setValue("pending_mission", null);
+            await AntiDetection.sleep(600 + Math.random() * 600);
+            window.location.href = "/";
+            return;
+          }
+          log(`[FARM] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
           picked.click();
           await AntiDetection.sleep(500 + Math.random() * 500);
         }
@@ -8878,7 +8912,13 @@
           <div class="status" id="ogx-farm-status">Idle</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Heavy Cargo sent per attack on one inactive planet.">Heavy Cargo / attack</span>
+              <span title="Which ship attacks inactive planets. Light Cargo / Battleship are often faster than Heavy Cargo (slot frees sooner = more attacks); Battleship survives leftover defence.">Ship type</span>
+              <select id="ogx-farm-ship" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+                ${["LIGHT_CARGO", "HEAVY_CARGO", "BATTLESHIP"].map(s => `<option value="${s}" ${(CONFIG.inactiveFarming.shipType || "HEAVY_CARGO") === s ? "selected" : ""}>${s.replace("_", " ")}</option>`).join("")}
+              </select>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Ships sent per attack on one inactive planet.">Ships / attack</span>
               <input id="ogx-farm-hc" type="number" min="1" step="1" value="${CONFIG.inactiveFarming.hcPerFlight}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
@@ -8893,7 +8933,7 @@
               <span title="Keep this many fleet slots unused (for mining / manual play). Limit shown on the Fleet page as 'Fleets: X/37'.">Slot reserve</span>
               <input id="ogx-farm-reserve" type="number" min="0" step="1" value="${CONFIG.inactiveFarming.slotReserve}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
-            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Attacks every (i)/(I) player in the ranges with Heavy Cargo (event farming). Either/or with Asteroid Mining.</div>
+            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Attacks every (i)/(I) player in the ranges with the chosen ship (event farming). Either/or with Asteroid Mining.</div>
           </div>
         </div>
 
@@ -9467,9 +9507,18 @@
         updateStatusUI();
       });
     };
-    bindFarmNum("ogx-farm-hc", "hcPerFlight", "Heavy Cargo / attack");
+    bindFarmNum("ogx-farm-hc", "hcPerFlight", "Ships / attack");
     bindFarmNum("ogx-farm-cooldown", "targetCooldownMin", "Target cooldown");
     bindFarmNum("ogx-farm-reserve", "slotReserve", "Slot reserve");
+    // v2.72.0: wybór statku farmy (dropdown — wartości to żywe data-ship-type)
+    {
+      const el = document.getElementById("ogx-farm-ship");
+      if (el) el.addEventListener("change", () => {
+        CONFIG.inactiveFarming.shipType = el.value;
+        saveConfig(CONFIG);
+        log(`Farm ship type set to ${el.value}`, "info");
+      });
+    }
     // v2.12.0: humanizer controls
     {
       const bBtn = document.getElementById("ogx-hum-breaks");
