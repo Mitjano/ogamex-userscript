@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.72.1
+// @version      2.72.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -572,12 +572,47 @@
       } catch (e) { log(`[GŁOS] błąd syntezy: ${e.message}`, "warn"); }
     },
 
+    // ── v2.72.2: SYRENA — 10-sekundowa melodyjka alarmowa (Web Audio) ──
+    // Gra POD głosem (cichsza), więc razem brzmi jak prawdziwy alarm.
+    // Syntetyzowana na miejscu (trójkąt + obwiednia) — zero plików, zero
+    // sieci. Uczciwość: nawigacja strony (a ratunek nawiguje od razu) utnie
+    // dźwięk — to sygnał „obudź się", nie gwarantowany 10-sekundowy koncert.
+    siren(seconds = 10) {
+      if (!this.voiceEnabled()) return;
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = this._audioCtx || (this._audioCtx = new Ctx());
+        if (ctx.state === "suspended") ctx.resume().catch(() => {});
+        const master = ctx.createGain();
+        master.gain.value = 0.35;
+        master.connect(ctx.destination);
+        const notes = [660, 880, 1046, 880]; // wznoszący motyw alarmowy
+        const step = 0.45;
+        const t0 = ctx.currentTime;
+        for (let t = 0; t < seconds; t += step) {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = "triangle";
+          o.frequency.value = notes[Math.round(t / step) % notes.length];
+          g.gain.setValueAtTime(0, t0 + t);
+          g.gain.linearRampToValueAtTime(1, t0 + t + 0.02);
+          g.gain.setValueAtTime(1, t0 + t + step - 0.06);
+          g.gain.linearRampToValueAtTime(0, t0 + t + step - 0.01);
+          o.connect(g); g.connect(master);
+          o.start(t0 + t);
+          o.stop(t0 + Math.min(t + step, seconds));
+        }
+      } catch (e) { log(`[SYRENA] błąd: ${e.message}`, "warn"); }
+    },
+
     // Hak z dziennika obrony: rodzaj wpisu decyduje o tym, czy i jak głośno.
     fromJournal(kind, msg) {
       const m = String(msg || "");
       if (kind === "ATAK") {
         if (this._throttled("ATAK")) return;
         this.push("⚔️ ATAK na Twoje konto OGameX!", m, "urgent", "rotating_light");
+        this.siren(10);
         this.speak("Uwaga! Atak na bazę! Uwaga! Atak na bazę!", 3);
       } else if (kind === "RATUNEK" && /WYS[ŁL]ANE/i.test(m)) {
         if (this._throttled("RATUNEK")) return;
@@ -9477,6 +9512,7 @@
         });
         if (nTest) nTest.addEventListener("click", () => {
           Notifier.push("🔔 Test powiadomień OGameX", `Działa! Temat: ${Notifier.topic()}. Bot wyśle tu alarm o ataku, ewakuacji i błędach obrony.`, "default", "bell");
+          Notifier.siren(3);
           Notifier.speak("Test alarmu głosowego. Tak zabrzmi atak na bazę.", 1);
           log(`[PUSH] wysłano testowe powiadomienie na temat ${Notifier.topic()} — telefon powinien zawibrować w kilka sekund.`, "success");
         });
