@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.72.0
+// @version      2.72.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -509,6 +509,7 @@
   const Notifier = {
     KEY_TOPIC: "ogamex_ntfy_topic",
     KEY_ON: "ogamex_ntfy_on",
+    KEY_VOICE: "ogamex_voice_on",   // v2.72.1: alarm głosowy na laptopie
     KEY_LAST: "ogamex_ntfy_last",   // { "<kind>": ts } — dławik na rodzaj
     THROTTLE_MS: { "ATAK": 5 * 60 * 1000, "RATUNEK": 2 * 60 * 1000, "POWRÓT": 5 * 60 * 1000, "BŁĄD": 5 * 60 * 1000, "FS": 5 * 60 * 1000 },
 
@@ -549,18 +550,42 @@
       } catch (e) { log(`[PUSH] błąd: ${e.message}`, "warn"); }
     },
 
+    // ── v2.72.1: alarm GŁOSOWY na laptopie (Web Speech API) ──
+    // Push na telefon bywa niesłyszalny (iOS: tryb cichy/Sen wygrywa nawet
+    // z priority=urgent — lekcja 04.08). Laptop z otwartą kartą gry może
+    // po prostu POWIEDZIEĆ, że jest atak — syntezator systemowy, zero
+    // zależności. Głos polski, jeśli system go ma; inaczej domyślny z lang.
+    voiceEnabled() { return GM_getValue(this.KEY_VOICE, "1") === "1"; },
+    speak(text, times = 3) {
+      if (!this.voiceEnabled()) return;
+      try {
+        if (!("speechSynthesis" in window)) { log("[GŁOS] przeglądarka nie ma speechSynthesis.", "warn"); return; }
+        const voice = (speechSynthesis.getVoices() || []).find(v => /^pl/i.test(v.lang || "")) || null;
+        for (let i = 0; i < Math.max(1, times); i++) {
+          const u = new SpeechSynthesisUtterance(text);
+          if (voice) u.voice = voice;
+          u.lang = "pl-PL";
+          u.rate = 1.0;
+          u.volume = 1.0;
+          speechSynthesis.speak(u); // kolejka syntezatora sama dawkuje powtórki
+        }
+      } catch (e) { log(`[GŁOS] błąd syntezy: ${e.message}`, "warn"); }
+    },
+
     // Hak z dziennika obrony: rodzaj wpisu decyduje o tym, czy i jak głośno.
     fromJournal(kind, msg) {
       const m = String(msg || "");
       if (kind === "ATAK") {
         if (this._throttled("ATAK")) return;
         this.push("⚔️ ATAK na Twoje konto OGameX!", m, "urgent", "rotating_light");
+        this.speak("Uwaga! Atak na bazę! Uwaga! Atak na bazę!", 3);
       } else if (kind === "RATUNEK" && /WYS[ŁL]ANE/i.test(m)) {
         if (this._throttled("RATUNEK")) return;
         this.push("🛟 Flota ewakuowana", m, "default", "shield");
       } else if (kind === "BŁĄD") {
         if (this._throttled("BŁĄD")) return;
         this.push("⚠️ Obrona zgłasza BŁĄD — sprawdź grę!", m, "high", "warning");
+        this.speak("Uwaga! Błąd obrony! Sprawdź grę!", 1);
       } else if (kind === "FS" && /NIEUDANE|zosta/i.test(m)) {
         if (this._throttled("FS")) return;
         this.push("🌙 Fleet Save: problem", m, "high", "warning");
@@ -8963,7 +8988,11 @@
                 <button class="mini-btn" id="ogx-ntfy-toggle">—</button>
               </label>
               <div class="status" id="ogx-ntfy-topic" style="font-size:9px;user-select:text;cursor:pointer;" title="Kliknij, żeby skopiować nazwę tematu do schowka.">—</div>
-              <button class="mini-btn" id="ogx-ntfy-test" style="width:100%;margin-top:3px;" title="Wysyła próbne powiadomienie na temat ntfy. Jeśli telefon nie zawibruje w kilka sekund — sprawdź subskrypcję w apce.">Wyślij testowe powiadomienie</button>
+              <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;margin-top:3px;">
+                <span title="Przy ATAKU laptop mówi na głos „Uwaga! Atak na bazę!" (syntezator systemowy przez przeglądarkę). Działa, póki karta z grą żyje i dźwięk w systemie nie jest wyciszony.">Alarm głosowy (laptop)</span>
+                <button class="mini-btn" id="ogx-voice-toggle">—</button>
+              </label>
+              <button class="mini-btn" id="ogx-ntfy-test" style="width:100%;margin-top:3px;" title="Wysyła próbne powiadomienie na temat ntfy i odtwarza próbny alarm głosowy. Jeśli telefon nie zawibruje w kilka sekund — sprawdź subskrypcję w apce.">Wyślij testowe powiadomienie</button>
             </div>
             <div class="status" id="ogx-moonsave-status" style="font-size:10px;margin-top:3px;">—</div>
             <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
@@ -9448,8 +9477,20 @@
         });
         if (nTest) nTest.addEventListener("click", () => {
           Notifier.push("🔔 Test powiadomień OGameX", `Działa! Temat: ${Notifier.topic()}. Bot wyśle tu alarm o ataku, ewakuacji i błędach obrony.`, "default", "bell");
+          Notifier.speak("Test alarmu głosowego. Tak zabrzmi atak na bazę.", 1);
           log(`[PUSH] wysłano testowe powiadomienie na temat ${Notifier.topic()} — telefon powinien zawibrować w kilka sekund.`, "success");
         });
+        const vBtn = document.getElementById("ogx-voice-toggle");
+        if (vBtn) {
+          const paintV = () => { vBtn.textContent = Notifier.voiceEnabled() ? "ON" : "OFF"; };
+          vBtn.addEventListener("click", () => {
+            GM_setValue(Notifier.KEY_VOICE, Notifier.voiceEnabled() ? "0" : "1");
+            log(`Alarm głosowy: ${Notifier.voiceEnabled() ? "WŁĄCZONY" : "wyłączony"}.`, "info");
+            if (Notifier.voiceEnabled()) Notifier.speak("Alarm głosowy włączony.", 1);
+            paintV();
+          });
+          paintV();
+        }
         paint();
       }
       const recon = document.getElementById("ogx-fleet-recon");
