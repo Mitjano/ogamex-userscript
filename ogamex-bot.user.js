@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.73.3
+// @version      2.74.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -141,6 +141,11 @@
       // insurance, so it defaults ON.
       autoSave: true,
       autoReturn: true,
+      // v2.74.0: tyle deuteru ZOSTAJE na ciele przy ratunku i FS. Bez tego
+      // ratunek/FS zabierał wszystko — a flota, która wróci później (np.
+      // z ekspedycji), nie miałaby paliwa na własną ewakuację. Rezerwa to
+      // grosze przy bilionach w skarbcu; napastnik zlootuje najwyżej ją.
+      deutReserve: 1_000_000_000,
     },
     // ── v2.14.0: expeditions in WAVES ──
     // Position 16 of the base system, combat fleet split into N waves sent a
@@ -4185,12 +4190,24 @@
             : document.querySelector("a.x_btn_fleet_return"));
           let live = findLive();
           if (!live) {
-            // Przy wielu flotach lista jest zwinięta — rozwiń panel „Fleet
-            // movements" (przycisk na stronie floty), jak zrobiłby człowiek.
-            const toggle = [...document.querySelectorAll("a, button, div, span")]
-              .find(e => e.offsetParent !== null && !e.closest("#ogx-bot-panel")
-                && /fleet\s*movements/i.test((e.textContent || "").trim()));
-            if (toggle) { toggle.click(); await AntiDetection.sleep(1500); live = findLive(); }
+            // v2.74.0: wiersze listy flot renderują się DOPIERO po rozwinięciu
+            // — potwierdzone na żywo 05.08 23:08 (właściciel rozwinął ręcznie
+            // i dokładnie ten sam klik przeszedł). Rozwijamy więc jak człowiek:
+            // kandydaci to „Fleet movements", nagłówek „Events" i pasek misji
+            // („N Missions"); po kliku POLLUJEMY do 4 s, bo wiersze dochodzą
+            // asynchronicznie (1,5 s bywało za mało).
+            const cands = [...document.querySelectorAll("a, button, div, span, h2, h3")]
+              .filter(e => e.offsetParent !== null && !e.closest("#ogx-bot-panel"))
+              .filter(e => {
+                const t = (e.textContent || "").trim();
+                return t.length > 0 && t.length < 60 && /fleet\s*movements|^events$|\d+\s*Missions?/i.test(t);
+              });
+            log(`[FS] przycisku zawracania nie ma w żywym DOM — próbuję rozwinąć listę flot (${cands.length} kandydatów).`, "info");
+            for (const t of cands) {
+              t.click();
+              for (let i = 0; i < 8 && !live; i++) { await AntiDetection.sleep(500); live = findLive(); }
+              if (live) { log(`[FS] lista flot rozwinięta („${(t.textContent || "").trim().slice(0, 30)}") — przycisk zawracania widoczny.`, "success"); break; }
+            }
           }
           if (!live) {
             // Zła strona (lista tylko w danych) — przejdź na /fleet i spróbuj
@@ -6943,6 +6960,34 @@
   // ═══════════════════════════════════════════════════════════════
 
   let _handlingMission = false;
+  // ── v2.74.0: rezerwa deuteru przy ratunku/FS ──
+  // Wywoływane PO kliknięciu btn-all-res na kroku 3: zdejmuje z pola deuteru
+  // kwotę rezerwy, żeby ciało nie zostało z zerem paliwa (flota wracająca
+  // z ekspedycji musi mieć za co uciec). Wiersz deuteru znajdujemy po parach
+  // btn-res-full — na tym forku są 3 w kolejności metal/kryształ/deuter
+  // (żywy zrzut step3-clickables 05.08 23:03). Bez trafienia: nic nie ruszamy.
+  async function applyDeutReserve(tag) {
+    const reserve = Math.max(0, parseInt(CONFIG.threatAlarm?.deutReserve) || 0);
+    if (!reserve) return;
+    try {
+      const fulls = [...document.querySelectorAll("a.btn-res-full, .btn-res-full")];
+      if (fulls.length < 3) { log(`[${tag}] rezerwa deuteru: nie widzę 3 wierszy surowców (${fulls.length}) — zostawiam jak jest.`, "warn"); return; }
+      const row = fulls[2].closest("div, tr, li") || fulls[2].parentElement;
+      const input = row?.querySelector("input") ||
+                    fulls[2].parentElement?.querySelector("input");
+      if (!input) { log(`[${tag}] rezerwa deuteru: brak pola przy wierszu deuteru — zostawiam jak jest.`, "warn"); return; }
+      const current = parseInt((input.value || "0").replace(/[^\d]/g, "")) || 0;
+      if (current <= reserve) { log(`[${tag}] rezerwa deuteru: w zbiorniku ${current.toLocaleString()} ≤ rezerwa — nie zabieram deuteru wcale.`, "fleet"); }
+      const keep = Math.max(0, current - reserve);
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (setter) setter.call(input, keep); else input.value = keep;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      log(`[${tag}] rezerwa deuteru: zostawiam ${Math.min(current, reserve).toLocaleString()} na ciele, zabieram ${keep.toLocaleString()}.`, "fleet");
+      await AntiDetection.sleep(300 + Math.random() * 300);
+    } catch (e) { log(`[${tag}] rezerwa deuteru: błąd (${e.message}) — surowce bez zmian.`, "warn"); }
+  }
+
   async function handlePendingMission() {
     if (_handlingMission) return;
     // v2.10.25: a non-leader tab must NEVER execute a pending mission — this
@@ -8189,6 +8234,7 @@
               : "[MOON SAVE] no resource-load button found — ships fly, resources stay.", fulls.length ? "fleet" : "warn");
           }
           await AntiDetection.sleep(400 + Math.random() * 400);
+          await applyDeutReserve("MOON SAVE"); // v2.74.0: paliwo dla spóźnialskich
         }
 
         // ── v2.60.0: FS — misja Stacjonuj + surowce z księżyca ──
@@ -8219,6 +8265,7 @@
           const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
           if (allRes) { allRes.click(); log("[FS] surowce z księżyca załadowane.", "fleet"); }
           await AntiDetection.sleep(400 + Math.random() * 400);
+          await applyDeutReserve("FS"); // v2.74.0: paliwo dla spóźnialskich
         }
 
         // ── v2.68.1: złom — misja „Collect" klikana jawnie, albo wcale ──
@@ -9074,6 +9121,10 @@
               <span title="Gdy alarm wygaśnie (10 min bez obcych flot), bot ściąga flotę i surowce z powrotem na planetę, żeby mining i ekspedycje ruszyły. Bez tego fałszywy alarm parkowałby gospodarkę na księżycu na stałe.">Auto-powrót po alarmie</span>
               <button class="mini-btn" id="ogx-auto-return">${CONFIG.threatAlarm.autoReturn ? "ON" : "OFF"}</button>
             </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Tyle deuteru ZOSTAJE na ciele przy ratunku i Fleet Save — paliwo dla floty, która wróci później (np. z ekspedycji) i sama będzie musiała uciekać. 0 = zabieraj wszystko.">Rezerwa deuteru</span>
+              <input id="ogx-deut-reserve" type="number" min="0" step="100000000" value="${CONFIG.threatAlarm.deutReserve ?? 1000000000}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
             <button class="mini-btn" id="ogx-threat-sim" style="width:100%;margin-top:4px;" title="Przepuszcza SYNTETYCZNY atak na bazę przez prawdziwą maszynerię obrony: kandydat → potwierdzenie ~25-35 s → EWAKUACJA całej floty i surowców na drugie ciało → po ~2 min alarm gaśnie i flota wraca automatycznie. Koszt: kilka minut miningu i dwa krótkie przeloty. To jest pełna próba generalna automatu bez czekania na wroga.">TEST ALARMU (symulacja ataku)</button>
             <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
@@ -9342,6 +9393,17 @@
       };
       bindThreatToggle("ogx-auto-save", "autoSave", "Auto-ratunek przy ataku");
       bindThreatToggle("ogx-auto-return", "autoReturn", "Auto-powrót po alarmie");
+      // v2.74.0: rezerwa deuteru (paliwo dla floty wracającej z ekspedycji)
+      {
+        const el = document.getElementById("ogx-deut-reserve");
+        if (el) el.addEventListener("change", () => {
+          const v = Math.max(0, parseInt(el.value) || 0);
+          el.value = v;
+          CONFIG.threatAlarm.deutReserve = v;
+          saveConfig(CONFIG);
+          log(`Rezerwa deuteru: ${v.toLocaleString()} (zostaje na ciele przy ratunku/FS).`, "info");
+        });
+      }
 
       const msBtn = document.getElementById("ogx-moonsave-now");
       if (msBtn) msBtn.addEventListener("click", () => {
