@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.68.3
+// @version      2.68.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6689,6 +6689,20 @@
       log("Pending mission expired, clearing", "warn");
       GM_setValue("pending_mission", null);
       _handlingMission = false; // v2.10.10: same — a leaked flag made this fn a no-op until next reload
+      return;
+    }
+
+    // ── v2.68.4: bot OFF przerywa RUTYNOWE misje w toku ──
+    // Incydent 05.08 10:32-10:33: właściciel wyłączył bota o 10:32:17, a fala
+    // ekspedycji #15 i tak wyszła o 10:33:38 — misja w toku wznawiała się przy
+    // każdym przeładowaniu strony, bo ta funkcja nie sprawdzała głównego
+    // wyłącznika. OFF ma znaczyć STOP. Wyjątek: ratunek (moonSave) — przyciski
+    // RATUJ/WRÓĆ działają także przy wyłączonym bocie i porzucenie ewakuacji
+    // w połowie formularza byłoby gorsze niż jej dokończenie.
+    if (!CONFIG.enabled && !mission.moonSave) {
+      log(`Bot OFF — porzucam misję w toku (${mission.type}). Włącz bota, jeśli ma dokończyć.`, "warn");
+      GM_setValue("pending_mission", null);
+      _handlingMission = false;
       return;
     }
 
