@@ -1,8 +1,100 @@
-# OGameX Assistant — stan na 3 sierpnia 2026, 22:45 (v2.66.1)
+# OGameX Assistant — stan na 5 sierpnia 2026, ~17:00 (v2.71.0)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
+
+---
+
+## PRZECZYTAJ NAJPIERW — PRZEKAZANIE 05.08 (praca → dom)
+
+**Priorytet ownera, wprost: „Obrona floty jest najważniejsza i nie może raz
+działać raz nie."** Wszystko inne jest drugorzędne. Zanim cokolwiek zmienisz
+w obronie — przeczytaj tę sekcję i incydent 16:18 poniżej w całości.
+
+### Co się dziś wydarzyło (2026-08-05) — trzy prawdziwe ataki, jeden bug
+
+Obrona odparła **3 ataki** w pełni automatycznie (wykrycie → ewakuacja na
+drugie ciało w ~24 s → napastnik zawraca → auto-powrót). ZERO strat floty:
+
+1. **12:30** — atak z [3:248:11] „Moon" (87,2 mld Battleship). Ewakuacja
+   księżyc→planeta, powrót 12:32 „planeta → księżyc" ✓ poprawnie.
+2. **15:09** — atak „HOME" z [3:254:9] (4 floty, ~190 mld). Jak wyżej ✓.
+   (HOME to niemal na pewno Sniper Grus — ten od masakry 11:00, gdy bot
+   był OFF; liczba Reaperów się zgadza.)
+3. **16:18** — znowu [3:248:11] (87,2 mld BS, dolot 5 min). Ewakuacja OK,
+   napastnik zawrócił, ALE powrót odstawił flotę na **PLANETĘ** zamiast na
+   księżyc. To NIE była awaria powrotu — to **flip pustego hangaru**:
+
+### Incydent 16:18 — anatomia buga (v2.70.3 naprawia)
+
+Sekwencja z dziennika: 16:18:58 ratunek księżyc→planeta ✓ → 16:20:40 straż
+wielofalowa (zamiatanie co 90 s) robi drugi przebieg → 16:20:52 zastaje
+**pusty hangar na księżycu przy trwającym alarmie** → stary „flip" uznaje
+„flota pewnie na drugim ciele" → **przenosi flotę z bezpiecznej planety
+Z POWROTEM na atakowany księżyc** (dolot 16 s przed uderzeniem! uratował
+nas tylko odwrót wroga) i **nadpisuje homeBody=planet** w notatkach straży
+→ 16:22:11 powrót sumiennie odstawia flotę „do domu" = na planetę.
+
+**Dlaczego „raz działa, raz nie":** flip odpalał TYLKO gdy alarm trwał na
+tyle długo, że zamiatanie trafiło na pusty hangar. W atakach 1-2 wróg
+zawrócił szybko → flip nie wykonał się wcale → wszystko działało. Bug był
+timing-dependent, siedział w kodzie od v2.66.0.
+
+**Fix v2.70.3 (live, pushnięte ~16:30):** flip wyłącznie przy PIERWSZYM
+ratunku alarmu — warunek `!mission.moonReturn && !mission.flippedBody &&
+!mission.sweep && saves<=1 && ThreatMonitor.active() && atkB!==hereB`
+(ogamex-bot.user.js, gałąź moonSave w select_ships_direct, szukaj
+„v2.70.3"). Zamiatanie z pustym hangarem = „nic nowego nie wylądowało",
+koniec. Flip nigdy nie może też celować w ciało, w które leci atak.
+
+### v2.71.0 — PROM planeta→księżyc (samonaprawa, pushnięte ~17:00)
+
+Moduł `MoonFerry` (przed DebrisCollector) + hook w schedulerTick (za
+OnlineBonus). W trybie księżycowym co 2 h (pierwszy kurs OD RAZU po
+aktualizacji) tworzy misję `moon_ferry_direct`: przewozi WSZYSTKO z planety
+na księżyc (ta sama maszyneria co ratunek: Deploy + wszystkie statki
++ surowce). Kluczowe flagi misji: `moonSave:true` (obsługa formularza),
+`ferry:true` (własne wpisy „odczyt/PROM" w dzienniku — NIE fałszuje
+liczników obrony), `sweep:true` (twardo wyłącza flip). Pusta planeta =
+cichy abort („nothing on this planet to save"). Ustępuje wszystkiemu:
+alarm/straż/pending/przerwy/okno nocne (patrz `MoonFerry.due()`).
+Efekt: każdy stan „flota na złym ciele" — z dowolnej przyczyny — naprawia
+się sam najpóźniej po 2 h.
+
+### NA CO ZWRÓCIĆ UWAGĘ W DOMU (kolejność ważności)
+
+1. **Sprawdź, że prom zadziałał**: w logu `[PROM] planeta → księżyc` +
+   flota (36,9 mld LF, 16,1 mld BS, minery, recyklery, 12 GS, AVATAR…)
+   ma stać NA KSIĘŻYCU [3:269:8]. Jeśli stoi na planecie — prom nie
+   ruszył, diagnozuj `MoonFerry.due()` (klucz GM `ogamex_ferry_at`).
+2. **Następny atak = test v2.70.3.** Sąsiedzi ([3:248:11] i [3:254:9])
+   atakują seryjnie — kolejny przyjdzie. Poprawny przebieg w dzienniku:
+   RATUNEK księżyc→planeta → (zamiatanie może logować „nothing to save",
+   to OK) → **ŻADNEGO wpisu „Hangar … pusty przy alarmie → przełączam"**
+   → POWRÓT „planeta → księżyc". Jeśli zobaczysz flip przy zamiataniu —
+   v2.70.3 nie zadziałał, to P0.
+3. **NIE dotykaj gałęzi moonSave w select_ships_direct ani zapisu
+   homeBody/refugeBody w MoonSave.saveWatch bez przeczytania incydentu
+   16:18.** Każda zmiana tam = ryzyko powtórki „flota wraca na atakowane
+   ciało".
+4. **Mining i Ekspedycje są OFF od 15:54** (owner wyłączył po ataku).
+   Włączyć może sam owner, gdy uzna że spokój. FS też OFF.
+5. **FS live-click zawracania (a.x_btn_fleet_return) nadal NIEPRZETESTOWANY**
+   — pierwsze zawrócenie było ręczne. Następny cykl FS = test; czytać log.
+6. **Gemini: brak klucza na tej maszynie** (GM storage nie synchronizuje
+   się między laptopami — w domu klucz pewnie jest, sprawdź panel).
+7. Drobne z dziś: licznik alarmów w pasku liczy epizody (v2.70.2, „3 alarm"
+   = poprawnie); dumpy wrogich wierszy szukaj po `[ATAK DOM]`.
+
+### Pomysły otwarte (owner zainteresowany, nic nie obiecane)
+
+- Ewakuacja awaryjna poza układ, gdy atak leci na OBA ciała naraz
+  (dziś: ratunek przerzuca tylko planeta↔księżyc tych samych koordów).
+- Podgląd nicku agresora (galaktyka [3:248] / [3:254]) do dziennika.
+- Rotacja księżyców ODRADZONA (koszt/chaos > zysk; falanga i tak nie
+  widzi księżyców) — zamiast tego wdrożony blitz fast-track (<120 s ETA
+  = alarm bez 25 s potwierdzania, v2.70.1).
 
 ---
 
