@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.73.2
+// @version      2.73.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8976,7 +8976,7 @@
       </style>
 
       <div class="header">
-        <span>OGameX Assistant</span>
+        <span>OGameX Assistant <span style="font-size:9px;color:#7f8c8d;font-weight:normal;" title="Wersja skryptu wg Tampermonkeya — po pushu na main aktualizuje się sama (CDN ~5 min).">v${(typeof GM_info !== "undefined" && GM_info?.script?.version) || "?"}</span></span>
         <div>
           <button id="ogx-toggle" class="toggle-btn ${CONFIG.enabled ? "on" : "off"}">${CONFIG.enabled ? "ON" : "OFF"}</button>
           <span class="minimize" id="ogx-minimize">_</span>
