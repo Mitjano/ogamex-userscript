@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.68.2
+// @version      2.68.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3720,9 +3720,11 @@
     RECALL_MAX_TRIES: 3,
 
     // Zwraca plan albo powód, dla którego go nie ma.
-    plan(now = Date.now()) {
+    // ignoreEnabled: potwierdzenie przy WŁĄCZANIU liczy plan, zanim flaga
+    // stanie się prawdą (v2.68.3).
+    plan(now = Date.now(), { ignoreEnabled = false } = {}) {
       const c = this.cfg();
-      if (!c.enabled) return { ok: false, why: "FS wyłączony" };
+      if (!c.enabled && !ignoreEnabled) return { ok: false, why: "FS wyłączony" };
       const at = this.returnAtMs(now);
       if (!Number.isFinite(at)) return { ok: false, why: "nie ustawiono godziny powrotu" };
       if (at <= now) return { ok: false, why: "godzina powrotu już minęła" };
@@ -9036,6 +9038,22 @@
     {
       const fsBtn = document.getElementById("ogx-fs-toggle");
       if (fsBtn) fsBtn.addEventListener("click", () => {
+        // ── v2.68.3: włączenie FS wymaga potwierdzenia Z PLANEM ──
+        // Incydent 05.08 09:32: omyłkowo włączony toggle + zapisana godzina
+        // i zmierzona trasa = w pełni automatyczny start CAŁEJ floty dwie
+        // minuty później. FS ma startować sam w nocy — więc jedyne właściwe
+        // miejsce na człowieka to moment włączania, z jasną zapowiedzią,
+        // KIEDY nastąpi start. Wyłączanie zostaje bez pytań (ma być szybkie).
+        if (!CONFIG.fleetSave.enabled) {
+          const p = FleetSave.plan(Date.now(), { ignoreEnabled: true });
+          const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+          const kiedy = p.ok
+            ? `Okno pasuje JUŻ TERAZ — start nastąpi w ciągu ~1 min:\n  start ${f(p.launchAt)} → zawrócenie ${f(p.recallAt)} → powrót ${f(p.returnAt)}.`
+            : p.launchDueAt
+              ? `Najbliższy automatyczny start: ok. ${f(p.launchDueAt)}.`
+              : `Start wstrzymany: ${p.why}`;
+          if (!window.confirm(`Włączyć Fleet Save?\n\n${kiedy}\n\nBot wyśle CAŁĄ flotę (poza minerami) + surowce z księżyca, bez dalszych pytań.`)) return;
+        }
         CONFIG.fleetSave.enabled = !CONFIG.fleetSave.enabled;
         saveConfig(CONFIG);
         fsBtn.textContent = CONFIG.fleetSave.enabled ? "ON" : "OFF";
