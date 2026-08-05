@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.70.2
+// @version      2.70.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5632,6 +5632,7 @@
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
           moonSave: true,
+          sweep: !!sweep, // v2.70.3: zamiatanie nie flipuje na drugie ciało
           atCoords: at,
           targetBody: to,
           homeBody: w0.homeBody || from,
@@ -7285,8 +7286,20 @@
             // (kierunek odwraca się sam: from=ciało aktywne po przełączeniu).
             // Jedna próba — jeśli i tam pusto, flota jest w powietrzu i nie ma
             // czego ratować.
-            if (!mission.moonReturn && !mission.flippedBody && ThreatMonitor.active()) {
-              const here = MoonSave.currentBody() || "planet";
+            // ── v2.70.3: flip TYLKO przy PIERWSZYM ratunku alarmu ──
+            // Przy ZAMIATANIU pusty hangar znaczy „nic nowego nie wylądowało",
+            // a nie „szukaj floty po drugiej stronie". Incydent 16:20: po
+            // udanej ewakuacji księżyc→planeta straż zastała pusty księżyc
+            // i flip przeniósł flotę z bezpiecznej planety Z POWROTEM na
+            // atakowany księżyc (dolot 16 s przed uderzeniem — uratował nas
+            // tylko odwrót wroga) oraz przestawił homeBody, przez co powrót
+            // odstawił flotę na złe ciało. Dodatkowo: flip nigdy nie może
+            // uczynić celem ciała, w które leci atak.
+            const hereB = MoonSave.currentBody() || "planet";
+            const atkB = (() => { try { return ThreatMonitor.events()?.targetBody || null; } catch { return null; } })();
+            if (!mission.moonReturn && !mission.flippedBody && !mission.sweep
+                && (MoonSave.watch().saves || 0) <= 1 && ThreatMonitor.active() && atkB !== hereB) {
+              const here = hereB;
               const other = here === "moon" ? "planet" : "moon";
               log(`[MOON SAVE] hangar na ${here === "moon" ? "księżycu" : "planecie"} PUSTY, a alarm trwa — flota stoi na ${other === "moon" ? "księżycu" : "planecie"}. Przełączam się i ratuję stamtąd.`, "warn");
               ThreatLog.add("RATUNEK", `Hangar ${here} pusty przy alarmie → flota na ${other}. Przełączam ciało i ratuję ${other} → ${here}.`);
