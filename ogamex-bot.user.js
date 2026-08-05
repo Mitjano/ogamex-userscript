@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.68.4
+// @version      2.69.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -58,6 +58,15 @@
 
   const DEFAULT_CONFIG = {
     enabled: false,
+    // ── v2.69.0: TRYB KSIĘŻYCOWY (decyzja właściciela 05.08 po ataku) ──
+    // Falanga skanuje tylko PLANETY: loty z/na planetę widać co do sekundy
+    // (napastnik ustawił atak "w jedną sekundę" na powrót ekspedycji), loty
+    // z/na KSIĘŻYC są niewidoczne, a księżyca nie da się zeskanować.
+    // "moon" = każda rutynowa wysyłka (mining, ekspedycje, złom) startuje
+    // z księżyca bazy: przed formularzem bot przełącza aktywne ciało, a
+    // rotacja minerów po koloniach jest wyłączona. Flota, minery, recyklery
+    // i deuter mają MIESZKAĆ na księżycu (prom z planety ręcznie: RATUJ).
+    baseBody: "moon",
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -6793,6 +6802,26 @@
       // ── Direct asteroid mining: fleet URL has coords + mission pre-set ──
       // 3-step form on same page: Select ships → Confirm destination → Send fleet
       if (mission.step === "select_ships_direct" && page === "fleet") {
+        // ── v2.69.0: TRYB KSIĘŻYCOWY — rutynowe wysyłki startują z księżyca ──
+        // Jeden punkt przewężenia zamiast czterech miejsc tworzenia misji:
+        // każda misja (mining/ekspedycja/złom) przechodzi tędy przed
+        // formularzem. Zła strona startu → przełącz na księżyc bazy tą samą
+        // maszynerią, którą FS i powrót ratunku mają potwierdzoną na żywo.
+        // Ratunek (moonSave) i FS mają własną logikę ciała — nietykane.
+        if (CONFIG.baseBody === "moon" && !mission.moonSave && !mission.fleetSave && !mission.launchChecked) {
+          const here = MoonSave.currentBody();
+          if (here && here !== "moon") {
+            mission.launchChecked = true; // jedna korekta na misję — bez pętli
+            mission.step = "switch_to_body";
+            mission.launchBody = "moon";
+            mission.atCoords = mission.atCoords || CONFIG.asteroidMining.minerBase;
+            mission.timestamp = Date.now();
+            GM_setValue("pending_mission", JSON.stringify(mission));
+            log(`[BAZA=KSIĘŻYC] misja ${mission.type} miała startować z planety — przełączam na księżyc bazy przed wysyłką.`, "warn");
+            setTimeout(() => { handlePendingMission().catch(() => {}); }, 1200);
+            return;
+          }
+        }
         // ── v2.10.23/24: same-target send guard (defence in depth) ──
         // Nothing downstream re-checks DispatchedAsteroids, so ANY path that
         // replays a pending_mission (send succeeded but the browser never
@@ -7331,6 +7360,17 @@
             return;
           }
         } else {
+          // ── v2.69.0: w trybie księżycowym NIE szukamy minerów po koloniach ──
+          // One mieszkają na księżycu bazy; pusty hangar = są w powietrzu.
+          // Stara rotacja przełączałaby aktywne ciało na kolonię i cała taktyka
+          // "wszystko z księżyca" rozjechałaby się po jednej pustej wysyłce.
+          if (CONFIG.baseBody === "moon") {
+            log("Brak minerów na księżycu bazy — są w powietrzu. Czekam na powrót (tryb księżycowy: bez rotacji po koloniach).", "asteroid");
+            GM_setValue("pending_mission", null);
+            const storedReturnMoon = parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0;
+            if (!(storedReturnMoon > Date.now())) GM_setValue("ogamex_fleet_return_at", String(Date.now() + 10 * 60 * 1000));
+            return;
+          }
           // No Asteroid Miners on this planet — try switching to another planet.
           // Track tried planets by coord key from the active sidebar entry. If we
           // can't detect the current planet from DOM (rare), fall back to using
@@ -8612,6 +8652,10 @@
           <div class="status" id="ogx-asteroid-locks" style="font-size:10px;color:#7f8c8d;margin-top:3px;" title="Which tab runs the bot + coords currently locked against re-dispatch (frees at fleet arrival, or after 1h if arrival unknown).">Tab: —</div>
           <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="KSIĘŻYC = każda rutynowa wysyłka (mining, ekspedycje, złom) startuje z księżyca bazy — falanga skanuje tylko planety, więc loty z księżyca są niewidoczne i nie da się ustawić snajperki na powrót floty (atak 05.08). Flota, minery, recyklery i deuter muszą MIESZKAĆ na księżycu — prom z planety przyciskiem RATUJ. Ratunek i FS mają własną logikę ciała.">Start wysyłek (falanga!)</span>
+              <button class="mini-btn" id="ogx-base-body">${CONFIG.baseBody === "moon" ? "KSIĘŻYC" : "PLANETA"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="How many miners to send on ONE flight. 0 = send all available in a single wave. This overrides the auto cargo/est formula.">Miners per flight (0=all)</span>
               <input id="ogx-cfg-miners" type="number" min="0" step="1" value="${CONFIG.asteroidMining.minersPerMission}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -9290,6 +9334,18 @@
         updateStatusUI();
       });
     };
+    // v2.69.0: przełącznik trybu księżycowego (dotyczy mining+ekspedycje+złom)
+    {
+      const bbBtn = document.getElementById("ogx-base-body");
+      if (bbBtn) bbBtn.addEventListener("click", () => {
+        const toMoon = CONFIG.baseBody !== "moon";
+        if (toMoon && !window.confirm("Start wysyłek z KSIĘŻYCA?\n\nFalanga nie widzi lotów z księżyca — koniec snajperek na powrót floty. WARUNEK: flota, minery, recyklery i deuter muszą stać na księżycu bazy (przenieś przyciskiem RATUJ FLOTĘ, jeśli jeszcze są na planecie).")) return;
+        CONFIG.baseBody = toMoon ? "moon" : "planet";
+        saveConfig(CONFIG);
+        bbBtn.textContent = toMoon ? "KSIĘŻYC" : "PLANETA";
+        log(`Start rutynowych wysyłek: ${toMoon ? "KSIĘŻYC (falanga ślepa)" : "PLANETA (uwaga: falanga widzi loty!)"}`, toMoon ? "success" : "warn");
+      });
+    }
     bindCfgInput("ogx-cfg-miners", "minersPerMission", "Miners per flight");
     bindCfgInput("ogx-cfg-total", "totalMinersToUse", "Total miners to use");
     bindCfgInput("ogx-cfg-cargo", "cargoPerMiner", "Cargo/miner");
