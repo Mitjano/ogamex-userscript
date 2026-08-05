@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.73.1
+// @version      2.73.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6982,7 +6982,11 @@
       const ours = planets.some(p => `${p.galaxy}:${p.system}:${p.position}` === `${c.galaxy}:${c.system}:${c.position}`);
       if (planets.length && !ours) {
         log(`[RATUNEK] porzucam wiszącą misję ${mission.type} → [${c.galaxy}:${c.system}:${c.position}] — nie mamy tam żadnego ciała (przenosiny bazy).`, "warn");
-        ThreatLog.add("BŁĄD", `Porzucona misja ${mission.type} na nieistniejące ciało [${c.galaxy}:${c.system}:${c.position}] (baza przeniesiona).`);
+        ThreatLog.add("odczyt", `Porzucona misja ${mission.type} na nieistniejące ciało [${c.galaxy}:${c.system}:${c.position}] (baza przeniesiona) — to sprzątanie, nie awaria.`);
+        // v2.73.2: powrót na ciało, którego nie mamy, będzie ponawiany przez
+        // straż w kółko (incydent 22:54: BŁĄD + głos co kilka minut). Straż
+        // pilnowała STAREJ bazy — zdejmij ją razem z misją.
+        MoonSave.disarm("cel ratunku/powrotu nie istnieje (przenosiny bazy)");
         GM_setValue("pending_mission", null);
         _handlingMission = false;
         return;
