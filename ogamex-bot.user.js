@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.69.2
+// @version      2.69.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3794,7 +3794,28 @@
     async tick() {
       const st = this.state() || {};
       if (st.phase === "launched") {
-        if (Date.now() >= (st.recallAt || 0)) await this.attemptRecall(st);
+        if (Date.now() >= (st.recallAt || 0)) { await this.attemptRecall(st); return; }
+        // ── v2.69.3: wykryj RĘCZNE zawrócenie przed czasem ──
+        // 05.08: właściciel zawrócił poranny (omyłkowy) FS minutę po starcie,
+        // a maszyna o 13:01 i tak poszła zawracać nieistniejący lot — trzy
+        // "ZAWRACANIE NIEUDANE" i straszny komunikat o niczym. Co 5 min tani
+        // fetch listy: brak naszego lotu PRZED czasem dolotu = zawrócony
+        // (ręcznie albo przerwany) → cykl zamyka się cicho i od razu.
+        if (Date.now() - (st.lastRowCheck || 0) > 5 * 60 * 1000) {
+          this.save({ ...st, lastRowCheck: Date.now() });
+          try {
+            const res = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+            if (res.ok) {
+              const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+              const eta = (st.sentAt || 0) + (st.flightMs || 0);
+              if (!this._findOurRow(doc) && st.flightMs && Date.now() < eta - 60000) {
+                this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
+                log("[FS] lotu nie ma na liście przed czasem dolotu — został zawrócony (najpewniej ręcznie). Zamykam cykl bez alarmów.", "info");
+                try { updateStatusUI(); } catch {}
+              }
+            }
+          } catch {}
+        }
         return;
       }
       if (st.phase === "recalled" || st.phase === "recall_failed") {
@@ -3907,6 +3928,16 @@
         const row = this._findOurRow(doc);
         if (!row) {
           // Wiersza nie ma: flota już doleciała (za późno) albo już zawrócona.
+          // v2.69.3: brak wiersza PRZED czasem dolotu = lot zawrócony (np.
+          // ręcznie) — to sukces cyklu, nie porażka. Porażką jest dopiero
+          // brak wiersza PO dolocie (flota stacjonuje na celu).
+          const etaAbs = (st.sentAt || 0) + (st.flightMs || 0);
+          if (st.flightMs && Date.now() < etaAbs - 60000) {
+            this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
+            log("[FS] lotu nie ma na liście przed czasem dolotu — został zawrócony (najpewniej ręcznie). Zamykam cykl.", "info");
+            try { updateStatusUI(); } catch {}
+            return;
+          }
           this._recallFail(st, "nie znajduję naszego lotu na liście ruchów (doleciała? już zawrócona?)");
           return;
         }
