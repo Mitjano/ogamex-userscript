@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.6
+// @version      2.74.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4852,6 +4852,26 @@
               ThreatLog.add("ATAK", `${attacks.length}× ${first.type} z ${bodyPl(first.srcBody)}${first.srcName ? ` „${first.srcName}"` : ""} [${first.src}] na ${bodyPl(first.dstBody, true)} [${first.dst}]`
                 + (mins !== null ? `, przylot za ~${mins} min` : "")
                 + (first.ships?.length ? ` | flota: ${first.ships.slice(0, 8).join(", ")}` : ""));
+            }
+          }
+          // ── v2.74.7: wywiad także dla NIE-ataków (sondy itp.) ──
+          // 06.08 12:31: sonda z daleka wisiała w pasku minutami, podniosła
+          // alarm — a w dzienniku nie został po niej ŻADEN ślad (skąd, czym).
+          // Skład i źródło siedzą w tym samym tooltipie co przy atakach, więc
+          // notujemy każdy nowy obraz obcych misji (sygnatura, nie co 30 s).
+          const others = foreign.filter(r => !r.attack);
+          if (others.length) {
+            const sigS = others.map(r => r.id || `${r.type}|${r.src}|${r.dst}`).sort().join(";");
+            let lastS = null;
+            try { lastS = JSON.parse(GM_getValue("ogamex_threat_spy_sig", "null")); } catch {}
+            if (!lastS || lastS.sig !== sigS || Date.now() - (lastS.at || 0) > 10 * 60 * 1000) {
+              GM_setValue("ogamex_threat_spy_sig", JSON.stringify({ sig: sigS, at: Date.now() }));
+              for (const r of others.slice(0, 3)) {
+                const minsS = r.eta ? Math.max(0, Math.round(r.eta / 60)) : null;
+                ThreatLog.add("odczyt", `Obca misja ${r.type} z [${r.src || "?"}]${r.srcName ? ` „${r.srcName}"` : ""} na [${r.dst || "?"}]`
+                  + (minsS !== null ? `, dolot ~${minsS} min` : "")
+                  + (r.ships?.length ? ` | skład: ${r.ships.slice(0, 6).join(", ")}` : ""));
+              }
             }
           }
           return;
