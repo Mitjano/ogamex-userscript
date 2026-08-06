@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.3
+// @version      2.75.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5891,7 +5891,12 @@
       }
       this.running = true;
       try {
-        const at = this.coordsOf(where) || this.coordsOf(this.watch().at);
+        // v2.75.4: coordsOf(null) domyślnie zwraca BAZĘ, więc stary zapis
+        // `coordsOf(where) || coordsOf(watch().at)` NIGDY nie sięgał po
+        // watch().at — zamiatanie straży na atakowanej kolonii celowało
+        // w bazę (incydent 22:18 06.08: sweep [2:277:8] poleciał w [3:272:7]).
+        // Kolejność: jawne where → kolonia z alarmu → dopiero baza.
+        const at = this.coordsOf(where || this.watch().at || null);
         const href = this.targetUrl(at);
         // ── v2.28.0: uciekaj na DRUGIE ciało, nie zawsze na księżyc ──
         // Właściciel: „jeśli flota stoi na księżycu i leci atak na księżyc, ma
@@ -7163,10 +7168,17 @@
     // nie łapało). Ratunek zawsze celuje w NASZE ciało — jeśli koordów misji
     // nie ma na liście planet, ta misja jest miną z poprzedniej bazy.
     if (mission.moonSave && mission.atCoords) {
-      const planets = GameState.getPlanets();
+      // v2.75.4: NIE ufać GameState.getPlanets() — na tym forku parsuje JEDNĄ
+      // planetę (aktywną) z 30, więc każda misja na nie-aktywną kolonię
+      // wychodziła jako „nieistniejąca" i ROZBRAJAŁA straż (incydent 22:18
+      // 06.08: baza [3:272:7] uznana za nieistniejącą, straż zdjęta, flota
+      // została na planecie bez auto-powrotu). Jedyne wiarygodne źródło listy
+      // naszych ciał to ownBodies() (select skrótów planet + cache GM).
+      // Pusta lista = „nie wiem" — misji wtedy nie ruszamy.
+      const own = ThreatMonitor.ownBodies();
       const c = mission.atCoords;
-      const ours = planets.some(p => `${p.galaxy}:${p.system}:${p.position}` === `${c.galaxy}:${c.system}:${c.position}`);
-      if (planets.length && !ours) {
+      const ours = own.has(`${c.galaxy}:${c.system}:${c.position}`);
+      if (own.size > 1 && !ours) {
         log(`[RATUNEK] porzucam wiszącą misję ${mission.type} → [${c.galaxy}:${c.system}:${c.position}] — nie mamy tam żadnego ciała (przenosiny bazy).`, "warn");
         ThreatLog.add("odczyt", `Porzucona misja ${mission.type} na nieistniejące ciało [${c.galaxy}:${c.system}:${c.position}] (baza przeniesiona) — to sprzątanie, nie awaria.`);
         // v2.73.2: powrót na ciało, którego nie mamy, będzie ponawiany przez
