@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.4
+// @version      2.74.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5693,6 +5693,20 @@
         this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round(age / 1000)}s temu) — nie wysyłam drugiego.`);
         return false;
       }
+      // ── v2.74.5: nie zawracaj floty, której RATUNEK jeszcze leci ──
+      // Incydent 6.08 12:32: alarm zszedł 20 s po wysłaniu ratunku (lot 81 s
+      // na te same koordy); powrót wystartował od razu, zastał PUSTE refugium
+      // i rozbroił straż — a ratunek wylądował minutę później na planecie
+      // i nikt go już nie ściągnął. Powrót czeka, aż ratunek fizycznie
+      // doleci: 130 s od stempla wysyłki/utworzenia (hop = 81 s + zapas).
+      if (!byOperator) {
+        const ref = Math.max(w.lastSendAt || 0, w.lastAt || 0);
+        const landAt = ref + 130000;
+        if (ref && Date.now() < landAt) {
+          this._sayOnce("waitland", `[POWRÓT] ratunek jeszcze w locie (~${Math.ceil((landAt - Date.now()) / 1000)}s do lądowania) — powrót poczeka.`);
+          return false;
+        }
+      }
       const url = this.homeUrl(w.at);
       if (!url) return false;
       this.running = true;
@@ -7583,6 +7597,19 @@
             // ściągać — flota już wróciła albo jest w drodze. Ponawianie tego
             // co pięć minut to była właśnie ta pętla, którą właściciel widział.
             if (mission.moonReturn) {
+              // ── v2.74.5: pusto może znaczyć „ratunek WCIĄŻ LECI" ──
+              // 6.08 12:32: powrót dotarł na refugium 24 s po wysłaniu ratunku
+              // (lot 81 s), zastał pustkę i rozbroił straż — ratunek wylądował
+              // minutę później bez opieki. Jeśli od wysyłki/utworzenia ratunku
+              // nie minęło 130 s, straż ZOSTAJE i powrót ponowi się po locie.
+              const w = MoonSave.watch();
+              const ref = Math.max(w.lastSendAt || 0, w.lastAt || 0);
+              if (w.armed && ref && Date.now() < ref + 130000) {
+                log("[POWRÓT] refugium puste, ale ratunek jeszcze leci — straż zostaje, ponowię po lądowaniu.", "warn");
+                ThreatLog.add("POWRÓT", "Refugium puste, ale ratunek w locie — czekam na lądowanie (straż uzbrojona).");
+                MoonSave.saveWatch({ ...w, returning: false });
+                return;
+              }
               ThreatLog.add("POWRÓT", "Na refugium pusto — nie ma czego ściągać. Straż zdjęta.");
               MoonSave.disarm("refugium puste — powrót bezprzedmiotowy");
             }
@@ -10574,6 +10601,11 @@
         // o 09:26:19, a potem próby o 09:27:45, 09:29:11, 09:30:23, 09:30:36
         // i 09:32:26 — wszystkie w pustkę, bo flota była już w drodze.
         if (wasMoonReturn) MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
+        // v2.74.5: stempel POTWIERDZONEJ wysyłki ratunku — powrót (returnHome)
+        // czeka od tego momentu 130 s na lądowanie, zanim ruszy ściągać flotę.
+        if (!wasMoonReturn && !wasFerry) {
+          try { const w = MoonSave.watch(); if (w.armed) MoonSave.saveWatch({ ...w, lastSendAt: Date.now() }); } catch {}
+        }
         if (wasFerry) {
           // v2.71.0: prom to logistyka, nie obrona — bez wpisu RATUNEK/POWRÓT
           // w dzienniku (zafałszowałby liczniki epizodów obrony).
