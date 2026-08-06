@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.7
+// @version      2.74.8
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3567,8 +3567,9 @@
       const ship = CONFIG.inactiveFarming.shipType || "HEAVY_CARGO";
       const fleetUrl = `/fleet?x=${t.galaxy}&y=${t.system}&z=${t.position}&planet=1&mission=8`;
       log(`FARM ATTACK → [${t.coord}] with ${hc} ${ship}`, "success");
-      // Start ze złego ciała naprawia chokepoint v2.69.0 w select_ships_direct
-      // (baza=księżyc → przełącz przed formularzem) — bez własnej logiki tutaj.
+      // v2.74.8: farm celowo POMIJA korektę ciała v2.69.0 (mission.farm w
+      // select_ships_direct) — atak startuje z aktualnie aktywnej
+      // planety/księżyca, bo właściciel przenosi flotę bliżej celów eventu.
       GM_setValue("pending_mission", JSON.stringify({
         type: "inactive_farm_direct",
         farm: true,
@@ -7234,7 +7235,11 @@
         // formularzem. Zła strona startu → przełącz na księżyc bazy tą samą
         // maszynerią, którą FS i powrót ratunku mają potwierdzoną na żywo.
         // Ratunek (moonSave) i FS mają własną logikę ciała — nietykane.
-        if (CONFIG.baseBody === "moon" && !mission.moonSave && !mission.fleetSave && !mission.launchChecked) {
+        // v2.74.8: farm STARTUJE Z AKTUALNEGO ciała (decyzja właściciela 06.08
+        // przed eventem idle-farming) — właściciel przenosi flotę między
+        // planetami/księżycami, żeby skrócić doloty; wymuszony start z bazy
+        // niweczyłby te przenosiny.
+        if (CONFIG.baseBody === "moon" && !mission.moonSave && !mission.fleetSave && !mission.farm && !mission.launchChecked) {
           const here = MoonSave.currentBody();
           if (here && here !== "moon") {
             mission.launchChecked = true; // jedna korekta na misję — bez pętli
