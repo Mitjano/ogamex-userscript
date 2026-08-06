@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.1
+// @version      2.75.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3908,6 +3908,18 @@
     state() { try { return JSON.parse(GM_getValue(this.KEY, "null")); } catch { return null; } },
     save(st) { GM_setValue(this.KEY, JSON.stringify(st)); },
 
+    // v2.75.2: koordy aktywnego ciała z WIERSZA listy planet — ta sama metoda
+    // co MoonSave.activeCoords (jedyna potwierdzona na tym forku; recon
+    // pokazywał "planet ?", bo tekst wpisu to sama nazwa, koordy stoją w
+    // wierszu obok). getCurrentPlanet zostaje jako drugi odczyt.
+    originCoords() {
+      const sel = document.querySelector("a.planet-select.selected, a.moon-select.selected, .planet-select.selected, .moon-select.selected");
+      const row = sel?.closest("li, div, tr") || sel?.parentElement;
+      const m = String(row?.textContent || "").match(/(\d+):(\d+):(\d+)/);
+      if (m) return { galaxy: +m[1], system: +m[2], position: +m[3] };
+      return GameState.getCurrentPlanet();
+    },
+
     // Zmierzony czas lotu dla tej trasy i prędkości (klucz uwzględnia oba).
     routeKey() {
       const c = this.cfg();
@@ -3917,7 +3929,7 @@
       // teleporcie plan wymusza świeży pomiar zamiast liczyć zawrócenie po
       // czasie ze starej trasy. c.from zostaje tylko jako fallback na
       // stronach bez paska planet.
-      const o = GameState.getCurrentPlanet() || c.from;
+      const o = this.originCoords() || c.from;
       return `${o?.galaxy}:${o?.system}:${o?.position}→${c.to?.galaxy}:${c.to?.system}:${c.to?.position}@${c.speedPercent}`;
     },
     flightMs() {
@@ -4085,7 +4097,7 @@
       const c = this.cfg();
       const to = c.to;
       if (!to || !Number.isFinite(to.galaxy)) { log("[FS] brak celu w konfiguracji — ustaw „Cel” w panelu FS.", "error"); return false; }
-      const from = GameState.getCurrentPlanet();
+      const from = this.originCoords();
       if (MoonSave.currentBody() !== "moon" || !from) { log("[FS] nie startuję: aktywne ciało nie jest księżycem albo nie widzę pozycji na tej stronie.", "warn"); return false; }
       const at = (plan && plan.returnAt) || this.returnAtMs();
       if (!measure && !Number.isFinite(at)) return false;
