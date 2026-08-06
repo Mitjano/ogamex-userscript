@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.5
+// @version      2.74.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -145,7 +145,7 @@
       // ratunek/FS zabierał wszystko — a flota, która wróci później (np.
       // z ekspedycji), nie miałaby paliwa na własną ewakuację. Rezerwa to
       // grosze przy bilionach w skarbcu; napastnik zlootuje najwyżej ją.
-      deutReserve: 1_000_000_000,
+      deutReserve: 100_000_000_000,
     },
     // ── v2.14.0: expeditions in WAVES ──
     // Position 16 of the base system, combat fleet split into N waves sent a
@@ -407,6 +407,20 @@
           GM_setValue("ogamex_ferry_at", "0");
           console.log("[OGameX v2.73.0] migration: baza przeniesiona na [3:272:7], wiedza o starym księżycu wyczyszczona");
           setTimeout(() => log("PRZENOSINY: baza bota ustawiona na [3:272:7] (planeta+księżyc). Cel ratunku nauczy się z nowego wiersza galaktyki; cel Fleet Save do ponownego wyboru.", "success"), 1500);
+        }
+
+        // ── v2.74.6 migration: rezerwa deuteru 1 mld → 100 mld (decyzja ownera 06.08) ──
+        // 1 mld to za mało paliwa dla flot lądujących na planecie; zapisany
+        // config trzyma starą wartość, więc jednorazowo podbijamy ją do nowego
+        // domyślnego 100 mld (chyba że owner ustawił już własną WYŻSZĄ).
+        const DR_KEY = "ogamex_migration_deut_reserve_v2746";
+        if (GM_getValue(DR_KEY, "0") !== "1") {
+          GM_setValue(DR_KEY, "1");
+          if (merged.threatAlarm && (parseInt(merged.threatAlarm.deutReserve) || 0) < 100_000_000_000) {
+            merged.threatAlarm.deutReserve = 100_000_000_000;
+            saveConfig(merged);
+            setTimeout(() => log("Rezerwa deuteru na planecie podniesiona do 100 mld (ratunek/FS/prom zostawiają tyle w zbiorniku).", "info"), 1500);
+          }
         }
       }
 
@@ -9198,7 +9212,7 @@
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Tyle deuteru ZOSTAJE na ciele przy ratunku i Fleet Save — paliwo dla floty, która wróci później (np. z ekspedycji) i sama będzie musiała uciekać. 0 = zabieraj wszystko.">Rezerwa deuteru</span>
-              <input id="ogx-deut-reserve" type="number" min="0" step="100000000" value="${CONFIG.threatAlarm.deutReserve ?? 1000000000}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+              <input id="ogx-deut-reserve" type="number" min="0" step="100000000" value="${CONFIG.threatAlarm.deutReserve ?? 100000000000}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
             <button class="mini-btn" id="ogx-threat-sim" style="width:100%;margin-top:4px;" title="Przepuszcza SYNTETYCZNY atak na bazę przez prawdziwą maszynerię obrony: kandydat → potwierdzenie ~25-35 s → EWAKUACJA całej floty i surowców na drugie ciało → po ~2 min alarm gaśnie i flota wraca automatycznie. Koszt: kilka minut miningu i dwa krótkie przeloty. To jest pełna próba generalna automatu bez czekania na wroga.">TEST ALARMU (symulacja ataku)</button>
