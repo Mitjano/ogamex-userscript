@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.74.8
+// @version      2.75.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -122,7 +122,7 @@
     // zawrócić. Minery zostają w domu — one pracują.
     fleetSave: {
       enabled: false,
-      from: { galaxy: 3, system: 272, position: 7 },  // bazowy księżyc (przenosiny 05.08)
+      from: { galaxy: 3, system: 272, position: 7 },  // v2.75.0: JUŻ NIE wymusza startu — FS leci z aktualnie aktywnego księżyca; to tylko fallback routeKey na stronach bez paska planet
       to: null,                // cel do PONOWNEGO wyboru po przenosinach (stary 3:269:5 nieaktualny)
       returnAt: null,          // ISO, godzina powrotu ustawiona przez właściciela
       speedPercent: 10,        // wolniej = dłuższy lot = dłuższy możliwy FS
@@ -3911,7 +3911,14 @@
     // Zmierzony czas lotu dla tej trasy i prędkości (klucz uwzględnia oba).
     routeKey() {
       const c = this.cfg();
-      return `${c.from?.galaxy}:${c.from?.system}:${c.from?.position}→${c.to?.galaxy}:${c.to?.system}:${c.to?.position}@${c.speedPercent}`;
+      // v2.75.0: FS startuje z AKTUALNEGO księżyca (decyzja właściciela 06.08,
+      // event idle-farming: flota wędruje między układami) — czas lotu jest
+      // kluczowany po faktycznej pozycji, nie po dawnej bazie, więc po
+      // teleporcie plan wymusza świeży pomiar zamiast liczyć zawrócenie po
+      // czasie ze starej trasy. c.from zostaje tylko jako fallback na
+      // stronach bez paska planet.
+      const o = GameState.getCurrentPlanet() || c.from;
+      return `${o?.galaxy}:${o?.system}:${o?.position}→${c.to?.galaxy}:${c.to?.system}:${c.to?.position}@${c.speedPercent}`;
     },
     flightMs() {
       try { return JSON.parse(GM_getValue(this.KEY_T, "{}"))[this.routeKey()] || 0; } catch { return 0; }
@@ -4043,6 +4050,17 @@
       // v2.66.0: nieudany start (np. pusty księżyc) nie jest ponawiany co tick.
       const failAt = parseInt(GM_getValue("ogamex_fs_fail_at", "0")) || 0;
       if (Date.now() - failAt < 10 * 60 * 1000) return;
+      // v2.75.0: start z aktualnego ciała — FS czeka, aż aktywny będzie księżyc
+      // (właściciel przenosi flotę podczas eventu; wysyłka z planety byłaby
+      // widoczna w falandze, więc z planety NIE startujemy).
+      if (MoonSave.currentBody() !== "moon") {
+        const warnAt = parseInt(GM_getValue("ogamex_fs_body_warn_at", "0")) || 0;
+        if (Date.now() - warnAt > 10 * 60 * 1000) {
+          GM_setValue("ogamex_fs_body_warn_at", String(Date.now()));
+          log("[FS] czekam ze startem: aktywne ciało nie jest księżycem — przełącz na księżyc, z którego mam wysłać FS.", "warn");
+        }
+        return;
+      }
       const p = this.plan();
       if (!p.ok && !p.measure) return;           // za wcześnie / wyłączony / brak godziny
       if (!p.ok && p.measure) {
@@ -4057,14 +4075,18 @@
       return this.launch({ plan: p });
     },
 
-    // Start: przełącz aktywne ciało na bazowy KSIĘŻYC (formularz wysyła z ciała
-    // aktywnego — ten sam mechanizm co powrót ratunku), potem formularz na cel.
+    // Start: z księżyca, na którym właściciel AKTUALNIE jest (v2.75.0 — bez
+    // przełączania na dawną bazę; formularz wysyła z ciała aktywnego).
+    // atCoords = bieżąca pozycja, żeby switch_to_body — gdyby w międzyczasie
+    // aktywna stała się planeta — wrócił na księżyc TEJ pary, nie bazy.
     // v2.74.3: plan z ticka niesie returnAt RUNDY (przy łańcuchu ≠ finalna
     // godzina z panelu) — bramka 2T na kroku 2 i markLaunched liczą na nim.
     launch({ measure = false, plan = null } = {}) {
       const c = this.cfg();
-      const from = c.from, to = c.to;
-      if (!from || !to || !Number.isFinite(to.galaxy)) { log("[FS] brak trasy (from/to) w konfiguracji.", "error"); return false; }
+      const to = c.to;
+      if (!to || !Number.isFinite(to.galaxy)) { log("[FS] brak celu w konfiguracji — ustaw „Cel” w panelu FS.", "error"); return false; }
+      const from = GameState.getCurrentPlanet();
+      if (MoonSave.currentBody() !== "moon" || !from) { log("[FS] nie startuję: aktywne ciało nie jest księżycem albo nie widzę pozycji na tej stronie.", "warn"); return false; }
       const at = (plan && plan.returnAt) || this.returnAtMs();
       if (!measure && !Number.isFinite(at)) return false;
       GM_setValue("pending_mission", JSON.stringify({
