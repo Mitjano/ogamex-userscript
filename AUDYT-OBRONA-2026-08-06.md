@@ -54,3 +54,67 @@ zadziałała, zero strat).
    przestawić „Cel" w panelu.
 3. Ratunek wymaga widocznej listy planet (jest na każdej stronie gry poza
    nielicznymi widokami — wtedy bot sam przechodzi na Overview).
+
+---
+
+# Audyt pełny — 2026-08-06 wieczór (v2.75.3)
+
+Zlecenie właściciela: „mam bardzo dużo agresywnych sąsiadów i nie mogę sobie
+pozwolić na faila — sprawdź, czy bot w każdym przypadku ochroni flotę".
+Przegląd WSZYSTKICH ścieżek dotykających floty: ThreatMonitor (detekcja),
+FleetMovements (parser), MoonSave (ratunek/straż/powrót), FleetSave, maszyna
+pending_mission, pętla obrony, TabLock, handlery fleetSendSuccessfully.
+
+## ZNALEZIONE I NAPRAWIONE w v2.75.3
+
+1. **KRYTYCZNE (regres v2.75.0): zawracanie FS nie znalazłoby lotu z nowego
+   księżyca.** `_findOurRow` rozpoznawał nasz lot po `config.from` (dawna
+   baza) + `config.to`. Po zmianie „FS z aktualnego księżyca" lot startuje
+   z innych koordów, więc wiersz nie pasowałby do wzorca: maszyna uznałaby
+   lot za „zawrócony ręcznie" i zamknęła cykl, a flota poleciałaby na cel
+   i tam stacjonowała (bezpieczna porażka, ale FS martwy). Naprawa: koordy
+   startu są STEMPLOWANE w stanie FS przy wysyłce (`from` w markLaunched)
+   i wiersz szuka się po nich; stare stany bez stempla używają configu jak
+   dotąd.
+2. **NISKIE: własny lot „Collect" (złom tego forka) mógł podnieść alarm.**
+   Typ COLLECT nie był na żadnej liście (ATTACK/SPY/SAFE), więc przy
+   chwilowo pustym `ownBodies()` klasyfikował się jako „typ spoza znanych
+   list = atak". Dodany do SAFE — obcy lot COLLECT i tak nie może uderzyć
+   we flotę.
+
+## SPRAWDZONE I ZDROWE (bez zmian)
+
+- **Detekcja**: lista ruchów flot z klasyfikacją po ŹRÓDLE (własna wysyłka
+  nie wychodzi jako obca), kontrola krzyżowa z paskiem misji (rozbieżność =
+  głośna degradacja do paska), nieznany typ misji = atak (bezpieczny błąd),
+  kandydat 25 s + BLITZ <2 min bez czekania, alarm zdejmowany WYŁĄCZNIE
+  potwierdzonym „zero obcych" (nie upływem czasu), backstop 3 h.
+- **Tryb obserwatora**: detekcja+dziennik+push działają też przy bocie OFF;
+  aktuatory za bramką CONFIG.enabled.
+- **Ratunek**: wywłaszcza pending_mission, własna pętla 30 s odporna na
+  jitter/przerwy/okno nocne, limit zapisów na alarm, bezpiecznik straży 1 h,
+  powrót czeka 130 s na lądowanie ratunku (wyścig z 6.08 12:32 zamknięty),
+  flip nigdy nie celuje w atakowane ciało, po v2.75.1 strażnik bezpiecznej
+  strony na każdej kolonii i tylko przy miarodajnym odczycie.
+- **FS**: bramka 2T na kroku 2 liczy na czasie lotu odczytanym NA ŻYWO
+  z formularza — zła pamięć trasy nie może dać zawrócenia po dolocie
+  (wysyłka zostaje odrzucona); wykrywanie ręcznego zawrócenia; porażka
+  zawracania = stacjonowanie na własnym księżycu; tick ustępuje alarmowi.
+- **Farm przy pustym ciele**: pauza 10 min zamiast palenia kolejki celów.
+- **fleetSendSuccessfully**: każda odmiana wysyłki (ratunek/powrót/prom/
+  ekspedycja/FS/złom/farm/mining) ma własną gałąź księgowania — bez
+  krzyżowego zatruwania liczników.
+
+## ZNANE OGRANICZENIA (świadome, do zapamiętania)
+
+1. Zmiana karty-lidera po padzie poprzedniej: do ~3,5 min bez detekcji
+   i ratunku (STALE_MS 3 min + tick 30 s). Nie otwierać wielu kart bez
+   potrzeby.
+2. FS wysyła to, co stoi na AKTYWNYM księżycu w chwili startu rundy — po
+   powrocie rundy flota jest tam, skąd wystartowała; przełączenie się na
+   inny księżyc = następna runda weźmie TAMTEJSZY hangar.
+3. Dwa równoczesne ataki na różne kolonie: ratunek pierwszej, druga ręcznie.
+4. Atak rozdzielony planeta+księżyc tej samej pary jest niedodgowalny skokiem
+   ciał (ograniczenie gry) — na to jest FS w powietrzu.
+5. `getCurrentPlanet()` bywa ślepy na tym forku („planet ?") — wszystko
+   krytyczne czyta koordy z wiersza listy planet (activeCoords/originCoords).

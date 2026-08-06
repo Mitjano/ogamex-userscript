@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.2
+// @version      2.75.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3809,7 +3809,10 @@
     // stacjonowanie nie celuje w obcych, powrót leci do siebie). Obca misja
     // spoza WSZYSTKICH trzech list to typ, którego nie znamy — traktujemy jak
     // ATAK, bo przegapiony atak kosztuje flotę, a fałszywy alarm dwa przeloty.
-    SAFE: /(TRANSPORT|DEPLOY|STATION|RETURN|EXPEDITION|COLONI|HARVEST|RECYCL|ASTEROID|HOLD|ACS.?DEFEND|FEDERATION)/i,
+    // v2.75.3: +COLLECT — typ zbierania złomu TEGO forka (przycisk „Collect"
+    // w formularzu floty). Bez niego własny lot po złom przy chwilowo pustym
+    // ownBodies() klasyfikował się jako "typ spoza znanych list" = atak.
+    SAFE: /(TRANSPORT|DEPLOY|STATION|RETURN|EXPEDITION|COLONI|HARVEST|RECYCL|ASTEROID|HOLD|ACS.?DEFEND|FEDERATION|COLLECT)/i,
 
     // Zwraca { ok, rows } — ok=false znaczy „nie wiem", a nie „bezpiecznie".
     async fetch() {
@@ -4032,7 +4035,7 @@
             if (res.ok) {
               const doc = new DOMParser().parseFromString(await res.text(), "text/html");
               const eta = (st.sentAt || 0) + (st.flightMs || 0);
-              if (!this._findOurRow(doc) && st.flightMs && Date.now() < eta - 60000) {
+              if (!this._findOurRow(doc, st) && st.flightMs && Date.now() < eta - 60000) {
                 this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
                 log("[FS] lotu nie ma na liście przed czasem dolotu — został zawrócony (najpewniej ręcznie). Zamykam cykl bez alarmów.", "info");
                 try { updateStatusUI(); } catch {}
@@ -4128,7 +4131,8 @@
       const sentAt = Date.now();
       const returnAt = pm.returnAtMs || this.returnAtMs();
       const recallAt = sentAt + Math.floor(Math.max(0, returnAt - sentAt) / 2);
-      this.save({ phase: "launched", sentAt, recallAt, returnAt, flightMs: pm.capturedFlightMs || 0, tries: 0, to: this.cfg().to });
+      this.save({ phase: "launched", sentAt, recallAt, returnAt, flightMs: pm.capturedFlightMs || 0, tries: 0,
+                  from: pm.atCoords || this.cfg().from, to: this.cfg().to });
       const f = (ms) => new Date(ms).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
       log(`[FS] WYSŁANE. Zawrócenie ${f(recallAt)}, powrót ~${f(returnAt)}.`, "success");
       ThreatLog.add("FS", `Flota w drodze. Zawrócenie ${f(recallAt)}, powrót ~${f(returnAt)}.`);
@@ -4144,10 +4148,16 @@
     RECALL_RX: /recall|call.?back|revoke|retreat|withdraw|cancel|abort|zawr[oó]|cofnij/i,
     _recalling: false,
 
-    _findOurRow(doc) {
+    _findOurRow(doc, st = null) {
       const c = this.cfg();
-      const fromS = `${c.from?.galaxy}:${c.from?.system}:${c.from?.position}`;
-      const toS = `${c.to?.galaxy}:${c.to?.system}:${c.to?.position}`;
+      // v2.75.3: lot rozpoznajemy po koordach STEMPLOWANYCH przy wysyłce —
+      // od v2.75.0 FS startuje z aktualnego księżyca, więc c.from (dawna baza)
+      // nie opisuje już trasy; szukanie po nim nie znalazłoby naszego wiersza
+      // i zawrócenie by przepadło (flota stacjonowałaby na celu).
+      const f = st?.from || c.from;
+      const t = st?.to || c.to;
+      const fromS = `${f?.galaxy}:${f?.system}:${f?.position}`;
+      const toS = `${t?.galaxy}:${t?.system}:${t?.position}`;
       for (const tr of doc.querySelectorAll("tr[class*='row-mission-type-']")) {
         const t = tr.textContent || "";
         if (t.includes(`[${fromS}]`) && t.includes(`[${toS}]`)) return tr;
@@ -4166,7 +4176,7 @@
         } catch {}
         if (!html) { this._recallFail(st, "lista ruchów flot nie odpowiada"); return; }
         const doc = new DOMParser().parseFromString(html, "text/html");
-        const row = this._findOurRow(doc);
+        const row = this._findOurRow(doc, st);
         if (!row) {
           // Wiersza nie ma: flota już doleciała (za późno) albo już zawrócona.
           // v2.69.3: brak wiersza PRZED czasem dolotu = lot zawrócony (np.
