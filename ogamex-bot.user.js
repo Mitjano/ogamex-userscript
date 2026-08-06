@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.0
+// @version      2.75.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5671,8 +5671,16 @@
         // przeciwne" przeniósłby ją PROSTO POD UDERZENIE (np. atak na planetę
         // po łup z kopalń, gdy flota mieszka na księżycu — tryb księżycowy
         // czyni ten scenariusz głównym). Wtedy nie ruszamy niczego.
+        // v2.75.1: strażnik obowiązuje na KAŻDEJ kolonii, nie tylko bazie —
+        // podczas eventu flota mieszka na różnych księżycach; atak na planetę
+        // kolonii przy flocie na jej księżycu nie może wywołać ratunku, który
+        // przeniósłby flotę prosto pod uderzenie. currentBody() opisuje parę
+        // AKTYWNĄ, więc porównanie jest miarodajne tylko, gdy stoimy na
+        // atakowanej kolonii — w przeciwnym razie decyzję podejmuje korekta
+        // ciała na formularzu (widzi, gdzie naprawdę stoi flota).
         const atkBody = ev?.targetBody || null;
-        if (isBase && atkBody) {
+        const active = this.activeCoords();
+        if (atkBody && active === target) {
           const cur = this.currentBody();
           if (cur && cur !== atkBody) {
             this._sayOnce("safeside", `[RATUNEK] atak celuje w ${atkBody === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${target}], a flota stoi na ${cur === "moon" ? "księżycu" : "planecie"} — po bezpiecznej stronie. NIE ruszam floty (ruch wprowadziłby ją pod atak).`);
@@ -5680,7 +5688,6 @@
             return false;
           }
         }
-        const active = this.activeCoords();
         if (active && active !== target) {
           // Klik przeładuje stronę; ratunek dokończy się w resumeAfterSwitch().
           if (this.switchTo(target, `AUTOMAT: atak na [${target}]`)) return true;
@@ -7595,6 +7602,30 @@
             ThreatLog.add("POWRÓT", `Flota już na ${bodyNow === "moon" ? "księżycu" : "planecie"} (cel powrotu) — powrót zbędny, straż zdjęta.`);
             GM_setValue("pending_mission", null);
             MoonSave.disarm("flota już na ciele docelowym");
+            return;
+          }
+          // ── v2.75.1: ratuj z CIAŁA, w które leci atak — na każdej kolonii ──
+          // Po przełączeniu na atakowaną kolonię aktywna robi się PLANETA
+          // (kotwica na liście), a atak zwykle celuje w księżyc z flotą.
+          // Zamiast ładować to, co stoi na bezpiecznym ciele (i wysyłać je
+          // POD atak), od razu przeskakujemy na ciało atakowane i ratujemy
+          // stamtąd — tą samą maszynerią co flip przy pustym hangarze.
+          const atkNow = (() => { try { return ThreatMonitor.events()?.targetBody || null; } catch { return null; } })();
+          if (!mission.moonReturn && !mission.flippedBody && !mission.sweep
+              && (MoonSave.watch().saves || 0) <= 1 && ThreatMonitor.active()
+              && atkNow && bodyNow && bodyNow !== atkNow) {
+            log(`[MOON SAVE] atak celuje w ${atkNow === "moon" ? "KSIĘŻYC" : "PLANETĘ"}, a stoję na ${bodyNow === "moon" ? "księżycu" : "planecie"} — przełączam się na atakowane ciało i ratuję stamtąd.`, "warn");
+            ThreatLog.add("RATUNEK", `Cel ataku: ${atkNow === "moon" ? "księżyc" : "planeta"} → ratuję z niego na ${bodyNow === "moon" ? "księżyc" : "planetę"}.`);
+            mission.flippedBody = true;
+            mission.launchBody = atkNow;
+            mission.targetBody = bodyNow;
+            mission.step = "switch_to_body";
+            mission.timestamp = Date.now();
+            GM_setValue("pending_mission", JSON.stringify(mission));
+            const w = MoonSave.watch();
+            MoonSave.saveWatch({ ...w, homeBody: atkNow, refugeBody: bodyNow });
+            await AntiDetection.sleep(500 + Math.random() * 500);
+            window.location.href = "/";
             return;
           }
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
