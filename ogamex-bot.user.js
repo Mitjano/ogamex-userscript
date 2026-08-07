@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.80.1
+// @version      2.80.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7595,6 +7595,26 @@
     return false;
   }
 
+  // ── v2.80.2: PROM ma sie przedstawiac jako PROM ──
+  // Prom (MoonFerry) jedzie DOKLADNIE ta sama maszyneria co ratunek, wiec
+  // jego kroki logowaly sie jako [MOON SAVE] i [RATUNEK]. 07.08 o 13:28
+  // wlasciciel zobaczyl w logu „[RATUNEK] przelaczam aktywne cialo" oraz
+  // „[MOON SAVE] cel: KSIEZYC" przy rutynowym kursie promu i uznal, ze bot
+  // ucieka przed atakiem. Slusznie — tak to wygladalo.
+  //
+  // Dziennik rozroznial to od poczatku (wpisy „odczyt/PROM", zeby nie
+  // falszowac licznikow obrony), ale log na zywo nie. Slowa zarezerwowane
+  // dla sytuacji awaryjnej musza opisywac sytuacje awaryjna, inaczej
+  // przestaja cokolwiek znaczyc — dokladnie ta sama zasada, dla ktorej
+  // rutynowe czekanie przestalo byc czerwone w v2.77.2.
+  function missionTag(fallback) {
+    try {
+      const p = GM_getValue("pending_mission", null);
+      if (p && p !== "null" && /moon_ferry/.test(p)) return "PROM";
+    } catch {}
+    return fallback;
+  }
+
   // ── v2.74.0: rezerwa deuteru przy ratunku/FS ──
   // Wywoływane PO kliknięciu btn-all-res na kroku 3: zdejmuje z pola deuteru
   // kwotę rezerwy, żeby ciało nie zostało z zerem paliwa (flota wracająca
@@ -7767,7 +7787,7 @@
           GM_setValue("pending_mission", null);
           return;
         }
-        log(`[RATUNEK] przełączam aktywne ciało na ${want === "moon" ? "księżyc" : "planetę"} bazy…`, "fleet");
+        log(`[${missionTag("RATUNEK")}] przełączam aktywne ciało na ${want === "moon" ? "księżyc" : "planetę"} bazy…`, "fleet");
         mission.step = "switch_planet_then_fleet";
         mission.switchToFleetUrl = mission.fleetUrl;
         mission.timestamp = Date.now();
@@ -7878,7 +7898,7 @@
           // v2.14.0: expeditions own their pacing/counters and must not touch
           // the mining wait timers (a 1h expedition would pause the scanner).
           if (mission.moonSave) {
-            if (dispatchOk) log("[MOON SAVE] fleet and resources are on the moon.", "success");
+            if (dispatchOk) log(`[${missionTag("MOON SAVE")}] fleet and resources are on the moon.`, "success");
             return;
           }
           if (mission.fleetSave) {
@@ -8206,7 +8226,7 @@
               window.location.href = "/";
               return;
             }
-            log("[MOON SAVE] nothing on this planet to save — aborting.", "warn");
+            log(`[${missionTag("MOON SAVE")}] nothing on this planet to save — aborting.`, "warn");
             DefenceWatchdog.note(`hangar pusty na ${MoonSave.currentBody() || "?"} — nie ma czego ratować`);
             GM_setValue("pending_mission", null);
             // v2.34.0: przy POWROCIE pusto na refugium znaczy, że nie ma czego
@@ -8231,7 +8251,7 @@
             }
             return;
           }
-          log(`[MOON SAVE] loading everything: ${loaded.join(", ")}`, "success");
+          log(`[${missionTag("MOON SAVE")}] loading everything: ${loaded.join(", ")}`, "success");
           await verifyShipInputs("MOON SAVE"); // v2.74.2: formularz gubi pola
           // v2.71.0: prom to logistyka — wpis "odczyt" nie zaburza liczników obrony.
           ThreatLog.add(mission.ferry ? "odczyt" : "RATUNEK", `${mission.ferry ? "PROM załadowany" : "Załadowano"}: ${loaded.join(", ")}`);
@@ -8576,7 +8596,7 @@
             .find(el => wanted.test(`${el.className || ""} ${el.getAttribute("data-name") || ""}`));
           if (pick) {
             pick.click();
-            log(`[MOON SAVE] cel: ${wantMoon ? "KSIĘŻYC" : "PLANETA"} — kliknięto ${pick.tagName}.${(pick.className || "").toString().split(" ")[0] || "-"}`, "fleet");
+            log(`[${missionTag("MOON SAVE")}] cel: ${wantMoon ? "KSIĘŻYC" : "PLANETA"} — kliknięto ${pick.tagName}.${(pick.className || "").toString().split(" ")[0] || "-"}`, "fleet");
             ThreatLog.add("RATUNEK", `Cel ustawiony: ${wantMoon ? "KSIĘŻYC" : "PLANETA"}`);
             await AntiDetection.sleep(400 + Math.random() * 400);
           } else {
@@ -8897,7 +8917,7 @@
             if (picked) { matched = want; break; }
           }
           if (picked) {
-            log(`[MOON SAVE] mission: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
+            log(`[${missionTag("MOON SAVE")}] mission: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
             // v2.21.0: this is the fact the automatic trigger waits for. Until
             // a real send has shown which "fly there and stay" mission this
             // build offers, arming an unattended fleet mover would be guessing
@@ -8924,7 +8944,7 @@
           const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
           if (allRes) {
             allRes.click();
-            log("[MOON SAVE] all resources loaded.", "fleet");
+            log(`[${missionTag("MOON SAVE")}] all resources loaded.`, "fleet");
           } else {
             const fulls = [...document.querySelectorAll("a.btn-res-full, .btn-res-full")];
             fulls.forEach(b => b.click());
@@ -8933,7 +8953,7 @@
               : "[MOON SAVE] no resource-load button found — ships fly, resources stay.", fulls.length ? "fleet" : "warn");
           }
           await AntiDetection.sleep(400 + Math.random() * 400);
-          await applyDeutReserve("MOON SAVE"); // v2.74.0: paliwo dla spóźnialskich
+          await applyDeutReserve(missionTag("MOON SAVE")); // v2.74.0: paliwo dla spóźnialskich
         }
 
         // ── v2.60.0: FS — misja Stacjonuj + surowce z księżyca ──
