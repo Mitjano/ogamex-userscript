@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.78.0
+// @version      2.79.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -2729,6 +2729,111 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
+  //  v2.79.0 — ALARM = TYLKO EWAKUACJA (wspólna bramka wysyłek)
+  // ═══════════════════════════════════════════════════════════════
+  // Reguła właściciela (07.08): „gdy jest atak i jest alarm, bot nie powinien
+  // floty wysyłać, tylko ewakuować każdą wracającą flotę na planetę".
+  //
+  // Dotąd każdy moduł pilnował tego sam i po swojemu: ekspedycje i farmienie
+  // patrzyły wyłącznie na ThreatMonitor.active(), a MINING nie patrzył
+  // WCALE — w alarmie 11:15-11:20 skaner dalej chodził po galaktyce i wysłał
+  // 2,5 mld minerów. To jest jedno miejsce z odpowiedzią „czy wolno teraz
+  // wysyłać cokolwiek".
+  //
+  // Okno obrony NIE kończy się w chwili, gdy obce floty znikną z paska:
+  // ratunek albo powrót jeszcze leci (81 s na te same koordy), straż dalej
+  // zamiata bazę, a surowce są w powietrzu. Fala wysłana w tym oknie zabiera
+  // statki spod ewakuacji i pali deuter, którego zabraknie na ucieczkę —
+  // dokładnie to widać było o 11:21:50 (ekspedycja poszła 66 s po zdjęciu
+  // alarmu, gdy księżyc miał na koncie samą rezerwę paliwa).
+  const KEY_DEFENCE_AT = "ogamex_defence_last_at";
+
+  const DefenceHold = {
+    // Ile czekamy po ostatnim ruchu obrony, zanim znów wolno wysyłać.
+    // Hop na te same koordy trwa ~81 s; 140 s to lądowanie + zapas na to,
+    // żeby surowce zdążyły wejść na konto ciała.
+    SETTLE_MS: 140 * 1000,
+
+    stamp() { try { GM_setValue(KEY_DEFENCE_AT, String(Date.now())); } catch {} },
+
+    /** Powód wstrzymania wysyłek albo null, gdy wolno pracować normalnie. */
+    reason() {
+      try {
+        if (ThreatMonitor.active()) return "trwa alarm — obce floty w drodze";
+        const w = MoonSave.watch() || {};
+        if (w.armed) return "straż obrony uzbrojona — baza ma zostać pusta";
+        const ref = parseInt(GM_getValue(KEY_DEFENCE_AT, "0")) || 0;
+        const left = ref + this.SETTLE_MS - Date.now();
+        if (ref && left > 0) {
+          return `ratunek/powrót jeszcze w locie (~${Math.ceil(left / 1000)}s do lądowania)`;
+        }
+      } catch {}
+      return null;
+    },
+
+    /** true = wolno wysyłać. Loguje powód nie częściej niż co 5 min. */
+    allows(who) {
+      const why = this.reason();
+      if (!why) return true;
+      const key = `hold_${who}`;
+      const last = this._said[key] || 0;
+      if (Date.now() - last > 5 * 60 * 1000) {
+        this._said[key] = Date.now();
+        log(`[OBRONA] ${who} wstrzymane: ${why}. Ewakuacja ma pierwszeństwo.`, "warn");
+      }
+      return false;
+    },
+    _said: {},
+  };
+
+  // ── v2.79.0: paliwo na ucieczkę jest nietykalne ──
+  // `deutReserve` (100 mld, decyzja ownera 06.08) zostaje na ciele przy każdym
+  // ratunku PO to, żeby flota wracająca w trakcie alarmu miała czym uciec.
+  // Nic tego dotąd nie pilnowało od drugiej strony: ekspedycje i mining brały
+  // paliwo z tego samego zbiornika, więc rezerwa mogła zniknąć na wypady po
+  // zysk, a przy kolejnym ataku nie byłoby czym ewakuować. Dodatkowo — to jest
+  // ta pętla, którą właściciel zgłosił 07.08 — po ratunku na ciele zostaje
+  // DOKŁADNIE rezerwa, więc każda próba wysyłki i tak kończy się odmową gry;
+  // lepiej nie wchodzić w formularz wcale i powiedzieć to wprost w logu.
+  const Fuel = {
+    reserve() { return Math.max(0, parseInt(CONFIG.threatAlarm?.deutReserve) || 0); },
+
+    /** Deuter na aktualnie wybranym ciele albo null, gdy nie da się odczytać. */
+    read() {
+      try {
+        const el = document.querySelector(".resource-item-deuterium");
+        if (!el) return null;
+        // „Deuterium\n 100.000.000.000" → pierwszy blok cyfr z separatorami.
+        const m = (el.textContent || "").match(/\d[\d.,\s ']*/);
+        if (!m) return null;
+        const n = parseInt(m[0].replace(/[^\d]/g, ""), 10);
+        return Number.isFinite(n) ? n : null;
+      } catch { return null; }
+    },
+
+    /**
+     * true = wolno wysyłać. Odczyt niemożliwy (strona bez paska surowców)
+     * NIE blokuje — bramka ma chronić rezerwę, a nie zatrzymywać bota na
+     * podstawie zgadywania.
+     */
+    allows(who) {
+      const reserve = this.reserve();
+      if (!reserve) return true;
+      const have = this.read();
+      if (have == null) return true;
+      if (have > reserve) return true;
+      const key = `fuel_${who}`;
+      const last = this._said[key] || 0;
+      if (Date.now() - last > 10 * 60 * 1000) {
+        this._said[key] = Date.now();
+        log(`[PALIWO] ${who} wstrzymane: na ciele ${have.toLocaleString()} deuteru, a ${reserve.toLocaleString()} to nietykalna rezerwa na ewakuację floty. Czekam, aż paliwo wróci (powrót po alarmie / produkcja).`, "warn");
+      }
+      return false;
+    },
+    _said: {},
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  ASTEROID MINER: Main asteroid mining logic
   // ═══════════════════════════════════════════════════════════════
 
@@ -2743,6 +2848,11 @@
         log("Sleep time - asteroid mining paused", "delay");
         return;
       }
+      // v2.79.0: mining nie miał ŻADNEJ bramki obrony — w alarmie 07.08 skaner
+      // dalej chodził po galaktyce i był o krok od wysłania 2,5 mld minerów.
+      // Cała maszyneria (skan, nawigacja, wysyłka) stoi na czas ewakuacji:
+      // rywalizacja o stronę z ratunkiem jest równie kosztowna co sama fala.
+      if (!DefenceHold.allows("mining")) return;
       if (this.running) return;
       this.running = true;
 
@@ -3251,6 +3361,10 @@
     async dispatchToFoundAsteroid(scanState) {
       const asteroid = scanState.foundAsteroid;
       if (!asteroid) return;
+      // v2.79.0: ostatnia bramka przed samą wysyłką — lot minerów pali deuter,
+      // a rezerwa na ewakuację floty nie jest do wzięcia. Asteroida i tak ma
+      // swój TTL; lepiej ją stracić niż paliwo na ucieczkę.
+      if (!DefenceHold.allows("mining") || !Fuel.allows("mining")) return;
 
       // Miners launch from the configured base planet
       const base = CONFIG.asteroidMining.minerBase;
@@ -3406,14 +3520,9 @@
       if (Humanizer.isOnBreak()) return; // v2.12.0: also covers init on-load hooks
       // v2.15.0: attacking someone else while a fleet is inbound on US is the
       // worst possible use of a fleet slot.
-      if (ThreatMonitor.active()) {
-        if (!this._threatLogged) {
-          this._threatLogged = true;
-          log("Farming on hold — incoming foreign fleet.", "warn");
-        }
-        return;
-      }
-      this._threatLogged = false;
+      // v2.79.0: bramka obejmuje całe okno obrony (alarm + straż + lot
+      // ratunku/powrotu), nie samą chwilę, gdy obce floty są na pasku.
+      if (!DefenceHold.allows("farmienie")) return;
       if (Humanizer.attackLimitReached()) {
         if (!this._limitLogged) {
           this._limitLogged = true;
@@ -5923,6 +6032,9 @@
           timestamp: Date.now(),
         }));
         this.saveWatch({ ...w, returning: true, returnAt: Date.now() });
+        // v2.79.0: stempel okna obrony — wysyłki stoją, aż powrót wyląduje
+        // i surowce (paliwo!) wrócą na konto ciała.
+        DefenceHold.stamp();
         const nm = (b) => (b === "moon" ? "księżyca" : "planety");
         log(`POWRÓT: alarm minął — ściągam flotę i surowce z ${nm(refuge)} z powrotem na ${home === "moon" ? "księżyc" : "planetę"}.`, "success");
         ThreatLog.add("POWRÓT", `Start: ${refuge === "moon" ? "księżyc" : "planeta"} → ${home === "moon" ? "księżyc" : "planeta"} (${byOperator ? "ręcznie" : "alarm minął"}).`);
@@ -6054,6 +6166,7 @@
         // where to put everything back regardless of which body it is today.
         this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: to, at,
                          lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
+        DefenceHold.stamp(); // v2.79.0: ratunek w powietrzu = cisza na wysyłkach
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na tych samych koordach (${reason}). Wszystkie statki i wszystkie surowce.`, "success");
         ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
         }
@@ -6475,10 +6588,11 @@
       if (AntiDetection.isSleepTime() || Humanizer.isOnBreak()) return;
       // v2.15.0: don't put MORE fleets in the air while something hostile is
       // inbound — every wave is one more group that could land badly timed.
-      if (ThreatMonitor.active()) {
-        this._say("threat", "Expeditions on hold — incoming foreign fleet.", "warn", 5 * 60 * 1000);
-        return;
-      }
+      // v2.79.0: hold trwa całe okno obrony (alarm + straż + lot ratunku),
+      // a nie do sekundy, w której obce floty znikną z paska.
+      if (!DefenceHold.allows("ekspedycje")) return;
+      // v2.79.0: fala kosztuje paliwo — rezerwa na ewakuację jest nietykalna.
+      if (!Fuel.allows("ekspedycje")) return;
       // A wave click navigates through 3 pages — never start one on top of a
       // mining/farm dispatch (they share the single pending_mission slot).
       const pending = GM_getValue("pending_mission", null);
@@ -10845,7 +10959,13 @@
       const slots = ExpeditionRunner.slots();
       const est = ExpeditionState.load();
       const gapLeft = est?.lastSendAt ? Math.max(0, Math.round(((est.lastSendAt + (est.nextGapMs || 0)) - Date.now()) / 1000)) : null;
+      // v2.79.0: „nast. ~30 s" przy wstrzymanych wysyłkach to nieprawda —
+      // pasek ma mówić, że stoimy i dlaczego (obrona albo rezerwa paliwa).
+      const holdWhy = DefenceHold.reason();
+      const fuelLow = !holdWhy && Fuel.reserve() > 0 && Fuel.read() != null && Fuel.read() <= Fuel.reserve();
       if (!CONFIG.expeditions.enabled) set("ogx-strip-exp", "dim", "wyłączone");
+      else if (holdWhy) set("ogx-strip-exp", "alert", `WSTRZYMANE — ${holdWhy}`);
+      else if (fuelLow) set("ogx-strip-exp", "alert", "WSTRZYMANE — deuter na poziomie rezerwy ewakuacyjnej");
       else set("ogx-strip-exp", slots.used >= (slots.total || 14) ? "ok" : "busy",
         `<b>${slots.used ?? "?"}</b>/${slots.total || "?"}${gapLeft !== null && slots.used < (slots.total || 14) ? ` · nast. ~<b>${gapLeft}</b> s` : ""} · dziś ${est?.sentToday ?? 0}`);
 
