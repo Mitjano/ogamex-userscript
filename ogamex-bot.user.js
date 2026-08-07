@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.7
+// @version      2.76.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5719,7 +5719,13 @@
     async autoSaveOnThreat() {
       if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled || !CONFIG.threatAlarm?.autoSave) return false;
       if (!ThreatMonitor.active()) return false;
-      if (this.watch().armed) return false;      // already saving for this alert
+      if (this.watch().armed) {                  // already saving for this alert
+        // Straż trzyma ciało puste — to JEST działanie, ale niech ma stempel:
+        // „uzbrojona bez ani jednego zapisu" to stan, o którym chcemy wiedzieć.
+        const wNow = this.watch();
+        if ((wNow.saves || 0) > 0) DefenceWatchdog.note(`straż aktywna, zapisów: ${wNow.saves}`);
+        return false;
+      }
       if (this.running) return false;
       // v2.25.1: neither gate REFUSES any more. Both used to abort the save —
       // the fleet stayed on the planet while the bot explained what the owner
@@ -5779,13 +5785,17 @@
           if (cur && cur !== atkBody) {
             this._sayOnce("safeside", `[RATUNEK] atak celuje w ${atkBody === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${target}], a flota stoi na ${cur === "moon" ? "księżycu" : "planecie"} — po bezpiecznej stronie. NIE ruszam floty (ruch wprowadziłby ją pod atak).`);
             ThreatLog.add("ATAK", `Cel: ${atkBody === "moon" ? "księżyc" : "planeta"}; flota na przeciwnym ciele — zostaje na miejscu.`);
+            DefenceWatchdog.note(`strażnik bezpiecznej strony: atak w ${atkBody}, flota na ${cur} [${target}]`);
             return false;
           }
         }
         if (active && active !== target) {
           // Klik przeładuje stronę; ratunek dokończy się w resumeAfterSwitch().
           if (this.switchTo(target, `AUTOMAT: atak na [${target}]`)) return true;
-          return false; // kolonii nie ma na liście — świadomie NIE ruszamy floty
+          // Świadomie NIE ruszamy floty — ale to MUSI zostawić ślad, inaczej
+          // wygląda jak zwykły spokój (nadzorca v2.76.0).
+          DefenceWatchdog.note(`kolonia [${target}] spoza listy planet — ratunek wstrzymany, potrzebna ręka`);
+          return false;
         }
       }
       return this.run({
@@ -7790,6 +7800,7 @@
               return;
             }
             log("[MOON SAVE] nothing on this planet to save — aborting.", "warn");
+            DefenceWatchdog.note(`hangar pusty na ${MoonSave.currentBody() || "?"} — nie ma czego ratować`);
             GM_setValue("pending_mission", null);
             // v2.34.0: przy POWROCIE pusto na refugium znaczy, że nie ma czego
             // ściągać — flota już wróciła albo jest w drodze. Ponawianie tego
@@ -9049,6 +9060,100 @@
   // „przed pauzy" w v2.21.0 chroniło przed przerwą na kawę i snem, bo z nich
   // tick wraca; z jitteru nie wraca.
   //
+  // ═══════════════════════════════════════════════════════════════
+  //  NADZORCA OBRONY (v2.76.0) — kto pilnuje pilnującego
+  // ═══════════════════════════════════════════════════════════════
+  // Dwa razy w jednym tygodniu obrona ZOBACZYŁA zagrożenie i nie zrobiła
+  // z nim nic: 03.08 alarm, którego nikt nie zdejmował, 07.08 atak grupowy
+  // wzięty za sondę. Wspólnym mianownikiem nie jest żadna z tych logik —
+  // jest nim to, że BEZCZYNNOŚĆ WYGLĄDA IDENTYCZNIE JAK SUKCES. W obu
+  // przypadkach w dzienniku była po prostu cisza.
+  //
+  // Nadzorca odwraca ten domyślny stan. Gdy alarm trwa, a przez GRACE_MS nie
+  // pojawi się ANI wysyłka floty, ANI jawnie zapisana decyzja „nie ruszam,
+  // bo…", uznaje to za awarię i krzyczy: log, dziennik, powiadomienie.
+  //
+  // Sam flotą NIE rusza. Skoro obrona zachowała się inaczej, niż ktokolwiek
+  // przewidział, to ostatnią rzeczą, jakiej chcemy, jest drugi automat
+  // wysyłający flotę w nieznanym kierunku — od tego jest człowiek i przycisk
+  // RATUJ. Zadaniem nadzorcy jest sprawić, żeby ten człowiek WIEDZIAŁ.
+  //
+  // Kontrakt działa w obie strony: każda ścieżka kończąca się „floty nie
+  // ruszam" MUSI zostawić stempel przez note(). Brak stempla = awaria.
+  const DefenceWatchdog = {
+    KEY_DECISION: "ogamex_defence_decision",
+    KEY_SINCE: "ogamex_defence_expect_since",
+    KEY_ALERTED: "ogamex_defence_watchdog_alerted",
+    GRACE_MS: 90 * 1000,       // wykrycie (25 s) + przełączenia stron + formularz
+    REPEAT_MS: 5 * 60 * 1000,  // powtórka krzyku, dopóki nic się nie zmienia
+
+    /** Jawna decyzja „floty nie ruszam i oto dlaczego". */
+    note(why) {
+      try { GM_setValue(this.KEY_DECISION, JSON.stringify({ at: Date.now(), why })); } catch {}
+    },
+    _decision() {
+      try { return JSON.parse(GM_getValue(this.KEY_DECISION, "null")); } catch { return null; }
+    },
+
+    // CZYSTA logika werdyktu — bez DOM, sieci i zegara. Dzięki temu daje się
+    // przetestować bez czekania na prawdziwy atak (test-nadzorca.js).
+    verdict(s) {
+      if (!s.expected) return { state: "off" };
+      if (s.armed && s.saves > 0) return { state: "ok", why: "flota ewakuowana" };
+      if (s.pendingRescue) return { state: "ok", why: "ratunek w toku" };
+      if (s.decisionAgeMs !== null && s.decisionAgeMs <= s.graceMs) return { state: "ok", why: "jawna decyzja" };
+      if (s.aliveMs < s.graceMs) return { state: "waiting" };
+      return { state: "STUCK" };
+    },
+
+    check() {
+      const expected = !!(CONFIG.enabled && CONFIG.threatAlarm?.enabled
+        && CONFIG.threatAlarm?.autoSave && ThreatMonitor.active());
+      if (!expected) {
+        // Alarm zszedł albo obrona wyłączona — zegar liczymy od nowa, żeby
+        // następny alarm dostał pełne okno łaski.
+        if ((parseInt(GM_getValue(this.KEY_SINCE, "0")) || 0)) {
+          GM_setValue(this.KEY_SINCE, "0");
+          GM_setValue(this.KEY_ALERTED, "0");
+        }
+        return;
+      }
+      let since = parseInt(GM_getValue(this.KEY_SINCE, "0")) || 0;
+      if (!since) { since = Date.now(); GM_setValue(this.KEY_SINCE, String(since)); }
+      const w = MoonSave.watch() || {};
+      const pend = String(GM_getValue("pending_mission", null) || "");
+      const pendingRescue = pend !== "" && pend !== "null"
+        && /moonSave|moonReturn|moon_save|moon_ferry/i.test(pend);
+      const d = this._decision();
+      const v = this.verdict({
+        expected: true,
+        armed: !!w.armed,
+        saves: w.saves || 0,
+        pendingRescue,
+        decisionAgeMs: d && d.at ? Date.now() - d.at : null,
+        aliveMs: Date.now() - since,
+        graceMs: this.GRACE_MS,
+      });
+      if (v.state !== "STUCK") return;
+      const lastAlert = parseInt(GM_getValue(this.KEY_ALERTED, "0")) || 0;
+      if (Date.now() - lastAlert < this.REPEAT_MS) return;
+      GM_setValue(this.KEY_ALERTED, String(Date.now()));
+      const secs = Math.round((Date.now() - since) / 1000);
+      const ev = ThreatMonitor.events() || {};
+      const msg = `ALARM TRWA ${secs} s, a flota NIE ZOSTAŁA RUSZONA i nie ma zapisanej decyzji, dlaczego. `
+        + `Ataki: ${ev.attacks != null ? ev.attacks : "?"}`
+        + `${ev.targets && ev.targets.length ? `, cel [${ev.targets.join(", ")}]` : ""}. `
+        + `SPRAWDŹ GRĘ — jeśli flota stoi w domu, użyj przycisku RATUJ.`;
+      log(`[NADZORCA] ${msg}`, "error");
+      ThreatLog.add("BŁĄD", msg);
+      try {
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("OGameX: OBRONA STOI — flota nieruszona!", { body: msg, tag: "ogamex-watchdog" });
+        }
+      } catch {}
+    },
+  };
+
   // Własny setInterval nie da się zagłodzić: nie zależy od ticku, jitteru,
   // przerw humanizera ani okna nocnego. To jedyny sposób, żeby „obrona działa
   // 24 h" było prawdą, a nie deklaracją.
@@ -9089,6 +9194,10 @@
         }
       }
       ThreatMonitor.check({ emergencyOnly: resting });
+      // v2.76.0: nadzorca patrzy PRZED aktuatorami — ocenia to, co (nie)
+      // zrobiły poprzednie przebiegi. Dzięki temu chodzi w każdym ticku,
+      // niezależnie od tego, który aktuator niżej przerwie tick swoim return.
+      DefenceWatchdog.check();
       // v2.69.1: przy bocie OFF kończymy na detekcji — flota nietknięta.
       // returnHome nie sprawdza CONFIG.enabled samodzielnie, więc bramka
       // musi być tutaj, zanim cokolwiek zdąży ruszyć.
