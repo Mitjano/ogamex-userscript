@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.5
+// @version      2.75.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8359,6 +8359,14 @@
             // przycisk „Zmierz trasę" działa od ręki.
             if (!(capturedFlightMs > 0)) GM_setValue("ogamex_fs_measure_at", String(Date.now() + 3 * 60 * 60 * 1000));
             log(`[FS] NIE wysyłam: ${why}.`, mission.fsMeasure ? "success" : "warn");
+            // v2.75.6: odmowa bez pauzy PĘTLIŁA start co tick (07.08 08:10–08:13:
+            // 7× „Start FS" w 2,5 min, zero wysyłek), a powód szedł tylko do
+            // zwykłego logu — dziennik pokazywał pętlę bez wyjaśnienia.
+            // Każda odmowa nie-pomiarowa: 10 min pauzy + powód do dziennika.
+            if (!mission.fsMeasure) {
+              GM_setValue("ogamex_fs_fail_at", String(Date.now()));
+              ThreatLog.add("FS", `NIE wysyłam: ${why}. Następna próba za 10 min.`);
+            }
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
             window.location.href = "/";
