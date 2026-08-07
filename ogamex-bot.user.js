@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.76.0
+// @version      2.77.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3820,30 +3820,13 @@
     // ownBodies() klasyfikował się jako "typ spoza znanych list" = atak.
     SAFE: /(TRANSPORT|DEPLOY|STATION|RETURN|EXPEDITION|COLONI|HARVEST|RECYCL|ASTEROID|COLLECT)/i,
 
-    // Zwraca { ok, rows } — ok=false znaczy „nie wiem", a nie „bezpiecznie".
-    async fetch() {
-      if (!Ajax.supported(this.URL)) return { ok: false, rows: [] };
-      let html = "";
-      try {
-        const res = await fetch(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-        if (!res.ok) { Ajax.markUnsupported(this.URL, res.status); return { ok: false, rows: [] }; }
-        Ajax.markWorking(this.URL); // v2.61.0: sprawdzony adres nie umrze od jednej czkawki 404
-        html = await res.text();
-      } catch { return { ok: false, rows: [] }; }
-      if (!html) return { ok: false, rows: [] };
-      const doc = new DOMParser().parseFromString(html, "text/html");
-      const trs = [...doc.querySelectorAll("tr[class*='row-mission-type-']")];
-      if (!trs.length) return { ok: false, rows: [] };
-      // v2.57.1: jednorazowy zrzut KOŃCA wiersza — tam siedzą przyciski akcji,
-      // w tym zawracanie floty, bez którego nie da się zrobić Fleet Save.
-      if (GM_getValue("ogamex_fml_tail_dumped", "") !== "1") {
-        GM_setValue("ogamex_fml_tail_dumped", "1");
-        const html = (trs[0].innerHTML || "").replace(/\s+/g, " ");
-        log(`[RUCHY FLOT] koniec 1. wiersza (szukam zawracania): ${html.slice(-1200)}`, "error");
-      }
-      const own = ThreatMonitor.ownBodies();
-      const rows = [];
-      for (const tr of trs) {
+    // ── v2.77.0: klasyfikacja POJEDYNCZEGO wiersza jako osobna metoda ──
+    // Wyjęta z pętli bez zmiany ani jednego warunku — po to, żeby AUTOTEST
+    // (DefenceSelfTest) mógł ją wywołać na syntetycznym markupie, w tym
+    // samym DOM i tym samym kodzie, który obsługuje prawdziwy atak.
+    // Test, który sprawdza kopię logiki zamiast oryginału, jest wart tyle,
+    // co brak testu — dlatego oryginał jest jeden i wołają go oba miejsca.
+    classifyRow(tr, own) {
         const type = (String(tr.className).match(/row-mission-type-([A-Z_]+)/i) || [])[1] || "?";
         const srcEl = tr.querySelector(".fleet-source-coords");
         const coords = [...(tr.textContent || "").matchAll(/\[(\d+:\d+:\d+)\]/g)].map(m => m[1]);
@@ -3880,7 +3863,7 @@
         const srcTd = (srcEl && srcEl.closest("td")) || tdOf(src);
         const dstTd = tdOf(dst);
         const srcName = srcTd ? ((srcTd.textContent || "").replace(`[${src}]`, "").replace(/\s+/g, " ").trim() || null) : null;
-        rows.push({
+        return {
           srcBody: bodyOf(srcTd),
           srcName,
           dstBody: bodyOf(dstTd),
@@ -3895,8 +3878,32 @@
           // Bez niego zły odczyt wrogiego wiersza byłby nie do zdiagnozowania
           // (stare one-shot zrzuty zużyły się na NASZYCH flotach).
           html: (tr.outerHTML || "").replace(/\s+/g, " ").slice(0, 1800),
-        });
+        };    },
+
+    // Zwraca { ok, rows } — ok=false znaczy „nie wiem", a nie „bezpiecznie".
+    async fetch() {
+      if (!Ajax.supported(this.URL)) return { ok: false, rows: [] };
+      let html = "";
+      try {
+        const res = await fetch(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!res.ok) { Ajax.markUnsupported(this.URL, res.status); return { ok: false, rows: [] }; }
+        Ajax.markWorking(this.URL); // v2.61.0: sprawdzony adres nie umrze od jednej czkawki 404
+        html = await res.text();
+      } catch { return { ok: false, rows: [] }; }
+      if (!html) return { ok: false, rows: [] };
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const trs = [...doc.querySelectorAll("tr[class*='row-mission-type-']")];
+      if (!trs.length) return { ok: false, rows: [] };
+      // v2.57.1: jednorazowy zrzut KOŃCA wiersza — tam siedzą przyciski akcji,
+      // w tym zawracanie floty, bez którego nie da się zrobić Fleet Save.
+      if (GM_getValue("ogamex_fml_tail_dumped", "") !== "1") {
+        GM_setValue("ogamex_fml_tail_dumped", "1");
+        const html = (trs[0].innerHTML || "").replace(/\s+/g, " ");
+        log(`[RUCHY FLOT] koniec 1. wiersza (szukam zawracania): ${html.slice(-1200)}`, "error");
       }
+      const own = ThreatMonitor.ownBodies();
+      const rows = [];
+      for (const tr of trs) rows.push(this.classifyRow(tr, own));
       return { ok: true, rows };
     },
   };
@@ -9154,6 +9161,101 @@
     },
   };
 
+  // ═══════════════════════════════════════════════════════════════
+  //  AUTOTEST OBRONY (v2.77.0) — bot sprawdza sam siebie
+  // ═══════════════════════════════════════════════════════════════
+  // „Czy w momencie ataku bot zachowa się prawidłowo?" — na to pytanie nie
+  // odpowiada czytanie kodu (dwa audyty przegapiły błąd z 07.08) ani testy
+  // na kopii logiki. Odpowiada je uruchomienie PRAWDZIWEGO kodu na znanych
+  // danych wejściowych.
+  //
+  // Autotest buduje syntetyczne wiersze wrogich flot i przepuszcza je przez
+  // FleetMovements.classifyRow — tę samą funkcję, którą co 30 s karmi
+  // prawdziwa lista ruchów — a potem sprawdza werdykt nadzorcy. Wszystko
+  // w przeglądarce, na wgranej wersji bota, bez ruszania flotą i bez
+  // czekania na napastnika.
+  //
+  // Czego NIE testuje: samej wysyłki floty (to robi „TEST ALARMU") oraz
+  // markupu, którego gra jeszcze nam nie pokazała — dlatego wrogie wiersze
+  // z prawdziwych ataków nadal lądują w logu jako [ATAK DOM].
+  const DefenceSelfTest = {
+    _row(cls, srcCoord, dstCoord, { moon = false, eta = 360, id = "1" } = {}) {
+      return `<table><tbody><tr class="${cls}" data-fleet-id="${id}">`
+        + `<td class="fleet-source-coords"><a href="#">[${srcCoord}]</a> Napastnik</td>`
+        + `<td><span data-remaining-seconds="${eta}">06:00</span></td>`
+        + `<td>${moon ? '<img src="/img/moon-icon.png">' : ""}<a href="#">[${dstCoord}]</a> ${moon ? "Moon" : "Planeta"}</td>`
+        + `</tr></tbody></table>`;
+    },
+    _parse(html) {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      return doc.querySelector("tr");
+    },
+
+    run({ manual = false } = {}) {
+      const fails = [];
+      const ok = [];
+      const check = (name, cond) => { (cond ? ok : fails).push(name); };
+      const own = new Set(["3:272:7", "3:280:4"]);
+
+      try {
+        // ── A. Klasyfikacja wrogich wierszy (prawdziwy classifyRow) ──
+        const A = [
+          ["klasyczny atak", "row-mission-type-ATTACK row-hostile-mission", true],
+          ["ACS/FEDERATION bez klasy wrogości (07.08)", "row-mission-type-FEDERATION", true],
+          ["wrogi wiersz o nazwie TRANSPORT", "row-mission-type-TRANSPORT row-hostile-mission", true],
+          ["nieznany typ misji = atak", "row-mission-type-NOWY_TYP_2027", true],
+          ["sonda NIE jest atakiem", "row-mission-type-ESPIONAGE row-hostile-mission", false],
+          ["zwykły transport NIE jest atakiem", "row-mission-type-TRANSPORT", false],
+        ];
+        for (const [name, cls, wantAttack] of A) {
+          const r = FleetMovements.classifyRow(this._parse(this._row(cls, "3:248:11", "3:280:4", { moon: true })), own);
+          check(`klasyfikacja: ${name}`, !!r && r.attack === wantAttack);
+        }
+
+        // ── B. Odczyt celu ataku: koordy + CIAŁO (księżyc vs planeta) ──
+        const rm = FleetMovements.classifyRow(this._parse(this._row("row-mission-type-ATTACK row-hostile-mission", "3:248:11", "3:280:4", { moon: true })), own);
+        check("cel ataku: koordynaty [3:280:4]", rm && rm.dst === "3:280:4");
+        check("cel ataku: rozpoznany KSIĘŻYC", rm && rm.dstBody === "moon");
+        check("cel ataku: źródło [3:248:11]", rm && rm.src === "3:248:11");
+        check("cel ataku: dolot 360 s", rm && rm.eta === 360);
+        const rp = FleetMovements.classifyRow(this._parse(this._row("row-mission-type-ATTACK row-hostile-mission", "3:248:11", "3:280:4", { moon: false })), own);
+        check("cel ataku: rozpoznana PLANETA", rp && rp.dstBody === "planet");
+
+        // ── C. Własny lot nie może wyjść jako obcy ──
+        const mine = FleetMovements.classifyRow(this._parse(this._row("row-mission-type-EXPEDITION", "3:272:7", "3:161:16")), own);
+        check("własna ekspedycja rozpoznana jako NASZA", mine && mine.mine === true);
+        const foreign = FleetMovements.classifyRow(this._parse(this._row("row-mission-type-ATTACK row-hostile-mission", "3:248:11", "3:272:7", { moon: true })), own);
+        check("atak NA nas nie jest liczony jako nasz", foreign && foreign.mine === false && foreign.attack === true);
+
+        // ── D. Nadzorca: cisza przy alarmie musi być awarią ──
+        const G = DefenceWatchdog.GRACE_MS;
+        const base = { expected: true, armed: false, saves: 0, pendingRescue: false, decisionAgeMs: null, aliveMs: 0, graceMs: G };
+        check("nadzorca: świeży alarm = czekamy", DefenceWatchdog.verdict({ ...base, aliveMs: 1000 }).state === "waiting");
+        check("nadzorca: flota ewakuowana = OK", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, armed: true, saves: 1 }).state === "ok");
+        check("nadzorca: jawna decyzja = OK", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, decisionAgeMs: 1000 }).state === "ok");
+        check("nadzorca: CISZA przy alarmie = awaria", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G }).state === "STUCK");
+        check("nadzorca: straż bez ani jednego zapisu = awaria", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, armed: true, saves: 0 }).state === "STUCK");
+      } catch (e) {
+        fails.push(`WYJĄTEK w autoteście: ${e.message}`);
+      }
+
+      const total = ok.length + fails.length;
+      if (fails.length) {
+        log(`[AUTOTEST] ${ok.length}/${total} OK — ${fails.length} NIEZDANYCH: ${fails.join(" | ")}`, "error");
+        ThreatLog.add("BŁĄD", `AUTOTEST OBRONY NIEZDANY (${fails.length}/${total}): ${fails.join(" | ")}. Obrona może nie zadziałać — nie zostawiaj floty w domu.`);
+        try {
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            new Notification("OGameX: AUTOTEST OBRONY NIEZDANY", { body: fails.join(" | "), tag: "ogamex-selftest" });
+          }
+        } catch {}
+        return false;
+      }
+      log(`[AUTOTEST] obrona sprawdzona: ${total}/${total} OK (klasyfikacja wrogich wierszy, odczyt celu i ciała, własne loty, nadzorca).`, "success");
+      if (manual) ThreatLog.add("odczyt", `AUTOTEST OBRONY: ${total}/${total} OK — klasyfikacja, odczyt celu ataku i nadzorca działają na tej wersji bota.`);
+      return true;
+    },
+  };
+
   // Własny setInterval nie da się zagłodzić: nie zależy od ticku, jitteru,
   // przerw humanizera ani okna nocnego. To jedyny sposób, żeby „obrona działa
   // 24 h" było prawdą, a nie deklaracją.
@@ -9232,7 +9334,15 @@
     }
   }
 
+  // v2.77.0: autotest przy każdym starcie skryptu — świeżo wgrana wersja
+  // mówi w logu, czy jej obrona w ogóle rozpoznaje atak. Zero kosztu, a
+  // wyłapuje regres w klasyfikacji, zanim zrobi to napastnik.
+  function runSelfTestOnBoot() {
+    setTimeout(() => { try { DefenceSelfTest.run(); } catch {} }, 4000);
+  }
+
   function startDefenceLoop() {
+    runSelfTestOnBoot();
     if (defenceTimer) clearInterval(defenceTimer);
     defenceTimer = setInterval(() => { defenceTick().catch(() => {}); }, DEFENCE_EVERY_MS);
     setTimeout(() => { defenceTick().catch(() => {}); }, 1500); // pierwszy przebieg od razu
@@ -9516,6 +9626,7 @@
               <input id="ogx-deut-reserve" type="number" min="0" step="100000000" value="${CONFIG.threatAlarm.deutReserve ?? 100000000000}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
+            <button class="mini-btn" id="ogx-selftest" style="width:100%;margin-top:4px;" title="Przepuszcza syntetyczne wrogie wiersze przez PRAWDZIWĄ klasyfikację bota (tę samą, którą karmi lista ruchów flot) i sprawdza werdykt nadzorcy. Nie rusza flotą, nie kosztuje nic, trwa ułamek sekundy. Odpowiada na pytanie „czy ta wersja bota rozpozna atak", bez czekania na napastnika.">AUTOTEST OBRONY (bez ruszania flotą)</button>
             <button class="mini-btn" id="ogx-threat-sim" style="width:100%;margin-top:4px;" title="Przepuszcza SYNTETYCZNY atak na bazę przez prawdziwą maszynerię obrony: kandydat → potwierdzenie ~25-35 s → EWAKUACJA całej floty i surowców na drugie ciało → po ~2 min alarm gaśnie i flota wraca automatycznie. Koszt: kilka minut miningu i dwa krótkie przeloty. To jest pełna próba generalna automatu bez czekania na wroga.">TEST ALARMU (symulacja ataku)</button>
             <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
               <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;">
@@ -9523,6 +9634,7 @@
                 <button class="mini-btn" id="ogx-ntfy-toggle">—</button>
               </label>
               <div class="status" id="ogx-ntfy-topic" style="font-size:9px;user-select:text;cursor:pointer;" title="Kliknij, żeby skopiować nazwę tematu do schowka.">—</div>
+              <button class="mini-btn" id="ogx-ntfy-topic-set" style="width:100%;margin-top:3px;" title="Temat ntfy jest losowany OSOBNO na każdym komputerze i przeglądarce (siedzi w pamięci Tampermonkey, która się nie synchronizuje). Dwa komputery = dwa różne tematy, a telefon słucha tylko jednego — dlatego z drugiego kompa powiadomienia nie przychodziły. Wklej tutaj temat z tego komputera, na którym push DZIAŁA, żeby oba wysyłały w to samo miejsce.">Ten sam temat na 2. komputerze</button>
               <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;margin-top:3px;">
                 <span title="Przy ATAKU laptop mówi na głos „Uwaga! Atak na bazę!" (syntezator systemowy przez przeglądarkę). Działa, póki karta z grą żyje i dźwięk w systemie nie jest wyciszony.">Alarm głosowy (laptop)</span>
                 <button class="mini-btn" id="ogx-voice-toggle">—</button>
@@ -10007,6 +10119,32 @@
       {
         const nBtn = document.getElementById("ogx-ntfy-toggle");
         const nTopic = document.getElementById("ogx-ntfy-topic");
+        const nSet = document.getElementById("ogx-ntfy-topic-set");
+        if (nSet) nSet.addEventListener("click", () => {
+          // ── v2.77.0: jeden temat na wszystkie maszyny ──
+          // Temat losował się per komputer i per przeglądarka (GM storage nie
+          // synchronizuje się między maszynami), więc laptop w pracy pisał na
+          // temat, którego telefon nie subskrybuje — push „działał" i szedł
+          // w próżnię. Objaw: w domu powiadomienia są, w pracy ich nie ma.
+          const cur = Notifier.topic();
+          const v = prompt(
+            "Temat ntfy dla TEGO komputera.\n\n" +
+            "Wklej temat z komputera, na ktorym powiadomienia DZIALAJA — wtedy oba\n" +
+            "wysylaja w to samo miejsce i telefon dostaje wszystko z obu maszyn.\n" +
+            "Temat dziala jak haslo: nie udostepniaj go nikomu.",
+            cur);
+          if (v === null) return;
+          const t = String(v).trim().replace(/^https?:\/\/ntfy\.sh\//i, "").replace(/\/+$/, "");
+          if (!/^[A-Za-z0-9_-]{4,64}$/.test(t)) {
+            alert("Temat może mieć 4-64 znaki: litery, cyfry, myślnik, podkreślnik.");
+            return;
+          }
+          GM_setValue(Notifier.KEY_TOPIC, t);
+          log(`[PUSH] temat ntfy tego komputera ustawiony na: ${t}`, "success");
+          if (nTopic) nTopic.textContent = `temat: ${t}`;
+          Notifier.push("🔔 Ten komputer podłączony", `Powiadomienia z tej maszyny idą teraz na temat ${t}.`, "default", "bell");
+          alert(`Ustawione: ${t}\n\nWyslalem probne powiadomienie — sprawdz telefon.`);
+        });
         const nTest = document.getElementById("ogx-ntfy-test");
         const paint = () => {
           if (nBtn) nBtn.textContent = Notifier.enabled() ? "ON" : "OFF";
@@ -10073,6 +10211,11 @@
         list.forEach(e => log(`  - ${e.coord} — powrot za ${Math.ceil((e.returnAt - now) / 60000)} min`, "asteroid"));
         if (list.length === 0) log("  (pusty — budzet nie blokuje wysylek)", "asteroid");
         log("Shift+klik = wyczysc rejestr awaryjnie.", "asteroid");
+      });
+      const stBtn = document.getElementById("ogx-selftest");
+      if (stBtn) stBtn.addEventListener("click", () => {
+        log("[AUTOTEST] uruchamiam sprawdzenie obrony na tej wersji bota…", "info");
+        DefenceSelfTest.run({ manual: true });
       });
       const bnNow = document.getElementById("ogx-bonus-now");
       if (bnNow) bnNow.addEventListener("click", () => {
