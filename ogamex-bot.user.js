@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.79.0
+// @version      2.80.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -146,6 +146,10 @@
       // bez podmiany wersji skryptu — pierwsza kolonia jest ratowana tak
       // samo w obu ustawieniach.
       rescueQueue: true,
+      // v2.80.0: cichy dźwięk trzymający kartę przy życiu w tle.
+      // Skutek uboczny: karta dostaje ikonkę głośnika i pojawia się
+      // w sterowaniu multimediami. Dlatego jest wyłącznik.
+      keepAwake: true,
       // v2.74.0: tyle deuteru ZOSTAJE na ciele przy ratunku i FS. Bez tego
       // ratunek/FS zabierał wszystko — a flota, która wróci później (np.
       // z ekspedycji), nie miałaby paliwa na własną ewakuację. Rezerwa to
@@ -701,6 +705,88 @@
   // gdzie nie ma praw admina). Uczciwe ograniczenia: karta z grą musi
   // być WIDOCZNA (schowana/zminimalizowana = system odbiera blokadę;
   // odzyskujemy ją, gdy karta wraca), a zamknięcie klapy i tak usypia.
+  // ── v2.80.0: DRUGA POŁOWA „nie zasypiaj" ──
+  // WakeLock trzyma ekran, ale WYŁĄCZNIE gdy karta jest widoczna — przeglądarka
+  // odbiera blokadę przy każdym schowaniu (w logu: „The requesting document is
+  // hidden"). Efekt zobaczyliśmy 07.08 o 12:11-12:23: dwanaście minut ciszy,
+  // przepadł zaplanowany odczyt zagrożeń, a atak w tym oknie zostałby wykryty
+  // dopiero po przeładowaniu sesji.
+  //
+  // Drugą połowę problemu — zamrażanie i dławienie liczników w karcie w tle —
+  // da się załatwić inaczej: karta, która ODTWARZA DŹWIĘK, jest zwolniona
+  // z intensive throttling i z zamrażania. Gramy więc ciszę w kółko. Sygnał
+  // jest niezerowy (amplituda 1/32768 ≈ -90 dBFS), bo cisza idealna bywa
+  // liczona jako brak dźwięku — i przy tym absolutnie niesłyszalny.
+  //
+  // Czego to NIE zrobi, i trzeba to wiedzieć: NIE powstrzyma uśpienia systemu
+  // ani zamknięcia klapy. Strona WWW nie ma do tego żadnego uprawnienia —
+  // to się ustawia w zasilaniu Windows. Ten moduł ratuje przypadek „karta
+  // w tle / inne okno na wierzchu", nie przypadek „laptop poszedł spać".
+  const AudioKeepalive = {
+    _el: null,
+    _playing: false,
+    _wired: false,
+
+    _url() {
+      const rate = 8000, n = rate;            // 1 s mono 16-bit
+      const buf = new ArrayBuffer(44 + n * 2);
+      const dv = new DataView(buf);
+      const wr = (off, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(off + i, str.charCodeAt(i)); };
+      wr(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); wr(8, "WAVE");
+      wr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+      dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
+      dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      wr(36, "data"); dv.setUint32(40, n * 2, true);
+      for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, i % 2 ? 1 : -1, true);
+      return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+    },
+
+    // Wołane przy starcie i z każdego ticku obrony — samo się naprawia, gdy
+    // nawigacja zabije element albo właściciel przełączy wyłącznik.
+    ensure() {
+      if (!CONFIG.threatAlarm?.keepAwake) { this.stop(); return; }
+      if (this._playing && this._el && !this._el.paused) return;
+      this.start();
+    },
+
+    start() {
+      try {
+        if (!this._el) {
+          this._el = new Audio(this._url());
+          this._el.loop = true;
+          this._el.volume = 1;
+        }
+        this._el.play().then(() => {
+          if (this._playing) return;
+          this._playing = true;
+          log("[WAKE] karta trzymana przy życiu cichym dźwiękiem — w tle nie zostanie zamrożona ani zdławiona.", "info");
+        }).catch((e) => {
+          // Polityka autoodtwarzania: pierwszy raz wymaga gestu użytkownika.
+          // Nie walczymy z nią — czekamy na dowolne kliknięcie w grę.
+          if (this._wired) return;
+          this._wired = true;
+          log(`[WAKE] dźwięk podtrzymujący czeka na pierwsze kliknięcie w grę (${e.name}) — kliknij gdziekolwiek na stronie.`, "warn");
+          const kick = () => {
+            document.removeEventListener("click", kick, true);
+            document.removeEventListener("keydown", kick, true);
+            this._wired = false;
+            this.start();
+          };
+          document.addEventListener("click", kick, true);
+          document.addEventListener("keydown", kick, true);
+        });
+      } catch (e) {
+        log(`[WAKE] dźwięk podtrzymujący niedostępny: ${e.message}`, "warn");
+      }
+    },
+
+    stop() {
+      if (!this._el) return;
+      try { this._el.pause(); } catch {}
+      this._playing = false;
+    },
+  };
+
   const WakeLock = {
     _lock: null,
     _wired: false,
@@ -9579,6 +9665,51 @@
   let defenceRunning = false;
   const DEFENCE_EVERY_MS = 30 * 1000;
 
+  // ── v2.80.0: CZUJNIK PRZERWY W OCHRONIE ──
+  // 07.08, 12:11-12:23: laptop stał dwanaście minut bez ani jednego przebiegu
+  // pętli obrony. Jedyny ślad to informacyjna linijka o przeładowaniu sesji —
+  // czyli coś, o czym właściciel dowiedziałby się wyłącznie wtedy, gdyby sam
+  // wczytał się w log. Przerwa w ochronie musi być ZDARZENIEM: wpis BŁĄD idzie
+  // do dziennika, a stamtąd pushem na telefon.
+  //
+  // Rozróżniamy dwa przypadki, bo mają różną wagę: kilkuminutowa dziura przy
+  // rzekomo działającym bocie to awaria, a wielogodzinna to po prostu
+  // wyłączona przeglądarka — i budzenie kogoś o tym syreną byłoby hałasem,
+  // który uczy ignorować alarmy.
+  const DefenceUptime = {
+    KEY: "ogamex_defence_last_tick",
+    GAP_MS: 5 * 60 * 1000,        // poniżej: normalna praca (pętla co 30 s)
+    OFF_MS: 3 * 60 * 60 * 1000,   // powyżej: bota po prostu nie było
+
+    // CZYSTA klasyfikacja — bez zegara, DOM-u i sieci (test-przerwa.js).
+    classify(gapMs) {
+      const mins = Math.round(gapMs / 60000);
+      if (gapMs < this.GAP_MS) return { level: "ok", mins };
+      if (gapMs > this.OFF_MS) return { level: "off", mins };
+      return { level: "gap", mins };
+    },
+
+    tick() {
+      const now = Date.now();
+      const last = parseInt(GM_getValue(this.KEY, "0")) || 0;
+      GM_setValue(this.KEY, String(now));
+      if (!last || now <= last) return null;
+      const v = this.classify(now - last);
+      if (v.level === "ok") return null;
+      if (v.level === "off") {
+        log(`[OBRONA] bota nie było przez ${Math.round(v.mins / 60)} h — w tym czasie nic nie pilnowało floty.`, "warn");
+        ThreatLog.add("odczyt", `Bot był wyłączony przez ~${Math.round(v.mins / 60)} h (przeglądarka zamknięta). Ochrona wznowiona.`);
+        return v;
+      }
+      const msg = `PRZERWA W OCHRONIE: przez ${v.mins} min nie było ani jednego przebiegu pętli obrony `
+        + `(uśpiony laptop, zamrożona karta w tle albo zamknięta przeglądarka). Atak w tym oknie NIE zostałby wykryty. `
+        + `Jeśli zostawiasz komputer, trzymaj kartę z grą na wierzchu i ustaw uśpienie na „Nigdy" przy zasilaniu sieciowym.`;
+      log(`[OBRONA] ${msg}`, "error");
+      ThreatLog.add("BŁĄD", msg);
+      return v;
+    },
+  };
+
   async function defenceTick() {
     if (defenceRunning) return;          // poprzedni przebieg jeszcze trwa
     // ── v2.69.1: WIEŻA PATRZY ZAWSZE — bot OFF to tryb obserwatora ──
@@ -9591,6 +9722,11 @@
     // każdy z nich i tak sam wymaga CONFIG.enabled).
     if (!requireLeader("defence")) return; // tylko karta-lider rusza flotą
     defenceRunning = true;
+    // v2.80.0: najpierw zmierz, czy w ogóle byliśmy — dopiero potem patrz.
+    // Stempel idzie w KAŻDYM ticku, także przy bocie OFF (wieża patrzy zawsze),
+    // bo przerwa w obserwacji jest luką niezależnie od stanu aktuatorów.
+    try { DefenceUptime.tick(); } catch {}
+    try { AudioKeepalive.ensure(); } catch {}
     try {
       // Nauki jednorazowe (wizyty w galaktyce) zostają za pauzą — to one
       // kazałyby „odpoczywającemu" botowi nawigować. Sam odczyt paska idzie
@@ -9959,6 +10095,10 @@
               <button class="mini-btn" id="ogx-rescue-queue">${CONFIG.threatAlarm.rescueQueue !== false ? "ON" : "OFF"}</button>
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Karta odtwarza niesłyszalny dźwięk, dzięki czemu przeglądarka nie zamraża jej ani nie dławi liczników, gdy jest w tle. NIE powstrzyma uśpienia systemu ani zamknięcia klapy — to ustaw w zasilaniu Windows („Uśpienie: Nigdy” przy zasilaniu sieciowym). Skutek uboczny: ikonka głośnika na karcie.">Nie pozwól zamrozić karty</span>
+              <button class="mini-btn" id="ogx-keep-awake">${CONFIG.threatAlarm.keepAwake !== false ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Tyle deuteru ZOSTAJE na ciele przy ratunku i Fleet Save — paliwo dla floty, która wróci później (np. z ekspedycji) i sama będzie musiała uciekać. 0 = zabieraj wszystko.">Rezerwa deuteru</span>
               <input id="ogx-deut-reserve" type="number" min="0" step="100000000" value="${CONFIG.threatAlarm.deutReserve ?? 100000000000}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -10233,6 +10373,7 @@
       bindThreatToggle("ogx-auto-save", "autoSave", "Auto-ratunek przy ataku");
       bindThreatToggle("ogx-auto-return", "autoReturn", "Auto-powrót po alarmie");
       bindThreatToggle("ogx-rescue-queue", "rescueQueue", "Kolejka ratunków (2. kolonia)");
+      bindThreatToggle("ogx-keep-awake", "keepAwake", "Nie pozwól zamrozić karty");
       // v2.74.0: rezerwa deuteru (paliwo dla floty wracającej z ekspedycji)
       {
         const el = document.getElementById("ogx-deut-reserve");
@@ -11292,6 +11433,7 @@
     // karta z grą (i tak liczy się ta widoczna), więc lider może się zmienić
     // bez utraty ochrony przed snem.
     try { WakeLock.wire(); } catch {}
+    try { AudioKeepalive.ensure(); } catch {}
 
     // v2.10.10: timestamp of the last real page load — read by the scheduler
     // keepalive to detect long stretches with no navigation (session risk).

@@ -17,6 +17,7 @@ const SUITES = [
   ["kolejka ratunków (2. kolonia)", "test-kolejka.js"],
   ["bramki wysyłek (alarm + paliwo)", "test-bramka-wysylek.js"],
   ["ratunek nietykalny", "test-ratunek-nietykalny.js"],
+  ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],
 ];
 
 let failed = [];
