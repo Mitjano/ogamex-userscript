@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.77.2
+// @version      2.78.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -141,6 +141,11 @@
       // insurance, so it defaults ON.
       autoSave: true,
       autoReturn: true,
+      // v2.78.0: drugi atak na INNĄ kolonię podczas trwającego alarmu.
+      // Wyłącznik istnieje, żeby dało się wrócić do zachowania z 2.77.2
+      // bez podmiany wersji skryptu — pierwsza kolonia jest ratowana tak
+      // samo w obu ustawieniach.
+      rescueQueue: true,
       // v2.74.0: tyle deuteru ZOSTAJE na ciele przy ratunku i FS. Bez tego
       // ratunek/FS zabierał wszystko — a flota, która wróci później (np.
       // z ekspedycji), nie miałaby paliwa na własną ewakuację. Rezerwa to
@@ -5731,6 +5736,16 @@
         // „uzbrojona bez ani jednego zapisu" to stan, o którym chcemy wiedzieć.
         const wNow = this.watch();
         if ((wNow.saves || 0) > 0) DefenceWatchdog.note(`straż aktywna, zapisów: ${wNow.saves}`);
+        // ── v2.78.0: JEDYNE nowe wyjście z tej gałęzi ──
+        // Wszystko powyżej i wszystko poniżej zostaje bez zmian. Tu dotąd był
+        // sam `return false` — i właśnie tędy uciekał drugi atak na inną
+        // kolonię. Ratunek pierwszej kolonii nie przechodzi przez ten warunek
+        // (przy pierwszym ataku `armed` jest fałszem), więc ta linia nie ma
+        // jak wpłynąć na ścieżkę, która działa.
+        if (await RescueQueue.tryNext(wNow).catch((e) => {
+          log(`[KOLEJKA] błąd: ${e.message} — pierwsza kolonia pozostaje chroniona.`, "error");
+          return false;
+        })) return true;
         return false;
       }
       if (this.running) return false;
@@ -5957,7 +5972,7 @@
       return this.run({ sweep: true, reason: "straż wielofalowa — sprzątam planetę" });
     },
 
-    async run({ manual = false, sweep = false, auto = false, reason = "manual", where = null } = {}) {
+    async run({ manual = false, sweep = false, auto = false, reason = "manual", where = null, queued = false } = {}) {
       if (this.running) return false;
       if (!this.armed()) return this.learnThenSave(reason);
       // A sweep is paced by MIN_RESAVE_MS instead: the 15-minute guard exists
@@ -6007,7 +6022,9 @@
           sweep: !!sweep, // v2.70.3: zamiatanie nie flipuje na drugie ciało
           atCoords: at,
           targetBody: to,
-          homeBody: w0.homeBody || from,
+          // v2.78.0: ratunek z kolejki dotyczy INNEJ kolonii, więc jej
+          // domem jest ciało, na którym stoi ONA, a nie dom pierwszej.
+          homeBody: queued ? from : (w0.homeBody || from),
           fleetUrl: href,
           step: "select_ships_direct",
           timestamp: Date.now(),
@@ -6017,6 +6034,18 @@
         // manual one: pressing the button once is the operator saying "we are
         // under attack", and everything that lands afterwards has to go too.
         const w = this.watch();
+        const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
+        if (queued) {
+          // ── v2.78.0: ratunek Z KOLEJKI nie tyka straży pierwszej kolonii ──
+          // saveWatch() nadpisałoby `at`, więc powrót ściągnąłby TĘ kolonię,
+          // a flota pierwszej została na ciele ucieczki na zawsze — czyli
+          // nowa funkcja zjadłaby starą. Zamiast tego dopisujemy się do
+          // listy oczekujących; promocja po powrocie pierwszej wpuści nas
+          // w ten sam, sprawdzony returnHome().
+          RescueQueue.addPending({ at, homeBody: from, refugeBody: to, savedAt: Date.now() });
+          log(`RATUNEK Z KOLEJKI: ${nameOf(from)} → ${nameOf(to)} na [${at.galaxy}:${at.system}:${at.position}] (${reason}). Straż pierwszej kolonii nietknięta.`, "success");
+          ThreatLog.add("RATUNEK", `KOLEJKA: ${nameOf(from)} → ${nameOf(to)} na [${at.galaxy}:${at.system}:${at.position}] (${reason}). Powrót tej kolonii pójdzie zaraz po powrocie pierwszej.`);
+        } else {
         // Remember WHO started this: the alarm may undo its own saves, nobody
         // else's. A sweep inherits the trigger of the save it continues.
         const trigger = w.trigger || (auto || ThreatMonitor.active() ? "threat" : "manual");
@@ -6025,9 +6054,9 @@
         // where to put everything back regardless of which body it is today.
         this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: to, at,
                          lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
-        const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na tych samych koordach (${reason}). Wszystkie statki i wszystkie surowce.`, "success");
         ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
+        }
         await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
         window.location.href = href;
         return true;
@@ -6037,6 +6066,147 @@
       } finally {
         this.running = false;
       }
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  KOLEJKA RATUNKÓW (v2.78.0) — drugi atak na INNĄ kolonię
+  // ═══════════════════════════════════════════════════════════════
+  // Do 2.77.2 jeden alarm = jedna kolonia. Gdy straż była już uzbrojona,
+  // autoSaveOnThreat kończył się `return false` i drugi atak — na inną
+  // kolonię — przechodził bez żadnej reakcji.
+  //
+  // Cała ta warstwa mieszka WYŁĄCZNIE w tamtej gałęzi. Przy pierwszym ataku
+  // `armed` jest fałszem, więc kod nawet do niej nie wchodzi: pierwszy
+  // ratunek leci dokładnie tą samą trasą, co przebieg z 7.08 10:41 (46 s od
+  // wykrycia do floty w powietrzu). Nowe może się odpalić tylko tam, gdzie
+  // dotąd nie działo się nic — i to jest jedyny powód, dla którego ta zmiana
+  // nie może zepsuć działającej obrony.
+  //
+  // Powrót: straż pierwszej kolonii zostaje NIETKNIĘTA, kolejne lądują na
+  // liście oczekujących. Gdy powrót pierwszej się kończy, zamiast rozbroić
+  // straż PROMUJEMY następną kolonię do tej samej struktury — więc ściąga ją
+  // ten sam, sprawdzony returnHome(), a nie świeżo napisany kod.
+  const RescueQueue = {
+    KEY: "ogamex_rescue_queue",
+    MAX_COLONIES: 5,   // limit PER ALARM, liczony w koloniach, nie w zapisach
+
+    state() {
+      try {
+        const v = JSON.parse(GM_getValue(this.KEY, "null"));
+        return (v && typeof v === "object") ? { done: v.done || [], pending: v.pending || [] } : { done: [], pending: [] };
+      } catch { return { done: [], pending: [] }; }
+    },
+    save(st) { GM_setValue(this.KEY, JSON.stringify(st)); },
+
+    // Koniec alarmu kasuje listę obsłużonych kolonii, ale NIE oczekujące
+    // powroty — one mają sens dopiero po alarmie i muszą go przeżyć.
+    endAlarm() {
+      const st = this.state();
+      if (!(st.done || []).length) return;
+      st.done = [];
+      this.save(st);
+    },
+
+    str(at) {
+      if (!at) return null;
+      if (typeof at === "string") return /^\d+:\d+:\d+$/.test(at) ? at : null;
+      return Number.isFinite(at.galaxy) ? `${at.galaxy}:${at.system}:${at.position}` : null;
+    },
+    obj(t) {
+      const m = /^(\d+):(\d+):(\d+)$/.exec(String(t || ""));
+      return m ? { galaxy: +m[1], system: +m[2], position: +m[3] } : null;
+    },
+
+    // CZYSTA decyzja — bez DOM, sieci i zegara. Dzięki temu sprawdza ją
+    // zarówno test offline (test-kolejka.js), jak i AUTOTEST w przeglądarce,
+    // na tej samej funkcji, którą wywołuje prawdziwy alarm.
+    nextTarget({ targets, guarded, done }) {
+      const skip = new Set([guarded, ...(done || [])].filter(Boolean));
+      for (const t of (targets || [])) {
+        if (!t || typeof t !== "string") continue;
+        if (skip.has(t)) continue;
+        return t;
+      }
+      return null;
+    },
+
+    // Ile atakowanych kolonii nikt jeszcze nie ruszył — karma dla nadzorcy.
+    // Bez tego awaria kolejki byłaby NIEWIDOCZNA: straż uzbrojona z jednym
+    // zapisem wygląda jak sukces, choć druga kolonia stoi bez reakcji.
+    unhandledCount(w) {
+      try {
+        if (CONFIG.threatAlarm?.rescueQueue === false) return 0;
+        const ev = ThreatMonitor.events();
+        if (!ev || !(ev.attacks > 0)) return 0;
+        const skip = new Set([this.str(w && w.at), ...(this.state().done || [])].filter(Boolean));
+        return (ev.targets || []).filter(t => t && !skip.has(t)).length;
+      } catch { return 0; }
+    },
+
+    markDone(coords) {
+      const st = this.state();
+      if (!st.done.includes(coords)) st.done.push(coords);
+      this.save(st);
+    },
+    addPending(entry) {
+      const st = this.state();
+      st.pending.push(entry);
+      this.save(st);
+    },
+
+    // Wywoływane WYŁĄCZNIE z gałęzi „straż już uzbrojona".
+    async tryNext(w) {
+      if (CONFIG.threatAlarm?.rescueQueue === false) return false;
+      const ev = ThreatMonitor.events();
+      if (!ev || !(ev.attacks > 0)) return false;
+      if (MoonSave.running) return false;
+      const st = this.state();
+      const guarded = this.str(w && w.at);
+      const next = this.nextTarget({ targets: ev.targets || [], guarded, done: st.done });
+      if (!next) return false;
+      const at = this.obj(next);
+      if (!at) return false;
+      // Limit liczony w KOLONIACH, nie w zapisach: alarm na trzech koloniach
+      // nie może wyczerpać budżetu zamiatania pierwszej z nich.
+      if ((st.done || []).length >= this.MAX_COLONIES) {
+        this.markDone(next);   // nie próbuj tej samej w kółko co 30 s
+        log(`[KOLEJKA] limit ${this.MAX_COLONIES} kolonii w jednym alarmie osiągnięty — [${next}] NIE ruszona. SPRAWDŹ GRĘ.`, "error");
+        ThreatLog.add("BŁĄD", `Kolejka ratunków: limit ${this.MAX_COLONIES} kolonii na alarm. Kolonia [${next}] została BEZ REAKCJI — sprawdź grę.`);
+        return false;
+      }
+      // Strażnik bezpiecznej strony nie ma tu zastosowania z tego samego
+      // powodu, co przy pierwszym ratunku na obcej kolonii: obowiązuje tylko,
+      // gdy stoimy na atakowanym ciele (`active === target`), a tu z definicji
+      // stoimy gdzie indziej. O ciało zadba korekta na formularzu — ta sama,
+      // która obsługuje pierwszy ratunek zdalnej kolonii.
+      this.markDone(next);
+      log(`[KOLEJKA] DRUGI ATAK w trwającym alarmie: kolonia [${next}]. Straż pierwszej ([${guarded || "?"}]) zostaje nietknięta — ratuję TĘ kolonię osobno.`, "error");
+      ThreatLog.add("ATAK", `KOLEJKA: drugi atak na [${next}] podczas alarmu na [${guarded || "?"}] — ewakuuję również tę kolonię.`);
+      return MoonSave.run({ auto: true, queued: true, where: at, reason: `AUTOMAT: drugi atak na [${next}]` });
+    },
+
+    // Po zakończonym powrocie pierwszej kolonii: zamiast rozbroić straż,
+    // wstaw w nią następną kolonię z kolejki. Powrót obsłuży ją tym samym
+    // kodem, który właśnie zadziałał.
+    promoteNext(why) {
+      const st = this.state();
+      if (!(st.pending || []).length) return false;
+      const nx = st.pending.shift();
+      this.save(st);
+      const coords = this.str(nx.at) || "?";
+      MoonSave.saveWatch({
+        armed: true, trigger: "threat",
+        homeBody: nx.homeBody, refugeBody: nx.refugeBody,
+        at: nx.at,
+        // lastAt = moment ratunku TEJ kolonii, więc zapora „130 s na
+        // lądowanie" liczy się od prawdy, a nie od chwili promocji.
+        lastAt: nx.savedAt || Date.now(),
+        saves: 1, since: Date.now(),
+      });
+      log(`[KOLEJKA] ${why} — biorę następną kolonię z kolejki: [${coords}]. Zostało: ${st.pending.length}.`, "success");
+      ThreatLog.add("POWRÓT", `KOLEJKA: ściągam kolonię [${coords}] (${why}). W kolejce zostało: ${st.pending.length}.`);
+      return true;
     },
   };
 
@@ -9110,7 +9280,16 @@
     // przetestować bez czekania na prawdziwy atak (test-nadzorca.js).
     verdict(s) {
       if (!s.expected) return { state: "off" };
-      if (s.armed && s.saves > 0) return { state: "ok", why: "flota ewakuowana" };
+      if (s.armed && s.saves > 0) {
+        // v2.78.0: „uratowaliśmy JEDNĄ kolonię" to nie to samo, co „obrona
+        // zadziałała". Bez tego warunku awaria kolejki byłaby niewidoczna:
+        // straż z jednym zapisem wygląda jak sukces, choć druga kolonia
+        // stoi bez reakcji. To dokładnie ta klasa błędu, co 7.08 rano.
+        if ((s.unhandled || 0) > 0 && s.aliveMs >= s.graceMs) {
+          return { state: "STUCK", why: `kolonie bez reakcji: ${s.unhandled}` };
+        }
+        return { state: "ok", why: "flota ewakuowana" };
+      }
       if (s.pendingRescue) return { state: "ok", why: "ratunek w toku" };
       if (s.decisionAgeMs !== null && s.decisionAgeMs <= s.graceMs) return { state: "ok", why: "jawna decyzja" };
       if (s.aliveMs < s.graceMs) return { state: "waiting" };
@@ -9126,6 +9305,9 @@
         if ((parseInt(GM_getValue(this.KEY_SINCE, "0")) || 0)) {
           GM_setValue(this.KEY_SINCE, "0");
           GM_setValue(this.KEY_ALERTED, "0");
+          // v2.78.0: alarm zszedł — lista obsłużonych kolonii traci sens.
+          // Oczekujące POWROTY zostają: one dzieją się właśnie po alarmie.
+          try { RescueQueue.endAlarm(); } catch {}
         }
         return;
       }
@@ -9144,6 +9326,7 @@
         decisionAgeMs: d && d.at ? Date.now() - d.at : null,
         aliveMs: Date.now() - since,
         graceMs: this.GRACE_MS,
+        unhandled: RescueQueue.unhandledCount(w),
       });
       if (v.state !== "STUCK") return;
       const lastAlert = parseInt(GM_getValue(this.KEY_ALERTED, "0")) || 0;
@@ -9151,7 +9334,10 @@
       GM_setValue(this.KEY_ALERTED, String(Date.now()));
       const secs = Math.round((Date.now() - since) / 1000);
       const ev = ThreatMonitor.events() || {};
-      const msg = `ALARM TRWA ${secs} s, a flota NIE ZOSTAŁA RUSZONA i nie ma zapisanej decyzji, dlaczego. `
+      const msg = /kolonie bez reakcji/.test(v.why || "")
+        ? `ALARM TRWA ${secs} s. Jedna kolonia jest uratowana, ale ${(v.why.match(/\d+/) || ["?"])[0]} atakowana kolonia/e NIE ZOSTAŁA RUSZONA. `
+          + `Cel: [${(ev.targets || []).join(", ") || "?"}]. SPRAWDŹ GRĘ — ratuj ręcznie przyciskiem RATUJ na tej kolonii.`
+        : `ALARM TRWA ${secs} s, a flota NIE ZOSTAŁA RUSZONA i nie ma zapisanej decyzji, dlaczego. `
         + `Ataki: ${ev.attacks != null ? ev.attacks : "?"}`
         + `${ev.targets && ev.targets.length ? `, cel [${ev.targets.join(", ")}]` : ""}. `
         + `SPRAWDŹ GRĘ — jeśli flota stoi w domu, użyj przycisku RATUJ.`;
@@ -9239,6 +9425,18 @@
         check("nadzorca: jawna decyzja = OK", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, decisionAgeMs: 1000 }).state === "ok");
         check("nadzorca: CISZA przy alarmie = awaria", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G }).state === "STUCK");
         check("nadzorca: straż bez ani jednego zapisu = awaria", DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, armed: true, saves: 0 }).state === "STUCK");
+
+        // ── E. Kolejka ratunków (v2.78.0) ──
+        check("kolejka: drugi atak na INNĄ kolonię trafia do ratunku",
+          RescueQueue.nextTarget({ targets: ["3:272:7", "2:151:8"], guarded: "3:272:7", done: [] }) === "2:151:8");
+        check("kolejka: pilnowana kolonia nie jest ratowana drugi raz",
+          RescueQueue.nextTarget({ targets: ["3:272:7"], guarded: "3:272:7", done: [] }) === null);
+        check("kolejka: kolonia obsłużona w tym alarmie jest pomijana",
+          RescueQueue.nextTarget({ targets: ["3:272:7", "2:151:8"], guarded: "3:272:7", done: ["2:151:8"] }) === null);
+        check("nadzorca: porzucona kolonia = awaria (inaczej kolejka psuje się po cichu)",
+          DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, armed: true, saves: 1, unhandled: 1 }).state === "STUCK");
+        check("nadzorca: komplet kolonii obsłużony = OK",
+          DefenceWatchdog.verdict({ ...base, aliveMs: 5 * G, armed: true, saves: 1, unhandled: 0 }).state === "ok");
       } catch (e) {
         fails.push(`WYJĄTEK w autoteście: ${e.message}`);
       }
@@ -9643,6 +9841,10 @@
               <button class="mini-btn" id="ogx-auto-return">${CONFIG.threatAlarm.autoReturn ? "ON" : "OFF"}</button>
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Gdy podczas trwającego alarmu nadleci atak na INNĄ kolonię, bot ewakuuje również ją, nie ruszając straży pierwszej. Powroty idą po kolei. OFF = zachowanie sprzed v2.78.0 (druga kolonia bez reakcji).">Kolejka ratunków (2. kolonia)</span>
+              <button class="mini-btn" id="ogx-rescue-queue">${CONFIG.threatAlarm.rescueQueue !== false ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Tyle deuteru ZOSTAJE na ciele przy ratunku i Fleet Save — paliwo dla floty, która wróci później (np. z ekspedycji) i sama będzie musiała uciekać. 0 = zabieraj wszystko.">Rezerwa deuteru</span>
               <input id="ogx-deut-reserve" type="number" min="0" step="100000000" value="${CONFIG.threatAlarm.deutReserve ?? 100000000000}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -9916,6 +10118,7 @@
       };
       bindThreatToggle("ogx-auto-save", "autoSave", "Auto-ratunek przy ataku");
       bindThreatToggle("ogx-auto-return", "autoReturn", "Auto-powrót po alarmie");
+      bindThreatToggle("ogx-rescue-queue", "rescueQueue", "Kolejka ratunków (2. kolonia)");
       // v2.74.0: rezerwa deuteru (paliwo dla floty wracającej z ekspedycji)
       {
         const el = document.getElementById("ogx-deut-reserve");
@@ -11085,7 +11288,15 @@
         // następnym ticku. Log właściciela z 2 sierpnia: powrót wysłany
         // o 09:26:19, a potem próby o 09:27:45, 09:29:11, 09:30:23, 09:30:36
         // i 09:32:26 — wszystkie w pustkę, bo flota była już w drodze.
-        if (wasMoonReturn) MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
+        if (wasMoonReturn) {
+          // v2.78.0: jeśli w kolejce czeka kolonia uratowana w tym samym
+          // alarmie, nie rozbrajamy straży — wstawiamy w nią tamtą kolonię
+          // i pozwalamy temu samemu returnHome() ściągnąć ją następnym
+          // ruchem. Pusta kolejka = zachowanie identyczne jak w 2.77.2.
+          if (!RescueQueue.promoteNext("powrót poprzedniej kolonii zakończony")) {
+            MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
+          }
+        }
         // v2.74.5: stempel POTWIERDZONEJ wysyłki ratunku — powrót (returnHome)
         // czeka od tego momentu 130 s na lądowanie, zanim ruszy ściągać flotę.
         if (!wasMoonReturn && !wasFerry) {
