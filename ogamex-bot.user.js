@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.6
+// @version      2.75.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4900,6 +4900,38 @@
             }
             // Nie kończymy tu: schodzimy do ścieżki paska niżej.
           } else {
+          // ── v2.75.7: WERDYKT SERWERA PONAD NASZĄ KLASYFIKACJĄ ──
+          // Lista ruchów flot mogła wiersz ataku ZOBACZYĆ, ale nazwać go
+          // bezpiecznie (07.08 08:25 — atak grupowy pod nieznaną nazwą, sonda
+          // zgadzała liczby, więc kontrola z paskiem milczała). Serwer liczy
+          // wrogość sam, po typie misji, i ma inny markup — jeśli widzi więcej
+          // ataków niż my, wygrywa ON. Rozjazd = alarm, nigdy odwrotnie:
+          // przegapiony atak kosztuje flotę, fałszywy dwa przeloty.
+          const srv = await this.fetchServerEvents().catch(() => null);
+          if (srv) {
+            // Gdy lista zdarzeń serwera dała się sklasyfikować, liczy się
+            // WYŁĄCZNIE srv.attacks — ta liczba jest już odsiana po ŹRÓDLE
+            // (nasze własne loty odpadają), więc farmienie nie podniesie
+            // alarmu. Surowego licznika `hostile` używamy tylko wtedy, gdy
+            // typów nie dało się odczytać — wtedy wszystko, czego nie
+            // tłumaczą nasze sondy, jest atakiem.
+            const srvAttacks = srv.classified
+              ? srv.attacks
+              : Math.max(0, (srv.hostile || 0) - out.spies);
+            if (srvAttacks > out.attacks) {
+              const before = out.attacks;
+              out.attacks = srvAttacks;
+              out.hostile = Math.max(out.hostile, srv.hostile || 0);
+              for (const t of (srv.targets || [])) if (t && !out.targets.includes(t)) out.targets.push(t);
+              for (const o of (srv.origins || [])) if (o && !out.origins.includes(o)) out.origins.push(o);
+              const warnAt = parseInt(GM_getValue("ogamex_srv_mismatch_at", "0")) || 0;
+              if (Date.now() - warnAt > 5 * 60 * 1000) {
+                GM_setValue("ogamex_srv_mismatch_at", String(Date.now()));
+                log(`[THREAT] ROZJAZD ŹRÓDEŁ: lista ruchów dała ${before} ataków (${out.spies} sond, ${foreign.length} obcych wierszy), a serwer widzi ${srv.hostile} wrogich (${srv.classified ? `${srv.attacks} ataków, ${srv.spies} sond` : "typów nie dało się odczytać"}). Wygrywa serwer — podnoszę alarm${out.targets.length ? ` na [${out.targets.join(", ")}]` : ""}.`, "error");
+                ThreatLog.add("ATAK", `Rozjazd źródeł: lista ruchów ${before} ataków, serwer ${srv.hostile} wrogich flot. Alarm z werdyktu serwera${out.targets.length ? ` (cel: ${out.targets.join(", ")})` : " (celu nie znam — ucieczka na przeciwne ciało)"}.`);
+              }
+            }
+          }
           GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
           if (attacks.length) {
             const first = attacks.sort((a, b) => (a.eta || 1e9) - (b.eta || 1e9))[0];
@@ -4945,15 +4977,35 @@
           }
         }
 
-        if (!Ajax.supported("/ajax/fleet/eventbox/fetch")) return;
-        let box = null;
-        try {
-          const res = await fetch("/ajax/fleet/eventbox/fetch", hdr);
-          if (!res.ok) { Ajax.markUnsupported("/ajax/fleet/eventbox/fetch", res.status); return; }
-          box = await res.json();
-        } catch { return; }
-        if (!box || !Number.isFinite(box.hostile)) return; // nie wiem → pasek zostaje awaryjnym źródłem
-        Ajax.remember(box.newAjaxToken); // każda odpowiedź gry niesie świeży token CSRF
+        const srv = await this.fetchServerEvents();
+        if (!srv) return;                 // nie wiem → pasek zostaje awaryjnym źródłem
+        GM_setValue(this.KEY_EVENTS, JSON.stringify(srv));
+      } finally {
+        this._evFetching = false;
+      }
+    },
+
+    // ── v2.75.7: DRUGIE ŹRÓDŁO PRAWDY — API zdarzeń serwera ──
+    // Klasyfikacja z listy ruchów flot stoi na NAZWACH klas w markupie forka.
+    // 07.08 08:25 atak grupowy przeszedł niewykryty, bo jego nazwa nie była na
+    // żadnej z list (ATTACK/SPY/SAFE), a sonda w tym samym czasie zgadzała
+    // liczby, więc kontrola krzyżowa z paskiem misji nic nie zauważyła.
+    // Serwer ma WŁASNY werdykt wrogości (typy misji 1,2,6,9,10) i własny
+    // markup (tr.eventFleet[data-mission-type]) — to niezależny odczyt tej
+    // samej rzeczywistości, odporny na nazewnictwo wierszy listy ruchów.
+    // Zwraca null = „nie wiem" (nigdy „bezpiecznie").
+    async fetchServerEvents() {
+      const hdr = { headers: { "X-Requested-With": "XMLHttpRequest" } };
+      if (!Ajax.supported("/ajax/fleet/eventbox/fetch")) return null;
+      let box = null;
+      try {
+        const res = await fetch("/ajax/fleet/eventbox/fetch", hdr);
+        if (!res.ok) { Ajax.markUnsupported("/ajax/fleet/eventbox/fetch", res.status); return null; }
+        box = await res.json();
+      } catch { return null; }
+      if (!box || !Number.isFinite(box.hostile)) return null;
+      Ajax.remember(box.newAjaxToken); // każda odpowiedź gry niesie świeży token CSRF
+      {
         const out = { at: Date.now(), hostile: box.hostile, attacks: 0, spies: 0, classified: true, targets: [], origins: [] };
         if (box.hostile > 0) {
           let html = "";
@@ -5017,9 +5069,7 @@
             }
           }
         }
-        GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
-      } finally {
-        this._evFetching = false;
+        return out;
       }
     },
 
