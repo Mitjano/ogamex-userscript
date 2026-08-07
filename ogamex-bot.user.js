@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.77.1
+// @version      2.77.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5812,11 +5812,15 @@
       });
     },
 
-    _sayOnce(key, msg) {
+    // v2.77.2: poziom logu jako parametr. Domyslnie „error” — decyzje obrony
+    // maja byc czerwone i widoczne. Ale rutyna („powrot poczeka, bo ratunek
+    // jeszcze leci”) czerwona byc nie moze: czerwony na normalnej pracy uczy
+    // operatora ignorowac czerwony, a wtedy przegapi ten prawdziwy.
+    _sayOnce(key, msg, level = "error") {
       this._said = this._said || {};
       if (this._said[key] && Date.now() - this._said[key] < 5 * 60 * 1000) return;
       this._said[key] = Date.now();
-      log(msg, "error");
+      log(msg, level);
     },
 
     // v2.21.0 — the other half. Without it a false alarm would park the
@@ -5865,7 +5869,7 @@
           this.disarm("powrót dawno dolecial — zamykam alarm");
           return false;
         }
-        this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round(age / 1000)}s temu) — nie wysyłam drugiego.`);
+        this._sayOnce("returning", `[RATUNEK] powrót już leci (${Math.round(age / 1000)}s temu) — nie wysyłam drugiego.`, "info");
         return false;
       }
       // ── v2.74.5: nie zawracaj floty, której RATUNEK jeszcze leci ──
@@ -5878,7 +5882,7 @@
         const ref = Math.max(w.lastSendAt || 0, w.lastAt || 0);
         const landAt = ref + 130000;
         if (ref && Date.now() < landAt) {
-          this._sayOnce("waitland", `[POWRÓT] ratunek jeszcze w locie (~${Math.ceil((landAt - Date.now()) / 1000)}s do lądowania) — powrót poczeka.`);
+          this._sayOnce("waitland", `[POWRÓT] ratunek jeszcze w locie (~${Math.ceil((landAt - Date.now()) / 1000)}s do lądowania) — powrót poczeka.`, "info");
           return false;
         }
       }
@@ -9191,7 +9195,7 @@
       return doc.querySelector("tr");
     },
 
-    run({ manual = false } = {}) {
+    run({ manual = false, quiet = false } = {}) {
       const fails = [];
       const ok = [];
       const check = (name, cond) => { (cond ? ok : fails).push(name); };
@@ -9250,7 +9254,7 @@
         } catch {}
         return false;
       }
-      log(`[AUTOTEST] obrona sprawdzona: ${total}/${total} OK (klasyfikacja wrogich wierszy, odczyt celu i ciała, własne loty, nadzorca).`, "success");
+      if (!quiet) log(`[AUTOTEST] obrona sprawdzona: ${total}/${total} OK (klasyfikacja wrogich wierszy, odczyt celu i ciała, własne loty, nadzorca).`, "success");
       if (manual) ThreatLog.add("odczyt", `AUTOTEST OBRONY: ${total}/${total} OK — klasyfikacja, odczyt celu ataku i nadzorca działają na tej wersji bota.`);
       return true;
     },
@@ -9338,7 +9342,24 @@
   // mówi w logu, czy jej obrona w ogóle rozpoznaje atak. Zero kosztu, a
   // wyłapuje regres w klasyfikacji, zanim zrobi to napastnik.
   function runSelfTestOnBoot() {
-    setTimeout(() => { try { DefenceSelfTest.run(); } catch {} }, 4000);
+    setTimeout(() => {
+      try {
+        // v2.77.2: bot przeladowuje strone co kilkanascie sekund (skan
+        // galaktyki), wiec autotest przy kazdym boocie wypluwal kilkanascie
+        // identycznych linii na minute i topil w nich prawdziwe wpisy obrony.
+        // Sprawdzenie nadal biegnie ZAWSZE (jest darmowe) — cichnie tylko
+        // raport z sukcesu: mowi po zmianie wersji i raz na 30 min.
+        // Porazka krzyczy zawsze, bo to jedyny powod, dla ktorego istnieje.
+        const KEY = "ogamex_selftest_last";
+        const ver = (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "?";
+        let last = {};
+        try { last = JSON.parse(GM_getValue(KEY, "{}")) || {}; } catch {}
+        const quiet = last.ver === ver && last.ok === true &&
+                      Date.now() - (last.at || 0) < 30 * 60 * 1000;
+        const ok = DefenceSelfTest.run({ quiet });
+        GM_setValue(KEY, JSON.stringify({ ver, ok, at: quiet && ok ? (last.at || Date.now()) : Date.now() }));
+      } catch {}
+    }, 4000);
   }
 
   function startDefenceLoop() {
