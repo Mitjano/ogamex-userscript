@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.75.4
+// @version      2.75.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3803,7 +3803,13 @@
   // źródło, cel, czas do przylotu i skład floty.
   const FleetMovements = {
     URL: "/home/fleetmovementlist",
-    ATTACK: /(ATTACK|MISSILE|DESTRUCT|DESTROY|BOMBARD|INVAS)/i,
+    // v2.75.5: +ACS/FEDERATION/GROUP/HOLD — atak GRUPOWY („Players: 1/2" na
+    // liście zdarzeń) przeszedł 07.08 08:2x NIEWYKRYTY: 92,8 mld statków
+    // w księżyc bazy, a klasyfikacja widziała tylko sondę („ataki 0, sondy 1")
+    // i skasowała kandydata. FEDERATION/HOLD siedziały na liście SAFE z
+    // nazewnictwa upstreamu — obca misja tych typów na NASZE ciało to atak
+    // ACS albo wrogie stacjonowanie, nigdy nic bezpiecznego.
+    ATTACK: /(ATTACK|MISSILE|DESTRUCT|DESTROY|BOMBARD|INVAS|FEDERATION|GROUP|ACS|HOLD)/i,
     SPY: /(ESPIONAGE|SPY|PROBE|SCAN)/i,
     // v2.66.0: typy, które fizycznie nie mogą uderzyć (transport nie atakuje,
     // stacjonowanie nie celuje w obcych, powrót leci do siebie). Obca misja
@@ -3812,7 +3818,7 @@
     // v2.75.3: +COLLECT — typ zbierania złomu TEGO forka (przycisk „Collect"
     // w formularzu floty). Bez niego własny lot po złom przy chwilowo pustym
     // ownBodies() klasyfikował się jako "typ spoza znanych list" = atak.
-    SAFE: /(TRANSPORT|DEPLOY|STATION|RETURN|EXPEDITION|COLONI|HARVEST|RECYCL|ASTEROID|HOLD|ACS.?DEFEND|FEDERATION|COLLECT)/i,
+    SAFE: /(TRANSPORT|DEPLOY|STATION|RETURN|EXPEDITION|COLONI|HARVEST|RECYCL|ASTEROID|COLLECT)/i,
 
     // Zwraca { ok, rows } — ok=false znaczy „nie wiem", a nie „bezpiecznie".
     async fetch() {
@@ -3849,7 +3855,14 @@
         const ships = [...tip.matchAll(/>([A-Za-z ]+?)\s*:\s*<\/td>\s*<td[^>]*>([\d.\s]+)</g)]
           .map(m => `${m[1].trim()} ${m[2].trim()}`);
         const isSpy = this.SPY.test(type);
-        const isAttack = this.ATTACK.test(type) || (!isSpy && !this.SAFE.test(type));
+        // v2.75.5: PIERWSZE słowo ma sama gra — wiersz wrogiej misji nosi
+        // klasę `row-hostile-mission` (zrzuty [ATAK DOM] z 05-06.08). To
+        // odporne na KAŻDĄ nazwę typu (ACS, przyszłe misje forka): wrogi
+        // wiersz nie-sonda = atak, niezależnie od tego, jak się nazywa.
+        // Wiersze bez tej klasy klasyfikujemy po staremu (nazwa typu).
+        const hostileCls = /row-hostile-mission/i.test(String(tr.className));
+        const isAttack = hostileCls ? !isSpy
+          : (this.ATTACK.test(type) || (!isSpy && !this.SAFE.test(type)));
         // ── v2.70.0: ciało i nazwa przy KOŃCACH trasy ──
         // Zrzuty [ATAK DOM] z 05.08 pokazały, że wiersz niesie ikonę
         // (moon-icon) i nazwę ciała obok koordynatów obu końców. Ciało CELU
@@ -4870,11 +4883,20 @@
             }).catch(() => {});
           }
           const barNow = this.read();
-          if (barNow && barNow.foreign > 0 && foreign.length === 0) {
-            if (GM_getValue("ogamex_fml_blind_warned", "") !== "1") {
-              GM_setValue("ogamex_fml_blind_warned", "1");
-              log(`[THREAT] UWAGA: pasek pokazuje ${barNow.foreign} obcych flot, a lista ruchów flot żadnej. Ta lista najpewniej zawiera tylko NASZE floty — wracam do liczenia z paska (sondy znów będą ruszać flotą).`, "error");
-              ThreatLog.add("BŁĄD", `Lista ruchów flot nie pokazuje obcych, a pasek widzi ${barNow.foreign}. Klasyfikacja niepewna — obrona wraca na pasek misji.`);
+          // v2.75.5: rozbieżność LICZBY, nie tylko zupełna ślepota. 07.08
+          // 08:25 pasek widział obcego, lista pokazała TYLKO sondę (atak
+          // grupowy nie wszedł na listę albo ukrył się pod nazwą) — warunek
+          // `foreign.length === 0` nie łapał, sonda maskowała atak, kandydat
+          // został skasowany i 92,8 mld statków leciało bez alarmu. Gdy pasek
+          // widzi WIĘCEJ obcych niż lista, brakujące wiersze to niewiadoma —
+          // a niewiadoma to atak: schodzimy na ścieżkę paska (25 s
+          // potwierdzenia + okno ślepoty po własnej wysyłce nadal działają).
+          if (barNow && barNow.foreign > foreign.length) {
+            const warnAt = parseInt(GM_getValue("ogamex_fml_blind_warned_at", "0")) || 0;
+            if (Date.now() - warnAt > 10 * 60 * 1000) {
+              GM_setValue("ogamex_fml_blind_warned_at", String(Date.now()));
+              log(`[THREAT] UWAGA: pasek pokazuje ${barNow.foreign} obcych flot, a lista ruchów tylko ${foreign.length}. Brakujące wiersze traktuję jak ATAK — obrona liczy z paska.`, "error");
+              ThreatLog.add("BŁĄD", `Pasek widzi ${barNow.foreign} obcych, lista ${foreign.length}. Rozbieżność = możliwy ukryty atak — obrona przechodzi na pasek misji.`);
             }
             // Nie kończymy tu: schodzimy do ścieżki paska niżej.
           } else {
