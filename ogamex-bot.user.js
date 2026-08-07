@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.77.0
+// @version      2.77.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -10142,8 +10142,14 @@
           GM_setValue(Notifier.KEY_TOPIC, t);
           log(`[PUSH] temat ntfy tego komputera ustawiony na: ${t}`, "success");
           if (nTopic) nTopic.textContent = `temat: ${t}`;
-          Notifier.push("🔔 Ten komputer podłączony", `Powiadomienia z tej maszyny idą teraz na temat ${t}.`, "default", "bell");
-          alert(`Ustawione: ${t}\n\nWyslalem probne powiadomienie — sprawdz telefon.`);
+          // v2.77.1: nie klam, ze wyslano, gdy push jest wylaczony (07.08:
+          // owner zobaczyl „wyslalem probne powiadomienie” przy toggle OFF).
+          if (Notifier.enabled()) {
+            Notifier.push("🔔 Ten komputer podłączony", `Powiadomienia z tej maszyny idą teraz na temat ${t}.`, "default", "bell");
+          }
+          alert(Notifier.enabled()
+            ? `Ustawione: ${t}\n\nWyslalem probne powiadomienie — sprawdz telefon.`
+            : `Ustawione: ${t}\n\nUWAGA: przelacznik \"Push na telefon (ntfy)\" jest OFF, wiec NIC nie wyszlo — alarmy o ataku tez nie beda wychodzic. Wlacz go w panelu.`);
         });
         const nTest = document.getElementById("ogx-ntfy-test");
         const paint = () => {
