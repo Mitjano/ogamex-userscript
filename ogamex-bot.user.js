@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.80.3
+// @version      2.81.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -210,6 +210,13 @@
       shipType: "HEAVY_CARGO",   // LIGHT_CARGO | HEAVY_CARGO | BATTLESHIP
       ranges: "",                // e.g. "3:100-200, 3:250-300" — scanned system by system
       targetCooldownMin: 180,    // don't re-attack the same planet within this window
+      // v2.81.0: nowe okrazenie = czysta karta. Bez tego cooldown liczony
+      // zegarem wycinal cele w drugim przebiegu: pelne przemiatanie 499
+      // systemow trwa ~2 h, wiec planety zdobyte w pierwszej godzinie
+      // wciaz siedzialy na 180-minutowej blokadzie i byly pomijane.
+      // Przy ON tempo dyktuje dlugosc przemiatania (+15 min przerwy),
+      // a nie arbitralny zegar. Przy OFF zachowanie sprzed 2.81.0.
+      repeatEachSweep: true,
       slotReserve: 2,            // keep this many fleet slots free (manual play / mining)
     },
     // ── v2.13.0: auto-claim the green "Online bonus" menu button ──
@@ -3578,6 +3585,12 @@
     },
     has(coord) { return this._load().some(e => e.coord === coord); },
     count() { return this._load().length; },
+    // v2.81.0: zwolnij wszystkie cele przed nowym okrazeniem.
+    clear() {
+      const n = this.count();
+      GM_setValue(this.KEY, "[]");
+      return n;
+    },
 
   };
 
@@ -3686,6 +3699,18 @@
         if (!ranges.length) return; // nothing configured — status line explains
         const queue = [];
         ranges.forEach(r => { for (let s = r.start; s <= r.end; s++) queue.push({ galaxy: r.galaxy, system: s }); });
+        // ── v2.81.0: nowe okrazenie zaczyna od czystej karty ──
+        // Wlasciciel: „najlepiej jakby wracal do zaatakowanych wczesniej celow,
+        // jak skonczy wszystkich atakowac w zaznaczonym zakresie". Kolejka i tak
+        // odwiedza kazdy system dokladnie RAZ na przebieg, wiec zwolnienie
+        // blokad tutaj nie grozi podwojnym uderzeniem w tym samym okrazeniu —
+        // daje tylko to, o co chodzi: kolejne okrazenie bierze wszystkich od nowa.
+        // Naturalnym ogranicznikiem tempa zostaje dlugosc przemiatania plus
+        // 15-minutowa przerwa miedzy przebiegami.
+        if (cfg.repeatEachSweep !== false) {
+          const freed = FarmedTargets.clear();
+          if (freed) log(`Farm: nowe okrazenie — zwolniono ${freed} cel(ow) z poprzedniego przebiegu (atakuje ponownie).`, "info");
+        }
         st = { active: true, queue, scannedCount: 0, totalCount: queue.length, targets: [] };
         FarmState.save(st);
         log(`Farm sweep started: ${queue.length} systems (${cfg.ranges})`, "success");
@@ -10119,8 +10144,12 @@
               <input id="ogx-farm-ranges" type="text" placeholder="3:100-200" value="${escapeHTML(CONFIG.inactiveFarming.ranges || "")}" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
-              <span title="Don't re-attack the same planet within this many minutes.">Target cooldown (min)</span>
+              <span title="Don't re-attack the same planet within this many minutes. Przy WŁĄCZONYM „Nowe okrążenie od nowa” ten zegar praktycznie nie działa — blokady i tak są zwalniane na starcie każdego przebiegu.">Target cooldown (min)</span>
               <input id="ogx-farm-cooldown" type="number" min="1" step="10" value="${CONFIG.inactiveFarming.targetCooldownMin}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Po dojściu do końca zakresu bot zwalnia WSZYSTKIE blokady i w następnym okrążeniu atakuje tych samych graczy jeszcze raz. Tempo dyktuje wtedy długość przemiatania (przy 499 systemach ok. 2 h) plus 15 min przerwy, a nie zegar cooldownu. OFF = stare zachowanie: cel zablokowany na „Target cooldown” minut niezależnie od okrążeń.">Nowe okrążenie od nowa</span>
+              <button class="mini-btn" id="ogx-farm-repeat">${CONFIG.inactiveFarming.repeatEachSweep !== false ? "ON" : "OFF"}</button>
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Keep this many fleet slots unused (for mining / manual play). Limit shown on the Fleet page as 'Fleets: X/37'.">Slot reserve</span>
@@ -10784,6 +10813,16 @@
     bindFarmNum("ogx-farm-hc", "hcPerFlight", "Ships / attack");
     bindFarmNum("ogx-farm-cooldown", "targetCooldownMin", "Target cooldown");
     bindFarmNum("ogx-farm-reserve", "slotReserve", "Slot reserve");
+    {
+      const el = document.getElementById("ogx-farm-repeat");
+      if (el) el.addEventListener("click", () => {
+        CONFIG.inactiveFarming.repeatEachSweep = CONFIG.inactiveFarming.repeatEachSweep === false;
+        el.textContent = CONFIG.inactiveFarming.repeatEachSweep ? "ON" : "OFF";
+        saveConfig(CONFIG);
+        log(`Nowe okrążenie od nowa: ${CONFIG.inactiveFarming.repeatEachSweep ? "WŁĄCZONE — każdy przebieg atakuje wszystkich od nowa" : "wyłączone — obowiązuje Target cooldown"}.`, "info");
+        updateStatusUI();
+      });
+    }
     // v2.72.0: wybór statku farmy (dropdown — wartości to żywe data-ship-type)
     {
       const el = document.getElementById("ogx-farm-ship");
