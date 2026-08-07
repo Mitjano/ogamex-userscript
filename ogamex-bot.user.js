@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.80.2
+// @version      2.80.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5129,7 +5129,19 @@
             if (Date.now() - warnAt > 10 * 60 * 1000) {
               GM_setValue("ogamex_fml_blind_warned_at", String(Date.now()));
               log(`[THREAT] UWAGA: pasek pokazuje ${barNow.foreign} obcych flot, a lista ruchów tylko ${foreign.length}. Brakujące wiersze traktuję jak ATAK — obrona liczy z paska.`, "error");
-              ThreatLog.add("BŁĄD", `Pasek widzi ${barNow.foreign} obcych, lista ${foreign.length}. Rozbieżność = możliwy ukryty atak — obrona przechodzi na pasek misji.`);
+              // ── v2.80.3: to jest STAN POSREDNI, nie werdykt ──
+              // Do 2.80.2 szlo jako BLAD, czyli push na telefon z syrena.
+              // 07.08 zapalilo sie trzy razy (09:56, 11:20, 15:03) i za kazdym
+              // razem byla to sonda, ktora wyladowala MIEDZY dwoma odczytami:
+              // lista zdazyla ja skasowac, pasek jeszcze liczyl.
+              //
+              // Push nie wnosil tu zadnej ochrony. Eskalacja to linijka nizej
+              // — schodzimy na sciezke paska, ktora ma wlasne 25 s
+              // potwierdzenia i przy prawdziwym ataku podnosi ALARM z pushem
+              // o priorytecie pilnym. Zawiadomienie o samym rozjezdzie tylko
+              // uczylo ignorowac zawiadomienia. Wpis zostaje w dzienniku,
+              // czerwona linia w logu zostaje — znika wylacznie syrena.
+              ThreatLog.add("odczyt", `Rozjazd zrodel: pasek ${barNow.foreign} obcych, lista ${foreign.length}. Zwykle sonda, ktora wyladowala miedzy odczytami. Obrona przechodzi na pasek i potwierdza 25 s; prawdziwy atak podniesie osobny ALARM.`);
             }
             // Nie kończymy tu: schodzimy do ścieżki paska niżej.
           } else {
