@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.80.0
+// @version      2.80.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -726,6 +726,22 @@
     _el: null,
     _playing: false,
     _wired: false,
+    _starting: false,
+
+    // v2.80.1: log co najwyzej raz na 30 min NA RODZAJ komunikatu.
+    // Bot przeladowuje strone co kilkanascie sekund, a kazdy nowy dokument
+    // zaczyna od zera — bez tego jedna informacja o dzwieku zjadala caly log
+    // (dokladnie ta sama lekcja, co z autotestem w v2.77.2: powtarzany
+    // komunikat przestaje byc informacja, a zaczyna byc szumem).
+    _say(kind, msg, level) {
+      try {
+        const KEY = `ogamex_wake_said_${kind}`;
+        const last = parseInt(GM_getValue(KEY, "0")) || 0;
+        if (Date.now() - last < 30 * 60 * 1000) return;
+        GM_setValue(KEY, String(Date.now()));
+      } catch {}
+      log(msg, level);
+    },
 
     _url() {
       const rate = 8000, n = rate;            // 1 s mono 16-bit
@@ -745,6 +761,13 @@
     // nawigacja zabije element albo właściciel przełączy wyłącznik.
     ensure() {
       if (!CONFIG.threatAlarm?.keepAwake) { this.stop(); return; }
+      // v2.80.1: play() jest asynchroniczne. ensure() wola i start skryptu,
+      // i tick obrony — bez tej blokady drugie wywolanie startowalo play()
+      // na elemencie, ktory wlasnie startowal, i przegladarka odrzucala je
+      // przez polityke autoodtwarzania. Objaw w logu 07.08 13:07-13:28:
+      // „karta trzymana przy zyciu" i „czeka na kliknięcie" w tej samej
+      // sekundzie, w kolko. Wyscig, nie brak zgody.
+      if (this._starting) return;
       if (this._playing && this._el && !this._el.paused) return;
       this.start();
     },
@@ -756,16 +779,19 @@
           this._el.loop = true;
           this._el.volume = 1;
         }
+        this._starting = true;
         this._el.play().then(() => {
+          this._starting = false;
           if (this._playing) return;
           this._playing = true;
-          log("[WAKE] karta trzymana przy życiu cichym dźwiękiem — w tle nie zostanie zamrożona ani zdławiona.", "info");
+          this._say("ok", "[WAKE] karta trzymana przy życiu cichym dźwiękiem — w tle nie zostanie zamrożona ani zdławiona.", "info");
         }).catch((e) => {
+          this._starting = false;
           // Polityka autoodtwarzania: pierwszy raz wymaga gestu użytkownika.
           // Nie walczymy z nią — czekamy na dowolne kliknięcie w grę.
           if (this._wired) return;
           this._wired = true;
-          log(`[WAKE] dźwięk podtrzymujący czeka na pierwsze kliknięcie w grę (${e.name}) — kliknij gdziekolwiek na stronie.`, "warn");
+          this._say("wait", `[WAKE] dźwięk podtrzymujący czeka na pierwsze kliknięcie w grę (${e.name}) — kliknij gdziekolwiek na stronie.`, "warn");
           const kick = () => {
             document.removeEventListener("click", kick, true);
             document.removeEventListener("keydown", kick, true);
