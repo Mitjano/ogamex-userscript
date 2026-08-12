@@ -1,7 +1,7 @@
 // Test nadzorcy obrony — wyciąga PRAWDZIWĄ funkcję verdict() z bota
 // i sprawdza ją na scenariuszach, bez czekania na atak.
 const fs = require("fs");
-const src = fs.readFileSync("C:/Users/micha/ogamex-userscript/ogamex-bot.user.js", "utf8");
+const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8");
 
 // wytnij ciało verdict(s) { ... } licząc klamry
 const start = src.indexOf("    verdict(s) {");

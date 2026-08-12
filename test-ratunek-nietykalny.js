@@ -12,7 +12,7 @@
 // Test czyta PRAWDZIWE ciała funkcji z pliku bota. Nie zna się na sytuacji
 // w grze — sprawdza kontrakt: kto komu wolno powiedzieć „nie wysyłaj".
 const fs = require("fs");
-const PATH = "C:/Users/micha/ogamex-userscript/ogamex-bot.user.js";
+const PATH = require("path").join(__dirname, "ogamex-bot.user.js");
 const src = fs.readFileSync(PATH, "utf8");
 
 // Liczenie klamer musi omijać komentarze i stringi — w tym pliku pełno jest

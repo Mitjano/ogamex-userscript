@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.88.2
+// @version      2.88.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7284,27 +7284,59 @@
       return MoonSave.run({ auto: true, queued: true, where: at, reason: `AUTOMAT: drugi atak na [${next}]` });
     },
 
+    // ── v2.88.3: promocja TYLKO świeżych wpisów ──
+    // Incydent 12.08 23:00 (tuż po TEŚCIE ALARMU): promocja wyjęła z kolejki
+    // wpis [3:272:7] zapisany GODZINY wcześniej (bitwa 15:26) — wpis TEJ
+    // SAMEJ kolonii, która właśnie wróciła, z ODWROTNYM kierunkiem
+    // (dom=planeta, refugium=księżyc). Drugi powrót ruszył księżyc→planeta
+    // i tylko dlatego nie wywiózł 10 mld statków + 9,9 bln deuteru w złą
+    // stronę, że flota lądowała 5 s PO jego kontroli hangaru („refugium
+    // puste — abort"). Wpis przeżył, bo powrót jego alarmu skończył się
+    // ścieżką abortu, która nie tyka kolejki — z założenia „pending musi
+    // przeżyć alarm", więc TTL i dedup są jedynym płotem.
+    PENDING_MAX_AGE_MS: 4 * 60 * 60 * 1000, // backstop alarmu to 3 h — starszy wpis nie ma już swojego alarmu
+
+    // CZYSTA decyzja (jak nextTarget) — testowana offline w test-kolejka.js.
+    staleReason(nx, justReturned, now, maxAgeMs) {
+      const at = nx && nx.at;
+      const coords = typeof at === "string"
+        ? (/^\d+:\d+:\d+$/.test(at) ? at : null)
+        : (at && Number.isFinite(at.galaxy) ? `${at.galaxy}:${at.system}:${at.position}` : null);
+      if (!coords) return "wpis bez koordynatów";
+      if (justReturned && coords === justReturned) return "ta kolonia właśnie wróciła — jej flota już stoi w domu";
+      if (now - (nx.savedAt || 0) > maxAgeMs) return "wpis starszy niż 4 h — jego alarm dawno wygasł, kierunki opisują nieaktualny stan";
+      return null;
+    },
+
     // Po zakończonym powrocie pierwszej kolonii: zamiast rozbroić straż,
     // wstaw w nią następną kolonię z kolejki. Powrót obsłuży ją tym samym
     // kodem, który właśnie zadziałał.
-    promoteNext(why) {
+    promoteNext(why, justReturned = null) {
       const st = this.state();
-      if (!(st.pending || []).length) return false;
-      const nx = st.pending.shift();
-      this.save(st);
-      const coords = this.str(nx.at) || "?";
-      MoonSave.saveWatch({
-        armed: true, trigger: "threat",
-        homeBody: nx.homeBody, refugeBody: nx.refugeBody,
-        at: nx.at,
-        // lastAt = moment ratunku TEJ kolonii, więc zapora „130 s na
-        // lądowanie" liczy się od prawdy, a nie od chwili promocji.
-        lastAt: nx.savedAt || Date.now(),
-        saves: 1, since: Date.now(),
-      });
-      log(`[KOLEJKA] ${why} — biorę następną kolonię z kolejki: [${coords}]. Zostało: ${st.pending.length}.`, "success");
-      ThreatLog.add("POWRÓT", `KOLEJKA: ściągam kolonię [${coords}] (${why}). W kolejce zostało: ${st.pending.length}.`);
-      return true;
+      while ((st.pending || []).length) {
+        const nx = st.pending.shift();
+        this.save(st);
+        const coords = this.str(nx.at) || "?";
+        const stale = this.staleReason(nx, justReturned, Date.now(), this.PENDING_MAX_AGE_MS);
+        if (stale) {
+          log(`[KOLEJKA] wpis [${coords}] ODRZUCONY: ${stale}. Flota nie rusza według nieaktualnego kierunku.`, "warn");
+          ThreatLog.add("odczyt", `KOLEJKA: wpis [${coords}] odrzucony (${stale}).`);
+          continue;
+        }
+        MoonSave.saveWatch({
+          armed: true, trigger: "threat",
+          homeBody: nx.homeBody, refugeBody: nx.refugeBody,
+          at: nx.at,
+          // lastAt = moment ratunku TEJ kolonii, więc zapora „130 s na
+          // lądowanie" liczy się od prawdy, a nie od chwili promocji.
+          lastAt: nx.savedAt || Date.now(),
+          saves: 1, since: Date.now(),
+        });
+        log(`[KOLEJKA] ${why} — biorę następną kolonię z kolejki: [${coords}]. Zostało: ${st.pending.length}.`, "success");
+        ThreatLog.add("POWRÓT", `KOLEJKA: ściągam kolonię [${coords}] (${why}). W kolejce zostało: ${st.pending.length}.`);
+        return true;
+      }
+      return false;
     },
   };
 
@@ -12912,7 +12944,11 @@
           // alarmie, nie rozbrajamy straży — wstawiamy w nią tamtą kolonię
           // i pozwalamy temu samemu returnHome() ściągnąć ją następnym
           // ruchem. Pusta kolejka = zachowanie identyczne jak w 2.77.2.
-          if (!RescueQueue.promoteNext("powrót poprzedniej kolonii zakończony")) {
+          // v2.88.3: koordy kolonii, która WŁAŚNIE wróciła — promocja odrzuca
+          // jej własne przestarzałe wpisy (incydent 23:00: drugi powrót tej
+          // samej kolonii w odwrotną stronę z wpisu sprzed godzin).
+          const justAt = RescueQueue.str(MoonSave.watch()?.at);
+          if (!RescueQueue.promoteNext("powrót poprzedniej kolonii zakończony", justAt)) {
             MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
           }
         }

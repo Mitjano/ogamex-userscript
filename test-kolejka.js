@@ -96,6 +96,36 @@ eq("porzucona kolonia w oknie karencji jeszcze nie alarmuje",
 eq("wszystkie kolonie obsłużone = OK",
   verdict({ ...base, aliveMs: 5 * G, armed: true, saves: 1, unhandled: 0 }).state, "ok");
 
+console.log("\n── D. PROMOCJA ODRZUCA PRZESTARZAŁE WPISY (incydent 12.08 23:00) ──");
+// Po powrocie z TESTU ALARMU promocja wyjęła wpis TEJ SAMEJ kolonii sprzed
+// godzin (bitwa 15:26) z odwrotnym kierunkiem — drugi powrót ruszył
+// księżyc→planeta i od wywiezienia całej floty w złą stronę dzieliło go 5 s.
+const staleReason = new Function("nx", "justReturned", "now", "maxAgeMs",
+  bodyOf("staleReason", "nx, justReturned, now, maxAgeMs"));
+const H4 = 4 * 60 * 60 * 1000;
+const NOW = 1_755_000_000_000;
+
+eq("świeży wpis innej kolonii → promowany (null = brak powodu odrzucenia)",
+  staleReason({ at: "2:151:8", savedAt: NOW - 60_000 }, "3:272:7", NOW, H4), null);
+
+eq("wpis kolonii, która WŁAŚNIE wróciła → odrzucony (scenariusz 23:00)",
+  staleReason({ at: "3:272:7", savedAt: NOW - 60_000 }, "3:272:7", NOW, H4) !== null, true);
+
+eq("wpis starszy niż 4 h → odrzucony (alarm dawno wygasł)",
+  staleReason({ at: "2:151:8", savedAt: NOW - H4 - 1 }, "3:272:7", NOW, H4) !== null, true);
+
+eq("wpis z koordami-obiektem działa jak stringowy",
+  staleReason({ at: { galaxy: 3, system: 272, position: 7 }, savedAt: NOW - 60_000 }, "3:272:7", NOW, H4) !== null, true);
+
+eq("świeży wpis obiektowy innej kolonii → promowany",
+  staleReason({ at: { galaxy: 2, system: 151, position: 8 }, savedAt: NOW - 60_000 }, "3:272:7", NOW, H4), null);
+
+eq("wpis bez koordynatów → odrzucony (nigdy nie zgadujemy kolonii)",
+  staleReason({ at: null, savedAt: NOW }, null, NOW, H4) !== null, true);
+
+eq("brak justReturned (straż nie zna koordów) nie blokuje świeżego wpisu",
+  staleReason({ at: "2:151:8", savedAt: NOW - 60_000 }, null, NOW, H4), null);
+
 console.log(
   fails
     ? `\nKOLEJKA: ${fails} PRZYPADEK/PRZYPADKÓW NIEZDANYCH\n`
