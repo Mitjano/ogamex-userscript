@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.86.1
+// @version      2.86.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4258,7 +4258,18 @@
         // wiersz nie-sonda = atak, niezależnie od tego, jak się nazywa.
         // Wiersze bez tej klasy klasyfikujemy po staremu (nazwa typu).
         const hostileCls = /row-hostile-mission/i.test(String(tr.className));
-        const isAttack = hostileCls ? !isSpy
+        // ── v2.86.2: misja SOJUSZNIKA nie jest atakiem ──
+        // Gra znakuje misje przyjaciół klasą row-friendly-mission (pasek:
+        // „N Friendly"). Incydent 12.08 12:32 NA ŻYWO: kolega wysłał
+        // Stacjonuj (HOLD, 10 sond) na nasz księżyc — HOLD jest na liście
+        // ATTACK po wrogim ACS z 07.08, więc sojusznicza wizyta odpaliła
+        // godzinny fałszywy alarm i odbijanie floty planeta↔księżyc co 90 s.
+        // Klasa gry wygrywa z nazwą typu — symetrycznie do row-hostile.
+        // (Misja friendly mechanicznie nie może nas uderzyć: ACS defend/
+        // stacjonowanie sojusznika broni razem z nami.)
+        const friendlyCls = /row-friendly-mission/i.test(String(tr.className));
+        const isAttack = friendlyCls ? false
+          : hostileCls ? !isSpy
           : (this.ATTACK.test(type) || (!isSpy && !this.SAFE.test(type)));
         // ── v2.70.0: ciało i nazwa przy KOŃCACH trasy ──
         // Zrzuty [ATAK DOM] z 05.08 pokazały, że wiersz niesie ikonę
@@ -4284,9 +4295,10 @@
           id: tr.getAttribute("data-fleet-id") || "",
           type, src, dst, eta,
           mine: !!(src && own.size && own.has(src)),
+          friendly: friendlyCls, // v2.86.2: sojusznik — poza licznikami zagrożeń
           attack: isAttack,
           unknownType: isAttack && !this.ATTACK.test(type),
-          spy: isSpy,
+          spy: isSpy && !friendlyCls,
           ships,
           // v2.67.1: surowy HTML wiersza — materiał dowodowy na pierwszy atak.
           // Bez niego zły odczyt wrogiego wiersza byłby nie do zdiagnozowania
@@ -5514,7 +5526,10 @@
         // skład napastnika do dziennika.
         const fm = await FleetMovements.fetch().catch(() => ({ ok: false, rows: [] }));
         if (fm.ok) {
-          const foreign = fm.rows.filter(r => !r.mine);
+          // v2.86.2: sojusznicy (row-friendly-mission) poza WSZYSTKIMI
+          // licznikami zagrożeń — inaczej stacjonowanie kolegi podbijało
+          // ev.hostile i gałąź „BEZ klasyfikacji" wołała alarm.
+          const foreign = fm.rows.filter(r => !r.mine && !r.friendly);
           const attacks = foreign.filter(r => r.attack);
           const spies = foreign.filter(r => r.spy);
           // ── v2.67.1: materiał dowodowy — surowy HTML wrogich wierszy ──
@@ -5836,7 +5851,12 @@
       if (!m) return null;
       const total = parseInt(m[1]) || 0;
       const own = parseInt(m[2]) || 0;
-      return { total, own, foreign: Math.max(0, total - own) };
+      // v2.86.2: pasek rozróżnia „N Friendly" (sojusznik: ACS defend /
+      // stacjonowanie) od „N Hostile" — misja przyjazna nie jest obcą flotą
+      // do alarmu i nie może zawyżać liczby wrogów w kontroli krzyżowej.
+      const fr = document.body.textContent.match(/(\d+)\s*Friendly/);
+      const friendly = fr ? (parseInt(fr[1]) || 0) : 0;
+      return { total, own, foreign: Math.max(0, total - own - friendly) };
     },
 
     // One-time markup capture so Stage 2 can be written from facts:
@@ -10303,6 +10323,10 @@
           ["nieznany typ misji = atak", "row-mission-type-NOWY_TYP_2027", true],
           ["sonda NIE jest atakiem", "row-mission-type-ESPIONAGE row-hostile-mission", false],
           ["zwykły transport NIE jest atakiem", "row-mission-type-TRANSPORT", false],
+          // v2.86.2: incydent 12.08 — stacjonowanie SOJUSZNIKA (HOLD) odpaliło
+          // godzinny fałszywy alarm; klasa row-friendly-mission wygrywa z nazwą.
+          ["sojusznicze stacjonowanie (HOLD friendly) NIE jest atakiem", "row-mission-type-HOLD row-friendly-mission", false],
+          ["sojuszniczy ACS defend (FEDERATION friendly) NIE jest atakiem", "row-mission-type-FEDERATION row-friendly-mission", false],
         ];
         for (const [name, cls, wantAttack] of A) {
           const r = FleetMovements.classifyRow(this._parse(this._row(cls, "3:248:11", "3:280:4", { moon: true })), own);
