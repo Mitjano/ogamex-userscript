@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.86.4
+// @version      2.86.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6566,7 +6566,17 @@
       // teraz wprost szkodliwe: ruszałoby flotę tam, gdzie nic nie leci,
       // i zostawiało atakowaną kolonię bez reakcji.
       const ev = ThreatMonitor.events();
-      const target = ev?.attacks > 0 ? (ev.targets || [])[0] : null;
+      // ── v2.86.5: Ślepa ścieżka paska nie zna celu — celem jest DOM FLOTY ──
+      // I to z pełną maszynerią przełączenia kolonii (switchTo), tą samą,
+      // która ratowała zdalną kolonię bojowo 12.08 12:33. Dzięki temu
+      // ratunek to szybki skok W OBRĘBIE pary domu, a nie wielominutowy lot
+      // międzykolonijny z aktywnego ciała (13:41: 38 min na widoczną
+      // planetę). Ścieżka z celem z listy — bez zmian.
+      let target = ev?.attacks > 0 ? (ev.targets || [])[0] : null;
+      if (!target) {
+        const fh = CONFIG.expeditions?.launchFrom;
+        if (fh && Number.isFinite(fh.galaxy)) target = `${fh.galaxy}:${fh.system}:${fh.position}`;
+      }
       let where = null;
       if (target) {
         const [g, sy, pos] = String(target).split(":").map(Number);
@@ -6681,8 +6691,11 @@
         // w kółko, przy flocie od dawna stojącej w domu.
         // Skok planeta↔księżyc na tych samych koordach trwa poniżej minuty,
         // więc powrót sprzed 3 minut jest po prostu ZAKOŃCZONY.
-        if (age > 3 * 60 * 1000) {
-          ThreatLog.add("POWRÓT", `Powrót wysłany ${Math.round(age / 1000)}s temu — lot na te same koordy trwa <1 min, więc jest po wszystkim. Straż zdjęta.`);
+        // v2.86.5: okno domknięcia wg realnego czasu lotu (hop = 3 min po
+        // staremu; powrót międzykolonijny trwa tyle, co ratunek).
+        const doneAfterMs = Math.max(3 * 60 * 1000, (w.lastFlightMs || 0) + 60000);
+        if (age > doneAfterMs) {
+          ThreatLog.add("POWRÓT", `Powrót wysłany ${Math.round(age / 1000)}s temu — lot trwał najwyżej ~${Math.round(doneAfterMs / 60000)} min, więc jest po wszystkim. Straż zdjęta.`);
           this.disarm("powrót dawno dolecial — zamykam alarm");
           return false;
         }
@@ -6697,7 +6710,9 @@
       // doleci: 130 s od stempla wysyłki/utworzenia (hop = 81 s + zapas).
       if (!byOperator) {
         const ref = Math.max(w.lastSendAt || 0, w.lastAt || 0);
-        const landAt = ref + 130000;
+        // v2.86.5: lądowanie wg REALNEGO czasu lotu ratunku (hop = 130 s
+        // jak dotąd; lot międzykolonijny = jego czas + minuta zapasu).
+        const landAt = ref + Math.max(130000, (w.lastFlightMs || 0) + 60000);
         if (ref && Date.now() < landAt) {
           this._sayOnce("waitland", `[POWRÓT] ratunek jeszcze w locie (~${Math.ceil((landAt - Date.now()) / 1000)}s do lądowania) — powrót poczeka.`, "info");
           return false;
@@ -6829,7 +6844,11 @@
         // ekspedycji (tam z definicji stoi flota główna i tam wracają fale),
         // dopiero potem aktywnej pary, na końcu minerBase.
         const fleetHome = CONFIG.expeditions?.launchFrom || null;
-        const at = this.coordsOf(where || this.watch().at || fleetHome || HomeBase.coords() || null);
+        // v2.86.5: ręczny RATUJ chroni parę, na której STOI operator (klik
+        // znaczy „ratuj tu”); automat bez celu chroni dom floty. Odwrócona
+        // kolejność dla manual przywraca zachowanie sprzed 2.86.3.
+        const noTargetDefault = manual ? (HomeBase.coords() || fleetHome) : (fleetHome || HomeBase.coords());
+        const at = this.coordsOf(where || this.watch().at || noTargetDefault || null);
         // ── v2.85.0: UCIECZKA W POWIETRZE — decyzja PRZED zwykłym ratunkiem ──
         // Oba ciała TEJ pary pod atakiem = ewakuacja w obrębie pary przenosi
         // flotę pod drugie uderzenie; wtedy (i tylko wtedy) całość leci
@@ -6858,7 +6877,13 @@
         // przeciwne ciało jest właściwa w obu przypadkach. To usuwa zależność
         // od rozpoznania celu, którego nigdy nie udało się potwierdzić.
         const from = this.currentBody() || "planet";
-        const to = from === "moon" ? "planet" : "moon";
+        // v2.86.5: skok w obrębie pary → przeciwne ciało (po staremu).
+        // Lot MIĘDZYKOLONIJNY (aktywna para ≠ cel) → celuj w KSIĘŻYC celu:
+        // lądowanie na planecie stoi w falandze wroga (ratunek 13:41
+        // kliknął planet-icon i leciał 38 min na widoczną planetę).
+        const activePair = HomeBase.coords();
+        const crossColony = !!(at && activePair && (activePair.galaxy !== at.galaxy || activePair.system !== at.system || activePair.position !== at.position));
+        const to = crossColony ? "moon" : (from === "moon" ? "planet" : "moon");
         const w0 = this.watch();
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
@@ -8943,7 +8968,7 @@
               // nie minęło 130 s, straż ZOSTAJE i powrót ponowi się po locie.
               const w = MoonSave.watch();
               const ref = Math.max(w.lastSendAt || 0, w.lastAt || 0);
-              if (w.armed && ref && Date.now() < ref + 130000) {
+              if (w.armed && ref && Date.now() < ref + Math.max(130000, (w.lastFlightMs || 0) + 60000)) {
                 log("[POWRÓT] refugium puste, ale ratunek jeszcze leci — straż zostaje, ponowię po lądowaniu.", "warn");
                 ThreatLog.add("POWRÓT", "Refugium puste, ale ratunek w locie — czekam na lądowanie (straż uzbrojona).");
                 MoonSave.saveWatch({ ...w, returning: false });
@@ -9488,6 +9513,14 @@
           }
         }
 
+        // ── v2.86.5: KAŻDY ratunek niesie realny czas lotu ──
+        // Straż i powrót liczą lądowanie od niego, nie od założenia
+        // „hop < 130 s” (13:41: ratunek 38 min — straż zdjęłaby się pół
+        // godziny przed lądowaniem, a flota siadłaby na planecie bez opieki).
+        if (mission.moonSave && capturedFlightMs > 0 && !mission.flightMs) {
+          mission.flightMs = capturedFlightMs;
+          GM_setValue("pending_mission", JSON.stringify(mission));
+        }
         // ── v2.85.0: UCIECZKA W POWIETRZE — bramka arytmetyki ──
         // Zawrócić można tylko lot, który jeszcze leci — czas lotu z kroku 2
         // musi pokrywać okno „ostatni dolot ataku + bufor". Za krótki lot =
@@ -12442,7 +12475,8 @@
         // v2.74.5: stempel POTWIERDZONEJ wysyłki ratunku — powrót (returnHome)
         // czeka od tego momentu 130 s na lądowanie, zanim ruszy ściągać flotę.
         if (!wasMoonReturn && !wasFerry) {
-          try { const w = MoonSave.watch(); if (w.armed) MoonSave.saveWatch({ ...w, lastSendAt: Date.now() }); } catch {}
+          // v2.86.5: + realny czas lotu ratunku — od niego liczy się lądowanie.
+          try { const w = MoonSave.watch(); if (w.armed) MoonSave.saveWatch({ ...w, lastSendAt: Date.now(), lastFlightMs: (pmSnap && pmSnap.flightMs) || w.lastFlightMs || 0 }); } catch {}
         }
         if (wasFerry) {
           // v2.71.0: prom to logistyka, nie obrona — bez wpisu RATUNEK/POWRÓT

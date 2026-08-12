@@ -45,10 +45,25 @@ const runBody = bodyOf("async run({ manual = false, sweep = false, auto = false,
 must("MoonSave.run istnieje i ma niepuste ciało (>1000 znaków)", !!runBody && runBody.length > 1000);
 must("dom floty czytany z expeditions.launchFrom",
   !!runBody && /fleetHome\s*=\s*CONFIG\.expeditions\?\.launchFrom/.test(runBody));
-must("kolejność fallbacku: where → straż → DOM FLOTY → aktywna para",
-  !!runBody && /coordsOf\(where \|\| this\.watch\(\)\.at \|\| fleetHome \|\| HomeBase\.coords\(\)/.test(runBody));
+must("AUTOMAT bez celu: dom floty PRZED aktywną parą (v2.86.5)",
+  !!runBody && /noTargetDefault = manual \? \(HomeBase\.coords\(\) \|\| fleetHome\) : \(fleetHome \|\| HomeBase\.coords\(\)\)/.test(runBody));
+must("fallback celu idzie przez noTargetDefault",
+  !!runBody && /coordsOf\(where \|\| this\.watch\(\)\.at \|\| noTargetDefault/.test(runBody));
 must("„aktywna para” NIGDY przed domem floty (zabójczy porządek z 13:10)",
   !!runBody && !/coordsOf\(where \|\| this\.watch\(\)\.at \|\| HomeBase\.coords\(\)/.test(runBody));
+must("ślepa ścieżka paska syntetyzuje cel = dom floty (switch-first)",
+  /if \(!target\) \{\s*\n\s*const fh = CONFIG\.expeditions\?\.launchFrom;/.test(src));
+must("lot międzykolonijny celuje w KSIĘŻYC celu",
+  !!runBody && /crossColony \? "moon"/.test(runBody));
+
+console.log("\n── 1b. LĄDOWANIE WG REALNEGO CZASU LOTU (v2.86.5) ──");
+
+must("ratunek zapisuje czas lotu do misji (mission.flightMs)",
+  /mission\.moonSave && capturedFlightMs > 0 && !mission\.flightMs/.test(src));
+must("straż dostaje lastFlightMs po potwierdzonej wysyłce",
+  /lastFlightMs: \(pmSnap && pmSnap\.flightMs\) \|\| w\.lastFlightMs \|\| 0/.test(src));
+must("powrót czeka na lądowanie wg realnego czasu (nie 130 s na sztywno)",
+  /Math\.max\(130000, \(w\.lastFlightMs \|\| 0\) \+ 60000\)/.test(src));
 
 console.log("\n── 2. ODCZYT PASKA ZOSTAWIA ŚLAD I WYGRYWA Z LISTĄ ──");
 
