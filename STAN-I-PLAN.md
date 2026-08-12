@@ -6,6 +6,41 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (5) — KATASTROFA 13:10 i seria 2.85.1→2.86.5
+
+**UTRATA FLOTY GŁÓWNEJ 13:10** (Ibra646 [2:277:11], księżyc w układzie ownera,
+~200 mld statków, loot 74 bln). Sekcja zwłok i lekcje: patrz pamięć projektu
++ test-cel-ratunku.js (15 bezpieczników zamrożonych na źródle).
+
+Nowy model zagrożenia: wróg NA KSIĘŻYCU w układzie ownera — falanga na
+planetę, sondy co minutę, loty NIEWIDZIALNE dla fleetmovementlist ORAZ
+zdarzeń serwera (3× potwierdzone; tylko pasek je liczy), wabiki
+wyślij-zawróć, wywiad przez „sojusznika" (HOLD 017 przed uderzeniem).
+
+Wydania dnia (wszystkie z testami, od 2.86.3 z rytuałem symulacji):
+- 2.85.1: ratunek bez celu → aktywna para (WSPÓŁWINNE katastrofy z v2.84
+  auto-przełączaniem — bot bronił kolonii, przy której PRACOWAŁ).
+- 2.86.0/2.86.1: gotowość 10 s po wabiku / po sondzie.
+- 2.86.2: row-friendly-mission ≠ atak (sojusznik 017; autotest 25/25).
+- 2.86.3: PO KATASTROFIE — ratunek bez celu broni DOMU FLOTY
+  (expeditions.launchFrom); pasek cache 3 min + WYGRYWA z kłamiącą listą.
+  Bojowo potwierdzone 13:41 (wykrył jego niewidzialne floty, ratunek do
+  domu floty, wróg zawrócił).
+- 2.86.4: push ⚔️ dopiero przy POTWIERDZONYM alarmie (sondy pchały syrenę).
+- 2.86.5: lądowanie ratunku wg REALNEGO czasu lotu (lastFlightMs; 13:41
+  ratunek 38 min lądował bez opieki, bo automat zakładał hop <130 s);
+  ślepa ścieżka syntetyzuje cel=dom floty i idzie przez switchTo (skok
+  w parze zamiast lotu międzykolonijnego); lot międzykolonijny → KSIĘŻYC;
+  ręczny RATUJ chroni aktywną parę.
+
+OTWARTE P0-A (następne, osobne wydanie + symulacja): czytnik panelu Events
+z DOM (cel+ciało+dolot dla ataków niewidzialnych dla endpointów — przywraca
+blitz i ucieczkę w powietrze przeciwko atakom z układu). STRATEGICZNE:
+przeprowadzka domu floty poza układ [2:277] (falanga+sondy Ibry) — decyzja
+ownera w toku.
+
+---
+
 ## AKTUALIZACJA 12.08 (4) — v2.85.0: UCIECZKA W POWIETRZE + kolejka wg ETA + ciało per kolonia
 
 Zielone światło ownera na P1+P2 z audytu. Zamyka JEDYNY scenariusz utraty
