@@ -6,6 +6,38 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (7) — INCYDENT 15:24: pasek bez „Own” = totalna ślepota → v2.88.1
+
+ACS 450 mld na księżyc [3:272:7], dolot ~4 min. Bot NIE zareagował w ogóle
+(zero alarmu, zero pusha) — owner uciekł ręcznie. Diagnoza z żywego logu:
+
+1. **BUG parsera paska (główna przyczyna)**: regex wymagał segmentu „X Own”.
+   Owner nie miał ŻADNYCH własnych lotów, więc pasek pokazywał
+   `2 Missions: 2 Hostile` — bez „Own” → `read()` = null = „brak paska na tej
+   stronie” → cache sprzed ataku mówił „czysto”. Bot był ślepy DOKŁADNIE
+   wtedy, gdy cała flota stała w domu (najgroźniejszy moment).
+2. Bot chodził na 2.87.3 — lekarstwo (czytnik panelu Events, 2.88.0) leżało
+   na mainie od 40 min; Tampermonkey sprawdza aktualizacje raz na dobę.
+3. „Start ekspedycji” dalej wskazywał stare 2:277:8 — nawet sprawny ślepy
+   alarm broniłby złej kolonii.
+
+**v2.88.1** (wszystkie trzy ogniwa zabezpieczone, 42 bezpieczniki w teście):
+
+- `ThreatMonitor.parseBar(text)` — CZYSTA funkcja: `Own`/`Hostile`/`Friendly`
+  wszystkie opcjonalne; jawne „Hostile” = twarda liczba wrogów. Macierz
+  w teście offline + autotest w przeglądarce (34→41 checków).
+- `UpdateWatch` — co 30 min porównuje @version z repo (raw.githubusercontent,
+  nowy @connect); starsza lokalna = czerwony log co tick + dziennik BŁĄD
+  z pushem (nag co 6 h / na nową wersję). Niczego sam nie aktualizuje.
+- `FleetRecon.homeGuard` — hangar-mapa per para koordów (max z 48 h chroni
+  przed fałszywką przy nocnym FS); największa flota ≠ pole „Start
+  ekspedycji” (≥1 mld i ≥2× max domu) = log ERROR + dziennik BŁĄD z pushem.
+  Progi wykluczają księżyc minerów (7,5 mld) obok floty głównej (setki mld).
+
+OTWARTE po tej wersji: owner musi RAZ zaktualizować TM ręcznie (strażnik
+wersji chroni dopiero od 2.88.1 w górę) i ustawić „Start ekspedycji” na
+realny dom floty; potem strażnicy pilnują obu rzeczy sami.
+
 ## AKTUALIZACJA 12.08 (6) — popołudniowa wojna + seria 2.86.4→2.88.0
 
 Wróg (Ibra646) po utracie łupu z 13:10 eskalował: księżyce bojowe w DWÓCH

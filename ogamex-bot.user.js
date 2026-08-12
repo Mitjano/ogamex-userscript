@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.88.0
+// @version      2.88.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -12,6 +12,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      generativelanguage.googleapis.com
 // @connect      ntfy.sh
+// @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -5960,6 +5961,33 @@
 
     clear() { GM_setValue(this.KEY, "null"); },
 
+    // ── v2.88.1: PARSER PASKA — czysta funkcja, zamrożona testami ──
+    // INCYDENT 12.08 15:24 (ACS na [3:272:7]): pasek pokazywał
+    // „2 Missions: 2 Hostile" — BEZ segmentu „Own", bo żadna nasza flota
+    // nie leciała. Stary regex WYMAGAŁ „X Own", więc odczyt padał i bot
+    // uznawał „brak paska na tej stronie" → w grę wchodził cache sprzed
+    // ataku, który mówił „czysto". Bot był ślepy DOKŁADNIE wtedy, gdy cała
+    // flota stała w domu i atak był najgroźniejszy: zero alarmu, zero
+    // pusha, ratunek ręczny właściciela. Każdy segment (Own/Hostile/
+    // Friendly) jest teraz OPCJONALNY; jawne „Hostile" to twarda liczba
+    // wrogów — bez arytmetyki odejmowania.
+    parseBar(text) {
+      const t = String(text || "");
+      const m = t.match(/(\d+)\s*Missions?\s*:/);
+      if (!m) return null;
+      const total = parseInt(m[1]) || 0;
+      // segmenty czytamy z okna tuż za „N Missions:", żeby liczby z reszty
+      // strony (odliczania, koordynaty) nie weszły do rachunku
+      const win = t.slice(m.index, m.index + 160);
+      const seg = (re) => { const x = win.match(re); return x ? (parseInt(x[1]) || 0) : null; };
+      const own = seg(/(\d+)\s*Own/);
+      const hostile = seg(/(\d+)\s*Hostile/);
+      const friendly = seg(/(\d+)\s*Friendly/);
+      if (own === null && hostile === null && friendly === null) return null;
+      const foreign = hostile !== null ? hostile : Math.max(0, total - (own || 0) - (friendly || 0));
+      return { total, own: own || 0, foreign };
+    },
+
     // Reads the mission bar of whatever page we're on. Returns null when the
     // bar isn't rendered (most galaxy pages) so a blind page never clears a
     // live alert.
@@ -5973,8 +6001,8 @@
       // bez czekania na prawdziwego wroga.
       const blindUntil = parseInt(GM_getValue("ogamex_threat_sim_blind_until", "0")) || 0;
       if (Date.now() < blindUntil) {
-        const m0 = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
-        const own0 = m0 ? (parseInt(m0[2]) || 0) : 0;
+        const pb0 = this.parseBar(document.body.textContent);
+        const own0 = pb0 ? (pb0.own || 0) : 0;
         GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: 1, total: own0 + 1, own: own0 }));
         return { total: own0 + 1, own: own0, foreign: 1, sim: true };
       }
@@ -5983,16 +6011,10 @@
         GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: 0, total: 0, own: 0 }));
         log("[TEST] symulacja ślepego paska zakończona — pasek wraca na prawdziwe odczyty. Alarm zgaśnie, flota wróci automatycznie.", "info");
       }
-      const m = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
-      if (!m) return null;
-      const total = parseInt(m[1]) || 0;
-      const own = parseInt(m[2]) || 0;
-      // v2.86.2: pasek rozróżnia „N Friendly" (sojusznik: ACS defend /
-      // stacjonowanie) od „N Hostile" — misja przyjazna nie jest obcą flotą
-      // do alarmu i nie może zawyżać liczby wrogów w kontroli krzyżowej.
-      const fr = document.body.textContent.match(/(\d+)\s*Friendly/);
-      const friendly = fr ? (parseInt(fr[1]) || 0) : 0;
-      const out = { total, own, foreign: Math.max(0, total - own - friendly) };
+      // v2.88.1: parsowanie w parseBar() — czysta funkcja z macierzą testów
+      // (incydent 15:24: pasek bez segmentu „Own" wywracał stary regex).
+      const out = this.parseBar(document.body.textContent);
+      if (!out) return null;
       // ── v2.86.3: ODCZYT PASKA ZOSTAWIA ŚLAD (cache 3 min) ──
       // KATASTROFA 13:10: pasek zobaczył atak o 13:07:42, ale kolejne 99 s
       // bot spędził na stronach galaktyki, gdzie pasek się nie renderuje —
@@ -6001,7 +6023,7 @@
       // śladu, flota stracona. Każdy udany odczyt paska (także 0 — realne
       // odwołanie) zapisuje się na 3 min i zastępuje pasek tam, gdzie go
       // nie ma.
-      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total, own }));
+      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own }));
       return out;
     },
 
@@ -7773,7 +7795,59 @@
       ]);
       GM_setValue(this.KEY, JSON.stringify(snap));
       if (fingerprint(prev) !== fingerprint(snap)) this.logSummary(snap, "changed");
+      this.homeGuard(snap);
       return snap;
+    },
+
+    // ── v2.88.1: STRAŻNIK DOMU FLOTY ──
+    // INCYDENT 15:24: po przeprowadzce floty pole „Start ekspedycji" dalej
+    // wskazywało 2:277:8 — a ślepy alarm z paska broni TEGO pola, więc
+    // obrona poleciałaby w pustą kolonię. Bot i tak odwiedza stronę floty
+    // przy każdej wysyłce: notuje hangar per para koordów i KRZYCZY
+    // (log + dziennik z pushem), gdy największa flota mieszka gdzie indziej
+    // niż pole. Czysty alarm — flotą nie rusza. Dom porównujemy z jego
+    // MAKSIMUM z 48 h, żeby chwilowo pusty hangar (fleet save w nocy,
+    // flota w powietrzu) nie robił fałszywego alarmu.
+    KEY_HANGARS: "ogamex_hangar_map",
+
+    homeGuard(snap) {
+      try {
+        if (!snap || !snap.planet || !/^\d+:\d+:\d+$/.test(snap.planet)) return;
+        let map = {}; try { map = JSON.parse(GM_getValue(this.KEY_HANGARS, "{}")) || {}; } catch { map = {}; }
+        const cur = (snap.ships || []).reduce((a, sh) => a + (sh.qty || 0), 0);
+        const e = map[snap.planet] || {};
+        const maxFresh = (Date.now() - (e.maxAt || 0) < 48 * 60 * 60 * 1000) ? (e.max || 0) : 0;
+        map[snap.planet] = cur >= maxFresh
+          ? { total: cur, max: cur, maxAt: Date.now(), at: Date.now() }
+          : { total: cur, max: maxFresh, maxAt: e.maxAt, at: Date.now() };
+        for (const k of Object.keys(map)) if (Date.now() - (map[k].at || 0) > 48 * 60 * 60 * 1000) delete map[k];
+        GM_setValue(this.KEY_HANGARS, JSON.stringify(map));
+        const fh = CONFIG.expeditions?.launchFrom;
+        if (!fh || !Number.isFinite(fh.galaxy)) return;
+        const homeKey = `${fh.galaxy}:${fh.system}:${fh.position}`;
+        const v = this.homeVerdict({ map, homeKey });
+        if (!v) return;
+        const KEY_AT = "ogamex_homeguard_warned_at";
+        if (Date.now() - (parseInt(GM_getValue(KEY_AT, "0")) || 0) < 6 * 60 * 60 * 1000) return;
+        GM_setValue(KEY_AT, String(Date.now()));
+        log(`[DOM FLOTY] „Start ekspedycji" = [${homeKey}], ale największy hangar widzę na [${v.key}] (${v.total.toLocaleString()} statków vs ${v.homeMax.toLocaleString()} w domu przez 48 h). Ślepy alarm z paska broni POLA — popraw „Start ekspedycji" w panelu, inaczej ratunek poleci w złą kolonię.`, "error");
+        ThreatLog.add("BŁĄD", `Dom floty ≠ realny hangar: pole [${homeKey}], największa flota na [${v.key}]. Popraw „Start ekspedycji", inaczej ślepy alarm broni złej kolonii.`);
+      } catch {}
+    },
+
+    // czysta decyzja (testowalna macierzą): największy hangar ≠ dom pola
+    // + wyraźna przewaga (≥1 mld statków i ≥2× maksimum domu z 48 h) —
+    // księżyc minerów (7,5 mld) obok floty głównej (setki mld) NIE alarmuje.
+    homeVerdict({ map, homeKey }) {
+      const homeMax = (map[homeKey] && (map[homeKey].max || map[homeKey].total)) || 0;
+      let key = null, total = 0;
+      for (const k of Object.keys(map)) {
+        const t = (map[k] && map[k].total) || 0;
+        if (k !== homeKey && t > total) { total = t; key = k; }
+      }
+      if (!key) return null;
+      if (total < 1e9 || total < 2 * homeMax) return null;
+      return { key, total, homeMax };
     },
 
     logSummary(snap, tag = "cached") {
@@ -10660,6 +10734,26 @@
         check("ucieczka: lot już trwa → nie dubluj",
           AirSave.decide({ enabled: true, bodies: ["moon", "planet"], activePhase: "launched", failedAt: 0, now: Date.now() }) === "active");
 
+        // ── A4. Parser paska misji (v2.88.1 — incydent 15:24: pasek bez „Own") ──
+        {
+          const pb = (t) => ThreatMonitor.parseBar(t);
+          const eq = (a, e) => !!a && a.total === e.total && a.own === e.own && a.foreign === e.foreign;
+          check("pasek: „2 Missions: 2 Hostile\" (zero własnych) = 2 wrogów, nie ślepota",
+            eq(pb("2 Missions: 2 Hostile Next: 04:15 Type: ACS Attack"), { total: 2, own: 0, foreign: 2 }));
+          check("pasek: „13 Missions: 12 Own\" = 1 obcy (arytmetyka po staremu)",
+            eq(pb("13 Missions: 12 Own"), { total: 13, own: 12, foreign: 1 }));
+          check("pasek: „5 Missions: 3 Own, 2 Hostile\" = 2 wrogów (Hostile to twarda liczba)",
+            eq(pb("5 Missions: 3 Own, 2 Hostile"), { total: 5, own: 3, foreign: 2 }));
+          check("pasek: sojusznik (Friendly) nie jest wrogiem",
+            eq(pb("4 Missions: 2 Own, 1 Hostile, 1 Friendly"), { total: 4, own: 2, foreign: 1 }));
+          check("pasek: strona bez paska = null (ślepota ≠ czysto)",
+            pb("Overview Server properties Online players: 283") === null);
+          check("dom floty: wielki hangar poza polem przy małym domu = ALARM",
+            (FleetRecon.homeVerdict({ map: { "2:277:8": { total: 7.5e9, max: 7.5e9 }, "5:67:9": { total: 2e11, max: 2e11 } }, homeKey: "2:277:8" }) || {}).key === "5:67:9");
+          check("dom floty: księżyc minerów obok floty głównej NIE alarmuje",
+            FleetRecon.homeVerdict({ map: { "5:67:9": { total: 2e11, max: 2e11 }, "3:272:7": { total: 7.5e9, max: 7.5e9 } }, homeKey: "5:67:9" }) === null);
+        }
+
         // ── B. Odczyt celu ataku: koordy + CIAŁO (księżyc vs planeta) ──
         const rm = FleetMovements.classifyRow(this._parse(this._row("row-mission-type-ATTACK row-hostile-mission", "3:248:11", "3:280:4", { moon: true })), own);
         check("cel ataku: koordynaty [3:280:4]", rm && rm.dst === "3:280:4");
@@ -10880,10 +10974,65 @@
     }, 4000);
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  //  UPDATE WATCH (v2.88.1) — strażnik przestarzałej wersji
+  // ═══════════════════════════════════════════════════════════════
+  // INCYDENT 12.08 15:24: lekarstwo na atak z panelu Events (v2.88.0)
+  // leżało na mainie od 40 minut, a bot dalej chodził na 2.87.3 —
+  // Tampermonkey sprawdza aktualizacje raz na dobę. Naprawiony bug nie
+  // chroni NICZEGO, dopóki nie chodzi. Ten strażnik co 30 min porównuje
+  // @version z repo i krzyczy (czerwony log + dziennik z pushem), gdy
+  // lokalna jest starsza. Sam niczego nie aktualizuje — od tego jest TM.
+  const UpdateWatch = {
+    URL: "https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-bot.user.js",
+    KEY_AT: "ogamex_updwatch_at",
+    KEY_NAG: "ogamex_updwatch_nag",
+
+    // porównanie segmentami, nie leksykalnie (2.9 < 2.88)
+    newer(remote, local) {
+      const pa = String(remote).split(".").map(n => parseInt(n) || 0);
+      const pb = String(local).split(".").map(n => parseInt(n) || 0);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const d = (pa[i] || 0) - (pb[i] || 0);
+        if (d) return d > 0;
+      }
+      return false;
+    },
+
+    tick() {
+      const last = parseInt(GM_getValue(this.KEY_AT, "0")) || 0;
+      if (Date.now() - last < 30 * 60 * 1000) return;
+      GM_setValue(this.KEY_AT, String(Date.now()));
+      try {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: this.URL + "?t=" + Date.now(),
+          timeout: 20000,
+          onload: (r) => {
+            try {
+              const m = String(r.responseText || "").match(/@version\s+([\d.]+)/);
+              if (!m) return;
+              const remote = m[1];
+              const local = (typeof GM_info !== "undefined" && GM_info?.script?.version) || "0";
+              if (!this.newer(remote, local)) return;
+              log(`[UPDATE] Repo ma v${remote}, tu chodzi v${local} — poprawki obrony NIE działają na tym komputerze. Tampermonkey → Narzędzia → Sprawdź aktualizacje.`, "error");
+              let nag = null; try { nag = JSON.parse(GM_getValue(this.KEY_NAG, "null")); } catch {}
+              if (!nag || nag.ver !== remote || Date.now() - (nag.at || 0) > 6 * 60 * 60 * 1000) {
+                GM_setValue(this.KEY_NAG, JSON.stringify({ ver: remote, at: Date.now() }));
+                // dziennik sam pushuje BŁĄD na telefon (hak Notifier.fromJournal)
+                ThreatLog.add("BŁĄD", `Bot PRZESTARZAŁY: repo v${remote}, lokalnie v${local}. Zaktualizuj w Tampermonkey, inaczej poprawki obrony nie chronią.`);
+              }
+            } catch {}
+          },
+        });
+      } catch {}
+    },
+  };
+
   function startDefenceLoop() {
     runSelfTestOnBoot();
     if (defenceTimer) clearInterval(defenceTimer);
-    defenceTimer = setInterval(() => { defenceTick().catch(() => {}); }, DEFENCE_EVERY_MS);
+    defenceTimer = setInterval(() => { defenceTick().catch(() => {}); try { UpdateWatch.tick(); } catch {} }, DEFENCE_EVERY_MS);
     setTimeout(() => { defenceTick().catch(() => {}); }, 1500); // pierwszy przebieg od razu
     log(`Pętla obrony uruchomiona (co ${DEFENCE_EVERY_MS / 1000}s, niezależnie od przerw i jitteru).`, "info");
   }

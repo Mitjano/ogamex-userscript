@@ -111,5 +111,51 @@ must("nieznany markup = jednorazowy zrzut [EVENTS DOM], nie zgadywanie",
 must("niepewna numeracja misji wyłącza panel (nie zamienia sond w ataki)",
   /ogamex_mission_numbering_warned[\s\S]{0,40}return \[\];/.test(src));
 
+console.log("\n── 4. PASEK BEZ „OWN” + STRAŻNICY WERSJI I DOMU (v2.88.1) ──");
+// INCYDENT 15:24: pasek „2 Missions: 2 Hostile" (zero własnych lotów) nie
+// przechodził przez regex wymagający „X Own" → read()=null → bot ślepy
+// dokładnie wtedy, gdy cała flota stała w domu. Zero alarmu, zero pusha.
+
+const pbBody = bodyOf("    parseBar(text) {");
+must("parseBar istnieje (czysta funkcja)", !!pbBody && pbBody.length > 100);
+const pb = new Function("text", pbBody);
+const pbEq = (a, e) => !!a && a.total === e.total && a.own === e.own && a.foreign === e.foreign;
+must("pasek 15:24: „2 Missions: 2 Hostile' (zero własnych) = 2 wrogów, NIE null",
+  pbEq(pb("2 Missions: 2 Hostile Next: 04:15 Type: ACS Attack"), { total: 2, own: 0, foreign: 2 }));
+must("pasek 13:09: „13 Missions: 12 Own' = 1 obcy",
+  pbEq(pb("13 Missions: 12 Own"), { total: 13, own: 12, foreign: 1 }));
+must("pasek: „5 Missions: 3 Own, 2 Hostile' = 2 wrogów (Hostile = twarda liczba)",
+  pbEq(pb("5 Missions: 3 Own, 2 Hostile"), { total: 5, own: 3, foreign: 2 }));
+must("pasek: Friendly nie jest wrogiem (bez jawnego Hostile)",
+  pbEq(pb("2 Missions: 1 Own, 1 Friendly"), { total: 2, own: 1, foreign: 0 }));
+must("pasek: strona bez paska = null (ślepota, nie „czysto')",
+  pb("Overview Server properties Online players: 283") === null);
+must("read() używa parseBar (stary regex z wymaganym Own zniknął z read)",
+  /const out = this\.parseBar\(document\.body\.textContent\);/.test(src));
+
+const nwBody = bodyOf("    newer(remote, local) {");
+must("UpdateWatch.newer istnieje", !!nwBody);
+const nw = new Function("remote", "local", nwBody);
+must("wersje: 2.88.1 > 2.88.0", nw("2.88.1", "2.88.0") === true);
+must("wersje: 2.9.0 NIE jest nowsze niż 2.88.0 (segmenty, nie leksykalnie)", nw("2.9.0", "2.88.0") === false);
+must("wersje: równe = nie nowsze", nw("2.88.1", "2.88.1") === false);
+must("strażnik wersji tyka w pętli obrony i ma @connect do repo",
+  /UpdateWatch\.tick\(\)/.test(src) && /@connect\s+raw\.githubusercontent\.com/.test(src));
+must("przestarzała wersja idzie do dziennika jako BŁĄD (dziennik sam pushuje)",
+  /Bot PRZESTARZAŁY: repo v/.test(src));
+
+const hvBody = bodyOf("    homeVerdict({ map, homeKey }) {");
+must("homeVerdict istnieje (czysta decyzja)", !!hvBody);
+const hv = new Function("o", "const { map, homeKey } = o;\n" + hvBody);
+must("dom floty: wielka flota poza polem „Start ekspedycji' = alarm",
+  (hv({ map: { "2:277:8": { total: 7.5e9, max: 7.5e9 }, "5:67:9": { total: 2e11, max: 2e11 } }, homeKey: "2:277:8" }) || {}).key === "5:67:9");
+must("dom floty: księżyc minerów obok floty głównej NIE alarmuje",
+  hv({ map: { "5:67:9": { total: 2e11, max: 2e11 }, "3:272:7": { total: 7.5e9, max: 7.5e9 } }, homeKey: "5:67:9" }) === null);
+must("dom floty: dom chwilowo pusty (max 48 h pamięta flotę) NIE alarmuje",
+  hv({ map: { "5:67:9": { total: 0, max: 2e11 }, "3:272:7": { total: 7.5e9, max: 7.5e9 } }, homeKey: "5:67:9" }) === null);
+must("dom floty: drobnica poniżej 1 mld nie alarmuje",
+  hv({ map: { "5:67:9": { total: 0, max: 0 }, "1:1:1": { total: 5e8, max: 5e8 } }, homeKey: "5:67:9" }) === null);
+must("strażnik domu wołany przy każdym skanie floty", /this\.homeGuard\(snap\);/.test(src));
+
 console.log(fails ? `\nCEL RATUNKU: ${fails} BEZPIECZNIKÓW BRAK — NIE WYPUSZCZAĆ` : "\nCEL RATUNKU: WSZYSTKIE BEZPIECZNIKI NA MIEJSCU");
 process.exit(fails ? 1 : 0);
