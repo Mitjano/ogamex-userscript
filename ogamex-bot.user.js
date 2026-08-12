@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.87.3
+// @version      2.88.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4794,6 +4794,97 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  EVENTS PANEL (v2.88.0) — trzecie źródło: żywy DOM panelu Events
+  // ═══════════════════════════════════════════════════════════════
+  // 13:07 (utrata floty): atak z układu był NIEWIDZIALNY dla listy ruchów
+  // i endpointów zdarzeń — jedyny ślad to goły licznik paska (bez celu,
+  // dolotu i ciała), więc nie wstawał ani blitz, ani ucieczka w powietrze.
+  // Ale panel Events RENDERUJE się w stronie (/home, /fleet) z kompletem:
+  // typ misji, odliczanie, źródło, cel + ikona księżyca. Czytamy go z DOM
+  // parserem o kształcie z fetchServerEvents (tr.eventFleet + .coordsOrigin
+  // + .destCoords — NIE zgadujemy nowego markupu); jeśli fork renderuje
+  // inaczej, jednorazowy zrzut [EVENTS DOM] do logu i selektory dopiszemy
+  // z faktów. Odczyt żyje 3 min jako cache (strony galaktyki panelu nie
+  // mają — ta sama lekcja co cache paska).
+  const EventsPanel = {
+    KEY_CACHE: "ogamex_events_panel_cache",
+    KEY_DUMPED: "ogamex_events_panel_dumped",
+
+    _parseTr(tr, own) {
+      if (tr.dataset.returnFlight === "true") return null;      // nasz powrót
+      const type = parseInt(tr.dataset.missionType || "0") || 0;
+      const oc = (tr.querySelector(".coordsOrigin")?.textContent || "").match(/(\d+):(\d+):(\d+)/);
+      const dcEl = tr.querySelector(".destCoords");
+      const dc = ((dcEl && dcEl.textContent) || "").match(/(\d+):(\d+):(\d+)/);
+      if (!dc) return null;                                     // bez celu wiersz nic nie wnosi
+      const src = oc ? oc[0] : null;
+      if (own.size && src && own.has(src)) return null;         // nasza własna misja
+      const isSpy = type === ThreatMonitor.ESPIONAGE_TYPE;
+      const isAttack = !isSpy && ThreatMonitor.ATTACK_TYPES.includes(type);
+      if (!isSpy && !isAttack) return null;                     // typ spoza znanych — ostrożnie: zostaje ścieżka paska
+      // Dolot: data-arrival-time (epoch s) albo odliczanie w wierszu.
+      let eta = 0;
+      const arr = parseInt(tr.dataset.arrivalTime || "0") || 0;
+      if (arr > 0) eta = Math.max(0, Math.round(arr - Date.now() / 1000));
+      if (!eta) {
+        const t = tr.textContent || "";
+        const cd = t.match(/\b(\d{1,2}):(\d{2}):(\d{2})\b/) || t.match(/\b(\d{1,2}):(\d{2})\b/);
+        if (cd) eta = cd[3] !== undefined ? (+cd[1] * 3600 + +cd[2] * 60 + +cd[3]) : (+cd[1] * 60 + +cd[2]);
+      }
+      const dstBody = (dcEl.querySelector("img[src*='moon']") || /\bMoon\b/i.test(dcEl.textContent || "")) ? "moon" : "planet";
+      return {
+        mine: false, friendly: false, attack: isAttack, spy: isSpy, unknownType: false,
+        type: String(type), src, srcBody: null, srcName: null, dst: dc[0], dstBody, eta,
+        ships: [], html: (tr.outerHTML || "").replace(/\s+/g, " ").slice(0, 600), panel: true,
+      };
+    },
+
+    read() {
+      // Numeracja misji forka niepewna → typy z panelu nic nie znaczą.
+      if (GM_getValue("ogamex_mission_numbering_warned", "") === "1") return [];
+      const own = ThreatMonitor.ownBodies();
+      const trs = [...document.querySelectorAll("tr.eventFleet[data-mission-type]")];
+      if (trs.length) {
+        const rows = [];
+        for (const tr of trs) { const r = this._parseTr(tr, own); if (r) rows.push(r); }
+        GM_setValue(this.KEY_CACHE, JSON.stringify({
+          at: Date.now(),
+          rows: rows.map(r => ({ ...r, arriveAt: Date.now() + (r.eta || 0) * 1000 })),
+        }));
+        return rows;
+      }
+      this._maybeDump();
+      try {
+        const c = JSON.parse(GM_getValue(this.KEY_CACHE, "null"));
+        if (c && Date.now() - c.at < 3 * 60 * 1000) {
+          return (c.rows || [])
+            .filter(r => (r.arriveAt || 0) - Date.now() > -60000)   // dolot minął >1 min temu = po wszystkim
+            .map(r => ({ ...r, eta: Math.max(0, Math.round(((r.arriveAt || 0) - Date.now()) / 1000)) }));
+        }
+      } catch {}
+      return [];
+    },
+
+    // Fork bez tr.eventFleet: JEDNORAZOWY zrzut kontenera Events do logu —
+    // tylko gdy pasek widzi obcych (żeby złapać markup wrogiego wiersza,
+    // nie pustą tabelę). Z tego zrzutu dopiszemy selektory forka.
+    _maybeDump() {
+      if (GM_getValue(this.KEY_DUMPED, "") === "1") return;
+      let bar = null;
+      try { bar = ThreatMonitor.read(); } catch {}
+      if (!bar || bar.foreign < 1) return;
+      const hdr = [...document.querySelectorAll("div, span, h1, h2, h3, td")]
+        .find(e => (e.textContent || "").trim() === "Events" && !e.closest("#ogx-bot-panel"));
+      if (!hdr) return;
+      const host = hdr.closest("table") || (hdr.parentElement && hdr.parentElement.parentElement) || hdr.parentElement;
+      const html = host ? (host.outerHTML || "").replace(/\s+/g, " ") : "";
+      if (html.length < 200) return;
+      GM_setValue(this.KEY_DUMPED, "1");
+      log(`[EVENTS DOM] panel Events bez tr.eventFleet — zrzut do dopisania selektorów forka (prześlij tę linię): ${html.slice(0, 3000)}`, "error");
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  AIR SAVE (v2.85.0) — UCIECZKA W POWIETRZE na atak obu ciał pary
   // ═══════════════════════════════════════════════════════════════
   // Jedyny scenariusz, w którym ewakuacja księżyc↔planeta NIE ratuje floty:
@@ -5535,6 +5626,29 @@
           const foreign = fm.rows.filter(r => !r.mine && !r.friendly);
           const attacks = foreign.filter(r => r.attack);
           const spies = foreign.filter(r => r.spy);
+          // ── v2.88.0: PANEL EVENTS (żywy DOM + cache 3 min) — trzecie źródło ──
+          // Dokłada wiersze, których lista NIE ODDAŁA (13:07: atak z układu
+          // widoczny tylko jako goły licznik paska — bez celu, dolotu, ciała,
+          // więc nie wstawał blitz ani ucieczka w powietrze). Wiersze panelu
+          // wchodzą do tej samej klasyfikacji co wiersze listy, więc cel,
+          // dolot i ciało trafiają w te same mapy — blitz i air-save działają
+          // z automatu. Dedup po (cel, rodzaj, dolot ±20 s).
+          try {
+            const pRows = EventsPanel.read();
+            if (pRows.length) {
+              const keyOf = r => `${r.dst}|${r.attack ? "A" : "S"}|${Math.round((r.eta || 0) / 20)}`;
+              const have = new Set(foreign.map(keyOf));
+              let added = 0;
+              for (const pr of pRows) {
+                if (have.has(keyOf(pr))) continue;
+                have.add(keyOf(pr));
+                foreign.push(pr);
+                if (pr.attack) attacks.push(pr); else if (pr.spy) spies.push(pr);
+                added++;
+              }
+              if (added) log(`[THREAT] panel Events dołożył ${added} wiersz(e), których lista ruchów nie oddała.`, "warn");
+            }
+          } catch (e) { log(`[THREAT] panel Events: ${e.message}`, "warn"); }
           // ── v2.67.1: materiał dowodowy — surowy HTML wrogich wierszy ──
           // Jednorazowo na każdy NOWY obraz wrogich flot (nie co 30 s): to,
           // czego będzie trzeba do naprawy, gdyby klasyfikacja źle odczytała

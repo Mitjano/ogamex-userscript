@@ -98,5 +98,18 @@ must("pasek WYGRYWA tylko NADWYŻKĄ ponad wszystkie obce wiersze listy (ataki+s
 must("sonda policzona przez listę NIE robi ataku (foreign = ataki + nadwyżka)",
   /foreign: \(ev\.attacks \|\| 0\) \+ missing/.test(src));
 
-console.log(fails ? `\nCEL RATUNKU: ${fails} BEZPIECZNIKÓW BRAK — NIE WYPUSZCZAĆ` : "\nCEL RATUNKU: OBA BEZPIECZNIKI NA MIEJSCU");
+console.log("\n── 3. PANEL EVENTS — TRZECIE ŹRÓDŁO (v2.88.0) ──");
+
+must("panel czytany sprawdzonym kształtem (tr.eventFleet + data-mission-type)",
+  /querySelectorAll\("tr\.eventFleet\[data-mission-type\]"\)/.test(src));
+must("wiersze panelu dołączają do klasyfikacji (blitz/air-save z automatu)",
+  /panel Events dołożył/.test(src) && /if \(pr\.attack\) attacks\.push\(pr\); else if \(pr\.spy\) spies\.push\(pr\);/.test(src));
+must("odczyt panelu żyje 3 min jako cache (strony bez panelu nie ślepną)",
+  /ogamex_events_panel_cache/.test(src));
+must("nieznany markup = jednorazowy zrzut [EVENTS DOM], nie zgadywanie",
+  /\[EVENTS DOM\] panel Events bez tr\.eventFleet/.test(src));
+must("niepewna numeracja misji wyłącza panel (nie zamienia sond w ataki)",
+  /ogamex_mission_numbering_warned[\s\S]{0,40}return \[\];/.test(src));
+
+console.log(fails ? `\nCEL RATUNKU: ${fails} BEZPIECZNIKÓW BRAK — NIE WYPUSZCZAĆ` : "\nCEL RATUNKU: WSZYSTKIE BEZPIECZNIKI NA MIEJSCU");
 process.exit(fails ? 1 : 0);
