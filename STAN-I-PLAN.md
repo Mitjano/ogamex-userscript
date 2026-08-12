@@ -6,6 +6,32 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (8) — TEST ŚLEPEGO PASKA zaliczony E2E na 2.88.1 + v2.88.2 (panel forka)
+
+- 16:09–16:14: symulacja ślepego paska przeszła CAŁY cykl w prawdziwej grze:
+  kandydat → alarm → ratunek do domu floty → pusty hangar planety → sam
+  przełączył się na księżyc → koniec symulacji → auto-powrót → straż zdjęta.
+  Autotest na maszynie ownera: 41/41.
+- Wcześniej (15:26–15:30, jeszcze 2.87.3) bot obronił się SAM w prawdziwej
+  bitwie: ślepy pasek → ratunek; BLITZ (dolot 3 s) bez potwierdzania;
+  KOLEJKA (drugi atak na inną kolonię); bezpiecznik obcej kolonii wykrył
+  formularz na złej parze i sam się poprawił. Ataki wroga = wabiki
+  (1 sonda na misji ATTACK) z NOWEGO księżyca wroga **[3:276:9]** —
+  falanga prawdopodobnie sięga księżyca minerów [3:272:7].
+- Zrzut [EVENTS DOM] spalił się na PUSTYM kontenerze — „obcy” był
+  z symulacji, panel słusznie nic nie renderował. Ale zdradził kontener:
+  `#layoutFleetMovements > #fleet-movement-content`.
+- **v2.88.2**: kształt B panelu — `tr[class*='row-mission-type-']`
+  w kontenerze forka czytany PRAWDZIWYM `FleetMovements.classifyRow`
+  (zero zgadywania); niepewna numeracja wyłącza tylko kształt liczbowy;
+  zrzut nie odpala się na symulacji ani pustym kontenerze, klucz
+  przezbrojony. Zamrażarka: 46 bezpieczników.
+- Księżyce wroga (kompletna lista): [2:277:11], [5:67:11], [3:245:7],
+  [3:276:9]. Relokacja floty: omijać WSZYSTKIE te okolice.
+- OTWARTE: pole „Start ekspedycji” wciąż 2:277:8 (ratunki celują w starą
+  bazę); markup WROGIEGO wiersza panelu — potwierdzi go pierwszy prawdziwy
+  atak („panel Events dołożył N” = kształt B działa).
+
 ## AKTUALIZACJA 12.08 (7) — INCYDENT 15:24: pasek bez „Own” = totalna ślepota → v2.88.1
 
 ACS 450 mld na księżyc [3:272:7], dolot ~4 min. Bot NIE zareagował w ogóle
