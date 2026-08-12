@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.81.0
+// @version      2.82.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3125,10 +3125,10 @@
       }
       log(`Collected ${ranges.length} unique ranges from deep fetch`, "asteroid");
 
-      // Miners launch from a single fixed base planet
-      const base = CONFIG.asteroidMining.minerBase;
+      // v2.82.0: miners launch from the ACTIVE body (fallback: minerBase)
+      const base = HomeBase.coords();
       if (!base) {
-        log("No minerBase configured — dispatch will fail until one is set", "warn");
+        log("Nie znam punktu startu (brak paska planet i minerBase) — wysyłka nie ruszy.", "warn");
       }
       const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
 
@@ -3259,7 +3259,7 @@
           // reset to [3:371] re-queued [3:1-41] scanned 2min before AND
           // [3:371-391] with the just-dispatched [3:385]). Filter the rebuilt
           // queue by everything this sweep already covered.
-          const baseCfg = CONFIG.asteroidMining.minerBase;
+          const baseCfg = HomeBase.coords();
           const maxFlightCfg = CONFIG.asteroidMining.maxFlightMinutes;
           const scannedSetR = new Set((scanState.scannedSystems || []).map(s => `${s.galaxy}:${s.system}`));
           const fullQueue = AsteroidScanner.buildScanQueue(freshRanges, baseCfg, maxFlightCfg)
@@ -3283,7 +3283,7 @@
 
         // Current still valid — rebuild queue so new (often closer) ranges get
         // scanned immediately after we finish this system.
-        const baseCfg = CONFIG.asteroidMining.minerBase;
+        const baseCfg = HomeBase.coords();
         const maxFlightCfg = CONFIG.asteroidMining.maxFlightMinutes;
         const scannedSet = new Set((scanState.scannedSystems || []).map(s => `${s.galaxy}:${s.system}`));
         const freshQueue = AsteroidScanner.buildScanQueue(freshRanges, baseCfg, maxFlightCfg)
@@ -3342,7 +3342,7 @@
         // burn where v2.9.3 estimated 7min for Δ=58 but actual was 15min.
         // 5min margin absorbs formula error + ~30s dispatch UI overhead
         // + TTL countdown elapsed during the 3-step fleet flow.
-        const baseForCheck = CONFIG.asteroidMining.minerBase;
+        const baseForCheck = HomeBase.coords();
         if (result.ttlSeconds != null && baseForCheck) {
           const sameGal = baseForCheck.galaxy === current.galaxy;
           const dist = sameGal ? Math.abs(baseForCheck.system - current.system) : Infinity;
@@ -3451,7 +3451,7 @@
       const freshRanges = await AsteroidScanner.scanRangesFull(6);
       const newRanges = freshRanges.filter(r => !sweptKeys.has(`${r.galaxy}:${r.startSystem}-${r.endSystem}`));
       if (newRanges.length > 0) {
-        const base = CONFIG.asteroidMining.minerBase;
+        const base = HomeBase.coords();
         const maxFlight = CONFIG.asteroidMining.maxFlightMinutes;
         // v2.12.6: exclude systems the just-finished sweep already covered —
         // the fresh-range rescan is for the NEW areas, not a re-walk of the
@@ -3485,15 +3485,15 @@
       // swój TTL; lepiej ją stracić niż paliwo na ucieczkę.
       if (!DefenceHold.allows("mining") || !Fuel.allows("mining")) return;
 
-      // Miners launch from the configured base planet
-      const base = CONFIG.asteroidMining.minerBase;
+      // v2.82.0: miners launch from the ACTIVE body (fallback: minerBase)
+      const base = HomeBase.coords();
       if (!base) {
-        log("No minerBase configured — cannot dispatch", "error");
+        log("Nie znam punktu startu (brak paska planet i minerBase) — nie wysyłam.", "error");
         ScanState.clear();
         return;
       }
       if (base.galaxy !== asteroid.galaxy) {
-        log(`Base [${base.galaxy}:${base.system}] and asteroid ${asteroid.label} in different galaxies`, "error");
+        log(`Punkt startu [${base.galaxy}:${base.system}] i asteroida ${asteroid.label} w różnych galaktykach — pomijam.`, "error");
         ScanState.clear();
         return;
       }
@@ -3522,7 +3522,7 @@
         }
       }
 
-      log(`Dispatching to ${asteroid.label} from base [${base.galaxy}:${base.system}:${base.position}] (~${estMinutes}min)`, "asteroid");
+      log(`Dispatching to ${asteroid.label} from active body [${base.galaxy}:${base.system}:${base.position}] (~${estMinutes}min)`, "asteroid");
 
       // v2.10.24: this fallback path never registered the coords — the ONLY
       // dispatch initiation that didn't. In parallel mode the bot resumes
@@ -3893,6 +3893,93 @@
   // samą maszynerią co ratunek. Pusta planeta = cichy koniec („nothing to
   // save"). Ustępuje wszystkiemu: alarmowi, straży, trwającej wysyłce,
   // przerwom i oknu nocnemu.
+  // ═══════════════════════════════════════════════════════════════
+  //  HOME BASE (v2.82.0) — start z AKTUALNEGO ciała, nie ze sztywnej bazy
+  // ═══════════════════════════════════════════════════════════════
+  // Decyzja właściciela 12.08: agresywni sąsiedzi wymuszają zmianę miejsca
+  // startu — mining, ekspedycje, złom i prom mają lecieć z planety/księżyca
+  // AKTYWNEGO w pasku planet, a nie z zapisanej na sztywno bazy [3:272:7].
+  // Formularz floty i tak wysyła z ciała aktywnego (potwierdzone na żywo
+  // przy FS v2.75.0 i ratunku v2.55.0) — dotąd bot dokręcał start do bazy;
+  // teraz podąża za operatorem: przełączenie planety w grze = nowy punkt
+  // startu, bez żadnej konfiguracji.
+  //   • coords() — koordy aktywnego ciała; na stronie bez paska planet
+  //     ostatni znany odczyt (cache GM), w ostateczności minerBase.
+  //   • pairMoon() — księżyc AKTUALNEGO układu (wiersz księżyca renderuje
+  //     się zaraz po swojej planecie; STOP na następnej planecie, żeby
+  //     bezksiężycowa kolonia nie „pożyczyła" cudzego księżyca).
+  // Obrona (ratunek/straż/FS) ma własną logikę celów — nietknięta.
+  const HomeBase = {
+    KEY: "ogamex_home_body",
+
+    _parseCoords(el) {
+      const m = (el?.textContent || "").replace(/\s+/g, " ").match(/(\d+):(\d+):(\d+)/);
+      return m ? { galaxy: +m[1], system: +m[2], position: +m[3] } : null;
+    },
+
+    _selectedEntry() {
+      // Księżyc przed planetą: gdy zaznaczony jest księżyc, oba wpisy pary
+      // potrafią nosić klasę selected — wygrywa ciało, z którego realnie
+      // wychodzi formularz.
+      return document.querySelector(
+        "a.moon-select.selected, .moon-select.selected, a.planet-select.selected, .planet-select.selected"
+      );
+    },
+
+    // Żywy odczyt z paska planet; null, gdy paska nie ma na tej stronie.
+    read() {
+      const el = this._selectedEntry();
+      if (!el) return null;
+      const isMoon = el.classList.contains("moon-select");
+      let c = this._parseCoords(el);
+      if (!c && isMoon) {
+        // Wpis księżyca często nie niesie koordów — bierze je z planety,
+        // po której następuje (ta sama adjacencja co switch_to_body).
+        let p = el.previousElementSibling;
+        while (p && !(p.classList && p.classList.contains("planet-select"))) p = p.previousElementSibling;
+        c = this._parseCoords(p);
+      }
+      if (!c) return null;
+      const rec = { ...c, body: isMoon ? "moon" : "planet" };
+      let prev = null;
+      try { prev = JSON.parse(GM_getValue(this.KEY, "null")); } catch {}
+      const changed = !prev || prev.galaxy !== rec.galaxy || prev.system !== rec.system
+        || prev.position !== rec.position || prev.body !== rec.body;
+      if (changed) {
+        GM_setValue(this.KEY, JSON.stringify(rec));
+        log(`[START] aktywne ciało: ${rec.body === "moon" ? "księżyc" : "planeta"} [${rec.galaxy}:${rec.system}:${rec.position}] — stąd polecą mining/ekspedycje/złom.`, "info");
+      }
+      return rec;
+    },
+
+    // Koordy punktu startu rutynowych wysyłek. Nigdy nie zwraca null przy
+    // ustawionym minerBase — stare ścieżki mogą na tym polegać.
+    coords() {
+      const live = this.read();
+      if (live) return live;
+      try {
+        const c = JSON.parse(GM_getValue(this.KEY, "null"));
+        if (c && Number.isFinite(c.galaxy) && Number.isFinite(c.system)) return c;
+      } catch {}
+      const b = CONFIG.asteroidMining.minerBase;
+      return b ? { ...b, body: null } : null;
+    },
+
+    // Księżyc aktualnego układu (element paska planet) albo null, gdy go nie
+    // ma / nie widać. Gdy zaznaczony JEST księżyc — zwraca ten wpis.
+    pairMoon() {
+      const el = this._selectedEntry();
+      if (!el) return null;
+      if (el.classList.contains("moon-select")) return el;
+      let n = el.nextElementSibling;
+      while (n && !(n.classList && n.classList.contains("moon-select"))) {
+        if (n.classList && n.classList.contains("planet-select")) return null; // następna planeta = brak księżyca w parze
+        n = n.nextElementSibling;
+      }
+      return n || null;
+    },
+  };
+
   const MoonFerry = {
     KEY_AT: "ogamex_ferry_at",
     EVERY_MS: 2 * 60 * 60 * 1000,
@@ -3908,8 +3995,19 @@
 
     async run() {
       if (!this.due()) return false;
-      const b = CONFIG.asteroidMining.minerBase;
+      // v2.82.0: prom obsługuje AKTUALNY układ (planeta → jej księżyc),
+      // nie sztywną bazę — inaczej co 2 h wyrywałby operatora z wybranego
+      // przez niego miejsca startu. Bez paska planet nie wiemy, gdzie
+      // jesteśmy — bez stempla, spróbujemy na stronie, która pasek ma.
+      const b = HomeBase.read();
       if (!b) return false;
+      if (!HomeBase.pairMoon()) {
+        // Kolonia bez księżyca: nie ma dokąd wozić. Stempel normalny, żeby
+        // nie próbować co tick — wróci za 2 h albo po zmianie układu.
+        GM_setValue(this.KEY_AT, String(Date.now()));
+        log("[PROM] aktualny układ nie ma księżyca — prom pominięty do zmiany miejsca startu.", "info");
+        return false;
+      }
       GM_setValue(this.KEY_AT, String(Date.now()));
       GM_setValue("pending_mission", JSON.stringify({
         type: "moon_ferry_direct",
@@ -3936,7 +4034,10 @@
     CHECK_EVERY_MS: 20 * 60 * 1000,   // co tyle zaglądamy na galaktykę bazy
     RESEND_GUARD_MS: 10 * 60 * 1000,  // po wysyłce nie próbuj drugi raz
 
-    base() { return CONFIG.asteroidMining.minerBase; },
+    // v2.82.0: „galaktyka bazy" = układ AKTUALNEGO ciała — ekspedycje lecą
+    // teraz na poz. 16 bieżącego systemu, więc i złom po nich leży tam.
+    // (Złom w POPRZEDNIM miejscu startu zbierz ręcznie albo wróć tam ciałem.)
+    base() { return HomeBase.coords(); },
 
     // Wiersz pozycji 16 na ŻYWEJ stronie galaktyki. Zwraca link zbierania.
     findDebrisLink() {
@@ -6664,8 +6765,11 @@
     running: false,
     _warned: {},
 
+    // v2.82.0: fale lecą na poz. 16 systemu AKTUALNEGO ciała — operator
+    // zmienia miejsce startu przełączeniem planety w grze. expeditions.base
+    // zostaje jako świadome, sztywne nadpisanie (null = podążaj za graczem).
     base() {
-      const b = CONFIG.expeditions.base || CONFIG.asteroidMining.minerBase;
+      const b = CONFIG.expeditions.base || HomeBase.coords();
       return b && Number.isFinite(b.galaxy) && Number.isFinite(b.system) ? b : null;
     },
 
@@ -6752,7 +6856,7 @@
       try {
         const url = this.fleetUrl();
         if (!url) {
-          this._say("link", "Expeditions ON but no target yet — open any Galaxy page once so the bot can read the Expedition link from row 16 (and set a base planet).", "warn");
+          this._say("link", "Expeditions ON but no target yet — open any Galaxy page once so the bot can read the Expedition link from row 16.", "warn");
           return;
         }
 
@@ -7802,14 +7906,20 @@
         // Find the base entry in the sidebar. The game renders each moon right
         // after its planet, so the pair identifies itself by adjacency — no
         // coordinate parsing, and it works whichever half is currently active.
-        const b = mission.atCoords || CONFIG.asteroidMining.minerBase;
+        const b = mission.atCoords || HomeBase.coords();
         let target = null;
         const planets = [...document.querySelectorAll("a.planet-select, .planet-select")];
         for (const p of planets) {
           const href = p.getAttribute("href") || "";
           const isBase = b && href.includes(`${b.galaxy}`) && href.includes(`${b.system}`) && href.includes(`${b.position}`);
+          // v2.82.0: STOP na następnym wpisie planety — bez tego para BEZ
+          // księżyca „pożyczała" księżyc kolejnej planety z listy i cała
+          // wysyłka szła z cudzego ciała.
           let moon = p.nextElementSibling;
-          while (moon && !(moon.classList && moon.classList.contains("moon-select"))) moon = moon.nextElementSibling;
+          while (moon && !(moon.classList && moon.classList.contains("moon-select"))) {
+            if (moon.classList && moon.classList.contains("planet-select")) { moon = null; break; }
+            moon = moon.nextElementSibling;
+          }
           const mineHere = isBase || p.classList.contains("selected") ||
                            (moon && moon.classList.contains("selected"));
           if (!mineHere) continue;
@@ -7848,18 +7958,26 @@
         // przed eventem idle-farming) — właściciel przenosi flotę między
         // planetami/księżycami, żeby skrócić doloty; wymuszony start z bazy
         // niweczyłby te przenosiny.
+        // v2.82.0: „księżyc bazy" → „księżyc AKTUALNEGO układu". Operator
+        // wybiera miejsce startu przełączeniem planety; tryb księżycowy
+        // dokręca tylko CIAŁO w obrębie tej pary. Układ bez księżyca =
+        // start z planety (świadomy koszt: falanga widzi ten lot).
         if (CONFIG.baseBody === "moon" && !mission.moonSave && !mission.fleetSave && !mission.farm && !mission.launchChecked) {
           const here = MoonSave.currentBody();
           if (here && here !== "moon") {
             mission.launchChecked = true; // jedna korekta na misję — bez pętli
-            mission.step = "switch_to_body";
-            mission.launchBody = "moon";
-            mission.atCoords = mission.atCoords || CONFIG.asteroidMining.minerBase;
-            mission.timestamp = Date.now();
-            GM_setValue("pending_mission", JSON.stringify(mission));
-            log(`[BAZA=KSIĘŻYC] misja ${mission.type} miała startować z planety — przełączam na księżyc bazy przed wysyłką.`, "warn");
-            setTimeout(() => { handlePendingMission().catch(() => {}); }, 1200);
-            return;
+            if (HomeBase.pairMoon()) {
+              mission.step = "switch_to_body";
+              mission.launchBody = "moon";
+              mission.atCoords = mission.atCoords || HomeBase.coords();
+              mission.timestamp = Date.now();
+              GM_setValue("pending_mission", JSON.stringify(mission));
+              log(`[BAZA=KSIĘŻYC] misja ${mission.type} miała startować z planety — przełączam na księżyc aktualnego układu przed wysyłką.`, "warn");
+              setTimeout(() => { handlePendingMission().catch(() => {}); }, 1200);
+              return;
+            }
+            GM_setValue("pending_mission", JSON.stringify(mission)); // launchChecked przeżywa przeładowanie
+            log(`[BAZA=KSIĘŻYC] aktualny układ nie ma księżyca — misja ${mission.type} startuje z PLANETY (falanga widzi ten lot).`, "warn");
           }
         }
         // ── v2.10.23/24: same-target send guard (defence in depth) ──
@@ -8463,7 +8581,7 @@
           // Stara rotacja przełączałaby aktywne ciało na kolonię i cała taktyka
           // "wszystko z księżyca" rozjechałaby się po jednej pustej wysyłce.
           if (CONFIG.baseBody === "moon") {
-            log("Brak minerów na księżycu bazy — są w powietrzu. Czekam na powrót (tryb księżycowy: bez rotacji po koloniach).", "asteroid");
+            log("Brak minerów na aktywnym księżycu — są w powietrzu. Czekam na powrót (tryb księżycowy: bez rotacji po koloniach).", "asteroid");
             GM_setValue("pending_mission", null);
             const storedReturnMoon = parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0;
             if (!(storedReturnMoon > Date.now())) GM_setValue("ogamex_fleet_return_at", String(Date.now() + 10 * 60 * 1000));
@@ -10905,7 +11023,7 @@
       const bbBtn = document.getElementById("ogx-base-body");
       if (bbBtn) bbBtn.addEventListener("click", () => {
         const toMoon = CONFIG.baseBody !== "moon";
-        if (toMoon && !window.confirm("Start wysyłek z KSIĘŻYCA?\n\nFalanga nie widzi lotów z księżyca — koniec snajperek na powrót floty. WARUNEK: flota, minery, recyklery i deuter muszą stać na księżycu bazy (przenieś przyciskiem RATUJ FLOTĘ, jeśli jeszcze są na planecie).")) return;
+        if (toMoon && !window.confirm("Start wysyłek z KSIĘŻYCA?\n\nFalanga nie widzi lotów z księżyca — koniec snajperek na powrót floty. Od v2.82.0 chodzi o księżyc AKTUALNEGO układu (tam, gdzie stoisz). WARUNEK: flota, minery, recyklery i deuter muszą stać na tym księżycu (przenieś przyciskiem RATUJ FLOTĘ, jeśli są na planecie). Układ bez księżyca = start z planety.")) return;
         CONFIG.baseBody = toMoon ? "moon" : "planet";
         saveConfig(CONFIG);
         bbBtn.textContent = toMoon ? "KSIĘŻYC" : "PLANETA";
@@ -10940,7 +11058,7 @@
             const system = sMatch ? parseInt(sMatch[1]) : 0;
 
             // v2.9.3: TTL vs flight check (same guard as auto-dispatch).
-            const baseForCheck = CONFIG.asteroidMining.minerBase;
+            const baseForCheck = HomeBase.coords();
             if (result.ttlSeconds != null && baseForCheck) {
               const sameGal = baseForCheck.galaxy === galaxy;
               const dist = sameGal ? Math.abs(baseForCheck.system - system) : Infinity;
@@ -11370,7 +11488,7 @@
       } else if (!FleetRecon.expeditionLink()) {
         etext = "Czeka na link ekspedycji — wejdź raz na Galaxy";
       } else if (!ExpeditionRunner.base()) {
-        etext = "Brak bazy — ustaw minerBase / expeditions.base";
+        etext = "Nie znam punktu startu — otwórz stronę z listą planet";
       } else {
         const s = ExpeditionRunner.slots();
         const nextMs = ExpeditionRunner.msToNextWave();

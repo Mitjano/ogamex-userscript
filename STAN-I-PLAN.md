@@ -6,6 +6,36 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 — v2.82.0: START Z AKTUALNEGO CIAŁA (HomeBase)
+
+**Decyzja ownera:** agresywni sąsiedzi → mining i ekspedycje mają startować
+z planety/księżyca AKTYWNEGO w pasku planet, nie ze sztywnej bazy [3:272:7].
+Zmiana miejsca startu = przełączenie planety w grze, zero konfiguracji.
+
+Nowy moduł `HomeBase` (koordy aktywnego ciała z paska planet + cache GM
+`ogamex_home_body`; fallback `minerBase`). Konsumenci przełączeni na dynamikę:
+- **Mining**: kolejka skanu, TTL-vs-dolot, dispatch (auto+ręczny) liczą od
+  aktywnego ciała; asteroida w innej galaktyce niż aktywne ciało = pomijana.
+- **Ekspedycje**: fale lecą na poz. 16 systemu aktywnego ciała
+  (`expeditions.base` zostało jako świadome sztywne nadpisanie, null = podążaj).
+- **Złom (DebrisCollector)**: zagląda na galaktykę aktywnego układu.
+  UWAGA: złom po ekspedycjach z POPRZEDNIEGO miejsca startu zostaje tam —
+  zebrać ręcznie albo wrócić ciałem.
+- **Prom (MoonFerry)**: planeta → księżyc AKTUALNEGO układu; układ bez
+  księżyca = prom pominięty (stempel 2 h).
+- **Tryb księżycowy** (`baseBody:"moon"`): dokręca tylko CIAŁO w obrębie
+  aktualnej pary (planeta→jej księżyc). Układ bez księżyca = start z planety
+  + głośny warn (falanga widzi lot).
+- **Bezpiecznik w switch_to_body**: szukanie księżyca pary STOPUJE na
+  następnym wpisie planety — bezksiężycowa para nie „pożyczy" już cudzego
+  księżyca z listy.
+
+NIETKNIĘTE: obrona (ratunek/straż/RescueQueue), FS (od v2.75.0 i tak startuje
+z aktywnego księżyca), farm (od v2.74.8 startuje z aktualnego ciała).
+`minerBase` w configu zostaje wyłącznie jako fallback, gdy nie widać paska.
+
+---
+
 ## AKTUALIZACJA 05.08 ~23:40 (dom) — przenosiny bazy + FS potwierdzony
 
 **BAZA PRZENIESIONA: [3:269:8] → [3:272:7]** (agresor „Ay"/Sniper wskoczył do
