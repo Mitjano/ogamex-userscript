@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.84.0
+// @version      2.85.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -159,6 +159,13 @@
       // bez podmiany wersji skryptu — pierwsza kolonia jest ratowana tak
       // samo w obu ustawieniach.
       rescueQueue: true,
+      // ── v2.85.0: UCIECZKA W POWIETRZE ──
+      // Atak na OBA ciała jednej pary naraz (planeta + księżyc, np. GS
+      // „zniszcz księżyc" + atak na planetę): ewakuacja w obrębie pary
+      // przenosi flotę pod drugie uderzenie. Zamiast tego WSZYSTKO leci
+      // powolnym Deployem do innej kolonii i ZAWRACA po przejściu ataków
+      // (flota w locie jest nietykalna). OFF = zachowanie 2.84.0.
+      airSave: true,
       // v2.80.0: cichy dźwięk trzymający kartę przy życiu w tle.
       // Skutek uboczny: karta dostaje ikonkę głośnika i pojawia się
       // w sterowaniu multimediami. Dlatego jest wyłącznik.
@@ -4775,6 +4782,278 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  AIR SAVE (v2.85.0) — UCIECZKA W POWIETRZE na atak obu ciał pary
+  // ═══════════════════════════════════════════════════════════════
+  // Jedyny scenariusz, w którym ewakuacja księżyc↔planeta NIE ratuje floty:
+  // napastnik uderza JEDNOCZEŚNIE w planetę i księżyc tej samej pary
+  // (klasyka: GS „zniszcz księżyc" + atak na planetę). Odpowiedź uzgodniona
+  // z ownerem (OTWARTE od 07.08, zielone światło 12.08): wysłać WSZYSTKO
+  // powolnym Deployem do innej kolonii i ZAWRÓCIĆ po przejściu ataków —
+  // flota w locie jest nietykalna, a zawrócenie lotu startującego
+  // z księżyca jest niewidzialne dla falangi.
+  //
+  // Warstwa NA istniejącej ścieżce (strategia zmian w obronie):
+  //   • odpala się TYLKO, gdy lista ruchów pokazuje ataki na OBA ciała
+  //     jednej pary (ev.targetBodiesAll) — każdy inny atak idzie starą,
+  //     bojowo potwierdzoną ścieżką ratunku;
+  //   • każda porażka (brak refugium, lot za krótki, brak przycisku
+  //     zawracania) = głośny wpis + powrót kolonii na zwykły ratunek
+  //     przez markFailed — dno regresji to zachowanie 2.84.0;
+  //   • wysyłka jedzie sprawdzonym formularzem ratunku (wszystkie statki,
+  //     wszystkie surowce minus rezerwa deuteru), prędkość ustawia kod FS,
+  //     zawracanie klika tę samą kontrolkę x_btn_fleet_return, którą FS
+  //     zawraca na żywo od v2.66.9.
+  const AirSave = {
+    KEY: "ogamex_airsave",
+    KEY_FAIL: "ogamex_airsave_fail",
+    RECALL_BUFFER_MS: 120000,   // zawrócenie: ostatni dolot ataku + 2 min zapasu
+
+    enabled() { return CONFIG.threatAlarm?.airSave !== false; },
+    state() { try { return JSON.parse(GM_getValue(this.KEY, "null")) || {}; } catch { return {}; } },
+    save(st) { GM_setValue(this.KEY, st ? JSON.stringify(st) : "null"); },
+
+    key(c) { return c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : null; },
+
+    // CZYSTA decyzja — bez DOM, sieci i zegara systemowego. Testowana
+    // offline (test-ucieczka.js) i wołana na żywo przez MoonSave.run().
+    decide({ enabled, bodies, activePhase, failedAt, now }) {
+      if (!enabled) return "swap";
+      if (activePhase === "launched" || activePhase === "recalled" || activePhase === "arming") return "active";
+      if (!bodies || bodies.length < 2) return "swap";
+      if (failedAt && now - failedAt < 10 * 60 * 1000) return "swap";
+      return "air";
+    },
+
+    // CZYSTA arytmetyka zawrócenia: ostatni dolot + bufor.
+    recallAtFor(maxEtaSec, now) { return now + Math.max(0, maxEtaSec || 0) * 1000 + this.RECALL_BUFFER_MS; },
+
+    decideFor(atCoords) {
+      const k = this.key(atCoords);
+      if (!k) return "swap";
+      let ev = null;
+      try { ev = ThreatMonitor.events(); } catch {}
+      let failedAt = 0;
+      try { failedAt = (JSON.parse(GM_getValue(this.KEY_FAIL, "{}")) || {})[k] || 0; } catch {}
+      const st = this.state();
+      return this.decide({
+        enabled: this.enabled(),
+        bodies: (ev?.targetBodiesAll || {})[k] || [],
+        activePhase: (st.phase && this.key(st.at) === k) ? st.phase : null,
+        failedAt,
+        now: Date.now(),
+      });
+    },
+
+    markFailed(atCoords, why) {
+      const k = this.key(atCoords);
+      if (!k) return;
+      let m = {};
+      try { m = JSON.parse(GM_getValue(this.KEY_FAIL, "{}")) || {}; } catch {}
+      m[k] = Date.now();
+      GM_setValue(this.KEY_FAIL, JSON.stringify(m));
+      DefenceWatchdog.note(`ucieczka w powietrze nieudana (${why}) — kolonia [${k}] wraca na zwykły ratunek`);
+    },
+
+    // Najbliższa WŁASNA kolonia poza atakowaną parą (z paska planet;
+    // preferuj tę samą galaktykę — i tak lecimy wolno, chodzi o dolot,
+    // którego nigdy nie będzie).
+    refuge(atCoords) {
+      const list = [];
+      for (const p of document.querySelectorAll("a.planet-select, .planet-select")) {
+        const m = (p.textContent || "").replace(/\s+/g, " ").match(/(\d+):(\d+):(\d+)/);
+        if (m) list.push({ galaxy: +m[1], system: +m[2], position: +m[3] });
+      }
+      const k = this.key(atCoords);
+      const own = list.filter(c => this.key(c) !== k);
+      if (!own.length) return null;
+      const sameGal = own.filter(c => c.galaxy === atCoords.galaxy);
+      const pool = sameGal.length ? sameGal : own;
+      pool.sort((a, b) => Math.abs(a.system - atCoords.system) - Math.abs(b.system - atCoords.system));
+      return pool[0];
+    },
+
+    // Wysyłka. Wołane z MoonSave.run() — aktywna kolonia to już atakowana
+    // para (autoSaveOnThreat przełączył się wcześniej). Zwraca true, gdy
+    // misja ruszyła; false = wracaj na zwykły ratunek.
+    async launch(atCoords, reason, maxEtaSec) {
+      const to = this.refuge(atCoords);
+      if (!to) {
+        log("[UCIECZKA] nie widzę żadnej innej kolonii na pasku planet — wracam do zwykłego ratunku.", "error");
+        this.markFailed(atCoords, "brak refugium na pasku planet");
+        return false;
+      }
+      const holdUntilMs = this.recallAtFor(maxEtaSec, Date.now());
+      const speed = Math.max(1, Math.min(100, parseInt(CONFIG.fleetSave?.speedPercent) || 10));
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "air_save_direct",
+        moonSave: true,          // formularz ratunku: wszystkie statki + surowce − rezerwa deuteru
+        airSave: true,
+        atCoords,                // atakowana para (dla flipa pustego hangaru)
+        holdUntilMs,             // kiedy zawrócić: ostatni dolot + bufor
+        speedPercent: speed,     // wolno = długi lot = zawsze zdążymy zawrócić
+        fleetUrl: `/fleet?x=${to.galaxy}&y=${to.system}&z=${to.position}`,
+        step: "select_ships_direct",
+        timestamp: Date.now(),
+      }));
+      this.save({ phase: "arming", at: atCoords, to, holdUntilMs, reason, createdAt: Date.now() });
+      DefenceHold.stamp();
+      const hhmm = new Date(holdUntilMs).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+      log(`UCIECZKA W POWIETRZE: atak na OBA ciała [${this.key(atCoords)}] — wysyłam WSZYSTKO powolnym Deployem (${speed}%) do [${this.key(to)}], zawrócę ~${hhmm} (po przejściu ataków).`, "error");
+      ThreatLog.add("RATUNEK", `UCIECZKA W POWIETRZE: oba ciała [${this.key(atCoords)}] pod atakiem — flota leci do [${this.key(to)}] (${speed}%), zawrócenie ~${hhmm}.`);
+      await AntiDetection.sleep(300 + Math.random() * 400);
+      window.location.href = `/fleet?x=${to.galaxy}&y=${to.system}&z=${to.position}`;
+      return true;
+    },
+
+    // Po potwierdzonej wysyłce (finishDispatch ORAZ fleetSendSuccessfully —
+    // obie ścieżki mogą odpalić dla tej samej wysyłki, stąd dedup 15 s).
+    afterSend(mission) {
+      const st = this.state();
+      if (st.phase === "launched" && Date.now() - (st.sentAt || 0) < 15000) return;
+      this.save({
+        ...st,
+        phase: "launched",
+        sentAt: Date.now(),
+        flightMs: (mission && mission.flightMs) || st.flightMs || 0,
+        recallAt: (mission && mission.holdUntilMs) || st.holdUntilMs || (Date.now() + this.RECALL_BUFFER_MS),
+        at: st.at || (mission && mission.atCoords) || null,
+      });
+      updateStatusUI();
+    },
+
+    // Tick w pętli obrony (przed FS): pilnuje zawrócenia i domyka cykl.
+    async tick() {
+      const st = this.state();
+      if (!st.phase) return;
+      if (st.phase === "arming") {
+        // Wysyłka nie potwierdziła się w 5 min = misja padła w formularzu.
+        if (Date.now() - (st.createdAt || 0) > 5 * 60 * 1000) {
+          this.save(null);
+          this.markFailed(st.at, "wysyłka nie potwierdziła się w 5 min");
+          log("[UCIECZKA] wysyłka nie potwierdziła się w 5 min — stan wyczyszczony, kolonia wraca na zwykły ratunek.", "error");
+        }
+        return;
+      }
+      if (st.phase === "launched") {
+        DefenceWatchdog.note("ucieczka w powietrze w locie — zawrócenie wg zegara");
+        if (Date.now() >= (st.recallAt || 0)) await this._recall(st);
+        return;
+      }
+      if (st.phase === "recalled") {
+        // Powrót trwa tyle, ile lot do chwili zawrócenia; domknij z zapasem.
+        const backMs = Math.max(60000, (st.recalledAt || 0) - (st.sentAt || 0));
+        if (Date.now() > (st.recalledAt || 0) + backMs + 10 * 60 * 1000) {
+          this.save(null);
+          log("[UCIECZKA] cykl domknięty — flota powinna być z powrotem w domu. Zerknij do hangaru.", "success");
+        }
+        return;
+      }
+      if (st.phase === "recall_failed") {
+        // Stan trwały do ręcznego sprzątnięcia — przypominaj co 15 min.
+        if (Date.now() - (st.nagAt || 0) > 15 * 60 * 1000) {
+          this.save({ ...st, nagAt: Date.now() });
+          log(`[UCIECZKA] flota NIE została zawrócona — doleci/doleciała do [${this.key(st.to)}]. Ściągnij ją ręcznie (Deploy powrotny), potem stan wyczyści się sam po 2 h.`, "error");
+        }
+        if (Date.now() - (st.createdAt || st.sentAt || 0) > 2 * 60 * 60 * 1000) this.save(null);
+      }
+    },
+
+    // Nasz lot: Deploy/stacjonowanie z atakowanej pary do refugium, nie-powrotny.
+    _findOurRow(doc, st) {
+      const toKey = this.key(st.to), atKey = this.key(st.at);
+      for (const tr of doc.querySelectorAll("tr[class*='row-mission-type-']")) {
+        const cls = String(tr.className);
+        if (!/DEPLOY|STATION/i.test(cls)) continue;
+        if (/return/i.test(cls)) continue;
+        const txt = tr.textContent || "";
+        if (toKey && txt.includes(`[${toKey}]`) && atKey && txt.includes(`[${atKey}]`)) return tr;
+      }
+      return null;
+    },
+
+    async _recall(st) {
+      if (this._recalling) return;
+      this._recalling = true;
+      try {
+        const tries = (st.recallTries || 0) + 1;
+        this.save({ ...st, recallTries: tries });
+        if (tries > 5) {
+          this.save({ ...st, phase: "recall_failed" });
+          log("[UCIECZKA] 5 nieudanych prób zawrócenia — flota DOLECI do refugium i tam zostanie (bezpieczna, ale poza domem). Ściągnij ją ręcznie.", "error");
+          ThreatLog.add("BŁĄD", `Ucieczka w powietrze: zawrócenie nie powiodło się 5×. Flota doleci do [${this.key(st.to)}] — ściągnij ręcznie.`);
+          return;
+        }
+        let html = "";
+        try {
+          const res = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          if (res.ok) html = await res.text();
+        } catch {}
+        if (!html) { log("[UCIECZKA] lista ruchów flot nie odpowiada — ponowię w następnym przebiegu.", "warn"); return; }
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const row = this._findOurRow(doc, st);
+        if (!row) {
+          const etaAbs = (st.sentAt || 0) + (st.flightMs || 0);
+          if (st.flightMs && Date.now() < etaAbs - 60000) {
+            this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
+            log("[UCIECZKA] lotu nie ma na liście przed czasem dolotu — zawrócony (możliwe, że ręcznie). Zamykam cykl.", "info");
+          } else {
+            this.save({ ...st, phase: "recall_failed" });
+            log("[UCIECZKA] nie znajduję naszego lotu na liście — doleciał do refugium? Ściągnij flotę ręcznie.", "error");
+            ThreatLog.add("BŁĄD", `Ucieczka w powietrze: lot zniknął z listy (doleciał?). Flota na [${this.key(st.to)}] — ściągnij ręcznie.`);
+          }
+          return;
+        }
+        // Klik x_btn_fleet_return — dokładnie ścieżka FS (potwierdzona na żywo).
+        const fleetId = row.getAttribute("data-fleet-id") || "";
+        const findLive = () => (fleetId
+          ? document.querySelector(`a.x_btn_fleet_return[data-fleet-id="${fleetId}"]`)
+          : document.querySelector("a.x_btn_fleet_return"));
+        let live = findLive();
+        if (!live) {
+          const cands = [...document.querySelectorAll("a, button, div, span, h2, h3")]
+            .filter(e => e.offsetParent !== null && !e.closest("#ogx-bot-panel"))
+            .filter(e => { const t = (e.textContent || "").trim(); return t.length > 0 && t.length < 60 && /fleet\s*movements|^events$|\d+\s*Missions?/i.test(t); });
+          for (const t of cands) {
+            t.click();
+            for (let i = 0; i < 8 && !live; i++) { await AntiDetection.sleep(500); live = findLive(); }
+            if (live) break;
+          }
+        }
+        if (!live) {
+          const navs = (st.recallNavs || 0) + 1;
+          if (navs <= 2) {
+            this.save({ ...st, recallTries: tries - 1, recallNavs: navs }); // nawigacja nie zjada próby
+            log(`[UCIECZKA] przycisk zawracania nie na tej stronie — przechodzę na /fleet (${navs}/2).`, "info");
+            window.location.href = "/fleet";
+            return;
+          }
+          log(`[UCIECZKA] nie mogę dosięgnąć przycisku zawracania (próba ${tries}/5) — ponowię.`, "warn");
+          return;
+        }
+        const w = (typeof unsafeWindow !== "undefined" && unsafeWindow) || window;
+        const orig = w.confirm;
+        try { w.confirm = () => true; live.click(); await AntiDetection.sleep(800); }
+        finally { try { w.confirm = orig; } catch {} }
+        await AntiDetection.sleep(4000);
+        let ok = false;
+        try {
+          const res2 = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          const doc2 = res2.ok ? new DOMParser().parseFromString(await res2.text(), "text/html") : null;
+          const row2 = doc2 && (fleetId ? doc2.querySelector(`tr[data-fleet-id="${fleetId}"]`) : this._findOurRow(doc2, st));
+          if (!row2 || /return|powr|zawr/i.test((row2.className || "") + " " + (row2.textContent || ""))) ok = true;
+        } catch {}
+        if (ok) {
+          this.save({ ...st, recallTries: tries, phase: "recalled", recalledAt: Date.now() });
+          log("[UCIECZKA] flota ZAWRÓCONA — wraca do domu. Ataki przeszły w pustkę.", "success");
+          ThreatLog.add("POWRÓT", "UCIECZKA W POWIETRZE: flota zawrócona po przejściu ataków — wraca do domu.");
+        } else {
+          log(`[UCIECZKA] zawrócenie niepotwierdzone (próba ${tries}/5) — ponowię.`, "warn");
+        }
+      } finally { this._recalling = false; }
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  LLM PARSER (v2.64.0) — Gemini czyta to, czego parsery nie rozumieją
   // ═══════════════════════════════════════════════════════════════
   // Powracający ból tego projektu to markup: „unknown message markup",
@@ -5254,17 +5533,40 @@
               ThreatLog.add("ATAK", `Zrzucono surowy HTML ${Math.min(attacks.length, 3)} wrogiego(-ich) wiersza(-y) do logu głównego — materiał do weryfikacji klasyfikacji.`);
             }
           }
+          // ── v2.85.0: mapy per kolonia ──
+          // • cele w kolejności NAJKRÓTSZEGO dolotu (kolonia, w którą
+          //   uderzenie przyjdzie najwcześniej, ratowana pierwsza),
+          // • ciało celu PER KOLONIA (dotąd globalne z 1. wiersza — przy
+          //   ataku mieszanym druga kolonia polegała tylko na zapasowym
+          //   bezpieczniku pustego hangaru),
+          // • zestaw ciał + najdłuższy dolot per kolonia — wyzwalacz
+          //   i zegar zawrócenia UCIECZKI W POWIETRZE.
+          const byDst = new Map(); // dst -> { minEta, maxEta, bodies:Set, body }
+          for (const r of attacks) {
+            if (!r.dst) continue;
+            const e = Number.isFinite(r.eta) && r.eta > 0 ? r.eta : 9e9;
+            const rec = byDst.get(r.dst) || { minEta: Infinity, maxEta: 0, bodies: new Set(), body: null };
+            if (e < rec.minEta) { rec.minEta = e; rec.body = r.dstBody || rec.body; }
+            if (e !== 9e9 && e > rec.maxEta) rec.maxEta = e;
+            if (r.dstBody) rec.bodies.add(r.dstBody);
+            byDst.set(r.dst, rec);
+          }
+          const dstSorted = [...byDst.keys()].sort((a, b) => byDst.get(a).minEta - byDst.get(b).minEta);
           const out = {
             at: Date.now(),
             hostile: foreign.length,
             attacks: attacks.length,
             spies: spies.length,
             classified: true,
-            targets: [...new Set(attacks.map(r => r.dst).filter(Boolean))],
+            targets: dstSorted,
             origins: [...new Set(attacks.map(r => r.src).filter(Boolean))],
             // v2.70.0: w KTÓRE ciało leci atak (ikona przy celu w wierszu) —
             // pozwala nie ruszać floty stojącej po bezpiecznej stronie.
+            // (zostaje globalnie dla kompatybilności; nowe odczyty biorą mapy)
             targetBody: (attacks.find(r => r.dstBody) || {}).dstBody || null,
+            targetBodies: Object.fromEntries(dstSorted.filter(k => byDst.get(k).body).map(k => [k, byDst.get(k).body])),
+            targetBodiesAll: Object.fromEntries(dstSorted.map(k => [k, [...byDst.get(k).bodies]])),
+            targetMaxEta: Object.fromEntries(dstSorted.map(k => [k, byDst.get(k).maxEta || null])),
             // v2.70.1: najkrótszy czas dolotu ataku — blitz z sąsiedniego
             // układu (<2 min) nie może czekać na pełne potwierdzenie.
             minEta: attacks.length ? Math.min(...attacks.map(r => r.eta || 9e9)) : null,
@@ -6214,9 +6516,13 @@
         // AKTYWNĄ, więc porównanie jest miarodajne tylko, gdy stoimy na
         // atakowanej kolonii — w przeciwnym razie decyzję podejmuje korekta
         // ciała na formularzu (widzi, gdzie naprawdę stoi flota).
-        const atkBody = ev?.targetBody || null;
+        // v2.85.0: ciało celu PER KOLONIA; przy ataku na OBA ciała pary
+        // nie istnieje „bezpieczna strona" — strażnik się wyłącza, a decyzję
+        // przejmuje ucieczka w powietrze w run().
+        const atkBody = (ev?.targetBodies || {})[target] || ev?.targetBody || null;
+        const pairBodies = (ev?.targetBodiesAll || {})[target] || [];
         const active = this.activeCoords();
-        if (atkBody && active === target) {
+        if (atkBody && active === target && pairBodies.length < 2) {
           const cur = this.currentBody();
           if (cur && cur !== atkBody) {
             this._sayOnce("safeside", `[RATUNEK] atak celuje w ${atkBody === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${target}], a flota stoi na ${cur === "moon" ? "księżycu" : "planecie"} — po bezpiecznej stronie. NIE ruszam floty (ruch wprowadziłby ją pod atak).`);
@@ -6422,6 +6728,25 @@
         // w bazę (incydent 22:18 06.08: sweep [2:277:8] poleciał w [3:272:7]).
         // Kolejność: jawne where → kolonia z alarmu → dopiero baza.
         const at = this.coordsOf(where || this.watch().at || null);
+        // ── v2.85.0: UCIECZKA W POWIETRZE — decyzja PRZED zwykłym ratunkiem ──
+        // Oba ciała TEJ pary pod atakiem = ewakuacja w obrębie pary przenosi
+        // flotę pod drugie uderzenie; wtedy (i tylko wtedy) całość leci
+        // powolnym Deployem do innej kolonii. Każde „nie" (wyłączone, jedno
+        // ciało, świeża porażka, zamiatanie, kolejka, ręczny RATUJ) = stara,
+        // bojowo potwierdzona ścieżka — dno regresji to 2.84.0.
+        if (!sweep && !queued && !manual) {
+          const airVerdict = AirSave.decideFor(at);
+          if (airVerdict === "active") {
+            DefenceWatchdog.note(`ucieczka w powietrze w toku dla [${AirSave.key(at)}] — zwykły ratunek wstrzymany`);
+            return false;
+          }
+          if (airVerdict === "air") {
+            let maxEta = 0;
+            try { maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[AirSave.key(at)] || 0; } catch {}
+            if (await AirSave.launch(at, reason, maxEta)) return true;
+            // porażka startu = markFailed zapisany — lecimy starą ścieżką
+          }
+        }
         const href = this.targetUrl(at);
         // ── v2.28.0: uciekaj na DRUGIE ciało, nie zawsze na księżyc ──
         // Właściciel: „jeśli flota stoi na księżycu i leci atak na księżyc, ma
@@ -8160,6 +8485,7 @@
           // v2.14.0: expeditions own their pacing/counters and must not touch
           // the mining wait timers (a 1h expedition would pause the scanner).
           if (mission.moonSave) {
+            if (mission.airSave && dispatchOk) { try { AirSave.afterSend(mission); } catch {} } // v2.85.0
             if (dispatchOk) log(`[${missionTag("MOON SAVE")}] fleet and resources are on the moon.`, "success");
             return;
           }
@@ -8415,8 +8741,12 @@
           // Zamiast ładować to, co stoi na bezpiecznym ciele (i wysyłać je
           // POD atak), od razu przeskakujemy na ciało atakowane i ratujemy
           // stamtąd — tą samą maszynerią co flip przy pustym hangarze.
-          const atkNow = (() => { try { return ThreatMonitor.events()?.targetBody || null; } catch { return null; } })();
-          if (!mission.moonReturn && !mission.flippedBody && !mission.sweep
+          // v2.85.0: ciało celu per kolonia (mission.atCoords), z globalnym
+          // fallbackiem. Ucieczka w powietrze nie flipuje „na atakowane
+          // ciało" — atakowane są OBA; startujemy stamtąd, gdzie stoi flota.
+          const missionKey = mission.atCoords ? `${mission.atCoords.galaxy}:${mission.atCoords.system}:${mission.atCoords.position}` : null;
+          const atkNow = (() => { try { const ev = ThreatMonitor.events(); return (missionKey && ev?.targetBodies?.[missionKey]) || ev?.targetBody || null; } catch { return null; } })();
+          if (!mission.moonReturn && !mission.flippedBody && !mission.sweep && !mission.airSave
               && (MoonSave.watch().saves || 0) <= 1 && ThreatMonitor.active()
               && atkNow && bodyNow && bodyNow !== atkNow) {
             log(`[MOON SAVE] atak celuje w ${atkNow === "moon" ? "KSIĘŻYC" : "PLANETĘ"}, a stoję na ${bodyNow === "moon" ? "księżycu" : "planecie"} — przełączam się na atakowane ciało i ratuję stamtąd.`, "warn");
@@ -8468,22 +8798,31 @@
             // odstawił flotę na złe ciało. Dodatkowo: flip nigdy nie może
             // uczynić celem ciała, w które leci atak.
             const hereB = MoonSave.currentBody() || "planet";
-            const atkB = (() => { try { return ThreatMonitor.events()?.targetBody || null; } catch { return null; } })();
+            const emptyKey = mission.atCoords ? `${mission.atCoords.galaxy}:${mission.atCoords.system}:${mission.atCoords.position}` : null;
+            const atkB = (() => { try { const ev = ThreatMonitor.events(); return (emptyKey && ev?.targetBodies?.[emptyKey]) || ev?.targetBody || null; } catch { return null; } })();
+            // v2.85.0: ucieczka w powietrze MUSI znaleźć flotę — pusty hangar
+            // na aktywnym ciele = flota stoi na DRUGIM ciele TEJ pary; flip
+            // bez warunku „atak w drugie ciało", bo atakowane są oba.
             if (!mission.moonReturn && !mission.flippedBody && !mission.sweep
-                && (MoonSave.watch().saves || 0) <= 1 && ThreatMonitor.active() && atkB !== hereB) {
+                && (mission.airSave || ((MoonSave.watch().saves || 0) <= 1 && ThreatMonitor.active() && atkB !== hereB))) {
               const here = hereB;
               const other = here === "moon" ? "planet" : "moon";
               log(`[MOON SAVE] hangar na ${here === "moon" ? "księżycu" : "planecie"} PUSTY, a alarm trwa — flota stoi na ${other === "moon" ? "księżycu" : "planecie"}. Przełączam się i ratuję stamtąd.`, "warn");
               ThreatLog.add("RATUNEK", `Hangar ${here} pusty przy alarmie → flota na ${other}. Przełączam ciało i ratuję ${other} → ${here}.`);
               mission.flippedBody = true;
               mission.launchBody = other;
-              mission.targetBody = here;
+              // v2.85.0: przy ucieczce w powietrze CEL to inna kolonia —
+              // targetBody misji zostaje nietknięte (planeta refugium).
+              if (!mission.airSave) mission.targetBody = here;
               mission.step = "switch_to_body";
               mission.timestamp = Date.now();
               GM_setValue("pending_mission", JSON.stringify(mission));
-              // Straż musi wiedzieć, gdzie jest dom, żeby powrót szedł w dobrą stronę.
-              const w = MoonSave.watch();
-              MoonSave.saveWatch({ ...w, homeBody: other, refugeBody: here });
+              // Straż musi wiedzieć, gdzie jest dom, żeby powrót szedł w dobrą
+              // stronę. Ucieczka w powietrze nie zbroi straży — nie tykamy.
+              if (!mission.airSave) {
+                const w = MoonSave.watch();
+                MoonSave.saveWatch({ ...w, homeBody: other, refugeBody: here });
+              }
               await AntiDetection.sleep(500 + Math.random() * 500);
               window.location.href = "/";
               return;
@@ -8903,7 +9242,7 @@
         // do logu, a o skutku i tak decyduje bramka niżej — na czasie lotu,
         // który pokazuje SAMA GRA. Nieustawiona prędkość ≠ zła wysyłka:
         // najwyżej okno nie zmieści się w 2×T i bot odmówi startu.
-        if (mission.fleetSave) {
+        if (mission.fleetSave || mission.airSave) { // v2.85.0: ucieczka w powietrze leci wolno tym samym kodem
           const pct = Math.max(1, Math.min(100, parseInt(mission.speedPercent) || 100)); // v2.74.1: fork ma też 3% i 5%
           let speedSet = false;
           // 1) select, którego opcje wyglądają jak procenty (wzorzec „po tekście”
@@ -9047,6 +9386,27 @@
           }
         }
 
+        // ── v2.85.0: UCIECZKA W POWIETRZE — bramka arytmetyki ──
+        // Zawrócić można tylko lot, który jeszcze leci — czas lotu z kroku 2
+        // musi pokrywać okno „ostatni dolot ataku + bufor". Za krótki lot =
+        // uczciwa odmowa i powrót kolonii na zwykły ratunek (swap > nic).
+        if (mission.airSave) {
+          if (capturedFlightMs > 0) {
+            mission.flightMs = capturedFlightMs;
+            GM_setValue("pending_mission", JSON.stringify(mission));
+            const neededMs = Math.max(0, (mission.holdUntilMs || 0) - Date.now()) + 60000;
+            if (capturedFlightMs < neededMs) {
+              log(`[UCIECZKA] lot ${Math.round(capturedFlightMs / 60000)} min KRÓTSZY niż wymagane ${Math.ceil(neededMs / 60000)} min (ostatni dolot + bufor) — NIE wysyłam w powietrze, kolonia wraca na zwykły ratunek.`, "error");
+              ThreatLog.add("BŁĄD", `Ucieczka w powietrze odwołana: lot ${Math.round(capturedFlightMs / 60000)} min < wymagane ${Math.ceil(neededMs / 60000)} min. Przechodzę na ratunek na drugie ciało.`);
+              AirSave.markFailed(mission.atCoords, "lot za krótki na okno zawrócenia");
+              AirSave.save(null);
+              GM_setValue("pending_mission", null);
+              return;
+            }
+          } else {
+            log("[UCIECZKA] nie odczytałem czasu lotu w kroku 2 — wysyłam mimo to (wolny Deploy do innej kolonii to godziny lotu vs minuty dolotu ataku).", "warn");
+          }
+        }
         // ── v2.60.0: FS — bramka arytmetyki na PRAWDZIWYM czasie lotu ──
         // To jest serce bezpieczeństwa FS: decyzja nie zapada na szacunku ani
         // na niezweryfikowanym markupli, tylko na czasie lotu, który gra sama
@@ -10079,6 +10439,10 @@
       // którego ona istnieje: zawrócenie w środku nocy nie może zależeć od
       // schedulera, który śpi w oknie nocnym i staje na jitterze. Ratunek ma
       // pierwszeństwo — tick FS sam ustępuje przy aktywnym alarmie.
+      // v2.85.0: zegar zawrócenia ucieczki w powietrze — żyje w pętli obrony
+      // z tego samego powodu co FS: zawrócenie nie może zależeć od schedulera,
+      // który śpi w oknie nocnym i staje na jitterze.
+      await AirSave.tick().catch((e) => { log(`[UCIECZKA] błąd ticku: ${e.message}`, "error"); });
       await FleetSave.tick().catch((e) => { log(`[FS] błąd ticku: ${e.message}`, "error"); });
 
       // ── v2.39.0: gdy COŚ widzimy, patrz częściej ──
@@ -10420,6 +10784,10 @@
               <button class="mini-btn" id="ogx-rescue-queue">${CONFIG.threatAlarm.rescueQueue !== false ? "ON" : "OFF"}</button>
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Atak na OBA ciała jednej pary naraz (planeta + księżyc, np. Gwiazdy Śmierci „zniszcz księżyc” + atak na planetę): ewakuacja w obrębie pary nie ratuje floty, więc bot wysyła WSZYSTKO powolnym Deployem do najbliższej innej kolonii i ZAWRACA po przejściu ataków — flota w locie jest nietykalna, a zawrócenie lotu z księżyca jest niewidzialne dla falangi. OFF = zachowanie sprzed v2.85.0.">Ucieczka w powietrze (oba ciała)</span>
+              <button class="mini-btn" id="ogx-air-save">${CONFIG.threatAlarm.airSave !== false ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Karta odtwarza niesłyszalny dźwięk, dzięki czemu przeglądarka nie zamraża jej ani nie dławi liczników, gdy jest w tle. NIE powstrzyma uśpienia systemu ani zamknięcia klapy — to ustaw w zasilaniu Windows („Uśpienie: Nigdy” przy zasilaniu sieciowym). Skutek uboczny: ikonka głośnika na karcie.">Nie pozwól zamrozić karty</span>
               <button class="mini-btn" id="ogx-keep-awake">${CONFIG.threatAlarm.keepAwake !== false ? "ON" : "OFF"}</button>
             </label>
@@ -10702,6 +11070,7 @@
       bindThreatToggle("ogx-auto-save", "autoSave", "Auto-ratunek przy ataku");
       bindThreatToggle("ogx-auto-return", "autoReturn", "Auto-powrót po alarmie");
       bindThreatToggle("ogx-rescue-queue", "rescueQueue", "Kolejka ratunków (2. kolonia)");
+      bindThreatToggle("ogx-air-save", "airSave", "Ucieczka w powietrze (oba ciała)"); // v2.85.0
       bindThreatToggle("ogx-keep-awake", "keepAwake", "Nie pozwól zamrozić karty");
       // v2.74.0: rezerwa deuteru (paliwo dla floty wracającej z ekspedycji)
       {
@@ -11909,8 +12278,10 @@
       let wasMoonSend = false;
       let wasMoonReturn = false;
       let wasFerry = false;
+      let pmSnap = null; // v2.85.0: ucieczka w powietrze czyta misję po wyczyszczeniu slotu
       try {
         const pm = JSON.parse(GM_getValue("pending_mission", "null"));
+        pmSnap = pm;
         wasFarmSend = !!pm?.farm;
         wasExpoSend = !!pm?.expedition;
         wasMoonSend = !!pm?.moonSave;
@@ -11964,6 +12335,11 @@
           // w dzienniku (zafałszowałby liczniki epizodów obrony).
           ThreatLog.add("odczyt", "PROM: planeta → księżyc wysłany (przewóz produkcji/surowców/floty).");
           log("[PROM] wysłany — wszystko z planety leci na księżyc.", "success");
+        } else if (pmSnap?.airSave) {
+          // v2.85.0: potwierdzona wysyłka ucieczki — stempel stanu + dziennik.
+          try { AirSave.afterSend(pmSnap); } catch {}
+          ThreatLog.add("RATUNEK", "UCIECZKA W POWIETRZE WYSŁANE — flota w locie do refugium, zawrócenie automatyczne po przejściu ataków.");
+          log("[UCIECZKA] gra przyjęła wysyłkę — flota w powietrzu, zawrócenie wg zegara.", "success");
         } else {
           ThreatLog.add(wasMoonReturn ? "POWRÓT" : "RATUNEK", "WYSŁANE — gra przyjęła flotę (potwierdzone po przeładowaniu).");
           log("Ratunek/powrót floty wysłany — liczniki mininga nietknięte.", "fleet");

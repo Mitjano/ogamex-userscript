@@ -15,6 +15,7 @@ const SUITES = [
   ["klasyfikacja wrogich misji", "test-klasyfikacja.js"],
   ["nadzorca obrony", "test-nadzorca.js"],
   ["kolejka ratunków (2. kolonia)", "test-kolejka.js"],
+  ["ucieczka w powietrze (oba ciała pary)", "test-ucieczka.js"],
   ["bramki wysyłek (alarm + paliwo)", "test-bramka-wysylek.js"],
   ["ratunek nietykalny", "test-ratunek-nietykalny.js"],
   ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],

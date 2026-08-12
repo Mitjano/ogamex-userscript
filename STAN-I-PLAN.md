@@ -6,6 +6,38 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (4) — v2.85.0: UCIECZKA W POWIETRZE + kolejka wg ETA + ciało per kolonia
+
+Zielone światło ownera na P1+P2 z audytu. Zamyka JEDYNY scenariusz utraty
+floty: atak na OBA ciała jednej pary naraz (GS „zniszcz księżyc" + atak na
+planetę) — ewakuacja w obrębie pary przenosiła flotę pod drugie uderzenie.
+
+**AirSave (moduł, po FleetSave):** gdy `ev.targetBodiesAll[kolonia]` ma oba
+ciała → zamiast swapa CAŁA flota+surowce (− rezerwa deuteru) leci powolnym
+Deployem (prędkość z `fleetSave.speedPercent`, domyślnie 10%) do najbliższej
+innej kolonii i jest ZAWRACANA po ostatnim dolocie ataku + 2 min
+(x_btn_fleet_return — ta sama kontrolka co FS). Warstwa NA istniejącej
+ścieżce: decyzja w MoonSave.run() (sweep/kolejka/ręczny RATUJ = po staremu);
+każda porażka (brak refugium, lot za krótki wg bramki arytmetyki na kroku 2,
+5× nieudane zawrócenie) = głośny wpis + markFailed → powrót na zwykły
+ratunek na 10 min. Przełącznik w panelu Obrona („Ucieczka w powietrze"),
+domyślnie ON. Zegar w pętli obrony (AirSave.tick przed FS.tick).
+Test: `test-ucieczka.js` (decyzja + arytmetyka zawrócenia, 14 przypadków).
+
+**P2 precyzja:** `ev.targets` sortowane wg NAJKRÓTSZEGO dolotu (kolonia
+z najbliższym uderzeniem ratowana pierwsza — dotyczy też kolejki), nowe mapy
+`ev.targetBodies` (ciało celu PER KOLONIA — flipy na formularzu i strażnik
+bezpiecznej strony czytają per-kolonia zamiast globalnego 1. wiersza),
+`ev.targetBodiesAll` (zestaw ciał — wyzwalacz ucieczki; strażnik bezpiecznej
+strony WYŁĄCZA się przy obu ciałach), `ev.targetMaxEta` (zegar zawrócenia).
+
+NIEPRZETESTOWANE NA ŻYWO: pierwszy realny atak na oba ciała = pierwsza
+bojowa próba ucieczki. Symulacja ataku NIE ćwiczy tej ścieżki (syntetyczne
+zdarzenia nie mają targetBodiesAll) — celowo, żeby nie wysyłała floty na
+wielogodzinny lot przy każdym teście.
+
+---
+
 ## AKTUALIZACJA 12.08 (3) — v2.84.0: punkt startu PER MODUŁ (minery ≠ ekspedycje)
 
 Problem ownera: asteroidy spawnują się ZAWSZE w g3 (tam większość planet),
