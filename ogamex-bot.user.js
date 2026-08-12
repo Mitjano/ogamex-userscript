@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.87.0
+// @version      2.87.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6576,6 +6576,24 @@
           log(`[KOLEJKA] błąd: ${e.message} — pierwsza kolonia pozostaje chroniona.`, "error");
           return false;
         })) return true;
+        // ── v2.87.1: OBA CIAŁA STRZEŻONEJ KOLONII POD ATAKIEM ──
+        // Zaobserwowane NA ŻYWO 12.08 14:28: straż uzbrojona po pierwszym
+        // ataku (flota ewakuowana na refugium), wróg dosłał DRUGĄ flotę na
+        // drugie ciało tej samej pary — a ta gałąź kończyła się głuchym
+        // `return false`: brama ucieczki w powietrze żyje w run(), do
+        // którego uzbrojona straż nigdy nie dochodziła. Flota stała na
+        // refugium pod nadlatującym uderzeniem; uratował ją ręczny Deploy
+        // ownera. Teraz: oba ciała strzeżonej pary pod atakiem → run() →
+        // delegacja do AirSave → wszystko w powietrze.
+        try {
+          const guardedKey = RescueQueue.str(wNow.at);
+          const bodiesNow = (ThreatMonitor.events()?.targetBodiesAll || {})[guardedKey] || [];
+          if (guardedKey && bodiesNow.length >= 2 && AirSave.decideFor(wNow.at) === "air") {
+            log(`[UCIECZKA] OBA ciała strzeżonej kolonii [${guardedKey}] pod atakiem — skok w obrębie pary nie ratuje, wysyłam wszystko w powietrze.`, "error");
+            ThreatLog.add("ATAK", `Oba ciała [${guardedKey}] pod atakiem przy uzbrojonej straży — ucieczka w powietrze zamiast skoku w parze.`);
+            return this.run({ auto: true, where: wNow.at, reason: `AUTOMAT: oba ciała [${guardedKey}] pod atakiem` });
+          }
+        } catch (e) { log(`[UCIECZKA] błąd sprawdzenia pary strzeżonej: ${e.message}`, "warn"); }
         return false;
       }
       if (this.running) return false;

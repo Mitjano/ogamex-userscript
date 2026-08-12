@@ -71,6 +71,8 @@ must("ślepa ścieżka paska syntetyzuje cel = dom floty (switch-first)",
   /if \(!target\) \{\s*\n\s*const fh = CONFIG\.expeditions\?\.launchFrom;/.test(src));
 must("lot międzykolonijny celuje w KSIĘŻYC celu",
   !!runBody && /crossColony \? "moon"/.test(runBody));
+must("uzbrojona straż PYTA ucieczkę w powietrze przy ataku na oba ciała (v2.87.1)",
+  /bodiesNow\.length >= 2 && AirSave\.decideFor\(wNow\.at\) === "air"/.test(src));
 
 console.log("\n── 1b. LĄDOWANIE WG REALNEGO CZASU LOTU (v2.86.5) ──");
 
