@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.86.2
+// @version      2.86.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5856,7 +5856,17 @@
       // do alarmu i nie może zawyżać liczby wrogów w kontroli krzyżowej.
       const fr = document.body.textContent.match(/(\d+)\s*Friendly/);
       const friendly = fr ? (parseInt(fr[1]) || 0) : 0;
-      return { total, own, foreign: Math.max(0, total - own - friendly) };
+      const out = { total, own, foreign: Math.max(0, total - own - friendly) };
+      // ── v2.86.3: ODCZYT PASKA ZOSTAWIA ŚLAD (cache 3 min) ──
+      // KATASTROFA 13:10: pasek zobaczył atak o 13:07:42, ale kolejne 99 s
+      // bot spędził na stronach galaktyki, gdzie pasek się nie renderuje —
+      // a lista ruchów, która NIE ODDAJE wierszy ataków z własnego układu,
+      // odświeżała się jako „czysta" i kasowała obraz. Jeden log, zero
+      // śladu, flota stracona. Każdy udany odczyt paska (także 0 — realne
+      // odwołanie) zapisuje się na 3 min i zastępuje pasek tam, gdzie go
+      // nie ma.
+      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total, own }));
+      return out;
     },
 
     // One-time markup capture so Stage 2 can be written from facts:
@@ -6063,11 +6073,33 @@
       // Pasek misji zostaje wyłącznie jako awaryjne źródło: gdy eventbox nie
       // odpowiedział albo gdy listy zdarzeń nie da się sklasyfikować.
       const bar = this.read();
+      // ── v2.86.3: strona bez paska bierze CACHE odczytu (3 min) ──
+      // Skaner spędza minuty na stronach galaktyki, gdzie pasek się nie
+      // renderuje — dotąd te przebiegi były ślepe na wszystko, czego nie
+      // oddała lista ruchów. Odczyt z ostatniej strony Z paskiem żyje 3 min.
+      let barEff = bar;
+      if (!barEff) {
+        try {
+          const c = JSON.parse(GM_getValue("ogamex_bar_cache", "null"));
+          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, cached: true };
+        } catch {}
+      }
       const ev = this.events();
       const evFresh = ev && Date.now() - ev.at < this.EVENT_MAX_AGE_MS;
-      let r = bar, evSrc = "";
+      let r = barEff, evSrc = "";
       if (evFresh && ev.classified) {
-        r = { total: bar?.total ?? 0, own: bar?.own ?? 0, foreign: ev.attacks };
+        r = { total: barEff?.total ?? 0, own: barEff?.own ?? 0, foreign: ev.attacks };
+        // ── v2.86.3: PASEK WYGRYWA, GDY WIDZI WIĘCEJ NIŻ LISTA ──
+        // KATASTROFA 13:10: lista ruchów tego forka NIE ODDAJE wierszy
+        // ataków z własnego układu (3 rozjazdy 12.08 — wszystkie to loty
+        // Ibra646 z [2:277:11]; ostatni kosztował flotę główną). „Czysta"
+        // świeża lista kasowała odczyt paska przy każdym przebiegu i atak
+        // znikał z obrazu na 99 s. Od teraz: brakujące wiersze = ATAK,
+        // większa liczba wygrywa — na każdej stronie, także z cache.
+        if (barEff && barEff.foreign > ev.attacks) {
+          r = { ...r, foreign: barEff.foreign };
+          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych, lista tylko ${ev.attacks} — brakujące wiersze traktuję jak ATAK`;
+        } else
         evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
           + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
         // ── v2.86.1: SONDA UZBRAJA CZUJNOŚĆ (flotą dalej nie rusza) ──
@@ -6085,7 +6117,7 @@
           GM_setValue("ogamex_spy_alert_at", String(Date.now()));
         }
       } else if (evFresh && ev.hostile > 0) {
-        r = { total: bar?.total ?? 0, own: bar?.own ?? 0, foreign: ev.hostile };
+        r = { total: barEff?.total ?? 0, own: barEff?.own ?? 0, foreign: ev.hostile };
         evSrc = `zdarzenia BEZ klasyfikacji: ${ev.hostile} obcych (typu misji nie dało się odczytać — traktuję jak atak)`;
       }
       // ── v2.29.0: powiedz, CO właściwie odczytałeś ──
@@ -6778,10 +6810,20 @@
         // 1 h 25 min lotu przez pół wszechświata zamiast skoku <1 min na
         // planetę TEJ pary. Flota ocalała (lot = nietykalność), ale straż
         // uzbroiła się na złej kolonii i auto-powrót nie miał czego ściągać.
-        // Formularz wysyła z ciała AKTYWNEGO — więc ratunek bez znanego celu
-        // ma celować w koordy tego właśnie ciała (HomeBase.coords() sam spada
-        // na cache, a w ostateczności na minerBase — stare zachowanie).
-        const at = this.coordsOf(where || this.watch().at || HomeBase.coords() || null);
+        // ── v2.86.3: RATUNEK BEZ CELU BRONI DOMU FLOTY ──
+        // KATASTROFA 12.08 13:10 — utrata floty głównej na [2:277:8]:
+        // Ibra646 [2:277:11] (ten sam układ, ~3 min lotu) zaatakował, a lista
+        // ruchów ZNOWU nie oddała wiersza (pasek 1 obcy / lista 0 → cel
+        // nieznany). Fallback v2.85.1 „chroń aktywną parę" trafił w księżyc
+        // MINERÓW [3:272:7], bo v2.84 sam przełącza aktywne ciało przy każdej
+        // wysyłce górniczej — obrona sprzątała kolonię, przy której bot
+        // PRACOWAŁ, zamiast tej, na której MIESZKA flota. Ostatnie zamiatanie
+        // dotarło na [2:277:8] 4 sekundy po uderzeniu.
+        // Ratunek bez znanego celu broni od teraz DOMU FLOTY: punktu startu
+        // ekspedycji (tam z definicji stoi flota główna i tam wracają fale),
+        // dopiero potem aktywnej pary, na końcu minerBase.
+        const fleetHome = CONFIG.expeditions?.launchFrom || null;
+        const at = this.coordsOf(where || this.watch().at || fleetHome || HomeBase.coords() || null);
         // ── v2.85.0: UCIECZKA W POWIETRZE — decyzja PRZED zwykłym ratunkiem ──
         // Oba ciała TEJ pary pod atakiem = ewakuacja w obrębie pary przenosi
         // flotę pod drugie uderzenie; wtedy (i tylko wtedy) całość leci
