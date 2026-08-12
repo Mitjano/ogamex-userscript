@@ -73,6 +73,10 @@ must("lot międzykolonijny celuje w KSIĘŻYC celu",
   !!runBody && /crossColony \? "moon"/.test(runBody));
 must("uzbrojona straż PYTA ucieczkę w powietrze przy ataku na oba ciała (v2.87.1)",
   /bodiesNow\.length >= 2 && AirSave\.decideFor\(wNow\.at\) === "air"/.test(src));
+must("przełączanie pary celuje po KOORDACH z tekstu kotwicy (v2.87.2)",
+  /anchorByCoords = b \? HomeBase\.pairAnchor\(b\) : null/.test(src));
+must("formularz ratunku/powrotu NIGDY nie wysyła z obcej kolonii (v2.87.2)",
+  /floty z obcej kolonii NIE ruszam/.test(src) && /mission\.moonSave && mission\.atCoords/.test(src));
 
 console.log("\n── 1b. LĄDOWANIE WG REALNEGO CZASU LOTU (v2.86.5) ──");
 

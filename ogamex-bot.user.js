@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.87.1
+// @version      2.87.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8467,8 +8467,17 @@
         // coordinate parsing, and it works whichever half is currently active.
         const b = mission.atCoords || HomeBase.coords();
         let target = null;
+        // ── v2.87.2: NAJPIERW dopasowanie po KOORDACH z tekstu kotwicy ──
+        // Incydent NA ŻYWO 14:35: powrót do [5:67:5] przy aktywnej Colony 11
+        // — stara heurystyka (href/zaznaczona para) wzięła AKTYWNĄ parę
+        // i powrót załadował hangar OBCEJ kolonii (4 statki kolonizacyjne,
+        // 215 mln HC, 849 mld surowców) w 37-minutowy lot. pairAnchor
+        // dopasowuje parę po koordach w tekście — ta sama mechanika, którą
+        // brama launchAt bezbłędnie przełącza pary od v2.84.
+        const anchorByCoords = b ? HomeBase.pairAnchor(b) : null;
+        if (anchorByCoords) target = want === "moon" ? (HomeBase.moonOf(anchorByCoords) || anchorByCoords) : anchorByCoords;
         const planets = [...document.querySelectorAll("a.planet-select, .planet-select")];
-        for (const p of planets) {
+        if (!target) for (const p of planets) {
           const href = p.getAttribute("href") || "";
           const isBase = b && href.includes(`${b.galaxy}`) && href.includes(`${b.system}`) && href.includes(`${b.position}`);
           // v2.82.0: STOP na następnym wpisie planety — bez tego para BEZ
@@ -8574,6 +8583,39 @@
             }
             GM_setValue("pending_mission", JSON.stringify(mission)); // launchChecked przeżywa przeładowanie
             log(`[BAZA=KSIĘŻYC] aktualny układ nie ma księżyca — misja ${mission.type} startuje z PLANETY (falanga widzi ten lot).`, "warn");
+          }
+        }
+        // ── v2.87.2: FORMULARZ NIGDY NIE WYSYŁA Z OBCEJ KOLONII ──
+        // Ratunek/powrót niesie atCoords = kolonię, o którą chodzi. Jeśli
+        // formularz otworzył się na INNEJ parze (nietrafione przełączenie —
+        // incydent 14:35), to załadowałby jej hangar i wysłał go w lot.
+        // Jedna próba korekty przez pairAnchor; druga porażka = głośne
+        // przerwanie. Flota z obcej kolonii nie może latać „przy okazji".
+        if (mission.moonSave && mission.atCoords) {
+          const herePair = HomeBase.read();
+          const wantPair = mission.atCoords;
+          const samePairNow = herePair && herePair.galaxy === wantPair.galaxy && herePair.system === wantPair.system && herePair.position === wantPair.position;
+          if (herePair && !samePairNow) {
+            if (!mission.pairChecked) {
+              mission.pairChecked = true;
+              const a2 = HomeBase.pairAnchor(wantPair);
+              if (a2) {
+                const el2 = (mission.launchBody === "moon") ? (HomeBase.moonOf(a2) || a2) : a2;
+                mission.step = "switch_planet_then_fleet";
+                mission.switchToFleetUrl = mission.fleetUrl;
+                mission.timestamp = Date.now();
+                GM_setValue("pending_mission", JSON.stringify(mission));
+                log(`[RATUNEK] formularz otworzył się na OBCEJ kolonii [${herePair.galaxy}:${herePair.system}:${herePair.position}] zamiast [${wantPair.galaxy}:${wantPair.system}:${wantPair.position}] — przełączam i wracam do formularza.`, "warn");
+                await AntiDetection.sleep(500 + Math.random() * 500);
+                const h2 = el2.getAttribute("href");
+                if (h2 && h2.length > 1) window.location.href = h2; else el2.click();
+                return;
+              }
+            }
+            log(`[RATUNEK] PRZERWANE: formularz na obcej kolonii [${herePair.galaxy}:${herePair.system}:${herePair.position}], cel to [${wantPair.galaxy}:${wantPair.system}:${wantPair.position}] — floty z obcej kolonii NIE ruszam.`, "error");
+            DefenceWatchdog.note(`ratunek/powrót przerwany: formularz na obcej kolonii, cel [${wantPair.galaxy}:${wantPair.system}:${wantPair.position}]`);
+            GM_setValue("pending_mission", null);
+            return;
           }
         }
         // ── v2.10.23/24: same-target send guard (defence in depth) ──
