@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.88.1
+// @version      2.88.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4809,7 +4809,7 @@
   // mają — ta sama lekcja co cache paska).
   const EventsPanel = {
     KEY_CACHE: "ogamex_events_panel_cache",
-    KEY_DUMPED: "ogamex_events_panel_dumped",
+    KEY_DUMPED: "ogamex_events_panel_dumped_v2882",
 
     _parseTr(tr, own) {
       if (tr.dataset.returnFlight === "true") return null;      // nasz powrót
@@ -4841,17 +4841,36 @@
     },
 
     read() {
-      // Numeracja misji forka niepewna → typy z panelu nic nie znaczą.
-      if (GM_getValue("ogamex_mission_numbering_warned", "") === "1") return [];
       const own = ThreatMonitor.ownBodies();
-      const trs = [...document.querySelectorAll("tr.eventFleet[data-mission-type]")];
-      if (trs.length) {
+      // ── Kształt A: upstream tr.eventFleet z NUMERYCZNĄ numeracją misji ──
+      // Tylko przy pewnej numeracji — inaczej typy liczbowe nic nie znaczą.
+      if (GM_getValue("ogamex_mission_numbering_warned", "") !== "1") {
+        const trs = [...document.querySelectorAll("tr.eventFleet[data-mission-type]")];
+        if (trs.length) {
+          const rows = [];
+          for (const tr of trs) { const r = this._parseTr(tr, own); if (r) rows.push(r); }
+          this._cache(rows);
+          return rows;
+        }
+      }
+      // ── Kształt B (v2.88.2): fork renderuje panel wierszami listy ruchów ──
+      // Zrzut [EVENTS DOM] z 12.08 16:10 pokazał kontener forka:
+      // #layoutFleetMovements > #fleet-movement-content (był pusty, bo
+      // „obcy" pochodził z symulacji ślepego paska). Wrogie wiersze tego
+      // forka to tr[class*='row-mission-type-'] (zrzuty [ATAK DOM]) —
+      // czytamy je PRAWDZIWYM FleetMovements.classifyRow: zero nowego
+      // parsera, klasyfikacja sprawdzona bojowo (row-hostile/row-friendly)
+      // i przybita autotestem. Numeracja liczbowa jej nie dotyczy.
+      const panelTrs = [...document.querySelectorAll("#fleet-movement-content tr[class*='row-mission-type-'], #layoutFleetMovements tr[class*='row-mission-type-']")];
+      if (panelTrs.length) {
         const rows = [];
-        for (const tr of trs) { const r = this._parseTr(tr, own); if (r) rows.push(r); }
-        GM_setValue(this.KEY_CACHE, JSON.stringify({
-          at: Date.now(),
-          rows: rows.map(r => ({ ...r, arriveAt: Date.now() + (r.eta || 0) * 1000 })),
-        }));
+        for (const tr of panelTrs) {
+          let r = null; try { r = FleetMovements.classifyRow(tr, own); } catch {}
+          if (!r || r.mine || r.friendly || !r.dst) continue;
+          if (!r.attack && !r.spy) continue;
+          rows.push({ ...r, panel: true });
+        }
+        this._cache(rows);
         return rows;
       }
       this._maybeDump();
@@ -4866,22 +4885,34 @@
       return [];
     },
 
-    // Fork bez tr.eventFleet: JEDNORAZOWY zrzut kontenera Events do logu —
-    // tylko gdy pasek widzi obcych (żeby złapać markup wrogiego wiersza,
-    // nie pustą tabelę). Z tego zrzutu dopiszemy selektory forka.
+    _cache(rows) {
+      GM_setValue(this.KEY_CACHE, JSON.stringify({
+        at: Date.now(),
+        rows: rows.map(r => ({ ...r, arriveAt: Date.now() + (r.eta || 0) * 1000 })),
+      }));
+    },
+
+    // Fork bez znanych wierszy: JEDNORAZOWY zrzut kontenera Events do logu.
+    // v2.88.2 (lekcja 16:10): zrzut NIE odpala się na symulacji (syntetyczny
+    // obcy = panel słusznie pusty) ani na pustym kontenerze — spalenie
+    // jedynego zrzutu na niczym to strata jedynej szansy na markup.
     _maybeDump() {
       if (GM_getValue(this.KEY_DUMPED, "") === "1") return;
       let bar = null;
       try { bar = ThreatMonitor.read(); } catch {}
-      if (!bar || bar.foreign < 1) return;
-      const hdr = [...document.querySelectorAll("div, span, h1, h2, h3, td")]
-        .find(e => (e.textContent || "").trim() === "Events" && !e.closest("#ogx-bot-panel"));
-      if (!hdr) return;
-      const host = hdr.closest("table") || (hdr.parentElement && hdr.parentElement.parentElement) || hdr.parentElement;
-      const html = host ? (host.outerHTML || "").replace(/\s+/g, " ") : "";
-      if (html.length < 200) return;
+      if (!bar || bar.sim || bar.foreign < 1) return;
+      let el = document.querySelector("#fleet-movement-content") || document.querySelector("#layoutFleetMovements");
+      if (!el) {
+        const hdr = [...document.querySelectorAll("div, span, h1, h2, h3, td")]
+          .find(e => (e.textContent || "").trim() === "Events" && !e.closest("#ogx-bot-panel"));
+        if (!hdr) return;
+        el = hdr.closest("table") || (hdr.parentElement && hdr.parentElement.parentElement) || hdr.parentElement;
+      }
+      if (!el || !el.children || el.children.length === 0) return; // pusty kontener niczego nie uczy
+      const html = (el.outerHTML || "").replace(/\s+/g, " ");
+      if (html.length < 100) return;
       GM_setValue(this.KEY_DUMPED, "1");
-      log(`[EVENTS DOM] panel Events bez tr.eventFleet — zrzut do dopisania selektorów forka (prześlij tę linię): ${html.slice(0, 3000)}`, "error");
+      log(`[EVENTS DOM] panel Events bez znanych wierszy — zrzut do dopisania selektorów forka (prześlij tę linię): ${html.slice(0, 3000)}`, "error");
     },
   };
 

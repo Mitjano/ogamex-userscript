@@ -107,9 +107,19 @@ must("wiersze panelu dołączają do klasyfikacji (blitz/air-save z automatu)",
 must("odczyt panelu żyje 3 min jako cache (strony bez panelu nie ślepną)",
   /ogamex_events_panel_cache/.test(src));
 must("nieznany markup = jednorazowy zrzut [EVENTS DOM], nie zgadywanie",
-  /\[EVENTS DOM\] panel Events bez tr\.eventFleet/.test(src));
-must("niepewna numeracja misji wyłącza panel (nie zamienia sond w ataki)",
-  /ogamex_mission_numbering_warned[\s\S]{0,40}return \[\];/.test(src));
+  /\[EVENTS DOM\] panel Events bez znanych wierszy/.test(src));
+must("niepewna numeracja misji wyłącza TYLKO kształt liczbowy (klasyfikacja nazwami zostaje)",
+  /GM_getValue\("ogamex_mission_numbering_warned", ""\) !== "1"/.test(src));
+// ── v2.88.2 (lekcja 16:10: zrzut spalony na pustym kontenerze z symulacji) ──
+must("panel forka czytany kontenerem #fleet-movement-content przez PRAWDZIWY classifyRow",
+  /#fleet-movement-content tr\[class\*='row-mission-type-'\]/.test(src) &&
+  /FleetMovements\.classifyRow\(tr, own\)/.test(src));
+must("zrzut [EVENTS DOM] nie odpala się na symulacji ani bez obcych",
+  /bar\.sim \|\| bar\.foreign < 1/.test(src));
+must("pusty kontener NIE pali jednorazowego zrzutu",
+  /children\.length === 0\) return;/.test(src));
+must("zrzut przezbrojony po fałszywym spaleniu 16:10 (nowy klucz)",
+  /ogamex_events_panel_dumped_v2882/.test(src));
 
 console.log("\n── 4. PASEK BEZ „OWN” + STRAŻNICY WERSJI I DOMU (v2.88.1) ──");
 // INCYDENT 15:24: pasek „2 Missions: 2 Hostile" (zero własnych lotów) nie
