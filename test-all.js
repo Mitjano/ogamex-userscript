@@ -16,6 +16,7 @@ const SUITES = [
   ["nadzorca obrony", "test-nadzorca.js"],
   ["kolejka ratunków (2. kolonia)", "test-kolejka.js"],
   ["ucieczka w powietrze (oba ciała pary)", "test-ucieczka.js"],
+  ["cel ratunku + ślad paska (katastrofa 13:10)", "test-cel-ratunku.js"],
   ["bramki wysyłek (alarm + paliwo)", "test-bramka-wysylek.js"],
   ["ratunek nietykalny", "test-ratunek-nietykalny.js"],
   ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],
