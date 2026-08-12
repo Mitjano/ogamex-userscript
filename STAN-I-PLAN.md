@@ -6,6 +6,35 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (3) — v2.84.0: punkt startu PER MODUŁ (minery ≠ ekspedycje)
+
+Problem ownera: asteroidy spawnują się ZAWSZE w g3 (tam większość planet),
+a ekspedycje po przeprowadzce lecą z g2 — po 2.82.0 („start z aktywnego
+ciała") minery były martwe, bo asteroidy z g3 wypadały na bramce „inna
+galaktyka niż punkt startu".
+
+Rozwiązanie: `asteroidMining.launchFrom` + `expeditions.launchFrom`
+(pola „g:s:p" w panelu; puste = z aktywnego ciała, jak w 2.82.0):
+- Misja dostaje `launchAt` przy TWORZENIU; nowa bramka w handlePendingMission
+  (przed bramką księżycową) porównuje aktywną parę z launchAt — inna para →
+  klik właściwego wpisu na pasku planet (księżyc przy baseBody=moon,
+  fallback planeta gdy para bez księżyca) → switch_planet_then_fleet →
+  formularz. Koordy spoza listy planet = głośny error + start z aktywnego.
+- Minery: kolejka skanu/TTL/dispatch liczone od `HomeBase.mining()`.
+- Ekspedycje: cel = poz. 16 systemu `HomeBase.expo()` (launchFrom → stare
+  `expeditions.base` → aktywne ciało); powroty wracają na ciało startu (gra).
+- Złom (DebrisCollector) chodzi za punktem startu EKSPEDYCJI (tam leżą pola
+  po falach; recyklery mieszkają przy flocie ekspedycyjnej).
+- Farm/FS/ratunek — bez zmian (własna logika startu).
+
+Operacyjnie: owner wpisuje start minerów 3:272:7 (księżyc, minery+deuter
+muszą tam FIZYCZNIE stać), ekspedycje puste (lecą stamtąd, gdzie stoi)
+albo przypięte do księżyca w g2. UWAGA: bramka paliwa czyta deuter z
+AKTYWNEGO ciała — przy sztywnym starcie odczyt bywa z innego ciała
+(fail-open; realna odmowa i tak wyjdzie na formularzu).
+
+---
+
 ## AKTUALIZACJA 12.08 (2) — v2.83.0: PROM na przełącznik (OFF) + OFF przerywa formularz
 
 Feedback ownera po porannym logu (jeszcze na 2.81.0):
