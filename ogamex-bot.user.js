@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.82.0
+// @version      2.83.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -67,6 +67,13 @@
     // rotacja minerów po koloniach jest wyłączona. Flota, minery, recyklery
     // i deuter mają MIESZKAĆ na księżycu (prom z planety ręcznie: RATUJ).
     baseBody: "moon",
+    // ── v2.83.0: PROM na przełącznik, DOMYŚLNIE OFF ──
+    // Decyzja właściciela 12.08: bot NIE przenosi floty sam z siebie —
+    // 08:48 prom tuż po starcie wywiózł całą flotę + 11,8 bln deuteru
+    // z planety na księżyc bez pytania. Automatyczna samonaprawa „flota
+    // na złym ciele" działa odtąd tylko, gdy operator świadomie ją włączy
+    // (przycisk PROM w sekcji Mining); przenosiny ręczne = RATUJ / Deploy.
+    moonFerry: { enabled: false },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -3985,6 +3992,8 @@
     EVERY_MS: 2 * 60 * 60 * 1000,
 
     due() {
+      // v2.83.0: prom tylko na wyraźne życzenie operatora (domyślnie OFF).
+      if (!CONFIG.moonFerry?.enabled) return false;
       if (CONFIG.baseBody !== "moon" || !CONFIG.enabled) return false;
       if (ThreatMonitor.active() || MoonSave.watch().armed) return false;
       const p = GM_getValue("pending_mission", null);
@@ -8031,6 +8040,20 @@
 
         log("Fleet page loaded (direct asteroid). Starting 3-step dispatch...", "fleet");
 
+        // ── v2.83.0: OFF ma znaczyć STOP także W ŚRODKU formularza ──
+        // v2.68.4 przerywa misję przy WZNOWIENIU (przeładowanie strony), ale
+        // klik OFF w trakcie 3 kroków nie był nigdzie sprawdzany — 12.08
+        // 08:48:42 właściciel wyłączył bota, a fala ekspedycji i tak wyszła
+        // sekundę później. Bramka przed każdym klikiem pchającym formularz
+        // naprzód. Wyjątek jak w 2.68.4: ratunek (moonSave) zawsze dokańcza —
+        // porzucenie ewakuacji w połowie jest gorsze niż jej dokończenie.
+        const offAbort = (where) => {
+          if (CONFIG.enabled || mission.moonSave) return false;
+          log(`Bot OFF — przerywam misję ${mission.type} przed krokiem „${where}". Nic nie zostało wysłane.`, "warn");
+          GM_setValue("pending_mission", null);
+          return true;
+        };
+
         // Flight time captured in step 2, used by finishDispatch
         let capturedFlightMs = 0;
         // v2.10.0: miner counts captured at step 1, read by finishDispatch to
@@ -8647,6 +8670,7 @@
         } // end single-ship-type path (v2.14.0)
 
         await AntiDetection.sleep(1000 + Math.random() * 1500);
+        if (offAbort("step1→2")) return;
 
         // Click "Next" — step 1 → step 2
         if (!await clickButtonWhenEnabled("Next", "step1→2")) {
@@ -9023,6 +9047,7 @@
         }
 
         await AntiDetection.sleep(800 + Math.random() * 1200);
+        if (offAbort("step2→3")) return;
 
         // Click "Next" — step 2 → step 3
         if (!await clickButtonWhenEnabled("Next", "step2→3")) {
@@ -9262,6 +9287,9 @@
           // start of the 3-step flow, ~10s ago — another machine/browser can
           // have sent a fleet in that window. Fetch-only (skipDom — the step-3
           // page may render our own chosen target as text).
+          // v2.83.0: ostatnia szansa wyłącznika — OFF kliknięty w trakcie
+          // kroków 1-3 ma zatrzymać wysyłkę TERAZ, nie po fakcie.
+          if (offAbort("Send fleet")) return;
           const flyingNow = (mission.expedition || mission.moonSave || mission.fleetSave) ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
           if (flyingNow) {
             log(`DUPLICATE BLOCKED (pre-click, server events via ${flyingNow}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
@@ -10221,6 +10249,10 @@
               <button class="mini-btn" id="ogx-base-body">${CONFIG.baseBody === "moon" ? "KSIĘŻYC" : "PLANETA"}</button>
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="PROM: co 2 h automatycznie przewozi WSZYSTKO (flota, surowce, deuter minus rezerwa) z aktywnej planety na jej księżyc misją Deploy. OFF = bot NIGDY sam nie przenosi floty — przenosiny tylko ręcznie (RATUJ / Deploy). Działa wyłącznie w trybie księżycowym.">PROM planeta→księżyc</span>
+              <button class="mini-btn" id="ogx-ferry-toggle">${CONFIG.moonFerry?.enabled ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="How many miners to send on ONE flight. 0 = send all available in a single wave. This overrides the auto cargo/est formula.">Miners per flight (0=all)</span>
               <input id="ogx-cfg-miners" type="number" min="0" step="1" value="${CONFIG.asteroidMining.minersPerMission}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -11018,6 +11050,18 @@
         updateStatusUI();
       });
     };
+    // v2.83.0: przełącznik PROMU (domyślnie OFF — bot sam nie przenosi floty)
+    {
+      const ferryBtn = document.getElementById("ogx-ferry-toggle");
+      if (ferryBtn) ferryBtn.addEventListener("click", () => {
+        const on = !(CONFIG.moonFerry?.enabled);
+        if (on && !window.confirm("Włączyć PROM?\n\nCo 2 h bot będzie automatycznie przewoził WSZYSTKO z aktywnej planety na jej księżyc (flota, surowce, deuter minus rezerwa). Pierwszy kurs może ruszyć od razu.")) return;
+        CONFIG.moonFerry = { ...(CONFIG.moonFerry || {}), enabled: on };
+        saveConfig(CONFIG);
+        ferryBtn.textContent = on ? "ON" : "OFF";
+        log(on ? "[PROM] włączony — co 2 h wszystko z aktywnej planety pojedzie na jej księżyc." : "[PROM] wyłączony — bot sam nie przenosi floty; przenosiny tylko ręcznie (RATUJ / Deploy).", "info");
+      });
+    }
     // v2.69.0: przełącznik trybu księżycowego (dotyczy mining+ekspedycje+złom)
     {
       const bbBtn = document.getElementById("ogx-base-body");

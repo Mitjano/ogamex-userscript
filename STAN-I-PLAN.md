@@ -6,6 +6,22 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (2) — v2.83.0: PROM na przełącznik (OFF) + OFF przerywa formularz
+
+Feedback ownera po porannym logu (jeszcze na 2.81.0):
+1. **PROM domyślnie WYŁĄCZONY** (`moonFerry.enabled:false`, przycisk „PROM
+   planeta→księżyc" w sekcji Mining, confirm przy włączaniu). 08:48 prom tuż
+   po starcie sam wywiózł całą flotę + 11,8 bln deuteru na księżyc — owner
+   nie chce, by bot KIEDYKOLWIEK przenosił flotę bez wyraźnej zgody.
+   Samonaprawa „flota na złym ciele" działa tylko przy PROM=ON.
+2. **OFF = STOP także w środku 3-krokowego formularza**: v2.68.4 przerywała
+   misję tylko przy wznowieniu po przeładowaniu; klik OFF w trakcie kroków
+   nie był sprawdzany (08:48:42 OFF → 08:48:43 fala i tak wyszła). Nowy
+   `offAbort()` przed klikiem step1→2, step2→3 i przed „Send fleet".
+   Wyjątek bez zmian: ratunek (moonSave) zawsze dokańcza.
+
+---
+
 ## AKTUALIZACJA 12.08 — v2.82.0: START Z AKTUALNEGO CIAŁA (HomeBase)
 
 **Decyzja ownera:** agresywni sąsiedzi → mining i ekspedycje mają startować
