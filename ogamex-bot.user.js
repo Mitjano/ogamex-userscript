@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.86.3
+// @version      2.86.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6143,7 +6143,13 @@
           // Do dziennika trafia KAŻDY odczyt — także zerowy. Bez dowodu, że bot
           // patrzył i widział zero, nie da się później odróżnić „nie wykrył" od
           // „nie patrzył", a to dwie różne naprawy.
-          ThreatLog.add(r && r.foreign > 0 ? "ATAK" : (r ? "odczyt" : "ŚLEPY"),
+          // v2.86.4: NIEPOTWIERDZONY odczyt to nie alarm — sondy widoczne
+          // tylko na pasku (loty Ibra646) pchały push ⚔️ z syreną przy każdym
+          // skanie, a fałszywe alarmy uczą ignorować prawdziwe. Rodzaj ATAK
+          // (= push na telefon) dopiero przy POTWIERDZONYM alarmie; do tego
+          // czasu zwykły odczyt w dzienniku. Potwierdzenie (WYKRYTO) i blitz
+          // mają własne wpisy ATAK — te pchają jak dotąd.
+          ThreatLog.add(r && r.foreign > 0 ? (this.active() ? "ATAK" : "odczyt") : (r ? "odczyt" : "ŚLEPY"),
             `${seen}${r ? "" : ` | strona: ${location.pathname}`}`);
         }
       }
