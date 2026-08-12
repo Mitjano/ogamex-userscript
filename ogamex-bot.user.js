@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.86.0
+// @version      2.86.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6050,6 +6050,20 @@
         r = { total: bar?.total ?? 0, own: bar?.own ?? 0, foreign: ev.attacks };
         evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
           + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
+        // ── v2.86.1: SONDA UZBRAJA CZUJNOŚĆ (flotą dalej nie rusza) ──
+        // Pełny łańcuch przeciwnika (owner, na żywo 12.08): SKAN sondą →
+        // decyzja → atak. Sonda leci sekundy i jest NAJWCZEŚNIEJSZYM
+        // sygnałem — więc na 5 min po niej pętla obrony schodzi do rytmu
+        // ~10 s (ten sam mechanizm co gotowość po wabiku). Ewakuacji sonda
+        // nadal NIE wywołuje: reagowanie flotą na każdy skan parkowałoby
+        // gospodarkę na stałe i uczyłoby napastnika sterowania botem.
+        if (ev.spies > 0) {
+          const prev = parseInt(GM_getValue("ogamex_spy_alert_at", "0")) || 0;
+          if (Date.now() - prev > 5 * 60 * 1000) {
+            log(`[GOTOWOŚĆ] sonda szpiegowska (${ev.spies}) — ktoś nas skanuje przed atakiem? Przez 5 min pętla obrony chodzi co ~10 s.`, "warn");
+          }
+          GM_setValue("ogamex_spy_alert_at", String(Date.now()));
+        }
       } else if (evFresh && ev.hostile > 0) {
         r = { total: bar?.total ?? 0, own: bar?.own ?? 0, foreign: ev.hostile };
         evSrc = `zdarzenia BEZ klasyfikacji: ${ev.hostile} obcych (typu misji nie dało się odczytać — traktuję jak atak)`;
@@ -10474,9 +10488,13 @@
       // zmienia, bo dzieje się to tylko wtedy, gdy naprawdę coś zobaczyliśmy.
       // v2.86.0: rytm ~10 s trwa też przez 10 min PO zniknięciu kandydata —
       // wabik znika w sekundy, a właściwy atak przychodzi tuż za nim.
+      // v2.86.1: to samo na 5 min po SONDZIE — skan poprzedza atak, a sonda
+      // leci sekundy; kto nas ogląda, ten zaraz może uderzyć.
       const highAlertAt = parseInt(GM_getValue("ogamex_high_alert_at", "0")) || 0;
+      const spyAlertAt = parseInt(GM_getValue("ogamex_spy_alert_at", "0")) || 0;
       if ((parseInt(GM_getValue(ThreatMonitor.KEY_CANDIDATE, "0")) || 0)
-          || Date.now() - highAlertAt < 10 * 60 * 1000) {
+          || Date.now() - highAlertAt < 10 * 60 * 1000
+          || Date.now() - spyAlertAt < 5 * 60 * 1000) {
         setTimeout(() => { defenceTick().catch(() => {}); }, 10 * 1000);
       }
     } catch (err) {
