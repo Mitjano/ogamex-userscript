@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.85.0
+// @version      2.85.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6727,7 +6727,17 @@
         // watch().at — zamiatanie straży na atakowanej kolonii celowało
         // w bazę (incydent 22:18 06.08: sweep [2:277:8] poleciał w [3:272:7]).
         // Kolejność: jawne where → kolonia z alarmu → dopiero baza.
-        const at = this.coordsOf(where || this.watch().at || null);
+        // ── v2.85.1: ratunek bez celu chroni AKTYWNĄ parę, nie starą bazę ──
+        // Incydent 12.08 10:56 NA ŻYWO: atak ACS na księżyc [2:277:8] wykryty
+        // ze ŚCIEŻKI PASKA (lista ruchów bez wierszy → where=null), a fallback
+        // wysłał wszystko z aktywnego księżyca... Deployem do [3:272:7] —
+        // 1 h 25 min lotu przez pół wszechświata zamiast skoku <1 min na
+        // planetę TEJ pary. Flota ocalała (lot = nietykalność), ale straż
+        // uzbroiła się na złej kolonii i auto-powrót nie miał czego ściągać.
+        // Formularz wysyła z ciała AKTYWNEGO — więc ratunek bez znanego celu
+        // ma celować w koordy tego właśnie ciała (HomeBase.coords() sam spada
+        // na cache, a w ostateczności na minerBase — stare zachowanie).
+        const at = this.coordsOf(where || this.watch().at || HomeBase.coords() || null);
         // ── v2.85.0: UCIECZKA W POWIETRZE — decyzja PRZED zwykłym ratunkiem ──
         // Oba ciała TEJ pary pod atakiem = ewakuacja w obrębie pary przenosi
         // flotę pod drugie uderzenie; wtedy (i tylko wtedy) całość leci
