@@ -93,10 +93,10 @@ must("udany odczyt paska zapisuje cache (ogamex_bar_cache)",
   /GM_setValue\("ogamex_bar_cache"/.test(src));
 must("strona bez paska czyta cache z TTL 3 min",
   /ogamex_bar_cache[\s\S]{0,200}?3 \* 60 \* 1000/.test(src));
-must("pasek (żywy lub cache) WYGRYWA, gdy widzi więcej niż lista",
-  /barEff\.foreign > ev\.attacks/.test(src));
-must("zwycięstwo paska podnosi foreign do liczby z paska",
-  /r = \{ \.\.\.r, foreign: barEff\.foreign \}/.test(src));
+must("pasek WYGRYWA tylko NADWYŻKĄ ponad wszystkie obce wiersze listy (ataki+sondy) — v2.87.3",
+  /barEff\.foreign > listForeign/.test(src) && /\(ev\.attacks \|\| 0\) \+ \(ev\.spies \|\| 0\)/.test(src));
+must("sonda policzona przez listę NIE robi ataku (foreign = ataki + nadwyżka)",
+  /foreign: \(ev\.attacks \|\| 0\) \+ missing/.test(src));
 
 console.log(fails ? `\nCEL RATUNKU: ${fails} BEZPIECZNIKÓW BRAK — NIE WYPUSZCZAĆ` : "\nCEL RATUNKU: OBA BEZPIECZNIKI NA MIEJSCU");
 process.exit(fails ? 1 : 0);

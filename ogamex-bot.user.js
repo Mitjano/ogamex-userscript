@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.87.2
+// @version      2.87.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6118,9 +6118,19 @@
         // świeża lista kasowała odczyt paska przy każdym przebiegu i atak
         // znikał z obrazu na 99 s. Od teraz: brakujące wiersze = ATAK,
         // większa liczba wygrywa — na każdej stronie, także z cache.
-        if (barEff && barEff.foreign > ev.attacks) {
-          r = { ...r, foreign: barEff.foreign };
-          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych, lista tylko ${ev.attacks} — brakujące wiersze traktuję jak ATAK`;
+        // v2.87.3: pasek liczy WSZYSTKIE obce misje — TAKŻE SONDY — więc
+        // porównanie z samymi atakami z listy robiło z każdej sondy „atak"
+        // (incydent 14:38-14:50: 2 sondy → pełne ratunki pustych kolonii,
+        // mimo że lista słusznie mówiła „sondy 2, IGNORUJĘ"). Brakujący
+        // wiersz to wyłącznie NADWYŻKA paska ponad wszystkie obce wiersze
+        // listy (ataki+sondy) — i tylko ona jest traktowana jak atak.
+        // Zabójczy przypadek 13:07 (atak w ogóle nie na liście) nadal
+        // pokryty: pasek 1 > lista 0 → nadwyżka 1 → alarm.
+        const listForeign = Math.max(ev.hostile || 0, (ev.attacks || 0) + (ev.spies || 0));
+        if (barEff && barEff.foreign > listForeign) {
+          const missing = barEff.foreign - listForeign;
+          r = { ...r, foreign: (ev.attacks || 0) + missing };
+          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}) — ${missing} brakujących traktuję jak ATAK`;
         } else
         evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
           + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
