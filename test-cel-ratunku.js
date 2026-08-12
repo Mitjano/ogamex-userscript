@@ -45,12 +45,28 @@ const runBody = bodyOf("async run({ manual = false, sweep = false, auto = false,
 must("MoonSave.run istnieje i ma niepuste ciało (>1000 znaków)", !!runBody && runBody.length > 1000);
 must("dom floty czytany z expeditions.launchFrom",
   !!runBody && /fleetHome\s*=\s*CONFIG\.expeditions\?\.launchFrom/.test(runBody));
-must("AUTOMAT bez celu: dom floty PRZED aktywną parą (v2.86.5)",
-  !!runBody && /noTargetDefault = manual \? \(HomeBase\.coords\(\) \|\| fleetHome\) : \(fleetHome \|\| HomeBase\.coords\(\)\)/.test(runBody));
-must("fallback celu idzie przez noTargetDefault",
-  !!runBody && /coordsOf\(where \|\| this\.watch\(\)\.at \|\| noTargetDefault/.test(runBody));
-must("„aktywna para” NIGDY przed domem floty (zabójczy porządek z 13:10)",
-  !!runBody && !/coordsOf\(where \|\| this\.watch\(\)\.at \|\| HomeBase\.coords\(\)/.test(runBody));
+must("run() wybiera cel przez resolveRescueTarget (czystą funkcję)",
+  !!runBody && /this\.resolveRescueTarget\(\{/.test(runBody));
+
+// ── v2.87.0: MACIERZ na PRAWDZIWEJ funkcji (nie regex, nie kopia) ──
+const rrtBody = bodyOf("    resolveRescueTarget({ where, watchAt, manual, fleetHome, activePair }) {");
+must("resolveRescueTarget istnieje", !!rrtBody && rrtBody.length > 40);
+const rrt = new Function("o", "const { where, watchAt, manual, fleetHome, activePair } = o;\n" + rrtBody);
+const FH = "DOM", AP = "AKTYWNA", XX = "CEL", WA = "STRAŻ";
+must("macierz: jawny cel wygrywa ze wszystkim",
+  rrt({ where: XX, watchAt: WA, manual: false, fleetHome: FH, activePair: AP }) === XX);
+must("macierz: kolonia strzeżona przed domem floty",
+  rrt({ where: null, watchAt: WA, manual: false, fleetHome: FH, activePair: AP }) === WA);
+must("macierz: AUTOMAT bez celu → DOM FLOTY (zabójczy porządek z 13:10 odwrócony)",
+  rrt({ where: null, watchAt: null, manual: false, fleetHome: FH, activePair: AP }) === FH);
+must("macierz: automat bez domu floty → aktywna para",
+  rrt({ where: null, watchAt: null, manual: false, fleetHome: null, activePair: AP }) === AP);
+must("macierz: ręczny RATUJ → para operatora, nie dom floty",
+  rrt({ where: null, watchAt: null, manual: true, fleetHome: FH, activePair: AP }) === AP);
+must("macierz: ręczny RATUJ bez pary → dom floty",
+  rrt({ where: null, watchAt: null, manual: true, fleetHome: FH, activePair: null }) === FH);
+must("macierz: nic nie wiadomo → null (coordsOf dośle bazę)",
+  rrt({ where: null, watchAt: null, manual: false, fleetHome: null, activePair: null }) === null);
 must("ślepa ścieżka paska syntetyzuje cel = dom floty (switch-first)",
   /if \(!target\) \{\s*\n\s*const fh = CONFIG\.expeditions\?\.launchFrom;/.test(src));
 must("lot międzykolonijny celuje w KSIĘŻYC celu",

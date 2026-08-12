@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.86.5
+// @version      2.87.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5506,7 +5506,10 @@
         {
           const simUntil = parseInt(GM_getValue("ogamex_threat_sim_until", "0")) || 0;
           if (Date.now() < simUntil) {
-            const b = CONFIG.asteroidMining.minerBase;
+            // v2.87.0: symulacja atakuje DOM FLOTY — tam mieszka flota
+            // i tam ma ćwiczyć obrona (stara baza minerów była celem
+            // z czasów sprzed przeprowadzki).
+            const b = CONFIG.expeditions?.launchFrom || CONFIG.asteroidMining.minerBase;
             GM_setValue(this.KEY_EVENTS, JSON.stringify({
               at: Date.now(), hostile: 1, attacks: 1, spies: 0, classified: true,
               targets: [`${b.galaxy}:${b.system}:${b.position}`], origins: [], sim: true,
@@ -5847,6 +5850,25 @@
     // bar isn't rendered (most galaxy pages) so a blind page never clears a
     // live alert.
     read() {
+      // ── v2.87.0: SYMULACJA ŚLEPEGO PASKA ──
+      // Odtwarza atak z 12.08 13:10: lista ruchów i zdarzenia serwera CZYSTE,
+      // tylko pasek widzi +1 obcą flotę (tak wyglądają ataki z własnego
+      // układu). Syntetyczny odczyt przechodzi przez CAŁĄ prawdziwą
+      // maszynerię: cache paska → kandydat → potwierdzenie → ratunek do
+      // DOMU FLOTY → straż → powrót. To jedyny sposób na E2E tej ścieżki
+      // bez czekania na prawdziwego wroga.
+      const blindUntil = parseInt(GM_getValue("ogamex_threat_sim_blind_until", "0")) || 0;
+      if (Date.now() < blindUntil) {
+        const m0 = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
+        const own0 = m0 ? (parseInt(m0[2]) || 0) : 0;
+        GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: 1, total: own0 + 1, own: own0 }));
+        return { total: own0 + 1, own: own0, foreign: 1, sim: true };
+      }
+      if (blindUntil) {
+        GM_setValue("ogamex_threat_sim_blind_until", "0");
+        GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: 0, total: 0, own: 0 }));
+        log("[TEST] symulacja ślepego paska zakończona — pasek wraca na prawdziwe odczyty. Alarm zgaśnie, flota wróci automatycznie.", "info");
+      }
       const m = document.body.textContent.match(/(\d+)\s*Missions?:\s*(\d+)\s*Own/);
       if (!m) return null;
       const total = parseInt(m[1]) || 0;
@@ -6338,6 +6360,16 @@
     // „moon", misja stacjonowania. Mechanika jest identyczna jak na bazie, więc
     // jedyne, co było zaszyte na sztywno, to koordynaty.
     // Brak argumentu = baza, czyli dotychczasowe zachowanie bez zmian.
+    // ── v2.87.0: WYBÓR CELU RATUNKU jako CZYSTA funkcja ──
+    // Decyzja, która 12.08 13:10 kosztowała flotę, była zaszyta w run()
+    // i nietestowalna. Teraz: bez DOM, sieci i zegara — tę samą funkcję
+    // woła run(), AUTOTEST w przeglądarce i test offline (macierz).
+    // Kolejność: jawny cel → kolonia strzeżona w tym alarmie → (ręczny
+    // RATUJ: para operatora / automat: DOM FLOTY) → co zostało.
+    resolveRescueTarget({ where, watchAt, manual, fleetHome, activePair }) {
+      return where || watchAt || (manual ? (activePair || fleetHome) : (fleetHome || activePair)) || null;
+    },
+
     coordsOf(where) {
       const b = where || CONFIG.asteroidMining.minerBase;
       if (!b || !Number.isFinite(b.galaxy) || !Number.isFinite(b.system)) return null;
@@ -6844,11 +6876,12 @@
         // ekspedycji (tam z definicji stoi flota główna i tam wracają fale),
         // dopiero potem aktywnej pary, na końcu minerBase.
         const fleetHome = CONFIG.expeditions?.launchFrom || null;
-        // v2.86.5: ręczny RATUJ chroni parę, na której STOI operator (klik
-        // znaczy „ratuj tu”); automat bez celu chroni dom floty. Odwrócona
-        // kolejność dla manual przywraca zachowanie sprzed 2.86.3.
-        const noTargetDefault = manual ? (HomeBase.coords() || fleetHome) : (fleetHome || HomeBase.coords());
-        const at = this.coordsOf(where || this.watch().at || noTargetDefault || null);
+        // v2.87.0: wybór celu przez CZYSTĄ funkcję (testowaną macierzą
+        // offline i w autoteście) — semantyka 2.86.5 bez zmian: ręczny
+        // RATUJ chroni parę operatora, automat bez celu chroni dom floty.
+        const at = this.coordsOf(this.resolveRescueTarget({
+          where, watchAt: this.watch().at, manual, fleetHome, activePair: HomeBase.coords(),
+        }));
         // ── v2.85.0: UCIECZKA W POWIETRZE — decyzja PRZED zwykłym ratunkiem ──
         // Oba ciała TEJ pary pod atakiem = ewakuacja w obrębie pary przenosi
         // flotę pod drugie uderzenie; wtedy (i tylko wtedy) całość leci
@@ -10414,6 +10447,35 @@
           check(`klasyfikacja: ${name}`, !!r && r.attack === wantAttack);
         }
 
+        // ── A2. Wybór celu ratunku (v2.87.0 — CZYSTA funkcja, macierz) ──
+        // Zamrożenie lekcji 13:10 na PRAWDZIWEJ funkcji, którą woła run().
+        {
+          const FH = { galaxy: 2, system: 277, position: 8 };
+          const AP = { galaxy: 3, system: 272, position: 7 };
+          const XX = { galaxy: 1, system: 1, position: 1 };
+          const rrt = (o) => MoonSave.resolveRescueTarget(o);
+          check("cel ratunku: jawny cel z listy wygrywa ze wszystkim",
+            rrt({ where: XX, watchAt: FH, manual: false, fleetHome: FH, activePair: AP }) === XX);
+          check("cel ratunku: kolonia strzeżona przed domem floty",
+            rrt({ where: null, watchAt: AP, manual: false, fleetHome: FH, activePair: null }) === AP);
+          check("cel ratunku: AUTOMAT bez celu → DOM FLOTY (lekcja 13:10)",
+            rrt({ where: null, watchAt: null, manual: false, fleetHome: FH, activePair: AP }) === FH);
+          check("cel ratunku: automat bez domu floty → aktywna para",
+            rrt({ where: null, watchAt: null, manual: false, fleetHome: null, activePair: AP }) === AP);
+          check("cel ratunku: ręczny RATUJ → para operatora, nie dom floty",
+            rrt({ where: null, watchAt: null, manual: true, fleetHome: FH, activePair: AP }) === AP);
+          check("cel ratunku: nic nie wiadomo → null (coordsOf dośle bazę)",
+            rrt({ where: null, watchAt: null, manual: false, fleetHome: null, activePair: null }) === null);
+        }
+
+        // ── A3. Ucieczka w powietrze — decyzja (prawdziwe AirSave.decide) ──
+        check("ucieczka: oba ciała pary pod atakiem → powietrze",
+          AirSave.decide({ enabled: true, bodies: ["moon", "planet"], activePhase: null, failedAt: 0, now: Date.now() }) === "air");
+        check("ucieczka: jedno ciało → zwykły ratunek",
+          AirSave.decide({ enabled: true, bodies: ["moon"], activePhase: null, failedAt: 0, now: Date.now() }) === "swap");
+        check("ucieczka: lot już trwa → nie dubluj",
+          AirSave.decide({ enabled: true, bodies: ["moon", "planet"], activePhase: "launched", failedAt: 0, now: Date.now() }) === "active");
+
         // ── B. Odczyt celu ataku: koordy + CIAŁO (księżyc vs planeta) ──
         const rm = FleetMovements.classifyRow(this._parse(this._row("row-mission-type-ATTACK row-hostile-mission", "3:248:11", "3:280:4", { moon: true })), own);
         check("cel ataku: koordynaty [3:280:4]", rm && rm.dst === "3:280:4");
@@ -10945,6 +11007,7 @@
             <button class="mini-btn" id="ogx-moonback-now" style="width:100%;margin-top:4px;background:#1a5276;border-color:#2e86c1;color:#fff;" title="Ściąga flotę i surowce z ciała, na które uciekły, z powrotem na to, z którego wystartowały. Potrzebne po ręcznym ratunku — takich bot sam nie cofa.">WRÓĆ NA BAZĘ</button>
             <button class="mini-btn" id="ogx-selftest" style="width:100%;margin-top:4px;" title="Przepuszcza syntetyczne wrogie wiersze przez PRAWDZIWĄ klasyfikację bota (tę samą, którą karmi lista ruchów flot) i sprawdza werdykt nadzorcy. Nie rusza flotą, nie kosztuje nic, trwa ułamek sekundy. Odpowiada na pytanie „czy ta wersja bota rozpozna atak", bez czekania na napastnika.">AUTOTEST OBRONY (bez ruszania flotą)</button>
             <button class="mini-btn" id="ogx-threat-sim" style="width:100%;margin-top:4px;" title="Przepuszcza SYNTETYCZNY atak na bazę przez prawdziwą maszynerię obrony: kandydat → potwierdzenie ~25-35 s → EWAKUACJA całej floty i surowców na drugie ciało → po ~2 min alarm gaśnie i flota wraca automatycznie. Koszt: kilka minut miningu i dwa krótkie przeloty. To jest pełna próba generalna automatu bez czekania na wroga.">TEST ALARMU (symulacja ataku)</button>
+            <button class="mini-btn" id="ogx-threat-sim-blind" style="width:100%;margin-top:4px;" title="Odtwarza DOKŁADNIE scenariusz ataku z 12.08 13:10: lista ruchów i zdarzenia serwera czyste, tylko pasek misji widzi +1 obcą flotę (tak wyglądają ataki z Twojego własnego układu). Sprawdza całą ślepą ścieżkę: cache paska → kandydat → potwierdzenie → ratunek do DOMU FLOTY → straż → powrót.">TEST ŚLEPEGO PASKA (atak z układu)</button>
             <div style="margin-top:6px;border-top:1px solid #1a5276;padding-top:6px;">
               <label style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#bbb;">
                 <span title="Push na telefon przez ntfy.sh przy ataku, ewakuacji, błędzie obrony i powrocie. Zainstaluj apkę ntfy (Google Play / App Store), dodaj subskrypcję tematu widocznego niżej — i tyle. Temat o losowej nazwie działa jak hasło: nie udostępniaj go.">Push na telefon (ntfy)</span>
@@ -11289,6 +11352,23 @@
         GM_setValue("ogamex_threat_sim_until", String(Date.now() + 90 * 1000));
         log("[TEST] SYMULACJA ATAKU uruchomiona (90 s). Obserwuj sekwencję: kandydat → ALARM → RATUNEK → koniec alarmu → POWRÓT. Wszystko poniżej to prawdziwa maszyneria obrony.", "error");
         ThreatLog.add("odczyt", "TEST: symulacja ataku uruchomiona przez operatora (90 s).");
+      });
+
+      // v2.87.0: symulacja ślepego paska — E2E ścieżki, która zawiodła 13:10.
+      const simBlindBtn = document.getElementById("ogx-threat-sim-blind");
+      if (simBlindBtn) simBlindBtn.addEventListener("click", () => {
+        if (!window.confirm(
+          "SYMULACJA ŚLEPEGO PASKA (scenariusz ataku z 13:10)?\n\n" +
+          "Lista ruchów i zdarzenia serwera zostają CZYSTE — tylko pasek misji dostaje syntetyczną +1 obcą flotę, dokładnie jak przy atakach z Twojego układu.\n" +
+          "Oczekiwana sekwencja:\n" +
+          "• PASEK: 1 obcych, lista tylko 0 — traktuję jak ATAK,\n" +
+          "• kandydat → potwierdzenie ~25-35 s,\n" +
+          "• RATUNEK do DOMU FLOTY (przełączenie kolonii + skok planeta↔księżyc),\n" +
+          "• po ~2 min alarm gaśnie i flota wraca.\n\n" +
+          "UWAGA: przez 90 s symulacji prawdziwy odczyt paska jest podmieniony — nie odpalaj przy realnym dolocie. Kontynuować?")) return;
+        GM_setValue("ogamex_threat_sim_blind_until", String(Date.now() + 90 * 1000));
+        log("[TEST] SYMULACJA ŚLEPEGO PASKA uruchomiona (90 s) — to jest dokładnie ścieżka, która zawiodła 12.08 13:10. Obserwuj: PASEK>lista → kandydat → ALARM → RATUNEK do domu floty → POWRÓT.", "error");
+        ThreatLog.add("odczyt", "TEST: symulacja ślepego paska uruchomiona przez operatora (90 s).");
       });
 
       const mbBtn = document.getElementById("ogx-moonback-now");
