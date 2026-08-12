@@ -6,6 +6,42 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 12.08 (6) — popołudniowa wojna + seria 2.86.4→2.88.0
+
+Wróg (Ibra646) po utracie łupu z 13:10 eskalował: księżyce bojowe w DWÓCH
+układach ownera ([2:277:11], [5:67:11]) + trzeci gracz z [3:245:7]; sondy co
+minutę, wabiki, podwójne ataki na obie strony pary, Gwiazdy Śmierci na
+porzucone księżyce (~15:05). Flota główna ocalona (ręczny Deploy ownera
+o 14:29 + relokacje). Każdy incydent = fix z testem w ciągu godziny:
+
+- 2.86.4: push ⚔️ tylko przy POTWIERDZONYM alarmie.
+- 2.86.5: lądowanie ratunku wg realnego czasu lotu (lastFlightMs);
+  ślepa ścieżka → switchTo na dom floty; lot międzykolonijny → KSIĘŻYC;
+  ręczny RATUJ chroni aktywną parę.
+- 2.87.0: AUDYT WYKONYWALNY — resolveRescueTarget (pure + macierze offline
+  i w autoteście), symulacja ŚLEPEGO PASKA (E2E ścieżki z 13:10 na żywo),
+  zwykła symulacja celuje w dom floty.
+- 2.87.1: uzbrojona straż PYTA AirSave przy ataku na oba ciała strzeżonej
+  pary (incydent 14:28 — głuche return false; uratował ręczny Deploy).
+- 2.87.2: switch_to_body po KOORDACH Z TEKSTU (pairAnchor) + formularz
+  ratunku NIGDY nie wysyła z obcej kolonii (incydent 14:35: powrót załadował
+  hangar Colony 11 — 4 kolonizatory + 849 mld — i wysłał do 5:67:5).
+- 2.87.3: sonda policzona przez listę ≠ brakujący wiersz — pasek wygrywa
+  tylko NADWYŻKĄ ponad (ataki+sondy); koniec ratunków na skany (14:38-14:50).
+- 2.88.0 (P0-A): PANEL EVENTS z żywego DOM jako trzecie źródło — czytany
+  kształtem z fetchServerEvents (tr.eventFleet), wiersze dołączają do
+  klasyfikacji (cel+dolot+ciało → blitz i air-save działają dla ataków
+  niewidzialnych dla listy), cache 3 min; fork bez tr.eventFleet =
+  jednorazowy zrzut [EVENTS DOM] (czekamy na wklejkę ownera → selektory
+  z faktów w 2.88.1). Zamrażarka: 23 checki, autotest ~34.
+
+OTWARTE: potwierdzenie kształtu panelu Events na żywo (zrzut [EVENTS DOM]
+albo działający merge „panel dołożył N wierszy"); relokacja floty do układu
+BEZ wrogich księżyców (w toku — [5:67] też ma wrogi księżyc!); pierwszy
+bojowy lot AirSave; „Start ekspedycji" do zaktualizowania po osiedleniu.
+
+---
+
 ## AKTUALIZACJA 12.08 (5) — KATASTROFA 13:10 i seria 2.85.1→2.86.5
 
 **UTRATA FLOTY GŁÓWNEJ 13:10** (Ibra646 [2:277:11], księżyc w układzie ownera,
