@@ -21,6 +21,7 @@ const SUITES = [
   ["ratunek nietykalny", "test-ratunek-nietykalny.js"],
   ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],
   ["ranking celu farmy (parser + filtr)", "test-farm-rank.js"],
+  ["priorytet mining > farming", "test-farm-priorytet.js"],
 ];
 
 let failed = [];

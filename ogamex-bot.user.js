@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.89.0
+// @version      2.90.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -222,9 +222,10 @@
       launchFrom: null,   // { galaxy, system, position } | null
     },
     // ── v2.11.0: Inactive-player farming (event: reward per fleet sent) ──
-    // Scans user-given system ranges, attacks EVERY (i)/(I) inactive planet
+    // Scans user-given system ranges, attacks (i)/(I) inactive planets
     // with Heavy Cargo (mission=8, direct fleet URL — same 3-step flow as
-    // asteroids). Mutually exclusive with asteroidMining (mining wins).
+    // asteroids). v2.90.0: współistnieje z asteroidMining — mining ma
+    // pierwszeństwo, farm działa w oknach, gdy minery są w locie.
     inactiveFarming: {
       enabled: false,
       hcPerFlight: 100,          // ships per attack (manual, like miners per flight)
@@ -3606,8 +3607,10 @@
   // Sweeps user-configured system ranges ("3:100-200"), collects every planet
   // whose player status is (i)/(I) — skipping (v)/(p)/(b) — and attacks each
   // with Heavy Cargo via the direct fleet URL (…&z=P&planet=1&mission=8),
-  // reusing the guarded select_ships_direct 3-step machinery. Mutually
-  // exclusive with Asteroid Mining (mining wins; toggles auto-switch in UI).
+  // reusing the guarded select_ships_direct 3-step machinery. v2.90.0:
+  // współistnieje z Asteroid Mining — mining ma PIERWSZEŃSTWO (asteroidy
+  // zarabiają więcej), farm rusza się tylko, gdy skaner asteroid śpi
+  // (minery w locie / cooldowny) — patrz farmYieldsToMining.
 
   // ── v2.89.0: ranking celu z wiersza galaktyki ──
   // Tooltip gracza („Royal Zion / Ranking: 2.881 / Write message…") jest
@@ -3629,6 +3632,31 @@
     return rank <= maxRank;
   }
   // ── FARM-RANK-END ──
+
+  // ── v2.90.0: MINING MA PIERWSZEŃSTWO, FARM WYPEŁNIA OKNA ──
+  // Decyzja ownera (14.08): asteroidy zarabiają więcej niż farmienie, więc
+  // koniec z either/or (włączenie farmy WYŁĄCZAŁO mining — bot tracił
+  // główne źródło dochodu). Oba moduły mogą być ON naraz; farm rusza się
+  // TYLKO wtedy, gdy mining i tak nic nie robi:
+  //   • minery w locie (ogamex_fleet_return_at w przyszłości — tryb parallel
+  //     ZERUJE ten timer, gdy dalej skanuje, więc timer>now naprawdę znaczy
+  //     „skan śpi do powrotu”),
+  //   • 10-min cooldown po nieudanej wysyłce minerów,
+  //   • przerwa między skanami zakresów (ogamex_scan_cooldown_until).
+  // W każdej innej sytuacji mining pracuje albo zaraz ruszy — farm czeka.
+  // Rytm z logów: mining skanuje ~1-2 min, potem 8-25 min lotu — farm dostaje
+  // większość zegara, ale nigdy kosztem asteroid.
+  // ── FARM-PRIO-START (test-farm-priorytet.js czyta ten blok w całości) ──
+  const MINING_FAIL_COOLDOWN_MS = 10 * 60 * 1000; // ta sama stała co w skanerze asteroid
+  function farmYieldsToMining(s) {
+    // s = { miningEnabled, now, fleetReturnAt, dispatchFailAt, scanCooldownUntil }
+    if (!s.miningEnabled) return false;                                        // mining OFF → farm wolny
+    if (s.fleetReturnAt > s.now) return false;                                 // minery w locie → okno farmy
+    if (s.dispatchFailAt && s.now - s.dispatchFailAt < MINING_FAIL_COOLDOWN_MS) return false; // cooldown po porażce
+    if (s.scanCooldownUntil > s.now) return false;                             // przerwa między skanami
+    return true;                                                               // mining pracuje/zaraz ruszy → farm ustępuje
+  }
+  // ── FARM-PRIO-END ──
 
   // ── v2.89.0: trwała baza celów farmienia ──
   // Każdy zeskanowany system NADPISUJE swoje wpisy (planeta, która przestała
@@ -3736,6 +3764,18 @@
 
     cachedFleetTotal() { return parseInt(GM_getValue("ogamex_fleet_total_slots", "0")) || 0; },
 
+    // v2.90.0: czy farm ma teraz ustąpić miningowi (żywe GM-fakty → czysty
+    // predykat farmYieldsToMining; używane w run(), hooku on-load i statusie).
+    yieldsToMining() {
+      return farmYieldsToMining({
+        miningEnabled: !!CONFIG.asteroidMining.enabled,
+        now: Date.now(),
+        fleetReturnAt: parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0,
+        dispatchFailAt: parseInt(GM_getValue("ogamex_dispatch_fail_at", "0")) || 0,
+        scanCooldownUntil: parseInt(GM_getValue("ogamex_scan_cooldown_until", "0")) || 0,
+      });
+    },
+
     // "Fleets: X/37" exists only on the fleet page — the total is cached from
     // visits there (init). Everywhere else the live "M Own" missions bar
     // (inflightFleetCount) tracks usage.
@@ -3749,12 +3789,19 @@
     async run() {
       const cfg = CONFIG.inactiveFarming;
       if (!CONFIG.enabled || !cfg.enabled) return;
-      if (CONFIG.asteroidMining.enabled) {
+      // v2.90.0: mining ma pierwszeństwo — farm działa tylko w jego martwych
+      // oknach (minery w locie / cooldowny). Stan farmy zostaje nietknięty,
+      // więc przerwane okrążenie samo wznawia się w następnym oknie.
+      if (this.yieldsToMining()) {
         if (!this._pausedLogged) {
           this._pausedLogged = true;
-          log("Farming paused — Asteroid Mining is ON (modules are either/or).", "warn");
+          log("Farm ustępuje: Asteroid Mining pracuje (priorytet) — wrócę, gdy minery będą w locie.", "delay");
         }
         return;
+      }
+      if (this._pausedLogged) {
+        this._pausedLogged = false;
+        if (CONFIG.asteroidMining.enabled) log("Farm wraca: mining czeka na powrót minerów — okno dla farmienia.", "info");
       }
       if (AntiDetection.isSleepTime()) return;
       if (Humanizer.isOnBreak()) return; // v2.12.0: also covers init on-load hooks
@@ -9080,7 +9127,9 @@
           return;
         }
 
-        log("Fleet page loaded (direct asteroid). Starting 3-step dispatch...", "fleet");
+        // v2.90.0: etykieta po typie misji (wcześniej wszystko szło jako
+        // „direct asteroid”, także ataki farmy i loty po złom).
+        log(`Fleet page loaded (${mission.farm ? "farm attack" : mission.recycle ? "recycle" : mission.expedition ? "expedition" : "direct asteroid"}). Starting 3-step dispatch...`, "fleet");
 
         // ── v2.83.0: OFF ma znaczyć STOP także W ŚRODKU formularza ──
         // v2.68.4 przerywa misję przy WZNOWIENIU (przeładowanie strony), ale
@@ -9634,7 +9683,10 @@
             else input.value = toSend;
             input.dispatchEvent(new Event("input", { bubbles: true }));
             input.dispatchEvent(new Event("change", { bubbles: true }));
-            log(`Selected ${toSend}/${available} Asteroid Miners (input: ${input.className})`, "fleet");
+            // v2.90.0: etykieta po typie misji — „Asteroid Miners” przy ataku
+            // farmy Heavy Cargo myliło ownera w logach.
+            const shipLabel = (mission.farm || mission.recycle) ? (mission.shipType || "ships").replace("_", " ") : "Asteroid Miners";
+            log(`Selected ${toSend}/${available} ${shipLabel} (input: ${input.className})`, "fleet");
           } else {
             log(`No ${mission.farm || mission.recycle ? mission.shipType : "Asteroid Miners"} available (found: ${available}, input: ${!!input})`, "error");
             // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
@@ -9958,7 +10010,11 @@
         // AsteroidYieldTracker.minersNeeded(). Only learn when we know how many
         // we sent (dispatchInfo.toSend) and the user hasn't pinned it in config.
         try {
-          if (!CONFIG.asteroidMining.cargoPerMiner && dispatchInfo.toSend > 0) {
+          // v2.90.0: ucz się WYŁĄCZNIE na locie minerów — Heavy Cargo farmy ma
+          // inną ładowność (463 750 vs 20 750) i tylko hałasował strażnikiem
+          // rozsądku („Odrzucam odczyt ładowności…” przy każdym ataku).
+          if (!mission.farm && !mission.expedition && !mission.recycle
+              && !CONFIG.asteroidMining.cargoPerMiner && dispatchInfo.toSend > 0) {
             const cargoText = document.body.textContent;
             // "Cargo capacity: 1.234.567" / "Storage capacity" / "Ładowność"
             const cm = cargoText.match(/(?:cargo|storage|capacity|ladun|ładun|frachtraum|laderaum)\D{0,20}?([\d][\d.,\s]{2,})/i);
@@ -11523,7 +11579,7 @@
               <input id="ogx-farm-refresh" type="number" min="1" step="1" value="${CONFIG.inactiveFarming.dbRefreshHours ?? 12}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <button class="mini-btn" id="ogx-farm-dbdump" style="width:100%;margin-top:4px;" title="Wypisuje do dziennika całą bazę celów: koordy, gracz, ranking, kiedy widziany — posortowaną po rankingu. Nie rusza flotą.">POKAŻ BAZĘ CELÓW</button>
-            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Pełny skan buduje bazę nieaktywnych; potem szybkie okrążenia biją tylko cele z rankingiem ≤ limitu. Either/or z Asteroid Mining.</div>
+            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Pełny skan buduje bazę nieaktywnych; potem szybkie okrążenia biją tylko cele z rankingiem ≤ limitu. Mining ma pierwszeństwo — farm działa w oknach, gdy minery są w locie.</div>
           </div>
         </div>
 
@@ -11762,8 +11818,8 @@
       }
     });
 
-    // v2.11.0: mining and farming are either/or — turning one ON turns the
-    // other OFF (both button + section repainted).
+    // v2.90.0 (było either/or od v2.11.0): oba moduły mogą działać naraz —
+    // repaint obu przycisków i sekcji po każdym przełączeniu.
     const paintModuleToggles = () => {
       const aBtn = document.getElementById("ogx-asteroid-toggle");
       const aSec = document.getElementById("ogx-asteroid-section");
@@ -11775,26 +11831,27 @@
       if (fSec) fSec.className = `section ${CONFIG.inactiveFarming.enabled ? "active" : "inactive"}`;
     };
 
+    // v2.90.0: koniec either/or — oba moduły mogą być ON naraz. Mining ma
+    // pierwszeństwo; farm dostaje wyłącznie okna, gdy minery są w locie.
     document.getElementById("ogx-asteroid-toggle").addEventListener("click", () => {
       CONFIG.asteroidMining.enabled = !CONFIG.asteroidMining.enabled;
-      if (CONFIG.asteroidMining.enabled && CONFIG.inactiveFarming.enabled) {
-        CONFIG.inactiveFarming.enabled = false;
-        log("Inactive farming disabled (mining turned on — modules are either/or)", "info");
-      }
       saveConfig(CONFIG);
       paintModuleToggles();
       log(`Asteroid mining ${CONFIG.asteroidMining.enabled ? "enabled" : "disabled"}`, "info");
+      if (CONFIG.asteroidMining.enabled && CONFIG.inactiveFarming.enabled) {
+        log("Mining + farming razem: asteroidy mają PIERWSZEŃSTWO, farm wypełnia okna między lotami minerów.", "info");
+      }
+      updateStatusUI();
     });
 
     document.getElementById("ogx-farm-toggle").addEventListener("click", () => {
       CONFIG.inactiveFarming.enabled = !CONFIG.inactiveFarming.enabled;
-      if (CONFIG.inactiveFarming.enabled && CONFIG.asteroidMining.enabled) {
-        CONFIG.asteroidMining.enabled = false;
-        log("Asteroid mining disabled (farming turned on — modules are either/or)", "info");
-      }
       saveConfig(CONFIG);
       paintModuleToggles();
       log(`Inactive farming ${CONFIG.inactiveFarming.enabled ? "enabled" : "disabled"}`, "info");
+      if (CONFIG.asteroidMining.enabled && CONFIG.inactiveFarming.enabled) {
+        log("Mining + farming razem: asteroidy mają PIERWSZEŃSTWO, farm wypełnia okna między lotami minerów.", "info");
+      }
       updateStatusUI();
     });
 
@@ -12751,8 +12808,8 @@
       let ftext = "Idle";
       if (!cfg.enabled) {
         ftext = "Off";
-      } else if (CONFIG.asteroidMining.enabled) {
-        ftext = "PAUSED — Asteroid Mining is ON (either/or)";
+      } else if (InactiveFarmer.yieldsToMining()) {
+        ftext = "Czeka — mining ma pierwszeństwo (skan/wysyłka asteroid); farm wróci, gdy minery będą w locie";
       } else if (!InactiveFarmer.parseRanges(cfg.ranges).length) {
         ftext = "No valid ranges — set e.g. 3:100-200";
       } else {
@@ -13372,10 +13429,12 @@
       // v2.48.0: jeśli to galaktyka systemu bazy, najpierw sprawdź pole złomu.
       try { if (DebrisCollector.tryCollectHere()) return; } catch {}
       setTimeout(() => AsteroidMiner.run(), 1500 + Math.random() * 1000); // v2.10.18: trimmed (galaxy items are server-rendered, present on load)
-    } else if (CONFIG.enabled && CONFIG.inactiveFarming?.enabled && !CONFIG.asteroidMining.enabled
+    } else if (CONFIG.enabled && CONFIG.inactiveFarming?.enabled && !InactiveFarmer.yieldsToMining()
                && FarmState.load()?.active && GameState.getCurrentPage() === "galaxy") {
       // v2.11.0: farm sweep continues on galaxy page load (mirror of the
       // asteroid resume above; farmer no-ops if a pending_mission exists).
+      // v2.90.0: zamiast „mining wyłączony” — brama priorytetu (farm wznawia
+      // się na galaktyce tylko w oknie, gdy mining i tak czeka na minery).
       setTimeout(() => { InactiveFarmer.run().catch(() => {}); }, 1500 + Math.random() * 1000);
     }
 

@@ -6,6 +6,27 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 14.08 (10) — v2.90.0: koniec either/or, mining > farming
+
+- v2.89.0 potwierdzona bojowo (09:37-09:40): parser rankingu trafia w markup
+  (rank 361/728/656 zaatakowane, 28 pustych pominiętych w 7 systemach, zero
+  [FARM RANK DOM]). Jeden atak przepadł na ZNANYM wyścigu formularza
+  (Next disabled → step 2 timeout) — kolejne dwa przeszły czysto.
+- Owner: mining zarabia więcej → asteroidy mają pierwszeństwo. Problem:
+  moduły były EITHER/OR — włączenie farmy WYŁĄCZAŁO mining (widoczne w logu
+  09:37:39). v2.90.0: oba moduły mogą być ON naraz; farm rusza się TYLKO gdy
+  skaner asteroid śpi: minery w locie (fleet_return_at>now; parallel ZERUJE
+  ten timer gdy dalej skanuje!), cooldown po porażce wysyłki (10 min) albo
+  przerwa między skanami (scan_cooldown_until). Predykat farmYieldsToMining
+  (blok FARM-PRIO) + test-farm-priorytet.js (10 przypadków).
+- Stan farmy nietknięty przy ustąpieniu — przerwane okrążenie samo wznawia
+  się w następnym oknie. Status sekcji: „Czeka — mining ma pierwszeństwo…".
+- Kosmetyka: logi wysyłki po typie misji (koniec „direct asteroid"/„Asteroid
+  Miners" przy atakach farmy); uczenie ładowności minerów pomija loty
+  farm/ekspedycja/złom (szum „Odrzucam odczyt ładowności 463 750").
+- PO WGRANIU: włączyć OBA moduły i sprawdzić rytm w logu — mining skanuje,
+  po „Miners in flight" farm przejmuje okno, po powrocie minerów ustępuje.
+
 ## AKTUALIZACJA 14.08 (9) — v2.89.0: farm z filtrem rankingu + baza celów
 
 - Problem (owner): bot atakował KAŻDEGO nieaktywnego; łup z graczy z końca
