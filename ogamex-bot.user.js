@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.90.0
+// @version      2.90.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3871,9 +3871,22 @@
         const lastFull = parseInt(GM_getValue("ogamex_farm_last_full_sweep", "0")) || 0;
         const refreshMs = Math.max(1, cfg.dbRefreshHours || 12) * 3600000;
         let queue = null, mode = "full";
-        if (Date.now() - lastFull < refreshMs) {
+        const dbFresh = Date.now() - lastFull < refreshMs;
+        // v2.90.1: start po przerwie (np. następnego dnia) NIE zaczyna od
+        // pełnego skanu, jeśli baza zna cele — najpierw JEDNO okrążenie po
+        // znanych systemach (natychmiastowy łup z wczorajszej wiedzy), pełny
+        // skan odświeżający bazę idzie zaraz po nim. Flaga pilnuje, żeby
+        // zaległe okrążenie nie odsuwało pełnego skanu w nieskończoność.
+        const staleLapDone = GM_getValue("ogamex_farm_stale_lap_done", "0") === "1";
+        if (dbFresh || !staleLapDone) {
           const sys = FarmTargetDB.eligibleSystems(maxRank, ranges);
-          if (sys.length) { queue = sys; mode = "lap"; }
+          if (sys.length) {
+            queue = sys; mode = "lap";
+            if (!dbFresh) {
+              GM_setValue("ogamex_farm_stale_lap_done", "1");
+              log("Farm: pełny skan zaległy, ale baza zna cele — najpierw okrążenie po nich, pełny skan zaraz po.", "info");
+            }
+          }
           // pusta baza w obrębie zakresów → od razu pełny skan
         }
         if (!queue) {
@@ -3911,7 +3924,10 @@
       // v2.89.0: pełny skan stempluje się dopiero PO dojściu do końca —
       // przerwany w połowie nie udaje świeżej bazy i następne podejście
       // znowu będzie pełne.
-      if (st?.mode !== "lap") GM_setValue("ogamex_farm_last_full_sweep", String(Date.now()));
+      if (st?.mode !== "lap") {
+        GM_setValue("ogamex_farm_last_full_sweep", String(Date.now()));
+        GM_setValue("ogamex_farm_stale_lap_done", "0"); // v2.90.1: świeży pełny skan kasuje dług zaległego okrążenia
+      }
       const cfg = CONFIG.inactiveFarming;
       const dbStats = FarmTargetDB.stats(cfg.maxTargetRank || 0);
       const kind = st?.mode === "lap" ? "okrążenie po bazie" : "pełny skan";
