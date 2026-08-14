@@ -6,6 +6,23 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 14.08 (11) — v2.90.1/2: okrążenie po przerwie + INCYDENT puli wysyłek
+
+- v2.90.1: start po przerwie (np. rano) z niepustą bazą = najpierw JEDNO
+  okrążenie po znanych celach, pełny skan zaraz po (flaga stale_lap_done).
+- **INCYDENT 11:00-11:21 (na 2.90.0): klincz priorytetu.** Farm wysłał 76
+  ataków, każdy `RateLimiter.record()` → pula 20 wysyłek/h zapchana → mining
+  stał na `canAct()` („Rate limit reached") z WOLNĄ asteroidą (TTL 47 min),
+  a farm mu „ustępował" (predykat widział mining jako aktywny). Nikt nie
+  pracował ponad 20 min. **v2.90.2**: ataki farmy NIE zapisują się do puli
+  minerów — ten sam świadomy wzorzec co ekspedycje (komentarz przy
+  expedition_direct); pula 20/h ma JEDNEGO konsumenta bramki: skaner
+  asteroid. Tempo farmy ograniczają humanizer + NavRateLimiter (wspólny).
+  Jednorazowa migracja czyści zapchaną pulę (inaczej mining stałby do
+  godziny po wgraniu poprawki). LEKCJA: przy łączeniu modułów sprawdź
+  WSZYSTKIE wspólne zasoby (sloty, pending_mission, RateLimiter, NavRate) —
+  priorytet na jednym zasobie nie chroni przed inwersją na innym.
+
 ## AKTUALIZACJA 14.08 (10) — v2.90.0: koniec either/or, mining > farming
 
 - v2.89.0 potwierdzona bojowo (09:37-09:40): parser rankingu trafia w markup
