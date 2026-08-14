@@ -10,7 +10,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const src = fs.readFileSync(path.join(__dirname, "ogamex-bot.user.js"), "utf8");
+const src = fs.readFileSync(path.join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 function bodyOf(name, argList) {
   const sig = `    ${name}(${argList}) {`;

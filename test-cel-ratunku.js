@@ -18,7 +18,7 @@
 // któryś z bezpieczników, ten plik ma paść na CI zanim padnie flota.
 
 const fs = require("fs");
-const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8");
+const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 let fails = 0;
 const must = (name, cond) => {

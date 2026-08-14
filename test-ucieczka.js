@@ -11,7 +11,7 @@
 // testu.
 
 const fs = require("fs");
-const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8");
+const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 // ── wyciągnij ciało metody po nazwie (liczenie klamer od KOŃCA sygnatury —
 //    lekcja z test-kolejka: przy `({ a, b })` pierwsza klamra to argumenty) ──

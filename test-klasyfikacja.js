@@ -1,6 +1,6 @@
 // Test klasyfikacji wrogich wierszy — czyta PRAWDZIWE regexy z bota.
 const fs = require("fs");
-const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8");
+const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 const pick = (name) => {
   const m = src.match(new RegExp(`^\\s*${name}:\\s*(/.+?/i),`, "m"));

@@ -11,7 +11,7 @@
 // testu — kopia może się rozjechać z oryginałem i nikt tego nie zauważy.
 
 const fs = require("fs");
-const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8");
+const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 // ── wyciągnij ciało metody po nazwie (liczenie klamer) ──────────────────
 function bodyOf(name, argList) {

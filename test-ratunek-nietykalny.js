@@ -13,7 +13,7 @@
 // w grze — sprawdza kontrakt: kto komu wolno powiedzieć „nie wysyłaj".
 const fs = require("fs");
 const PATH = require("path").join(__dirname, "ogamex-bot.user.js");
-const src = fs.readFileSync(PATH, "utf8");
+const src = fs.readFileSync(PATH, "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 // Liczenie klamer musi omijać komentarze i stringi — w tym pliku pełno jest
 // polskich komentarzy z „{" i szablonów `${...}`, a naiwny licznik urywał

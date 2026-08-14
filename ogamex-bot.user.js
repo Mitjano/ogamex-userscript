@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.88.3
+// @version      2.89.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -244,6 +244,17 @@
       // a nie arbitralny zegar. Przy OFF zachowanie sprzed 2.81.0.
       repeatEachSweep: true,
       slotReserve: 2,            // keep this many fleet slots free (manual play / mining)
+      // ── v2.89.0: filtr rankingu + baza celów ──
+      // Obserwacja ownera (14.08): bot atakował KAŻDEGO nieaktywnego, a łup
+      // z graczy z końca rankingu (2000+) nie zwraca nawet czasu lotu — puste
+      // kolonie zjadały sloty floty. Ranking gracza stoi w tooltipie wiersza
+      // galaktyki („Ranking: 2.881"), więc pełne przemiatanie buduje BAZĘ
+      // celów (koordy + gracz + ranking), a kolejne okrążenia odwiedzają już
+      // tylko systemy z celami w limicie rankingu — zamiast ~2 h pełnego
+      // skanu, okrążenie po bazie trwa minuty i uderza tylko w tłuste cele.
+      maxTargetRank: 800,        // atakuj TYLKO nieaktywnych z rankingiem ≤ N; 0 = bez filtra.
+                                 // Nieznany ranking (parser nie odczytał) = atakuj + głośny log.
+      dbRefreshHours: 12,        // co tyle godzin pełny skan zakresów odświeża bazę celów
     },
     // ── v2.13.0: auto-claim the green "Online bonus" menu button ──
     // (antimatter + Academy points). Independent of mining/farming — runs
@@ -3598,6 +3609,82 @@
   // reusing the guarded select_ships_direct 3-step machinery. Mutually
   // exclusive with Asteroid Mining (mining wins; toggles auto-switch in UI).
 
+  // ── v2.89.0: ranking celu z wiersza galaktyki ──
+  // Tooltip gracza („Royal Zion / Ranking: 2.881 / Write message…") jest
+  // renderowany serwerowo w HTML wiersza — czasem jako zwykły tekst, czasem
+  // w atrybucie data-tooltip-content/title (tak fork robi tooltipy w innych
+  // miejscach). Parser dostaje ZLEPEK obu źródeł. Kropka/przecinek/nbsp to
+  // separatory tysięcy („2.881" = ranking 2881, nie 2,881).
+  // ── FARM-RANK-START (test-farm-rank.js czyta ten blok w całości) ──
+  const FARM_RANK_RX = /rank(?:ing)?\s*:?\s*(\d{1,3}(?:[.,  ]\d{3})+|\d+)/i;
+  function farmParseRank(raw) {
+    const m = FARM_RANK_RX.exec(String(raw || ""));
+    if (!m) return null;
+    const n = parseInt(m[1].replace(/\D/g, ""), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  function farmRankEligible(rank, maxRank) {
+    if (!maxRank) return true;     // 0 = filtr wyłączony
+    if (rank == null) return true; // nieznany ranking → atakuj (fail-open), log krzyczy osobno
+    return rank <= maxRank;
+  }
+  // ── FARM-RANK-END ──
+
+  // ── v2.89.0: trwała baza celów farmienia ──
+  // Każdy zeskanowany system NADPISUJE swoje wpisy (planeta, która przestała
+  // być nieaktywna, znika z bazy przy najbliższej wizycie). Baza trzyma
+  // WSZYSTKICH nieaktywnych — także tych poza limitem rankingu — bo limit
+  // można zmienić suwakiem bez ponownego pełnego skanu. Wpisy niewidziane
+  // 7 dni wypadają same (skasowana planeta w systemie, którego już nie
+  // odwiedzamy, nie może wiecznie ciągnąć okrążeń).
+  const FarmTargetDB = {
+    KEY: "ogamex_farm_target_db",
+    TTL_DAYS: 7,
+    load() {
+      try { const o = JSON.parse(GM_getValue(this.KEY, "{}")); return (o && typeof o === "object" && !Array.isArray(o)) ? o : {}; }
+      catch { return {}; }
+    },
+    save(db) { GM_setValue(this.KEY, JSON.stringify(db)); },
+    updateSystem(galaxy, system, entries) {
+      const db = this.load();
+      const prefix = `${galaxy}:${system}:`;
+      for (const c of Object.keys(db)) if (c.startsWith(prefix)) delete db[c];
+      entries.forEach(e => { db[e.coord] = { name: e.name || "?", rank: e.rank ?? null, seenAt: Date.now() }; });
+      const cut = Date.now() - this.TTL_DAYS * 86400000;
+      for (const c of Object.keys(db)) if ((db[c].seenAt || 0) < cut) delete db[c];
+      this.save(db);
+    },
+    stats(maxRank) {
+      const db = this.load();
+      let total = 0, eligible = 0, unknown = 0;
+      for (const c in db) {
+        total++;
+        if (db[c].rank == null) unknown++;
+        if (farmRankEligible(db[c].rank, maxRank)) eligible++;
+      }
+      return { total, eligible, unknown };
+    },
+    // Systemy (w obrębie AKTUALNYCH zakresów), w których stoi choć jeden cel
+    // przechodzący filtr — z tego buduje się kolejkę szybkiego okrążenia.
+    eligibleSystems(maxRank, ranges) {
+      const db = this.load();
+      const seen = new Set(); const out = [];
+      for (const c in db) {
+        if (!farmRankEligible(db[c].rank, maxRank)) continue;
+        const parts = c.split(":");
+        const g = parseInt(parts[0]), s = parseInt(parts[1]);
+        if (!Number.isFinite(g) || !Number.isFinite(s)) continue;
+        if (!ranges.some(r => r.galaxy === g && s >= r.start && s <= r.end)) continue;
+        const key = `${g}:${s}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ galaxy: g, system: s });
+      }
+      out.sort((a, b) => a.galaxy - b.galaxy || a.system - b.system);
+      return out;
+    },
+  };
+
   // Per-target attack cooldown — full g:s:z coords (many targets per system).
   const FarmedTargets = {
     KEY: "ogamex_farmed_targets",
@@ -3725,8 +3812,27 @@
         if (Date.now() < cool) return;
         const ranges = this.parseRanges(cfg.ranges);
         if (!ranges.length) return; // nothing configured — status line explains
-        const queue = [];
-        ranges.forEach(r => { for (let s = r.start; s <= r.end; s++) queue.push({ galaxy: r.galaxy, system: s }); });
+        // ── v2.89.0: okrążenie po bazie celów zamiast pełnego skanu ──
+        // Pełny skan zakresów (np. 998 systemów gal. 3+4 ≈ godziny) odświeża
+        // bazę celów co dbRefreshHours. MIĘDZY pełnymi skanami bot krąży
+        // wyłącznie po systemach, w których baza zna cel przechodzący filtr
+        // rankingu — okrążenie trwa minuty, więc tłuste cele dostają ataki
+        // wielokrotnie częściej, a puste systemy nie kosztują ani nawigacji,
+        // ani czasu. Statusy i ranking odświeżają się przy każdej wizycie
+        // (scanStep nadpisuje wpisy systemu), więc baza nie gnije.
+        const maxRank = cfg.maxTargetRank || 0;
+        const lastFull = parseInt(GM_getValue("ogamex_farm_last_full_sweep", "0")) || 0;
+        const refreshMs = Math.max(1, cfg.dbRefreshHours || 12) * 3600000;
+        let queue = null, mode = "full";
+        if (Date.now() - lastFull < refreshMs) {
+          const sys = FarmTargetDB.eligibleSystems(maxRank, ranges);
+          if (sys.length) { queue = sys; mode = "lap"; }
+          // pusta baza w obrębie zakresów → od razu pełny skan
+        }
+        if (!queue) {
+          queue = [];
+          ranges.forEach(r => { for (let s = r.start; s <= r.end; s++) queue.push({ galaxy: r.galaxy, system: s }); });
+        }
         // ── v2.81.0: nowe okrazenie zaczyna od czystej karty ──
         // Wlasciciel: „najlepiej jakby wracal do zaatakowanych wczesniej celow,
         // jak skonczy wszystkich atakowac w zaznaczonym zakresie". Kolejka i tak
@@ -3739,9 +3845,14 @@
           const freed = FarmedTargets.clear();
           if (freed) log(`Farm: nowe okrazenie — zwolniono ${freed} cel(ow) z poprzedniego przebiegu (atakuje ponownie).`, "info");
         }
-        st = { active: true, queue, scannedCount: 0, totalCount: queue.length, targets: [] };
+        st = { active: true, mode, queue, scannedCount: 0, totalCount: queue.length, targets: [], skippedRank: 0, unknownRank: 0 };
         FarmState.save(st);
-        log(`Farm sweep started: ${queue.length} systems (${cfg.ranges})`, "success");
+        if (mode === "lap") {
+          const nextFullMin = Math.max(0, Math.ceil((lastFull + refreshMs - Date.now()) / 60000));
+          log(`Farm: okrążenie PO BAZIE — ${queue.length} system(ów) ze znanymi celami${maxRank ? ` (rank ≤ ${maxRank})` : ""}; pełny skan zakresów za ~${nextFullMin} min.`, "success");
+        } else {
+          log(`Farm sweep started (pełny skan): ${queue.length} systems (${cfg.ranges})${maxRank ? ` | filtr: rank ≤ ${maxRank}` : ""}`, "success");
+        }
         await AntiDetection.shortDelay();
         scanNavigate(`/galaxy?x=${queue[0].galaxy}&y=${queue[0].system}`, "farm start");
       } finally {
@@ -3750,7 +3861,15 @@
     },
 
     finishSweep(st) {
-      log(`Farm sweep done: ${st?.scannedCount ?? "?"} systems checked. Next sweep in ${this.SWEEP_COOLDOWN_MIN}min.`, "info");
+      // v2.89.0: pełny skan stempluje się dopiero PO dojściu do końca —
+      // przerwany w połowie nie udaje świeżej bazy i następne podejście
+      // znowu będzie pełne.
+      if (st?.mode !== "lap") GM_setValue("ogamex_farm_last_full_sweep", String(Date.now()));
+      const cfg = CONFIG.inactiveFarming;
+      const dbStats = FarmTargetDB.stats(cfg.maxTargetRank || 0);
+      const kind = st?.mode === "lap" ? "okrążenie po bazie" : "pełny skan";
+      log(`Farm sweep done (${kind}): ${st?.scannedCount ?? "?"} systems checked. Baza celów: ${dbStats.total} nieaktywnych, ${dbStats.eligible} w limicie${cfg.maxTargetRank ? ` (rank ≤ ${cfg.maxTargetRank})` : ""}${st?.skippedRank ? `, pominięto ${st.skippedRank} pow. limitu` : ""}. Next sweep in ${this.SWEEP_COOLDOWN_MIN}min.`, "info");
+      if (st?.unknownRank) log(`Farm: ${st.unknownRank} cel(ów) BEZ odczytanego rankingu — filtr ich nie ogranicza (atakowane jak dotąd). Wklej [FARM RANK DOM] z dziennika do analizy parsera.`, "warn");
       FarmState.clear();
       GM_setValue("ogamex_farm_cooldown_until", String(Date.now() + this.SWEEP_COOLDOWN_MIN * 60 * 1000));
     },
@@ -3766,12 +3885,16 @@
         scanNavigate(`/galaxy?x=${cur.galaxy}&y=${cur.system}`, "farm align");
         return;
       }
-      const found = this.collectTargets(cur.galaxy, cur.system);
+      const scan = this.collectTargets(cur.galaxy, cur.system);
+      const found = scan.targets;
       st.queue.shift();
       st.scannedCount++;
       st.targets = (st.targets || []).concat(found);
+      st.skippedRank = (st.skippedRank || 0) + scan.skippedRank;
+      st.unknownRank = (st.unknownRank || 0) + scan.unknownRank;
       FarmState.save(st);
-      if (found.length) log(`Farm: ${found.length} inactive target(s) at [${cur.galaxy}:${cur.system}]: ${found.map(t => t.coord).join(", ")}`, "success");
+      if (found.length) log(`Farm: ${found.length} inactive target(s) at [${cur.galaxy}:${cur.system}]: ${found.map(t => t.coord + (t.rank ? ` (rank ${t.rank})` : "")).join(", ")}`, "success");
+      if (scan.skippedRank) log(`Farm: [${cur.galaxy}:${cur.system}] ${scan.skippedRank} nieaktywny(ch) POMINIĘTO — ranking powyżej ${CONFIG.inactiveFarming.maxTargetRank} (puste kolonie nie zjadają slotów).`, "info");
       if (st.targets.length) { await this.dispatchNext(st); return; }
       const next = st.queue[0];
       if (next) {
@@ -3797,8 +3920,15 @@
     // Parse the CURRENT galaxy page for attackable inactive planets.
     // Status letters from the legend: s strong, n weak, v vacation,
     // p protection, b banned, i 7d-inactive, I 28d-inactive. Case matters.
+    // v2.89.0: zwraca { targets, skippedRank, unknownRank } — targets to
+    // wiersze przechodzące filtr rankingu i nie będące na cooldownie; baza
+    // celów dostaje KOMPLET nieaktywnych tego systemu (nadpisanie systemu).
     collectTargets(galaxy, system) {
+      const cfg = CONFIG.inactiveFarming;
+      const maxRank = cfg.maxTargetRank || 0;
       const out = [];
+      const dbEntries = [];
+      let skippedRank = 0, unknownRank = 0;
       document.querySelectorAll(".galaxy-item").forEach(item => {
         const idx = item.querySelector(".planet-index");
         if (!idx) return;
@@ -3810,6 +3940,25 @@
         const blocked = statuses.includes("v") || statuses.includes("p") || statuses.includes("b");
         if (!inactive || blocked) return;
         const coord = `${galaxy}:${system}:${pos}`;
+        // Ranking: tooltip bywa tekstem w wierszu ALBO atrybutem — czytamy oba.
+        const attrText = [item, ...item.querySelectorAll("[data-tooltip-content],[title],[data-title]")]
+          .map(el => `${el.getAttribute?.("data-tooltip-content") || ""} ${el.getAttribute?.("title") || ""} ${el.getAttribute?.("data-title") || ""}`)
+          .join(" ").replace(/<[^>]*>/g, " ");
+        const rank = farmParseRank(text) ?? farmParseRank(attrText);
+        // Nazwa gracza (do podglądu bazy): tekst tuż przed statusem (i)/(I).
+        const nameM = text.match(/([^()]{2,32}?)\s*\(\s*[iI]\s*\)/);
+        const name = nameM ? nameM[1].trim().slice(0, 24) : "?";
+        dbEntries.push({ coord, name, rank });
+        if (maxRank > 0 && rank == null) {
+          unknownRank++;
+          // Jednorazowy zrzut wiersza bez odczytanego rankingu — do
+          // utwardzenia parsera na markup TEGO forka.
+          if (GM_getValue("ogamex_farm_rank_dumped", "0") !== "1") {
+            GM_setValue("ogamex_farm_rank_dumped", "1");
+            log(`[FARM RANK DOM] wiersz bez rankingu: ${item.innerHTML.replace(/\s+/g, " ").substring(0, 600)}`, "warn");
+          }
+        }
+        if (!farmRankEligible(rank, maxRank)) { skippedRank++; return; }
         if (FarmedTargets.has(coord)) return;
         // One-time DOM dump of the first matched row — verifies the status
         // parsing against this OGameX build's real markup.
@@ -3817,9 +3966,12 @@
           GM_setValue("ogamex_farm_row_dumped", "1");
           log(`[FARM DOM] first target row: ${item.innerHTML.replace(/\s+/g, " ").substring(0, 400)}`, "info");
         }
-        out.push({ coord, galaxy, system, position: pos });
+        out.push({ coord, galaxy, system, position: pos, rank });
       });
-      return out;
+      // Świeży skan systemu = nowa prawda o jego wpisach w bazie (planety,
+      // które przestały być nieaktywne, właśnie z niej wypadły).
+      FarmTargetDB.updateSystem(galaxy, system, dbEntries);
+      return { targets: out, skippedRank, unknownRank };
     },
 
     async dispatchNext(st) {
@@ -11362,7 +11514,16 @@
               <span title="Keep this many fleet slots unused (for mining / manual play). Limit shown on the Fleet page as 'Fleets: X/37'.">Slot reserve</span>
               <input id="ogx-farm-reserve" type="number" min="0" step="1" value="${CONFIG.inactiveFarming.slotReserve}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
-            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Attacks every (i)/(I) player in the ranges with the chosen ship (event farming). Either/or with Asteroid Mining.</div>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Atakuj TYLKO nieaktywnych z rankingiem ≤ N (ranking z tooltipa gracza w galaktyce, np. „Ranking: 2.881” = 2881). Gracze z końca rankingu mają puste kolonie — atak na nich to strata slotu i czasu lotu. 0 = bez filtra (stare zachowanie). Cel z NIEODCZYTANYM rankingiem jest atakowany normalnie, a dziennik krzyczy [FARM RANK DOM].">Max ranking celu</span>
+              <input id="ogx-farm-maxrank" type="number" min="0" step="100" value="${CONFIG.inactiveFarming.maxTargetRank ?? 800}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Pełny skan zakresów odświeża BAZĘ CELÓW co tyle godzin. Pomiędzy pełnymi skanami bot krąży TYLKO po systemach ze znanymi celami w limicie rankingu — okrążenie trwa minuty zamiast godzin, więc tłuste cele obrywają dużo częściej. Statusy odświeżają się przy każdej wizycie, a wpisy niewidziane 7 dni wypadają z bazy same.">Pełny skan co (h)</span>
+              <input id="ogx-farm-refresh" type="number" min="1" step="1" value="${CONFIG.inactiveFarming.dbRefreshHours ?? 12}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <button class="mini-btn" id="ogx-farm-dbdump" style="width:100%;margin-top:4px;" title="Wypisuje do dziennika całą bazę celów: koordy, gracz, ranking, kiedy widziany — posortowaną po rankingu. Nie rusza flotą.">POKAŻ BAZĘ CELÓW</button>
+            <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Pełny skan buduje bazę nieaktywnych; potem szybkie okrążenia biją tylko cele z rankingiem ≤ limitu. Either/or z Asteroid Mining.</div>
           </div>
         </div>
 
@@ -12047,6 +12208,26 @@
     bindFarmNum("ogx-farm-hc", "hcPerFlight", "Ships / attack");
     bindFarmNum("ogx-farm-cooldown", "targetCooldownMin", "Target cooldown");
     bindFarmNum("ogx-farm-reserve", "slotReserve", "Slot reserve");
+    bindFarmNum("ogx-farm-maxrank", "maxTargetRank", "Max ranking celu (0 = bez filtra)");
+    bindFarmNum("ogx-farm-refresh", "dbRefreshHours", "Pełny skan bazy co (h)");
+    // v2.89.0: podgląd bazy celów — koordy + gracz + ranking, po rankingu.
+    {
+      const el = document.getElementById("ogx-farm-dbdump");
+      if (el) el.addEventListener("click", () => {
+        const db = FarmTargetDB.load();
+        const rows = Object.entries(db)
+          .map(([coord, e]) => ({ coord, ...e }))
+          .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9));
+        if (!rows.length) { log("Baza celów PUSTA — poczekaj na pełny skan zakresów.", "warn"); return; }
+        const maxRank = CONFIG.inactiveFarming.maxTargetRank || 0;
+        log(`── BAZA CELÓW: ${rows.length} nieaktywnych${maxRank ? `, limit rank ≤ ${maxRank}` : ""} ──`, "info");
+        rows.forEach(r => {
+          const age = Math.round((Date.now() - (r.seenAt || 0)) / 3600000);
+          const inLimit = farmRankEligible(r.rank, maxRank) ? "✓" : "✗";
+          log(`${inLimit} [${r.coord}] ${r.name} — rank ${r.rank ?? "?"} (widziany ${age}h temu)`, "info");
+        });
+      });
+    }
     {
       const el = document.getElementById("ogx-farm-repeat");
       if (el) el.addEventListener("click", () => {
@@ -12117,6 +12298,10 @@
         log(`Farm ranges set: "${CONFIG.inactiveFarming.ranges}" → ${parsed.length} valid range(s), ${parsed.reduce((a, r) => a + r.end - r.start + 1, 0)} systems`, parsed.length ? "info" : "warn");
         FarmState.clear(); // ranges changed → restart sweep from scratch
         GM_setValue("ogamex_farm_cooldown_until", "0");
+        // v2.89.0: nowe zakresy = baza może nie pokrywać terenu → następne
+        // podejście MUSI być pełnym skanem (okrążenia po bazie i tak filtrują
+        // po zakresach, ale bez tego bot krążyłby po starym wycinku).
+        GM_setValue("ogamex_farm_last_full_sweep", "0");
         updateStatusUI();
       });
     }
@@ -12574,14 +12759,17 @@
         const st = FarmState.load();
         const free = InactiveFarmer.slotsFree();
         const totalSlots = InactiveFarmer.cachedFleetTotal() || "?";
+        const dbStats = FarmTargetDB.stats(cfg.maxTargetRank || 0);
+        const dbTxt = `baza: ${dbStats.eligible}/${dbStats.total} celów${cfg.maxTargetRank ? ` ≤${cfg.maxTargetRank}` : ""}`;
         if (st?.active) {
-          ftext = `Sweep ${st.scannedCount}/${st.totalCount} | targets queued: ${st.targets?.length ?? 0} | slots free: ${free}/${totalSlots} | attacked (cooldown): ${FarmedTargets.count()}`;
+          const kind = st.mode === "lap" ? "Okrążenie" : "Pełny skan";
+          ftext = `${kind} ${st.scannedCount}/${st.totalCount} | targets queued: ${st.targets?.length ?? 0} | ${dbTxt} | slots free: ${free}/${totalSlots} | attacked (cooldown): ${FarmedTargets.count()}`;
         } else {
           const cool = parseInt(GM_getValue("ogamex_farm_cooldown_until", "0")) || 0;
           const coolMin = cool > Date.now() ? Math.ceil((cool - Date.now()) / 60000) : 0;
           ftext = coolMin > 0
-            ? `Sweep done — next in ~${coolMin}min | attacked (cooldown): ${FarmedTargets.count()}`
-            : `Ready — sweep starts on next tick | slots free: ${free}/${totalSlots}`;
+            ? `Sweep done — next in ~${coolMin}min | ${dbTxt} | attacked (cooldown): ${FarmedTargets.count()}`
+            : `Ready — sweep starts on next tick | ${dbTxt} | slots free: ${free}/${totalSlots}`;
         }
       }
       farmStatus.textContent = ftext;

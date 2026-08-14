@@ -4,7 +4,7 @@
 // Powód: 07.08 w trakcie/tuż po alarmie bot dalej próbował wysyłać ekspedycje
 // i minery, a na ciele zostawała sama rezerwa deuteru.
 const fs = require("fs");
-const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8");
+const src = fs.readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n") /* CRLF checkout (autocrlf) nie moze psuc markerow z \n */;
 
 function cutBody(marker) {
   const start = src.indexOf(marker);

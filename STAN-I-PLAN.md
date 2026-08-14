@@ -6,6 +6,31 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 14.08 (9) — v2.89.0: farm z filtrem rankingu + baza celów
+
+- Problem (owner): bot atakował KAŻDEGO nieaktywnego; łup z graczy z końca
+  rankingu (2000+) nie zwracał czasu lotu — puste kolonie zjadały sloty.
+- Ranking bierzemy z tooltipa gracza w wierszu galaktyki („Ranking: 2.881").
+  Parser czyta tekst wiersza ORAZ atrybuty data-tooltip-content/title/data-title;
+  separatory tysięcy: kropka/przecinek/nbsp/spacja. **Nieznany ranking =
+  fail-open (atakuj) + jednorazowy zrzut [FARM RANK DOM]** — jeśli markup forka
+  jest inny, bot NIE ślepnie, tylko prosi o zrzut do utwardzenia parsera.
+- Nowe ustawienia farmy: **Max ranking celu** (domyślnie 800; 0 = bez filtra,
+  do limitu WŁĄCZNIE) i **Pełny skan co (h)** (domyślnie 12).
+- **Baza celów** (`ogamex_farm_target_db`): pełny skan zakresów buduje bazę
+  (koordy + gracz + ranking + seenAt); między pełnymi skanami bot robi
+  OKRĄŻENIA tylko po systemach ze znanymi celami w limicie → minuty zamiast
+  ~2 h, tłuste cele obrywają wielokrotnie częściej. Każda wizyta w systemie
+  NADPISUJE jego wpisy (cel, który ożył, wypada), wpisy niewidziane 7 dni
+  gasną. Przycisk **POKAŻ BAZĘ CELÓW** wypisuje bazę do dziennika.
+- Stempel pełnego skanu stawiany dopiero na KOŃCU przebiegu (przerwany skan
+  nie udaje świeżej bazy). Zmiana zakresów zeruje stempel → wymusza pełny skan.
+- test-farm-rank.js (17 przypadków) w test-all; wszystkie testy czytające
+  źródło bota dostały normalizację CRLF (checkout z autocrlf psuł markery
+  z `\n` — bramki wysyłek i ratunek nietykalny padały na świeżym checkoucie).
+- DO ZROBIENIA PO WGRANIU: sprawdzić w dzienniku, czy przy pełnym skanie
+  pojawia się `rank N` przy celach; jeśli leci [FARM RANK DOM] — wkleić zrzut.
+
 ## AKTUALIZACJA 12.08 (8) — TEST ŚLEPEGO PASKA zaliczony E2E na 2.88.1 + v2.88.2 (panel forka)
 
 - 16:09–16:14: symulacja ślepego paska przeszła CAŁY cykl w prawdziwej grze:
