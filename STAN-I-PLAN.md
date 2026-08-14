@@ -6,6 +6,33 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 14.08 (13) — v2.92.0: izolacja per-uni NAPRAWDĘ działa (bug od v2.9.0)
+
+Incydent 22:11: owner zalogował się świeżym kontem na **vega.ogamex.net** —
+bot pokazał config, kolejkę farmy („6 targets queued", reserve 4), liczniki
+bonusów i stan minerów Z ATHENY i próbował działać. Diagnoza: izolacja v2.9.0
+nadpisywała `window.GM_setValue/getValue`, ale w sandboxie Tampermonkeya gołe
+identyfikatory GM_* rozwiązują się w scope sandboxa, nie przez window —
+nadpiska była MARTWA od zawsze; wszystkie uni dzieliły jeden nieprefiksowany
+magazyn (migracja nexus→athena „działała" tylko dlatego).
+
+**v2.92.0**: oryginały łapane top-level PRZED IIFE (`__gmGetRaw/__gmSetRaw`),
+wewnątrz IIFE `GM_getValue/GM_setValue` cieniowane constami z prefiksem
+`location.host:` — każde z ~580 istniejących wywołań trafia w wrappery
+leksykalnie. Fallback migracyjny: TYLKO athena czyta stare nieprefiksowane
+klucze (zapisy już prefiksowane, prefiks z czasem przejmuje wszystko). Inne
+uni startują z czystą kartą → DEFAULT_CONFIG (enabled:false) = bot na Vedze
+po aktualizacji stoi, dopóki owner świadomie go nie skonfiguruje.
+
+Test: test-uni-izolacja.js WYKONUJE blok UNI-ISO na sztucznym magazynie
+(Vega nie widzi Atheny, zapisy nie krzyżują się, fallback tylko athena)
++ zamrożenie kształtu (capture przed IIFE, zero window.GM_*). Cała bateria OK.
+
+UWAGA operacyjna: do czasu aktualizacji TM na maszynie ownera NIE klikać
+w panel na Vedze (zapisy lecą do wspólnego magazynu i psują Athenę).
+Śmieci, które Vega zdążyła zapisać przed fixem (np. licznik online bonus
+„#3 today"), zostają w legacy — athena je z czasem nadpisze prefiksowanymi.
+
 ## AKTUALIZACJA 14.08 (12) — v2.91.0: „Start farmienia" — farm atakuje z wpisanych koordów
 
 Decyzja ownera (20:55): galaktyka 3 przefarmiona, przenosimy farm do innej

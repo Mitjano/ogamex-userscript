@@ -23,6 +23,7 @@ const SUITES = [
   ["ranking celu farmy (parser + filtr)", "test-farm-rank.js"],
   ["priorytet mining > farming", "test-farm-priorytet.js"],
   ["punkt startu farmy (launchFrom)", "test-farm-start.js"],
+  ["izolacja magazynu per-uni", "test-uni-izolacja.js"],
 ];
 
 let failed = [];

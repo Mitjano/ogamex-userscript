@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.91.0
+// @version      2.92.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -16,42 +16,42 @@
 // @run-at       document-idle
 // ==/UserScript==
 
+// ── v2.92.0: przechwycenie ORYGINALNYCH GM_* na poziomie sandboxa ──
+// Musi stać PRZED IIFE: wewnątrz IIFE te nazwy cieniują consty z prefiksem,
+// więc tam oryginałów już nie widać (TDZ nie pozwala złapać ich w środku).
+const __gmGetRaw = GM_getValue;
+const __gmSetRaw = GM_setValue;
+
 (function () {
   "use strict";
 
   // ═══════════════════════════════════════════════════════════════
-  //  PER-UNIVERSE STORAGE ISOLATION  (v2.9.0, 2026-05-21)
+  //  PER-UNIVERSE STORAGE ISOLATION  (v2.92.0 — naprawa martwej v2.9.0)
   // ═══════════════════════════════════════════════════════════════
-  // Bot used to be hardcoded to nexus.ogamex.net. Switched to wildcard
-  // @match so it runs on athena/nexus/any future universe. But each
-  // universe is a SEPARATE account with different planet coords —
-  // sharing config + scan-state + dispatched-asteroids between universes
-  // would have the bot trying to mine planets that don't exist on the
-  // current host. Prefix every GM key with location.host so each
-  // universe gets isolated storage; legacy keys (no prefix) fall back
-  // for existing nexus users so they don't lose their config.
-  //
-  // We override window.GM_setValue / window.GM_getValue (property
-  // assignment is fine in strict mode — it's globals reassignment that
-  // would throw). The rest of the bot keeps calling GM_setValue /
-  // GM_getValue unchanged; those identifiers resolve to the window
-  // properties we just rewrote.
+  // v2.9.0 nadpisywało window.GM_setValue/getValue, ale w sandboxie
+  // Tampermonkeya gołe identyfikatory GM_* rozwiązują się w scope
+  // sandboxa, NIE przez window — nadpiska była martwa i WSZYSTKIE uni
+  // dzieliły jeden nieprefiksowany magazyn. Odkryte 14.08.2026: bot na
+  // świeżym koncie na Vedze czytał config, kolejkę farmy i liczniki
+  // Atheny (i mógł je nadpisywać). Teraz cieniujemy GM_getValue /
+  // GM_setValue constami WEWNĄTRZ IIFE — każde istniejące wywołanie
+  // w bocie trafia w te wrappery leksykalnie, bez dotykania window.
+  // ── UNI-ISO-START ──
   const HOST = location.host;
-  const _gmSetReal = window.GM_setValue;
-  const _gmGetReal = window.GM_getValue;
-  window.GM_setValue = function (key, value) {
-    return _gmSetReal(`${HOST}:${key}`, value);
-  };
-  window.GM_getValue = function (key, defaultValue) {
-    const v = _gmGetReal(`${HOST}:${key}`, undefined);
+  const GM_setValue = (key, value) => __gmSetRaw(`${HOST}:${key}`, value);
+  const GM_getValue = (key, defaultValue) => {
+    const v = __gmGetRaw(`${HOST}:${key}`, undefined);
     if (v !== undefined) return v;
-    // Migration fallback: existing nexus users keep their old un-prefixed
-    // data (read-only); next write lands under the host-prefixed key.
-    if (HOST === 'nexus.ogamex.net') {
-      return _gmGetReal(key, defaultValue);
+    // Migracja: dane Atheny żyją w starych, NIEprefiksowanych kluczach
+    // (izolacja nigdy nie działała) — czytamy je TYLKO na Athenie, każdy
+    // zapis ląduje już pod kluczem z prefiksem, więc prefiks z czasem
+    // przejmuje wszystko. Inne uni startują z czystą kartą (bot OFF).
+    if (HOST === "athena.ogamex.net") {
+      return __gmGetRaw(key, defaultValue);
     }
     return defaultValue;
   };
+  // ── UNI-ISO-END ──
 
   // ═══════════════════════════════════════════════════════════════
   //  CONFIGURATION (persistent via GM_setValue/GM_getValue, per-host)
