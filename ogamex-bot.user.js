@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.90.1
+// @version      2.90.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -375,6 +375,18 @@
           GM_setValue(MF_KEY, "1");
           GM_setValue("ogamex_fleet_return_at", "0");
           setTimeout(() => log("Licznik lotow gorniczych liczy teraz tylko WLASNE loty bota (recznie wysylane misje nie zjadaja limitu). Pauza skanu zdjeta.", "info"), 1500);
+        }
+      }
+
+      // v2.90.2: pula RateLimitera (20 wysyłek/h) jest zapchana 76 atakami
+      // farmy sprzed poprawki — bez wyczyszczenia mining stałby zablokowany
+      // do godziny PO wgraniu wersji, która błąd usuwa. Jednorazowo.
+      {
+        const RL_KEY = "ogamex_migration_rate_pool_v2902";
+        if (GM_getValue(RL_KEY, "0") !== "1") {
+          GM_setValue(RL_KEY, "1");
+          GM_setValue("ogamex_rate_actions", "[]");
+          setTimeout(() => log("Pula wysylek/h wyczyszczona z wpisow farmy (ataki farmy nie licza sie juz do puli minerow) — skaner asteroid odblokowany.", "info"), 1500);
         }
       }
 
@@ -4074,7 +4086,13 @@
         resumeScan: false,
         timestamp: Date.now(),
       }));
-      RateLimiter.record();
+      // v2.90.2: celowo BEZ RateLimiter.record() — ten sam wzorzec co
+      // ekspedycje. Pula 20/h ma jednego konsumenta bramki: skaner asteroid
+      // (canAct() przed startem skanu). Incydent 14.08 11:00-11:21: 76 ataków
+      // farmy zapchało pulę, mining stał („Rate limit reached”) z wolną
+      // asteroidą na talerzu, a farm mu „ustępował” — klincz na 20+ minut.
+      // Tempo farmy ograniczają: humanizer (maxAttacksPerDay, shortDelay),
+      // rytm galaktyka→formularz→galaktyka i wspólny NavRateLimiter.
       await AntiDetection.shortDelay();
       window.location.href = fleetUrl;
     },
