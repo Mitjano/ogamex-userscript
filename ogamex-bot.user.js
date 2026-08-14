@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.90.2
+// @version      2.91.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -256,6 +256,11 @@
       maxTargetRank: 800,        // atakuj TYLKO nieaktywnych z rankingiem ≤ N; 0 = bez filtra.
                                  // Nieznany ranking (parser nie odczytał) = atakuj + głośny log.
       dbRefreshHours: 12,        // co tyle godzin pełny skan zakresów odświeża bazę celów
+      // ── v2.91.0: sztywny punkt startu ataków (jak minery/ekspedycje) ──
+      // Wpisane koordy = każdy atak wychodzi z tej pary (księżyc przy trybie
+      // KSIĘŻYC), więc można farmić INNĄ galaktykę nie ruszając floty.
+      // Puste = zachowanie v2.74.8: start z aktualnie aktywnego ciała.
+      launchFrom: null,          // { galaxy, system, position } | null
     },
     // ── v2.13.0: auto-claim the green "Online bonus" menu button ──
     // (antimatter + Academy points). Independent of mining/farming — runs
@@ -4073,12 +4078,16 @@
       const ship = CONFIG.inactiveFarming.shipType || "HEAVY_CARGO";
       const fleetUrl = `/fleet?x=${t.galaxy}&y=${t.system}&z=${t.position}&planet=1&mission=8`;
       log(`FARM ATTACK → [${t.coord}] with ${hc} ${ship}`, "success");
-      // v2.74.8: farm celowo POMIJA korektę ciała v2.69.0 (mission.farm w
-      // select_ships_direct) — atak startuje z aktualnie aktywnej
-      // planety/księżyca, bo właściciel przenosi flotę bliżej celów eventu.
+      // v2.74.8: bez wpisanych koordów farm startuje z aktualnie aktywnego
+      // ciała (właściciel przenosi flotę bliżej celów eventu).
+      // v2.91.0: pole „Start farmienia" w panelu wygrywa — misja niesie
+      // launchAt i brama v2.84 przełącza parę/ciało przed formularzem, więc
+      // można farmić inną galaktykę bez przenoszenia floty.
+      const farmBase = HomeBase.farm();
       GM_setValue("pending_mission", JSON.stringify({
         type: "inactive_farm_direct",
         farm: true,
+        ...(farmBase ? { launchAt: farmBase } : {}),
         fleetUrl,
         shipType: ship,
         quantity: hc,
@@ -4258,6 +4267,9 @@
       return this.coords();
     },
     mining() { return this.forModule(CONFIG.asteroidMining.launchFrom); },
+    // v2.91.0: farm — wpisane koordy wygrywają; puste = null (misja nie
+    // niesie launchAt i atak startuje z aktywnego ciała, jak od v2.74.8).
+    farm() { const c = CONFIG.inactiveFarming?.launchFrom; return c ? this.forModule(c) : null; },
     // expeditions.base (stare, tylko-cel) zostaje w łańcuchu jako fallback.
     expo() { return this.forModule(CONFIG.expeditions.launchFrom || CONFIG.expeditions.base); },
 
@@ -9025,9 +9037,11 @@
         // koordy z panelu (minery ↔ ekspedycje mogą mieć RÓŻNE) albo ciało
         // aktywne. Jeśli aktywna jest INNA para — bot klika właściwy wpis
         // na pasku planet (planetę lub jej księżyc wg baseBody) i wraca do
-        // formularza tą samą mechaniką co rotacja minerów. Ratunek, FS
-        // i farm mają własną logikę startu — nietykane.
-        if (mission.launchAt && !mission.moonSave && !mission.fleetSave && !mission.farm && !mission.originChecked) {
+        // formularza tą samą mechaniką co rotacja minerów. Ratunek i FS
+        // mają własną logikę startu — nietykane. Farm (v2.91.0) niesie
+        // launchAt TYLKO przy wpisanych koordach, więc sam wybiera, czy tędy
+        // przechodzi; bez koordów launchAt nie istnieje i nic się nie zmienia.
+        if (mission.launchAt && !mission.moonSave && !mission.fleetSave && !mission.originChecked) {
           const want = mission.launchAt;
           const here = HomeBase.read();
           const samePair = here && here.galaxy === want.galaxy && here.system === want.system && here.position === want.position;
@@ -9061,7 +9075,7 @@
         // wybiera miejsce startu przełączeniem planety; tryb księżycowy
         // dokręca tylko CIAŁO w obrębie tej pary. Układ bez księżyca =
         // start z planety (świadomy koszt: falanga widzi ten lot).
-        if (CONFIG.baseBody === "moon" && !mission.moonSave && !mission.fleetSave && !mission.farm && !mission.launchChecked) {
+        if (CONFIG.baseBody === "moon" && !mission.moonSave && !mission.fleetSave && (!mission.farm || mission.launchAt) && !mission.launchChecked) {
           const here = MoonSave.currentBody();
           if (here && here !== "moon") {
             mission.launchChecked = true; // jedna korekta na misję — bez pętli
@@ -11593,6 +11607,10 @@
               <input id="ogx-farm-ranges" type="text" placeholder="3:100-200" value="${escapeHTML(CONFIG.inactiveFarming.ranges || "")}" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Sztywny punkt startu ATAKÓW, np. 3:269:8 — bot przed każdym atakiem sam przełączy się na tę parę (księżyc przy trybie KSIĘŻYC), więc można farmić inną galaktykę bez przenoszenia floty. Puste = atak startuje stamtąd, gdzie aktualnie jesteś. Statki muszą FIZYCZNIE stać na tym ciele.">Start farmienia (g:s:p)</span>
+              <input id="ogx-farm-from" type="text" placeholder="puste = tu gdzie jestem" value="${CONFIG.inactiveFarming.launchFrom ? `${CONFIG.inactiveFarming.launchFrom.galaxy}:${CONFIG.inactiveFarming.launchFrom.system}:${CONFIG.inactiveFarming.launchFrom.position}` : ""}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Don't re-attack the same planet within this many minutes. Przy WŁĄCZONYM „Nowe okrążenie od nowa” ten zegar praktycznie nie działa — blokady i tak są zwalniane na starcie każdego przebiegu.">Target cooldown (min)</span>
               <input id="ogx-farm-cooldown" type="number" min="1" step="10" value="${CONFIG.inactiveFarming.targetCooldownMin}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -12450,6 +12468,10 @@
         () => CONFIG.expeditions.launchFrom,
         (v) => { CONFIG.expeditions.launchFrom = v; },
         "[START EKSPEDYCJI]");
+      bindLaunchFrom("ogx-farm-from",
+        () => CONFIG.inactiveFarming.launchFrom,
+        (v) => { CONFIG.inactiveFarming.launchFrom = v; },
+        "[START FARMIENIA]");
     }
     // v2.83.0: przełącznik PROMU (domyślnie OFF — bot sam nie przenosi floty)
     {

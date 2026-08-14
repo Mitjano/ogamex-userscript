@@ -22,6 +22,7 @@ const SUITES = [
   ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],
   ["ranking celu farmy (parser + filtr)", "test-farm-rank.js"],
   ["priorytet mining > farming", "test-farm-priorytet.js"],
+  ["punkt startu farmy (launchFrom)", "test-farm-start.js"],
 ];
 
 let failed = [];

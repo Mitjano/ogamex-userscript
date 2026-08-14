@@ -6,6 +6,34 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 14.08 (12) — v2.91.0: „Start farmienia" — farm atakuje z wpisanych koordów
+
+Decyzja ownera (20:55): galaktyka 3 przefarmiona, przenosimy farm do innej
+galaktyki (np. 4), ale flota ma MIESZKAĆ na księżycu bazy — farm dostaje
+punkt startu jak minery/ekspedycje.
+
+- Panel: nowe pole „Start farmienia (g:s:p)" pod Ranges (ten sam
+  bindLaunchFrom co minery/ekspedycje; puste = stare zachowanie v2.74.8:
+  start z aktywnego ciała).
+- `HomeBase.farm()`: wpisane koordy → forModule (sztywna para + ciało wg
+  trybu KSIĘŻYC); puste → null, misja nie niesie launchAt.
+- Brama v2.84 w select_ships_direct wpuszcza teraz farm: `!mission.farm`
+  zdjęty z guardu launchAt (farm bez koordów i tak nie ma launchAt), a
+  korekta ciała trybu KSIĘŻYC to `(!mission.farm || mission.launchAt)` —
+  farm ze sztywnym startem dostaje pełną korektę pary i ciała, farm bez
+  koordów zostaje przy decyzji v2.74.8.
+- Test: test-farm-start.js (7 bezpieczników na źródle) dopisany do
+  test-all.js; cała bateria + składnia OK.
+
+Użycie: w polu „Start farmienia" wpisać 3:269:8 (tryb KSIĘŻYC sam wybierze
+księżyc pary), w Ranges np. `4:1-499`. Zmiana zakresów sama czyści bazę celów
+i wymusza pełny skan. UWAGA: loty międzygalaktyczne są DŁUGIE — tempo okrążeń
+spadnie; ranking ≤ 800 dalej filtruje cele.
+
+OTWARTE: pierwszy atak z bramą launchAt na żywo (patrzeć na log
+`[START] misja inactive_farm_direct startuje z …`); klik „TEST: symulacja
+ataku" po wgraniu.
+
 ## AKTUALIZACJA 14.08 (11) — v2.90.1/2: okrążenie po przerwie + INCYDENT puli wysyłek
 
 - v2.90.1: start po przerwie (np. rano) z niepustą bazą = najpierw JEDNO
