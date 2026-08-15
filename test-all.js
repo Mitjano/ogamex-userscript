@@ -23,6 +23,7 @@ const SUITES = [
   ["ranking celu farmy (parser + filtr)", "test-farm-rank.js"],
   ["priorytet mining > farming", "test-farm-priorytet.js"],
   ["punkt startu farmy (launchFrom)", "test-farm-start.js"],
+  ["czarna lista farmy (raporty bojowe)", "test-farm-ban.js"],
   ["izolacja magazynu per-uni", "test-uni-izolacja.js"],
   ["higiena wydajnosci (historia + log)", "test-nawigacja-log.js"],
 ];

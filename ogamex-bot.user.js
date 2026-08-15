@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.95.0
+// @version      2.96.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3767,6 +3767,136 @@ const __gmSetRaw = GM_setValue;
   };
 
   // Per-target attack cooldown — full g:s:z coords (many targets per system).
+  // ═══════════════════════════════════════════════════════════════
+  //  CZARNA LISTA FARMY (v2.96.0) — nie rozbijaj sie drugi raz o obrone
+  // ═══════════════════════════════════════════════════════════════
+  // Incydent 15.08 (~09:30): 10 atakow z rzedu (po 30 mln HC) rozbilo sie
+  // o obrone planet Sith Campeador w [4:36-37] — nieaktywny NIE znaczy
+  // bezbronny, a farm slepo wracal na te same koordy co okrazenie.
+  // Zrodlo prawdy: raporty bojowe. Wlasne straty > 0 = planeta ma obrone
+  // = ban na TTL (obrona po bitwie i tak sie odbudowuje, wiec powrot
+  // po 2 tygodniach ma sens tylko na prosbe operatora).
+  // ── FARM-BAN-START ──
+  const FarmBlacklist = {
+    KEY: "ogamex_farm_blacklist",
+    TTL_MS: 14 * 24 * 60 * 60 * 1000,
+    load() { try { return JSON.parse(GM_getValue(this.KEY, "{}")) || {}; } catch { return {}; } },
+    save(d) { GM_setValue(this.KEY, JSON.stringify(d)); },
+    has(coord) {
+      const e = this.load()[coord];
+      return !!e && Date.now() - (e.at || 0) < this.TTL_MS;
+    },
+    // true = swiezy ban (do zliczania w logu); ponowny raport tylko odswieza stempel
+    add(coord, losses) {
+      const d = this.load();
+      const fresh = !d[coord];
+      d[coord] = { at: Date.now(), losses: losses || 0 };
+      const cut = Date.now() - this.TTL_MS;
+      for (const c of Object.keys(d)) if ((d[c].at || 0) < cut) delete d[c];
+      this.save(d);
+      return fresh;
+    },
+    count() {
+      const d = this.load();
+      const cut = Date.now() - this.TTL_MS;
+      return Object.keys(d).filter(c => (d[c].at || 0) >= cut).length;
+    },
+  };
+
+  // Czyta liste raportow bojowych i banuje cele, na ktorych farm sie rozbil.
+  // Transport ten sam co Yield fetch (API .NET zlapane snifferem w v2.49.0);
+  // kategoria combat nie jest potwierdzona, wiec: kandydaci + zapamietanie
+  // dzialajacego adresu + rownolegle zbior z OTWARTEJ strony /messages
+  // (harvestDom) — ta druga droga dziala na pewno, bo parsuje czysty tekst,
+  // ktory widac na ekranie (nazwa/koordy/straty/lup).
+  const CombatWatch = {
+    KEY_AT: "ogamex_combat_watch_at",
+    KEY_URL: "ogamex_combat_endpoint",
+    EVERY_MS: 10 * 60 * 1000,
+    CANDIDATES: [
+      "/messages/messagedata?MessageCategoryType=FLEET_COMBAT&page=1",
+      "/messages/messagedata?MessageCategoryType=COMBAT&page=1",
+      "/messages/messagedata?MessageCategoryType=COMBAT_REPORTS&page=1",
+    ],
+    _num(s) { const n = parseInt(String(s).replace(/[^0-9]/g, ""), 10); return Number.isFinite(n) ? n : null; },
+    // Czysty tekst -> [{coord, losses, resources}]. Uklad z zywego serwera:
+    // "Combat report: Delta 11 [4:37:11] 15.08.2026 09:36:11 MCH : 360.000.000
+    //  Sith Campeador : 0 Resources : 0 Debris field : 288.000.000.000".
+    // Pierwsza para "nazwa : liczba" (poza Resources/Debris) = straty
+    // ATAKUJACEGO. Raport z obrony wlasnej kolonii tez przejdzie, ale jego
+    // koordy to NASZA planeta — farm nigdy jej nie zaatakuje, ban jalowy.
+    parse(text) {
+      const out = [];
+      const marks = [];
+      const re = /Combat report:[^\[]{0,80}\[(\d+):(\d+):(\d+)\]/g;
+      let m;
+      // Poczatek fragmentu ZA tytulem — koordy z naglowka nie moga wpasc do
+      // par "gracz : liczba" (test: [4:37:11] dawal straty "37").
+      while ((m = re.exec(text))) marks.push({ start: m.index + m[0].length, idx: m.index, coord: `${m[1]}:${m[2]}:${m[3]}` });
+      for (let i = 0; i < marks.length; i++) {
+        let chunk = text.slice(marks[i].start, marks[i + 1] ? marks[i + 1].idx : marks[i].start + 1600);
+        // Data i godzina raportu ("15.08.2026 09:36:11") tez wygladaja jak
+        // pary z dwukropkiem — precz z nimi przed skanowaniem.
+        chunk = chunk.replace(/\d{1,2}\.\d{2}\.\d{4}[\s\u00A0]+\d{1,2}:\d{2}(:\d{2})?/g, " ");
+        const resM = chunk.match(/Resources\s*:\s*([0-9][0-9.,\s\u00A0]*)/i);
+        let losses = null;
+        const pairRe = /([^:\n]{2,40}?)\s*:\s*([0-9][0-9.,\s\u00A0]*)/g;
+        let pm;
+        while ((pm = pairRe.exec(chunk))) {
+          const name = pm[1].trim();
+          if (/resources|debris/i.test(name)) continue;
+          losses = this._num(pm[2]);
+          break;
+        }
+        out.push({ coord: marks[i].coord, losses, resources: resM ? this._num(resM[1]) : null });
+      }
+      return out;
+    },
+    _apply(reports, sourceLabel) {
+      let banned = 0;
+      for (const r of reports) {
+        if (r.losses == null || r.losses <= 0) continue;
+        if (FarmBlacklist.add(r.coord, r.losses)) {
+          banned++;
+          log(`[FARM BAN] [${r.coord}] — obrona rozbila flote (straty ${r.losses.toLocaleString("pl-PL")}, lup ${r.resources ?? "?"}). Ban 14 dni.`, "warn");
+        }
+      }
+      if (banned) log(`[FARM BAN] ${sourceLabel}: dopisano ${banned} planet z obrona; czarna lista: ${FarmBlacklist.count()}.`, "warn");
+      return banned;
+    },
+    // Zbior z OTWARTEJ strony wiadomosci — dziala niezaleznie od endpointu.
+    harvestDom() {
+      if (!/^\/messages/.test(location.pathname)) return;
+      const text = (document.body.innerText || "").replace(/\s+/g, " ");
+      if (!/Combat report:/i.test(text)) return;
+      this._apply(this.parse(text), "strona wiadomosci");
+    },
+    async run() {
+      const last = parseInt(GM_getValue(this.KEY_AT, "0")) || 0;
+      if (Date.now() - last < this.EVERY_MS) return;
+      GM_setValue(this.KEY_AT, String(Date.now()));
+      const known = GM_getValue(this.KEY_URL, "");
+      for (const url of (known ? [known] : this.CANDIDATES)) {
+        try {
+          const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          if (!res.ok) continue;
+          const html = await res.text();
+          if (res.redirected || /login|password/i.test(html.substring(0, 500))) continue;
+          const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+          if (!/Combat report:/i.test(text)) continue;
+          if (!known) { GM_setValue(this.KEY_URL, url); log(`[FARM BAN] endpoint raportow bojowych potwierdzony: ${url}`, "info"); }
+          this._apply(this.parse(text), "raporty (fetch)");
+          return;
+        } catch {}
+      }
+      if (!known && GM_getValue("ogamex_combat_probe_logged", "") !== "1") {
+        GM_setValue("ogamex_combat_probe_logged", "1");
+        log("[FARM BAN] zaden kandydat endpointu raportow nie odpowiedzial — bany zbieram ze strony wiadomosci (wejdz czasem na Combat reports).", "warn");
+      }
+    },
+  };
+  // ── FARM-BAN-END ──
+
   const FarmedTargets = {
     KEY: "ogamex_farmed_targets",
     _ttlMs() { return Math.max(1, CONFIG.inactiveFarming.targetCooldownMin || 180) * 60 * 1000; },
@@ -3874,6 +4004,9 @@ const __gmSetRaw = GM_setValue;
       if (this.running) return;
       this.running = true;
       try {
+        // v2.96.0: przed kazda decyzja dociagnij swieze raporty bojowe
+        // (self-throttle 10 min) — bany musza wyprzedzic wysylke.
+        await CombatWatch.run().catch(() => {});
         const pending = GM_getValue("pending_mission", null);
         if (pending && pending !== "null") return; // a dispatch is mid-flight
 
@@ -4044,7 +4177,7 @@ const __gmSetRaw = GM_setValue;
       const maxRank = cfg.maxTargetRank || 0;
       const out = [];
       const dbEntries = [];
-      let skippedRank = 0, unknownRank = 0;
+      let skippedRank = 0, unknownRank = 0, bannedSkip = 0;
       document.querySelectorAll(".galaxy-item").forEach(item => {
         const idx = item.querySelector(".planet-index");
         if (!idx) return;
@@ -4075,6 +4208,7 @@ const __gmSetRaw = GM_setValue;
           }
         }
         if (!farmRankEligible(rank, maxRank)) { skippedRank++; return; }
+        if (FarmBlacklist.has(coord)) { bannedSkip++; return; } // v2.96.0: obrona = nie wracamy
         if (FarmedTargets.has(coord)) return;
         // One-time DOM dump of the first matched row — verifies the status
         // parsing against this OGameX build's real markup.
@@ -4087,6 +4221,7 @@ const __gmSetRaw = GM_setValue;
       // Świeży skan systemu = nowa prawda o jego wpisach w bazie (planety,
       // które przestały być nieaktywne, właśnie z niej wypadły).
       FarmTargetDB.updateSystem(galaxy, system, dbEntries);
+      if (bannedSkip) log(`Farm: [${galaxy}:${system}] ${bannedSkip} cel(e) na czarnej liscie (obrona) — pomijam.`, "info");
       return { targets: out, skippedRank, unknownRank };
     },
 
@@ -4095,7 +4230,7 @@ const __gmSetRaw = GM_setValue;
         log(`Farm: fleet slots exhausted (reserve ${CONFIG.inactiveFarming.slotReserve}) — waiting for returns; ${st.targets?.length ?? 0} target(s) queued.`, "warn");
         return; // scheduler retries; targets persist in FarmState
       }
-      const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord));
+      const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord) && !FarmBlacklist.has(t.coord));
       const t = targets.shift();
       st.targets = targets;
       FarmState.save(st);
@@ -4158,7 +4293,7 @@ const __gmSetRaw = GM_setValue;
         // farm hook (init + scheduler) dispatches from there after a human
         // dwell. Server-side this reads galaxy → fleet → galaxy → fleet, not
         // a burst of bare fleet-form GETs.
-        const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord));
+        const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord) && !FarmBlacklist.has(t.coord));
         if (targets.length) {
           const t = targets[0];
           await AntiDetection.shortDelay();
@@ -13078,6 +13213,10 @@ const __gmSetRaw = GM_setValue;
     if (handleErrorPageIfPresent()) {
       return;
     }
+
+    // v2.96.0: operator przeglada wiadomosci -> zbierz bany z widocznych
+    // raportow bojowych (dziala nawet bez potwierdzonego endpointu fetch).
+    try { CombatWatch.harvestDom(); } catch {}
 
     // Only run on game pages — NOT the landing/lobby page (/ or /home). v2.10.21:
     // the user is still LOGGED IN here (confirmed: no password, they just click a

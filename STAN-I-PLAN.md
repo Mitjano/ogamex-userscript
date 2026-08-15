@@ -6,6 +6,38 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 15.08 (17) — v2.96.0: CZARNA LISTA FARMY (raporty bojowe)
+
+Zgłoszenie ownera ~09:40 ze zrzutem /messages: ostatnie ~10 ataków farmy
+(po 30 mln HC) rozbiło się o obronę planet Sith Campeador w [4:36]–[4:37]
+(raport: MCH straty 360.000.000, Resources 0, debris 288 mld) — nieaktywny
+NIE znaczy bezbronny, a okrążenia wracały na te same koordy.
+
+**v2.96.0** (blok FARM-BAN, markery do testu):
+
+- `FarmBlacklist`: koordy z własnymi stratami > 0 → ban 14 dni (TTL,
+  ponowny raport odświeża stempel).
+- `CombatWatch`: dwa źródła banów — (a) fetch listy raportów bojowych
+  (kandydaci `MessageCategoryType=FLEET_COMBAT/COMBAT/COMBAT_REPORTS`,
+  działający adres zapamiętywany; żaden nie odpowie → jednorazowy log),
+  (b) `harvestDom` na OTWARTEJ stronie /messages — parsuje czysty tekst
+  widoczny na ekranie, działa na pewno (potwierdzone testem na tekście 1:1
+  ze zrzutu ownera). Self-throttle 10 min, wołane z farm.run() przed
+  każdą decyzją + w init na stronie wiadomości.
+- Parser: fragment ZA tytułem raportu + wycięta data/godzina (test złapał
+  bug: koordy [4:37:11] z nagłówka wpadały jako „straty 37"); pierwsza para
+  „gracz : liczba" (poza Resources/Debris) = straty atakującego.
+- Farm: collectTargets pomija zbanowane (licznik w logu), dispatchNext
+  i afterSend filtrują kolejkę (cele sprzed bana).
+
+Test: test-farm-ban.js WYKONUJE blok na sztucznym magazynie (parse na
+żywym tekście, ban tylko przy stratach, TTL, integracje) — 15 checków.
+Bateria: 128 OK. Seeding: wystarczy, że owner raz przejdzie strony
+raportów (harvestDom zbierze wszystkie rozbite) ALBO endpoint odpowie.
+
+OTWARTE: potwierdzenie, który kandydat endpointu combat działa na żywo
+(log `[FARM BAN] endpoint raportow bojowych potwierdzony`).
+
 ## AKTUALIZACJA 15.08 (16) — v2.95.0: porażka farmy PARKOWAŁA skaner asteroid
 
 Incydent ~09:00 (zgłoszenie ownera: „są asteroidy, a bot ich nie szuka, bo
