@@ -6,6 +6,32 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 15.08 (16) — v2.95.0: porażka farmy PARKOWAŁA skaner asteroid
+
+Incydent ~09:00 (zgłoszenie ownera: „są asteroidy, a bot ich nie szuka, bo
+farmi 4 galaktykę; mining ma pierwszeństwo"): w logu kręci się `Dispatch
+cooldown: Xmin (last dispatch failed)`, farm mieli ataki #32–38, skaner stoi.
+
+Sedno: stempel `ogamex_dispatch_fail_at` (10-minutowy cooldown SKANERA
+asteroid po nieudanej wysyłce) był wbijany w 9 miejscach warunkiem
+`!mission.expedition` — czyli przy porażce KAŻDEJ misji poza ekspedycjami,
+także farmy/złomu/ratunku. V2.66.3 naprawiła to tylko dla ekspedycji; farm
+był wtedy either/or z miningiem, więc nie bolało. Od v2.90.0 (równoległość)
+jedna wpadka farmy (timeout kroku formularza itp.) = mining zaparkowany na
+10 min przy wolnych asteroidach, a farm w tym czasie legalnie wypełnia okno
+— dokładnie odwrotność zamierzonego priorytetu.
+
+**v2.95.0**: helper `stampDispatchFailIfMining(mission)` — stempel pada
+TYLKO gdy misja jest górnicza (macierz 5 flag, ta sama co przy zdejmowaniu
+lotu z licznika minerów); wszystkie 9 miejsc przełączone. Priorytet bez
+zmian: prawdziwa porażka MININGU dalej daje 10 min cooldownu.
+
+Test: 3 zamrożenia w test-farm-start.js (helper+macierz, zero starych
+stempli, min 8 wywołań); bateria 113 checków OK.
+
+Uwaga kontekstowa: farm przeniesiony przez ownera na start [4:132:8]
+(księżyc, 4 gala) — ping-pong ciał mining[3:272:7]↔farm[4:132:8] działa.
+
 ## AKTUALIZACJA 15.08 (15) — v2.94.0: audyt wydajności, 5 optymalizacji
 
 Audyt po v2.93.0 (timery, magazyn, rendering, DOM). Werdykt: timery zdrowe

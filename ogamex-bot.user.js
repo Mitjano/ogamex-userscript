@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.94.0
+// @version      2.95.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3685,6 +3685,18 @@ const __gmSetRaw = GM_setValue;
   // większość zegara, ale nigdy kosztem asteroid.
   // ── FARM-PRIO-START (test-farm-priorytet.js czyta ten blok w całości) ──
   const MINING_FAIL_COOLDOWN_MS = 10 * 60 * 1000; // ta sama stała co w skanerze asteroid
+
+  // v2.95.0: stempel porazki wysylki TYLKO dla misji gorniczych. v2.66.3
+  // wylaczyla ekspedycje, ale farm/zlom/ratunek dalej wbijaly 10-minutowy
+  // cooldown SKANERA ASTEROID za wlasne porazki. Od v2.90.0 farm chodzi
+  // rownolegle z miningiem, wiec jego wpadka (np. timeout kroku formularza)
+  // parkowala mining przy WOLNYCH asteroidach - obserwacja ownera 15.08
+  // ~09:00: farm mieli ataki w 4 gali, a skaner stoi "last dispatch failed".
+  // Piec flag = ta sama macierz, ktora zdejmuje lot z licznika minerow.
+  function stampDispatchFailIfMining(mission) {
+    const miningMission = !mission?.expedition && !mission?.farm && !mission?.recycle && !mission?.moonSave && !mission?.fleetSave;
+    if (miningMission) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+  }
   function farmYieldsToMining(s) {
     // s = { miningEnabled, now, fleetReturnAt, dispatchFailAt, scanCooldownUntil }
     if (!s.miningEnabled) return false;                                        // mining OFF → farm wolny
@@ -9686,10 +9698,7 @@ const __gmSetRaw = GM_setValue;
           }
           if (!filled.length) {
             log("Expedition: could not fill any ship input — aborting wave.", "error");
-            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
             GM_setValue("pending_mission", null);
             return;
           }
@@ -9761,10 +9770,7 @@ const __gmSetRaw = GM_setValue;
             log(`Selected ${toSend}/${available} ${shipLabel} (input: ${input.className})`, "fleet");
           } else {
             log(`No ${mission.farm || mission.recycle ? mission.shipType : "Asteroid Miners"} available (found: ${available}, input: ${!!input})`, "error");
-            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
             // v2.11.1: farm with 0 HC on the active planet would otherwise
             // burn through the whole target queue (each retry stamps a target
             // cooldown and navigates for nothing). Pause the sweep instead.
@@ -9839,10 +9845,7 @@ const __gmSetRaw = GM_setValue;
               return;
             }
             log(`Asteroid Miner not found on ANY planet! Ships: ${shipDump}`, "error");
-            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
             await finishDispatch(false);
             return;
           }
@@ -9860,10 +9863,7 @@ const __gmSetRaw = GM_setValue;
           // linijkę wyżej; drugi komunikat twierdził, że przycisku „nie było",
           // także wtedy, gdy stał na stronie wyłączony (mylił właściciela 09:51).
           log("Krok 1 nieudany — wycofuję wysyłkę (szczegóły wyżej).", "error");
-          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
           await finishDispatch(false);
           return;
         }
@@ -9877,10 +9877,7 @@ const __gmSetRaw = GM_setValue;
         if (!step2Ready) {
           dumpButtons("step2-timeout");
           log("Step 2 never loaded (no Back button after 8s)", "error");
-          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
           await finishDispatch(false);
           return;
         }
@@ -10267,10 +10264,7 @@ const __gmSetRaw = GM_setValue;
           dumpButtons("step2-fail");
           // v2.66.6: jak w kroku 1 — prawdziwy powód jest linijkę wyżej.
           log("Krok 2 nieudany — wycofuję wysyłkę (szczegóły wyżej).", "error");
-          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
           await finishDispatch(false);
           return;
         }
@@ -10286,10 +10280,7 @@ const __gmSetRaw = GM_setValue;
         if (!step3Ready) {
           dumpButtons("step3-timeout");
           log("Step 3 never loaded (no Send fleet button after 12s)", "error");
-          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
           await finishDispatch(false);
           return;
         }
@@ -10565,10 +10556,7 @@ const __gmSetRaw = GM_setValue;
             // v2.39.1: ta flota nie wystartowala — zdejmij ja z licznika lotow
             // gorniczych, inaczej fantom zjadalby limit az do konca przelotu.
             if (!mission.expedition && !mission.farm && !mission.moonSave && !mission.recycle && !mission.fleetSave) MiningFlights.dropLast();
-            // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
           } else if (successMsg || fleetMovement) {
             if (mission.moonSave) ThreatLog.add(mission.ferry ? "odczyt" : mission.moonReturn ? "POWRÓT" : "RATUNEK", mission.ferry ? "PROM: planeta → księżyc wysłany." : "WYSŁANE — gra przyjęła flotę.");
             if (mission.moonReturn) MoonSave.disarm("flota i surowce wróciły na planetę bazową");
@@ -10628,10 +10616,7 @@ const __gmSetRaw = GM_setValue;
           dumpButtons("step3-no-send");
           log("Cannot find 'Send fleet' button (step 3)", "error");
           if (mission.moonSave) ThreatLog.add("BŁĄD", "Brak przycisku Send fleet na kroku 3 — ratunek NIE poleciał.");
-          // v2.66.3: kara za porażkę EKSPEDYCJI nie zatrzymuje skanera asteroid —
-            // fale mają własny rytm ponowień, a mining stał 10 min za cudzy błąd
-            // („Dispatch cooldown: 9min remaining" w logu 23:23–23:27).
-            if (!mission?.expedition) GM_setValue("ogamex_dispatch_fail_at", String(Date.now()));
+            stampDispatchFailIfMining(mission); // v2.95.0: porazka farmy/zlomu/ratunku nie parkuje skanera
         }
 
         // dispatchOk=true → all miners sent, stop scanning (wait for return)

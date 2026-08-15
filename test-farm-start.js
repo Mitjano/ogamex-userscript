@@ -44,5 +44,16 @@ check("panel ma input ogx-farm-from", /id="ogx-farm-from"/.test(src));
 check("binding ogx-farm-from → CONFIG.inactiveFarming.launchFrom",
   /bindLaunchFrom\("ogx-farm-from",\s*\(\) => CONFIG\.inactiveFarming\.launchFrom,\s*\(v\) => \{ CONFIG\.inactiveFarming\.launchFrom = v; \},/.test(src));
 
+// 8. v2.95.0: porazka FARMY nie parkuje skanera asteroid. Stary kod wbijal
+//    10-minutowy cooldown "last dispatch failed" przy kazdej nie-ekspedycyjnej
+//    porazce - od v2.90.0 farm chodzi rownolegle i glodzil mining przy
+//    wolnych asteroidach (incydent 15.08 ~09:00).
+check("stempel porazki tylko dla misji gorniczych (helper z 5 flagami)",
+  /function stampDispatchFailIfMining\(mission\) \{\s*const miningMission = !mission\?\.expedition && !mission\?\.farm && !mission\?\.recycle && !mission\?\.moonSave && !mission\?\.fleetSave;/.test(src));
+check("zero starych stempli if(!mission?.expedition) przy dispatch_fail_at",
+  !/if \(!mission\?\.expedition\) GM_setValue\("ogamex_dispatch_fail_at"/.test(src));
+check("wszystkie miejsca porazki wolaja helper (min 8)",
+  (src.match(/stampDispatchFailIfMining\(mission\);/g) || []).length >= 8);
+
 if (fail) { console.error(`\n${fail} PORAŻKA/EK`); process.exit(1); }
 console.log("\nWSZYSTKIE PRZYPADKI PRZESZŁY");
