@@ -6,6 +6,43 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 15.08 (18) — v2.97.0: PRIORYTET ŁUPU (top-tier lista celów)
+
+Życzenie ownera (~18:20, ze zrzutem Dziennika Grabieży): klasyfikacja
+najlepszych celów i lista top-tier atakowana pierwsza — maksymalizacja
+zysku, nie tracić limitu ataków/dobę na drobnicę. Rozrzut na żywo:
+Abutre [4:372:3] 5,1 bln vs Ratatosk [4:378:x] ~240 mld = 20×.
+
+**v2.97.0** (blok FARM-YIELD, markery):
+
+- `FarmYieldDB`: koord → EMA łupu (α=0,5, bo łup rośnie z czasem od
+  poprzedniego farmnięcia), liczba próbek, gracz; TTL 30 dni; mediana
+  (wynik eksploracyjny dla nieznanych), sumy per system, top(n).
+- `PlunderWatch`: dwa źródła — fetch `/home/Partial_PlunderJournal`
+  (kandydat; bracia Asteroid/Expedition potwierdzeni na żywo; 0 wierszy
+  → jednorazowy zrzut markupu) + `harvestDom` na stronie z „Plunder
+  Journal" (profil gracza; parsuje czysty tekst, potwierdzone testem na
+  wierszach 1:1 ze zrzutu). Dedup wpisów po koord|data. Self-throttle
+  15 min, wołane z farm.run() + w init.
+- `dispatchNext`: cele sortowane malejąco po znanym EMA; nieznane dostają
+  MEDIANĘ znanych (eksploracja w środku kolejki); nowy config/panel
+  `minTargetProfit` („Min. łup celu", 0=off) wycina ZNANĄ drobnicę —
+  nieznane cele nigdy (baza musi się uczyć).
+- `eligibleSystems` (okrążenie po bazie): systemy w kolejności sumy
+  znanych łupów malejąco.
+- Panel: przycisk „TOP CELE (lup)" — top 15 z medianą i progiem.
+
+Test test-farm-lup.js (18 checków, wykonuje blok na wierszach 1:1)
+ZŁAPAŁ bug przed wdrożeniem: chciwa klasa kwoty połykała spację i DATĘ
+następnego wiersza (5,1e22, 1 wiersz zamiast 4) — kwota przepisana na
+grupy tysięcy. Zluzowane jedno zamrożenie w test-farm-ban (filtr, nie
+sąsiedztwo shift). Bateria: 145 OK.
+
+Seeding: wejście na profil → Plunder Journal uczy bazę od ręki; przy
+progu zacznij od ~300–500 mld dopiero PO kilku okrążeniach nauki.
+OTWARTE: potwierdzenie endpointu Partial_PlunderJournal na żywo
+(log `[FARM LUP] dziennik (fetch)` vs zrzut).
+
 ## AKTUALIZACJA 15.08 (17) — v2.96.0: CZARNA LISTA FARMY (raporty bojowe)
 
 Zgłoszenie ownera ~09:40 ze zrzutem /messages: ostatnie ~10 ataków farmy

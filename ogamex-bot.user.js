@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.96.1
+// @version      2.97.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -261,6 +261,12 @@ const __gmSetRaw = GM_setValue;
       // KSIĘŻYC), więc można farmić INNĄ galaktykę nie ruszając floty.
       // Puste = zachowanie v2.74.8: start z aktualnie aktywnego ciała.
       launchFrom: null,          // { galaxy, system, position } | null
+      // ── v2.97.0: priorytet lupu ──
+      // Bot uczy sie sredniego lupu kazdego celu z Dziennika Grabiezy
+      // (Plunder Journal) i atakuje najtlustsze cele pierwsze. Prog odcina
+      // znana drobnice: cel ze SREDNIM lupem < progu jest pomijany
+      // (nieznany cel nigdy — eksploracja uczy bazy). 0 = bez progu.
+      minTargetProfit: 0,
     },
     // ── v2.13.0: auto-claim the green "Online bonus" menu button ──
     // (antimatter + Academy points). Independent of mining/farming — runs
@@ -3761,7 +3767,10 @@ const __gmSetRaw = GM_setValue;
         seen.add(key);
         out.push({ galaxy: g, system: s });
       }
-      out.sort((a, b) => a.galaxy - b.galaxy || a.system - b.system);
+      // v2.97.0: okrazenie po bazie odwiedza najpierw systemy z najwiekszym
+      // ZNANYM lupem (suma EMA celow w systemie); remis/nieznane — numerycznie.
+      const ysum = FarmYieldDB.systemSums();
+      out.sort((a, b) => (ysum[`${b.galaxy}:${b.system}`] || 0) - (ysum[`${a.galaxy}:${a.system}`] || 0) || a.galaxy - b.galaxy || a.system - b.system);
       return out;
     },
   };
@@ -3897,6 +3906,143 @@ const __gmSetRaw = GM_setValue;
   };
   // ── FARM-BAN-END ──
 
+  // ═══════════════════════════════════════════════════════════════
+  //  PRIORYTET LUPU (v2.97.0) — najtlustsze cele pierwsze
+  // ═══════════════════════════════════════════════════════════════
+  // Zrodlo prawdy: Dziennik Grabiezy (profil gracza) — dokladny lup per
+  // atak per koordy. Rozrzut na zywo 15.08: Abutre [4:372:3] 5,1 bln vs
+  // Ratatosk [4:378:x] ~240 mld — 20x roznicy przy tym samym koszcie
+  // slotu i limitu atakow/dobe. EMA (alfa 0,5) zamiast ostatniej probki,
+  // bo lup rosnie z czasem od poprzedniego farmniecia.
+  // ── FARM-YIELD-START ──
+  const FarmYieldDB = {
+    KEY: "ogamex_farm_yield",
+    KEY_SEEN: "ogamex_farm_yield_seen",
+    TTL_MS: 30 * 24 * 60 * 60 * 1000,
+    load() { try { return JSON.parse(GM_getValue(this.KEY, "{}")) || {}; } catch { return {}; } },
+    save(d) { GM_setValue(this.KEY, JSON.stringify(d)); },
+    avg(coord) {
+      const e = this.load()[coord];
+      if (!e || Date.now() - (e.at || 0) > this.TTL_MS) return null;
+      return e.p;
+    },
+    update(coord, profit, player) {
+      if (!Number.isFinite(profit) || profit < 0) return;
+      const d = this.load();
+      const e = d[coord];
+      d[coord] = {
+        p: e ? Math.round(e.p * 0.5 + profit * 0.5) : profit,
+        n: (e?.n || 0) + 1,
+        at: Date.now(),
+        player: player || e?.player || "?",
+      };
+      const cut = Date.now() - this.TTL_MS;
+      for (const c of Object.keys(d)) if ((d[c].at || 0) < cut) delete d[c];
+      this.save(d);
+    },
+    // Mediana znanych srednich — wynik eksploracyjny dla celow bez historii
+    // (nieznany moze byc zlotem, wiec nie laduje na koncu kolejki).
+    median() {
+      const vals = Object.values(this.load()).filter(e => Date.now() - (e.at || 0) <= this.TTL_MS).map(e => e.p).sort((a, b) => a - b);
+      if (!vals.length) return null;
+      return vals[Math.floor(vals.length / 2)];
+    },
+    // Suma znanych lupow per system "g:s" — kolejnosc okrazenia po bazie.
+    systemSums() {
+      const out = {};
+      const d = this.load();
+      const cut = Date.now() - this.TTL_MS;
+      for (const c of Object.keys(d)) {
+        if ((d[c].at || 0) < cut) continue;
+        const key = c.split(":").slice(0, 2).join(":");
+        out[key] = (out[key] || 0) + d[c].p;
+      }
+      return out;
+    },
+    top(n) {
+      return Object.entries(this.load())
+        .map(([coord, e]) => ({ coord, ...e }))
+        .filter(e => Date.now() - (e.at || 0) <= this.TTL_MS)
+        .sort((a, b) => b.p - a.p)
+        .slice(0, n);
+    },
+    seenHas(k) { try { return JSON.parse(GM_getValue(this.KEY_SEEN, "[]")).includes(k); } catch { return false; } },
+    seenAdd(k) {
+      let l; try { l = JSON.parse(GM_getValue(this.KEY_SEEN, "[]")) || []; } catch { l = []; }
+      l.unshift(k);
+      GM_setValue(this.KEY_SEEN, JSON.stringify(l.slice(0, 600)));
+    },
+  };
+
+  // Czyta Dziennik Grabiezy: fetch partialu (kandydat — bracia
+  // Partial_AsteroidJournal i Partial_ExpeditionJournal potwierdzeni na
+  // zywo) + zbior z OTWARTEJ strony profilu (dziala na pewno: parsuje
+  // czysty tekst wierszy "data | gracz (i) | [g:s:p] | +lup").
+  const PlunderWatch = {
+    KEY_AT: "ogamex_plunder_watch_at",
+    EVERY_MS: 15 * 60 * 1000,
+    CANDIDATES: ["/home/Partial_PlunderJournal"],
+    _num(s) { const n = parseInt(String(s).replace(/[^0-9]/g, ""), 10); return Number.isFinite(n) ? n : null; },
+    parse(text) {
+      const out = [];
+      // Kwota jako GRUPY TYSIECY (1-3 cyfry + bloki sep+3cyfry) — chciwa
+      // klasa [0-9.,\s]* polykala spacje i DATE nastepnego wiersza
+      // ("...031 15.08.2026 18" -> 5,1e22; zlapane testem przed wdrozeniem).
+      const re = /(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})[\s\u00A0]+([^\[\]()]{2,32}?)\s*\(\s*[a-zA-Z]\s*\)\s*\[(\d+):(\d+):(\d+)\][\s\u00A0]*\+[\s\u00A0]*([0-9]{1,3}(?:[.,\s\u00A0][0-9]{3})*)/g;
+      let m;
+      while ((m = re.exec(text))) {
+        out.push({ when: m[1], player: m[2].trim(), coord: `${m[3]}:${m[4]}:${m[5]}`, profit: this._num(m[6]) });
+      }
+      return out;
+    },
+    _apply(rows, label) {
+      let learned = 0;
+      for (const r of rows) {
+        if (r.profit == null) continue;
+        const key = `${r.coord}|${r.when}`;
+        if (FarmYieldDB.seenHas(key)) continue;
+        FarmYieldDB.seenAdd(key);
+        FarmYieldDB.update(r.coord, r.profit, r.player);
+        learned++;
+      }
+      if (learned) log(`[FARM LUP] ${label}: nauczyl(em) sie ${learned} wpisu(-ow) lupu (baza: ${Object.keys(FarmYieldDB.load()).length} celow).`, "info");
+      return learned;
+    },
+    harvestDom() {
+      const text = (document.body?.textContent || "");
+      if (!/Plunder Journal/i.test(text)) return;
+      this._apply(this.parse(text.replace(/\s+/g, " ")), "strona profilu");
+    },
+    async run() {
+      const last = parseInt(GM_getValue(this.KEY_AT, "0")) || 0;
+      if (Date.now() - last < this.EVERY_MS) return;
+      GM_setValue(this.KEY_AT, String(Date.now()));
+      for (const url of this.CANDIDATES) {
+        try {
+          const res = await fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+          if (!res.ok) continue;
+          const html = await res.text();
+          if (res.redirected || /login|password/i.test(html.substring(0, 500))) continue;
+          const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+          const rows = this.parse(text);
+          if (!rows.length) {
+            // rytual zrzutu: bez markupu nie piszemy parsera na slepo
+            const dumpKey = "ogamex_plunder_dump2";
+            if (GM_getValue(dumpKey, "") !== "1") {
+              GM_setValue(dumpKey, "1");
+              log(`[FARM LUP] ${url} -> ${html.length} zn., 0 wierszy — zrzut: ${text.slice(0, 700)}`, "warn");
+            }
+            continue;
+          }
+          this._apply(rows, "dziennik (fetch)");
+          return;
+        } catch {}
+      }
+    },
+  };
+  // ── FARM-YIELD-END ──
+
+
   const FarmedTargets = {
     KEY: "ogamex_farmed_targets",
     _ttlMs() { return Math.max(1, CONFIG.inactiveFarming.targetCooldownMin || 180) * 60 * 1000; },
@@ -4007,6 +4153,7 @@ const __gmSetRaw = GM_setValue;
         // v2.96.0: przed kazda decyzja dociagnij swieze raporty bojowe
         // (self-throttle 10 min) — bany musza wyprzedzic wysylke.
         await CombatWatch.run().catch(() => {});
+        await PlunderWatch.run().catch(() => {}); // v2.97.0: lupy przed decyzja
         const pending = GM_getValue("pending_mission", null);
         if (pending && pending !== "null") return; // a dispatch is mid-flight
 
@@ -4230,7 +4377,18 @@ const __gmSetRaw = GM_setValue;
         log(`Farm: fleet slots exhausted (reserve ${CONFIG.inactiveFarming.slotReserve}) — waiting for returns; ${st.targets?.length ?? 0} target(s) queued.`, "warn");
         return; // scheduler retries; targets persist in FarmState
       }
-      const targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord) && !FarmBlacklist.has(t.coord));
+      let targets = (st.targets || []).filter(t => !FarmedTargets.has(t.coord) && !FarmBlacklist.has(t.coord));
+      // v2.97.0: najtlustsze cele pierwsze. Znany sredni lup sortuje malejaco,
+      // nieznany dostaje MEDIANE znanych (eksploracja w srodku kolejki, nie na
+      // koncu); prog minTargetProfit wycina ZNANA drobnice (nieznanych nigdy).
+      const floor = CONFIG.inactiveFarming.minTargetProfit || 0;
+      if (floor > 0) {
+        const before = targets.length;
+        targets = targets.filter(x => { const a = FarmYieldDB.avg(x.coord); return a == null || a >= floor; });
+        if (before - targets.length) log(`Farm: ${before - targets.length} cel(e) ponizej progu lupu (${floor.toLocaleString("pl-PL")}) — pomijam.`, "info");
+      }
+      const med = FarmYieldDB.median();
+      if (med != null) targets.sort((a, b) => (FarmYieldDB.avg(b.coord) ?? med) - (FarmYieldDB.avg(a.coord) ?? med));
       const t = targets.shift();
       st.targets = targets;
       FarmState.save(st);
@@ -11762,6 +11920,10 @@ const __gmSetRaw = GM_setValue;
               <input id="ogx-farm-from" type="text" placeholder="puste = tu gdzie jestem" value="${CONFIG.inactiveFarming.launchFrom ? `${CONFIG.inactiveFarming.launchFrom.galaxy}:${CONFIG.inactiveFarming.launchFrom.system}:${CONFIG.inactiveFarming.launchFrom.position}` : ""}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Cel o ZNANYM srednim lupie ponizej progu jest pomijany (slot i limit atakow ida na tlustsze cele). Cele bez historii lupu atakowane normalnie — tak baza sie uczy. 0 = bez progu. Przyklad: 500000000000 = pol biliona.">Min. lup celu (0=off)</span>
+              <input id="ogx-farm-minprofit" type="number" min="0" step="1000000000" value="${CONFIG.inactiveFarming.minTargetProfit || 0}" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Don't re-attack the same planet within this many minutes. Przy WŁĄCZONYM „Nowe okrążenie od nowa” ten zegar praktycznie nie działa — blokady i tak są zwalniane na starcie każdego przebiegu.">Target cooldown (min)</span>
               <input id="ogx-farm-cooldown" type="number" min="1" step="10" value="${CONFIG.inactiveFarming.targetCooldownMin}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -11782,6 +11944,7 @@ const __gmSetRaw = GM_setValue;
               <input id="ogx-farm-refresh" type="number" min="1" step="1" value="${CONFIG.inactiveFarming.dbRefreshHours ?? 12}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <button class="mini-btn" id="ogx-farm-dbdump" style="width:100%;margin-top:4px;" title="Wypisuje do dziennika całą bazę celów: koordy, gracz, ranking, kiedy widziany — posortowaną po rankingu. Nie rusza flotą.">POKAŻ BAZĘ CELÓW</button>
+            <button class="mini-btn" id="ogx-farm-topdump" style="width:100%;margin-top:4px;" title="Wypisuje do dziennika TOP 15 celow wg sredniego lupu (EMA z Dziennika Grabiezy) + prog i mediane. Baza uczy sie sama: fetch dziennika co 15 min + kazde otwarcie profilu gracza.">TOP CELE (lup)</button>
             <div style="font-size:9px;color:#7f8c8d;margin-top:2px;">Pełny skan buduje bazę nieaktywnych; potem szybkie okrążenia biją tylko cele z rankingiem ≤ limitu. Mining ma pierwszeństwo — farm działa w oknach, gdy minery są w locie.</div>
           </div>
         </div>
@@ -12488,6 +12651,18 @@ const __gmSetRaw = GM_setValue;
         });
       });
     }
+    // v2.97.0: podglad priorytetu lupu
+    {
+      const el = document.getElementById("ogx-farm-topdump");
+      if (el) el.addEventListener("click", () => {
+        const rows = FarmYieldDB.top(15);
+        if (!rows.length) { log("Baza lupow PUSTA — wejdz raz na profil gracza (Plunder Journal) albo poczekaj na fetch (15 min).", "warn"); return; }
+        const med = FarmYieldDB.median();
+        const floor = CONFIG.inactiveFarming.minTargetProfit || 0;
+        log(`── TOP CELE wg lupu (mediana ${med?.toLocaleString("pl-PL") ?? "?"}${floor ? `, prog ${floor.toLocaleString("pl-PL")}` : ", prog OFF"}) ──`, "info");
+        rows.forEach((r, i) => log(`${i + 1}. [${r.coord}] ${r.player} — sredni lup ${r.p.toLocaleString("pl-PL")} (probek: ${r.n})`, "info"));
+      });
+    }
     {
       const el = document.getElementById("ogx-farm-repeat");
       if (el) el.addEventListener("click", () => {
@@ -12623,6 +12798,14 @@ const __gmSetRaw = GM_setValue;
         () => CONFIG.inactiveFarming.launchFrom,
         (v) => { CONFIG.inactiveFarming.launchFrom = v; },
         "[START FARMIENIA]");
+      {
+        const el = document.getElementById("ogx-farm-minprofit");
+        if (el) el.addEventListener("change", () => {
+          CONFIG.inactiveFarming.minTargetProfit = Math.max(0, parseInt(el.value) || 0);
+          saveConfig(CONFIG);
+          log(`Prog lupu celu: ${CONFIG.inactiveFarming.minTargetProfit ? CONFIG.inactiveFarming.minTargetProfit.toLocaleString("pl-PL") : "OFF (0)"}.`, "info");
+        });
+      }
     }
     // v2.83.0: przełącznik PROMU (domyślnie OFF — bot sam nie przenosi floty)
     {
@@ -13224,6 +13407,7 @@ const __gmSetRaw = GM_setValue;
     // v2.96.0: operator przeglada wiadomosci -> zbierz bany z widocznych
     // raportow bojowych (dziala nawet bez potwierdzonego endpointu fetch).
     try { CombatWatch.harvestDom(); } catch {}
+    try { PlunderWatch.harvestDom(); } catch {} // v2.97.0: profil = darmowe probki lupu
 
     // Only run on game pages — NOT the landing/lobby page (/ or /home). v2.10.21:
     // the user is still LOGGED IN here (confirmed: no password, they just click a

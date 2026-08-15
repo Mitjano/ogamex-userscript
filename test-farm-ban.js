@@ -51,7 +51,9 @@ if (m) {
 // ── zamrozenia integracji ──
 check("collectTargets pomija czarna liste", /if \(FarmBlacklist\.has\(coord\)\) \{ bannedSkip\+\+; return; \}/.test(src));
 check("dispatchNext filtruje zbanowane cele w kolejce",
-  /filter\(t => !FarmedTargets\.has\(t\.coord\) && !FarmBlacklist\.has\(t\.coord\)\);\s*const t = targets\.shift\(\);/.test(src));
+  // v2.97.0 wstawila sortowanie po lupie miedzy filtr a shift() — zamrozony
+  // jest sam FILTR (to on chroni przed powrotem na obrone), nie sasiedztwo.
+  /let targets = \(st\.targets \|\| \[\]\)\.filter\(t => !FarmedTargets\.has\(t\.coord\) && !FarmBlacklist\.has\(t\.coord\)\);/.test(src));
 check("farm.run() dociaga raporty przed decyzja", /await CombatWatch\.run\(\)\.catch\(\(\) => \{\}\);/.test(src));
 check("harvestDom wpiety w init (strona wiadomosci)", /CombatWatch\.harvestDom\(\); \} catch \{\}/.test(src));
 
