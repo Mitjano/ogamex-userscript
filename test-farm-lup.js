@@ -63,6 +63,8 @@ check("PlunderWatch.run() przed decyzja farmy", /await PlunderWatch\.run\(\)\.ca
 check("harvestDom profilu wpiety w init", /PlunderWatch\.harvestDom\(\); \} catch \{\}/.test(src));
 check("harvest doczytuje co 15 s (zakladki dni/stron bez przeladowania)",
   /setInterval\(\(\) => \{\s*try \{ CombatWatch\.harvestDom\(\); \} catch \{\}\s*try \{ PlunderWatch\.harvestDom\(\); \} catch \{\}\s*\}, 15 \* 1000\);/.test(src));
+check("przyciski-raporty otwieraja log (openLogPanel przed dumpem)",
+  (src.match(/openLogPanel\(\);/g) || []).length >= 2 && /function openLogPanel\(\)/.test(src));
 check("panel: pole progu + przycisk TOP CELE",
   /id="ogx-farm-minprofit"/.test(src) && /id="ogx-farm-topdump"/.test(src));
 

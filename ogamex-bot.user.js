@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.97.1
+// @version      2.97.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -12637,6 +12637,7 @@ const __gmSetRaw = GM_setValue;
     {
       const el = document.getElementById("ogx-farm-dbdump");
       if (el) el.addEventListener("click", () => {
+        openLogPanel();
         const db = FarmTargetDB.load();
         const rows = Object.entries(db)
           .map(([coord, e]) => ({ coord, ...e }))
@@ -12655,6 +12656,7 @@ const __gmSetRaw = GM_setValue;
     {
       const el = document.getElementById("ogx-farm-topdump");
       if (el) el.addEventListener("click", () => {
+        openLogPanel();
         const rows = FarmYieldDB.top(15);
         if (!rows.length) { log("Baza lupow PUSTA — wejdz raz na profil gracza (Plunder Journal) albo poczekaj na fetch (15 min).", "warn"); return; }
         const med = FarmYieldDB.median();
@@ -13058,6 +13060,22 @@ const __gmSetRaw = GM_setValue;
     _logPersistTimer = setTimeout(persistLogsNow, 1000);
   }
   window.addEventListener("pagehide", persistLogsNow);
+
+  // v2.97.2: przyciski-raporty (baza celow, top cele) pisza do logu, ktory
+  // domyslnie jest ZWINIETY na dole panelu - "klikam i nic sie nie dzieje"
+  // (owner 15.08 18:53). Otworz log i przewin panel do wyniku.
+  function openLogPanel() {
+    const la = document.getElementById("ogx-log");
+    if (!la) return;
+    GM_setValue("ogx_log_open", "1");
+    la.style.display = "block";
+    const lastLine = document.getElementById("ogx-log-last");
+    if (lastLine) lastLine.style.display = "none";
+    const chev = document.getElementById("ogx-log-chev");
+    if (chev) chev.textContent = "\u25be";
+    updateLogUI();
+    try { la.scrollIntoView({ block: "nearest" }); } catch {}
+  }
 
   function updateLogUI() {
     const logArea = document.getElementById("ogx-log");
