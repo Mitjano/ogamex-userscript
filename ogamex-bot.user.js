@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.96.0
+// @version      2.96.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11561,6 +11561,13 @@ const __gmSetRaw = GM_setValue;
           z-index: 99999;
           box-shadow: 0 4px 20px rgba(0,0,0,0.6);
           user-select: none;
+          /* v2.96.1: na 13,6-calowym MacBooku panel byl DLUZSZY niz okno,
+             a position:fixed nie scrolluje sie ze strona - dol panelu
+             (dziennik obrony, logi) byl nieosiagalny. Panel przewija sie sam. */
+          max-height: calc(100vh - 20px);
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          scrollbar-width: thin;
         }
         #ogx-bot-panel .header {
           background: linear-gradient(135deg, #1a5276, #0d2f4f);

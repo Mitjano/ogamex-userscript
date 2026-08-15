@@ -30,6 +30,8 @@ check("updateLogUI nie przebudowuje listy przy zwinietym logu",
   /if \(logArea\.style\.display !== "none"\) logArea\.innerHTML/.test(src));
 check("rozwiniecie logu odmalowuje liste (paint -> updateLogUI)",
   /if \(open\) updateLogUI\(\);/.test(src));
+check("panel przewija sie na malych ekranach (max-height + overflow-y)",
+  /max-height: calc\(100vh - 20px\);\s*overflow-y: auto;/.test(src));
 check("ThreatLog.all() ma cache 30 s, add() go zeruje",
   /_cacheAt < 30 \* 1000\) return this\._cache;/.test(src) && /this\._cache = null; \/\/ v2\.94\.0/.test(src));
 check("FarmTargetDB.updateSystem pomija zapis bez zmian",
