@@ -40,6 +40,14 @@ if (m) {
   check("_apply: te same wpisy = 0 (dedup po coord|dacie)", PlunderWatch._apply(rows, "test") === 0);
   check("avg: Abutre = 5,1 bln", FarmYieldDB.avg("4:372:3") === 5107842360031);
 
+  // ── v2.97.3: dedup przezywa widok WIEKSZY niz dawny cap (kaskada 638) ──
+  {
+    const big = [];
+    for (let i = 0; i < 650; i++) big.push({ when: `14.08.2026 10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}`, player: "Bulk", coord: `9:${1 + Math.floor(i / 15)}:${1 + (i % 15)}`, profit: 1000000 + i });
+    check("learnBatch: 650 nowych wpisow za pierwszym razem", PlunderWatch._apply(big, "test-bulk") === 650);
+    check("learnBatch: te same 650 = 0 (koniec kaskady capa)", PlunderWatch._apply(big, "test-bulk") === 0);
+  }
+
   // ── EMA: druga probka usrednia ──
   FarmYieldDB.update("4:378:6", 300000000000, "Ratatosk");
   check("EMA: (242,3 mld + 300 mld)/2", FarmYieldDB.avg("4:378:6") === Math.round((242317683382 + 300000000000) / 2));

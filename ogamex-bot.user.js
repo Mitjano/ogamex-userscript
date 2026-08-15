@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.97.2
+// @version      2.97.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3966,11 +3966,41 @@ const __gmSetRaw = GM_setValue;
         .sort((a, b) => b.p - a.p)
         .slice(0, n);
     },
-    seenHas(k) { try { return JSON.parse(GM_getValue(this.KEY_SEEN, "[]")).includes(k); } catch { return false; } },
-    seenAdd(k) {
-      let l; try { l = JSON.parse(GM_getValue(this.KEY_SEEN, "[]")) || []; } catch { l = []; }
-      l.unshift(k);
-      GM_setValue(this.KEY_SEEN, JSON.stringify(l.slice(0, 600)));
+    // v2.97.3: nauka PACZKA zamiast per-wpis. Dwa bledy z zywego seedowania
+    // (19:06, trzy razy "638 wpisow" z ta sama baza): (1) cap listy seen 600
+    // byl MNIEJSZY niz jeden widok dziennika (638 wierszy) - kazdy dodany
+    // wpis wypychal z konca dokladnie ten, ktory za chwile sprawdzalismy;
+    // kaskada = dedup martwy, wszystko uczone od nowa co 15 s; (2) kazdy
+    // wpis robil load+save CALEJ bazy i listy seen (638x na tick).
+    learnBatch(rows) {
+      let seen; try { seen = JSON.parse(GM_getValue(this.KEY_SEEN, "[]")) || []; } catch { seen = []; }
+      const seenSet = new Set(seen);
+      const d = this.load();
+      let learned = 0;
+      for (const r of rows) {
+        if (r.profit == null || !Number.isFinite(r.profit) || r.profit < 0) continue;
+        const key = `${r.coord}|${r.when}`;
+        if (seenSet.has(key)) continue;
+        seenSet.add(key);
+        seen.unshift(key);
+        const e = d[r.coord];
+        d[r.coord] = {
+          p: e ? Math.round(e.p * 0.5 + r.profit * 0.5) : r.profit,
+          n: (e?.n || 0) + 1,
+          at: Date.now(),
+          player: r.player || e?.player || "?",
+        };
+        learned++;
+      }
+      if (learned) {
+        const cut = Date.now() - this.TTL_MS;
+        for (const c of Object.keys(d)) if ((d[c].at || 0) < cut) delete d[c];
+        this.save(d);
+        // cap 4000 >> najwiekszy widok dziennika; FIFO wystarcza, bo stare
+        // dni nie wracaja do widoku po zejsciu z profilu.
+        GM_setValue(this.KEY_SEEN, JSON.stringify(seen.slice(0, 4000)));
+      }
+      return learned;
     },
   };
 
@@ -3996,15 +4026,7 @@ const __gmSetRaw = GM_setValue;
       return out;
     },
     _apply(rows, label) {
-      let learned = 0;
-      for (const r of rows) {
-        if (r.profit == null) continue;
-        const key = `${r.coord}|${r.when}`;
-        if (FarmYieldDB.seenHas(key)) continue;
-        FarmYieldDB.seenAdd(key);
-        FarmYieldDB.update(r.coord, r.profit, r.player);
-        learned++;
-      }
+      const learned = FarmYieldDB.learnBatch(rows);
       if (learned) log(`[FARM LUP] ${label}: nauczyl(em) sie ${learned} wpisu(-ow) lupu (baza: ${Object.keys(FarmYieldDB.load()).length} celow).`, "info");
       return learned;
     },
