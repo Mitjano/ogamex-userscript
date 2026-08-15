@@ -61,6 +61,8 @@ check("okrazenie po bazie sortowane suma lupow systemu",
   /const ysum = FarmYieldDB\.systemSums\(\);/.test(src));
 check("PlunderWatch.run() przed decyzja farmy", /await PlunderWatch\.run\(\)\.catch\(\(\) => \{\}\);/.test(src));
 check("harvestDom profilu wpiety w init", /PlunderWatch\.harvestDom\(\); \} catch \{\}/.test(src));
+check("harvest doczytuje co 15 s (zakladki dni/stron bez przeladowania)",
+  /setInterval\(\(\) => \{\s*try \{ CombatWatch\.harvestDom\(\); \} catch \{\}\s*try \{ PlunderWatch\.harvestDom\(\); \} catch \{\}\s*\}, 15 \* 1000\);/.test(src));
 check("panel: pole progu + przycisk TOP CELE",
   /id="ogx-farm-minprofit"/.test(src) && /id="ogx-farm-topdump"/.test(src));
 
