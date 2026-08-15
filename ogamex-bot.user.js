@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.97.3
+// @version      2.97.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -10222,6 +10222,24 @@ const __gmSetRaw = GM_setValue;
                 el.dispatchEvent(new Event("change", { bubbles: true }));
               }
               log(`[CEL] formularz pokazywał [${have}], a misja leci na [${wg}:${ws}:${wp}] — poprawiłem pola celu (URL nie zaaplikował parametrów).`, "warn");
+              // v2.97.4: sama korekta koordow NIE wystarcza, gdy formularz
+              // otworzyl sie z domyslnym celem-KSIEZYCEM (aktywna para) - typ
+              // celu zostawal "Moon" i gra odrzucala wysylke modalem "There is
+              // no planet or moons on this target" (incydent 15.08 19:21: farm
+              // z ksiezyca [4:132:8] na planety [4:406:x], krok 3 padal
+              // timeoutem seriami). Misja z planet=1 w URL leci ZAWSZE na
+              // planete - dopnij typ ta sama mechanika co ratunek
+              // (data-planet-type=1, z pominieciem sidebara).
+              if (/[?&]planet=1(?:&|$)/.test(mission.fleetUrl || "")) {
+                const inSidebarCel = (el) => !!el.closest(".planet-select, .moon-select, .sidebar, nav, #ogx-bot-panel");
+                const planetBtn = [...document.querySelectorAll('[data-planet-type="1"]')].filter(el => !inSidebarCel(el))[0];
+                if (planetBtn) {
+                  planetBtn.click();
+                  log("[CEL] typ celu dopiety na PLANETE (formularz startowal z celem-ksiezycem).", "fleet");
+                } else {
+                  log("[CEL] nie znalazlem przelacznika typu celu (data-planet-type=1) - jesli gra odrzuci wysylke, wklej zrzut [MOON DOM].", "warn");
+                }
+              }
               await AntiDetection.sleep(700 + Math.random() * 500); // niech gra przeliczy trasę
             }
           }

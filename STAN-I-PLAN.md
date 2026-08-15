@@ -6,6 +6,36 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 15.08 (19) — v2.97.1–4: seeding łupów + dwa bugi z żywego seedowania
+
+Seria po v2.97.0 (wszystko z obserwacji ownera na żywo):
+
+- **v2.97.1**: zakładki dni dziennika i strony raportów przełączają się BEZ
+  przeładowania — harvest (Combat+Plunder) doczytywany co 15 s; pozwala
+  zassać historię: przeklikanie dni na profilu (farm od 13.08 — wcześniejsze
+  dni puste). Endpoint `Partial_PlunderJournal` POTWIERDZONY na żywo 19:17
+  (`[FARM LUP] dziennik (fetch): 383 wpisy`).
+- **v2.97.2**: „POKAŻ BAZĘ CELÓW"/„TOP CELE" pisały do zwiniętego logu poza
+  ekranem („klikam i nic się nie dzieje") — otwierają log + scroll. Przy
+  okazji decyzja ownera: top-lista ma być automatem, nie widokiem — jest
+  (sortowanie w dispatchNext + okrążeniach od v2.97.0).
+- **v2.97.3**: dedup dziennika MARTWY przez kaskadę capa: lista seen (600)
+  mniejsza niż widok (638 wierszy) — każdy dodany wpis wypychał ten, który
+  za chwilę sprawdzaliśmy; bot uczył się tych samych 638 wpisów co 15 s
+  (3× ta sama linia w logu). Nauka paczką (learnBatch: 1 odczyt + 1 zapis),
+  cap 4000, test kaskady 650 wierszy. Dane niezepsute (EMA idempotentna).
+- **v2.97.4**: INCYDENT 19:21 — formularz floty przestał aplikować parametry
+  URL; korektor [CEL] (v2.66.5) poprawiał koordy, ale TYP celu zostawał
+  „Moon" (formularz otwierał się z domyślnym celem = aktywny księżyc
+  [4:132:8]) → gra odrzucała wysyłkę modalem „There is no planet or moons
+  on this target", krok 3 padał timeoutami seriami. Fix: misje z `planet=1`
+  w URL po korekcie koordów dopinają typ celu przełącznikiem
+  `data-planet-type="1"` (ta sama mechanika co ratunek, sidebar wykluczony).
+
+Bateria: 151 checków OK. OTWARTE: potwierdzenie na żywo dopięcia typu
+(log `[CEL] typ celu dopiety na PLANETE`); jeśli przełącznika nie ma
+w DOM — poprosić ownera o zrzut [MOON DOM].
+
 ## AKTUALIZACJA 15.08 (18) — v2.97.0: PRIORYTET ŁUPU (top-tier lista celów)
 
 Życzenie ownera (~18:20, ze zrzutem Dziennika Grabieży): klasyfikacja

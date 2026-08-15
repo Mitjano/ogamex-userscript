@@ -55,5 +55,13 @@ check("zero starych stempli if(!mission?.expedition) przy dispatch_fail_at",
 check("wszystkie miejsca porazki wolaja helper (min 8)",
   (src.match(/stampDispatchFailIfMining\(mission\);/g) || []).length >= 8);
 
+// 9. v2.97.4: korekta celu dopina TYP na planete dla misji planet=1 -
+//    formularz otwarty z celem-ksiezycem odrzucal wysylke modalem
+//    "There is no planet or moons on this target" (incydent 15.08 19:21).
+check("korektor [CEL] dopina typ celu data-planet-type=1 dla planet=1",
+  /\[\?&\]planet=1\(\?:&\|\$\)/.test(src.replace(/\\/g, "")) || /planet=1\(\?:&\|\$\)\)\.test\(mission\.fleetUrl/.test(src));
+check("dopiecie typu uzywa mechaniki ratunku (data-planet-type, bez sidebara)",
+  /data-planet-type="1"/.test(src) && /inSidebarCel/.test(src));
+
 if (fail) { console.error(`\n${fail} PORAŻKA/EK`); process.exit(1); }
 console.log("\nWSZYSTKIE PRZYPADKI PRZESZŁY");
