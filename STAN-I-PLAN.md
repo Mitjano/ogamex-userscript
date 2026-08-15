@@ -6,6 +6,32 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 15.08 (14) — v2.93.0: higiena wydajności (Firefox mulił)
+
+Obserwacja ownera ~10:00: Firefox i strony gry lagują po kilku godzinach
+pracy bota. Dwie przyczyny po stronie bota, obie zdjęte:
+
+1. **Historia karty**: wszystkie 39 programowych nawigacji szło przez
+   `window.location.href =` — każda dokłada wpis do historii karty, bot robi
+   tysiące przeładowań dziennie, a Firefox serializuje historię sesji w tle →
+   po godzinach muli cała przeglądarka. Teraz WSZĘDZIE `location.replace()`
+   (dla serwera identyczny GET, historia nie rośnie). Kliknięcia w prawdziwe
+   elementy (`.click()`) bez zmian.
+2. **Dziennik logów**: 300 wpisów serializowanych do magazynu przy KAŻDYM
+   wpisie, a zrzuty debugowe (step3-clickables itp.) mają ~10 KB/linia —
+   megabajtowe JSON-y mieliły CPU non stop. log() przycina wpisy do 600
+   znaków przed zapisem (znacznik „[uciete]"); na żywo pełny tekst.
+
+Test: test-nawigacja-log.js (zero href=, min 30 replace(), przycinanie w
+log()); bateria 105 checków OK. Kontekst dnia: throttling ukrytej karty
+(dźwięk podtrzymujący czeka na klik po restarcie przeglądarki) spowolnił
+skan ~30× i farm głodował priorytetem — po kliknięciu w kartę wraca samo.
+Ekonomia z dzienników 15.08: mining 393,6 bln/dzień vs farm 4,5 bln/dzień
+(1 lot minerów ≈ 12× cały dzień farmy) — priorytet mining>farm słuszny.
+
+OTWARTE: ewentualny bezpiecznik „farm dostaje okno, gdy skan miningu stoi
+>X min" — czeka na decyzję ownera (zmienia świadomy priorytet v2.90.0).
+
 ## AKTUALIZACJA 14.08 (13) — v2.92.0: izolacja per-uni NAPRAWDĘ działa (bug od v2.9.0)
 
 Incydent 22:11: owner zalogował się świeżym kontem na **vega.ogamex.net** —

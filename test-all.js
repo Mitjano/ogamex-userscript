@@ -24,6 +24,7 @@ const SUITES = [
   ["priorytet mining > farming", "test-farm-priorytet.js"],
   ["punkt startu farmy (launchFrom)", "test-farm-start.js"],
   ["izolacja magazynu per-uni", "test-uni-izolacja.js"],
+  ["higiena wydajnosci (historia + log)", "test-nawigacja-log.js"],
 ];
 
 let failed = [];

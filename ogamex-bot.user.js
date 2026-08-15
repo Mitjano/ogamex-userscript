@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.92.0
+// @version      2.93.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -598,7 +598,12 @@ const __gmSetRaw = GM_setValue;
 
   function log(msg, type = "info") {
     const time = new Date().toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    const entry = { time, msg, type };
+    // v2.93.0: zrzuty debugowe DOM potrafia miec ~10 KB na linie, a dziennik
+    // (300 wpisow) jest serializowany do magazynu przy KAZDYM wpisie -
+    // megabajtowe JSON-y mielily CPU caly dzien. 600 znakow wystarczalo na
+    // kazda diagnoze z ostatnich tygodni; pelny tekst i tak widac na zywo.
+    const msgStr = String(msg);
+    const entry = { time, msg: msgStr.length > 600 ? msgStr.slice(0, 600) + " [uciete]" : msgStr, type };
     logEntries.unshift(entry);
     if (logEntries.length > MAX_LOG_ENTRIES) logEntries.pop();
     // Persist logs across page navigations
@@ -1150,7 +1155,7 @@ const __gmSetRaw = GM_setValue;
     setTimeout(() => {
       if (!isOGameXErrorPage()) return; // page changed under us — nothing to do
       if (specificTarget) {
-        window.location.href = specificTarget;
+        window.location.replace(specificTarget);
         return;
       }
       // Click the page's own "Back to game" — what a human would do.
@@ -1158,15 +1163,15 @@ const __gmSetRaw = GM_setValue;
       if (btn) {
         log("Clicking < Back to game.", "info");
         if (btn.tagName === "A" && btn.href) {
-          window.location.href = btn.href; // use the real href (skips flaky JS handlers)
+          window.location.replace(btn.href); // use the real href (skips flaky JS handlers)
         } else {
           btn.click();
           // safety net: if the click didn't navigate, force it.
-          setTimeout(() => { if (isOGameXErrorPage()) window.location.href = "/"; }, 5000);
+          setTimeout(() => { if (isOGameXErrorPage()) window.location.replace("/"); }, 5000);
         }
         return;
       }
-      window.location.href = "/"; // last resort
+      window.location.replace("/"); // last resort
     }, backoff);
 
     // ── v2.61.0: strażnik strony błędu ──
@@ -1188,11 +1193,11 @@ const __gmSetRaw = GM_setValue;
           GM_setValue("ogamex_error_recover_at", String(Date.now()));
           GM_setValue("ogamex_error_recover_streak", String(streakNow));
           log(`Strażnik strony błędu: ponawiam powrót do gry (próba ${streakNow}).`, "warn");
-          if (streakNow >= 6) { window.location.href = "/"; return; }
+          if (streakNow >= 6) { window.location.replace("/"); return; }
           const btn = findBackToGameButton();
-          if (btn && btn.tagName === "A" && btn.href) window.location.href = btn.href;
+          if (btn && btn.tagName === "A" && btn.href) window.location.replace(btn.href);
           else if (btn) btn.click();
-          else window.location.href = "/";
+          else window.location.replace("/");
         } catch {}
       }, 60 * 1000);
     }
@@ -1374,7 +1379,12 @@ const __gmSetRaw = GM_setValue;
       return false;
     }
     NavRateLimiter.record();
-    window.location.href = url;
+    // v2.93.0: replace() zamiast href= we WSZYSTKICH programowych nawigacjach
+    // bota. Bot robi tysiace przeladowan dziennie; kazde href= doklada wpis
+    // do historii karty, a Firefox serializuje historie sesji w tle - po
+    // kilku godzinach mulila cala przegladarka (obserwacja ownera 15.08).
+    // Dla serwera identyczny GET; replace() po prostu nie rosnie w historii.
+    window.location.replace(url);
     return true;
   }
 
@@ -2762,7 +2772,7 @@ const __gmSetRaw = GM_setValue;
       // (confirmed from galaxy view: /fleet?x=6&y=476&z=16&mission=1)
       const url = `/fleet?x=${planet.galaxy}&y=${planet.system}&z=${planet.position}`;
       log(`Navigating to fleet: ${planet.name} [${planet.galaxy}:${planet.system}:${planet.position}]`);
-      window.location.href = url;
+      window.location.replace(url);
       // Page will reload — pending_mission flow handles next steps
     },
 
@@ -3452,7 +3462,7 @@ const __gmSetRaw = GM_setValue;
           }));
           RateLimiter.record();
           await AntiDetection.shortDelay(); // 2-8s, fast like a real player clicking
-          window.location.href = result.fleetUrl;
+          window.location.replace(result.fleetUrl);
           return;
         }
 
@@ -3614,7 +3624,7 @@ const __gmSetRaw = GM_setValue;
       }
       RateLimiter.record();
       await AntiDetection.shortDelay(); // 2-8s, fast like a real player clicking
-      window.location.href = fleetUrl;
+      window.location.replace(fleetUrl);
     },
   };
 
@@ -4103,7 +4113,7 @@ const __gmSetRaw = GM_setValue;
       // Tempo farmy ograniczają: humanizer (maxAttacksPerDay, shortDelay),
       // rytm galaktyka→formularz→galaktyka i wspólny NavRateLimiter.
       await AntiDetection.shortDelay();
-      window.location.href = fleetUrl;
+      window.location.replace(fleetUrl);
     },
 
     // Entry point after a farm fleet was sent (fleetSendSuccessfully / finishDispatch).
@@ -4415,7 +4425,7 @@ const __gmSetRaw = GM_setValue;
         timestamp: Date.now(),
       }));
       log(`[ZŁOM] pole złomu na [${b.galaxy}:${b.system}:16] — wysyłam recyklery (${href}).`, "success");
-      setTimeout(() => { window.location.href = href; }, 800 + Math.random() * 700);
+      setTimeout(() => { window.location.replace(href); }, 800 + Math.random() * 700);
       return true;
     },
 
@@ -4972,7 +4982,7 @@ const __gmSetRaw = GM_setValue;
             if (navs <= 2) {
               this.save({ ...st, recallNavs: navs });
               log(`[FS] przycisk zawracania jest w danych, ale nie na tej stronie — przechodzę na /fleet (${navs}/2), żeby go kliknąć.`, "info");
-              window.location.href = "/fleet";
+              window.location.replace("/fleet");
               return;
             }
             this._recallFail(st, "przycisk x_btn_fleet_return jest w danych listy, ale nie mogę go dosięgnąć w żywym DOM");
@@ -5281,7 +5291,7 @@ const __gmSetRaw = GM_setValue;
       log(`UCIECZKA W POWIETRZE: atak na OBA ciała [${this.key(atCoords)}] — wysyłam WSZYSTKO powolnym Deployem (${speed}%) do [${this.key(to)}], zawrócę ~${hhmm} (po przejściu ataków).`, "error");
       ThreatLog.add("RATUNEK", `UCIECZKA W POWIETRZE: oba ciała [${this.key(atCoords)}] pod atakiem — flota leci do [${this.key(to)}] (${speed}%), zawrócenie ~${hhmm}.`);
       await AntiDetection.sleep(300 + Math.random() * 400);
-      window.location.href = `/fleet?x=${to.galaxy}&y=${to.system}&z=${to.position}`;
+      window.location.replace(`/fleet?x=${to.galaxy}&y=${to.system}&z=${to.position}`);
       return true;
     },
 
@@ -5404,7 +5414,7 @@ const __gmSetRaw = GM_setValue;
           if (navs <= 2) {
             this.save({ ...st, recallTries: tries - 1, recallNavs: navs }); // nawigacja nie zjada próby
             log(`[UCIECZKA] przycisk zawracania nie na tej stronie — przechodzę na /fleet (${navs}/2).`, "info");
-            window.location.href = "/fleet";
+            window.location.replace("/fleet");
             return;
           }
           log(`[UCIECZKA] nie mogę dosięgnąć przycisku zawracania (próba ${tries}/5) — ponowię.`, "warn");
@@ -6948,7 +6958,7 @@ const __gmSetRaw = GM_setValue;
       GM_setValue(this.KEY_RESUME, JSON.stringify({ at: Date.now(), reason }));
       log(`[MOON SAVE] cel księżyca nieznany — wchodzę na galaktykę [${b.galaxy}:${b.system}], żeby go odczytać, i wracam dokończyć ratunek.`, "warn");
       await AntiDetection.sleep(300 + Math.random() * 400);
-      window.location.href = `/galaxy?x=${b.galaxy}&y=${b.system}`;
+      window.location.replace(`/galaxy?x=${b.galaxy}&y=${b.system}`);
       return true;
     },
 
@@ -7401,7 +7411,7 @@ const __gmSetRaw = GM_setValue;
         ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
         }
         await AntiDetection.sleep(400 + Math.random() * 600); // emergency: barely any delay
-        window.location.href = href;
+        window.location.replace(href);
         return true;
       } catch (err) {
         log(`[MOON SAVE] error: ${err.message}`, "error");
@@ -7928,7 +7938,7 @@ const __gmSetRaw = GM_setValue;
         // traffic stays under NavRateLimiter, which they do share.
         log(`EXPEDITION wave → [${b.galaxy}:${b.system}:16] for ${cfg.holdingHours}h (1/${cfg.waves} of the fleet, ${slots.used}/${slots.total || "?"} slots used)`, "success");
         await AntiDetection.shortDelay();
-        window.location.href = url;
+        window.location.replace(url);
       } catch (err) {
         log(`Expedition error: ${err.message}`, "error");
       } finally {
@@ -8417,7 +8427,7 @@ const __gmSetRaw = GM_setValue;
           GM_setValue(this.KEY_PENDING, JSON.stringify({ at: Date.now(), label: hit.label }));
           await AntiDetection.sleep(150 + Math.random() * 450); // enough to not be instant, too short to lose the race
           log(`Online bonus: navigating to ${href}`, "fleet");
-          window.location.href = realHref;
+          window.location.replace(realHref);
           return;
         }
         // Stamp BEFORE clicking: if the click navigates, this page's JS dies
@@ -8433,7 +8443,7 @@ const __gmSetRaw = GM_setValue;
         // Still here (no navigation) → judge now instead of waiting a tick.
         if (this.find() && href && href !== "#" && !/^javascript:/i.test(href)) {
           log(`Online bonus: click didn't take — following its link (${href}).`, "warn");
-          window.location.href = hit.el.href || href;
+          window.location.replace(hit.el.href || href);
           return;
         }
         this.settle(true);
@@ -8931,7 +8941,7 @@ const __gmSetRaw = GM_setValue;
         mission.timestamp = Date.now();
         GM_setValue("pending_mission", JSON.stringify(mission));
         await AntiDetection.sleep(1000 + Math.random() * 1500);
-        window.location.href = mission.switchToFleetUrl;
+        window.location.replace(mission.switchToFleetUrl);
         return;
       }
 
@@ -8956,7 +8966,7 @@ const __gmSetRaw = GM_setValue;
           mission.timestamp = Date.now();
           GM_setValue("pending_mission", JSON.stringify(mission));
           await AntiDetection.sleep(500 + Math.random() * 500);
-          window.location.href = "/";
+          window.location.replace("/");
           return;
         }
         if (here === want) {
@@ -8965,7 +8975,7 @@ const __gmSetRaw = GM_setValue;
           mission.timestamp = Date.now();
           GM_setValue("pending_mission", JSON.stringify(mission));
           await AntiDetection.sleep(500 + Math.random() * 500);
-          window.location.href = mission.fleetUrl;
+          window.location.replace(mission.fleetUrl);
           return;
         }
         // Find the base entry in the sidebar. The game renders each moon right
@@ -9015,7 +9025,7 @@ const __gmSetRaw = GM_setValue;
         GM_setValue("pending_mission", JSON.stringify(mission));
         await AntiDetection.sleep(600 + Math.random() * 600);
         const href = target.getAttribute("href");
-        if (href && href.length > 1) window.location.href = href; else target.click();
+        if (href && href.length > 1) window.location.replace(href); else target.click();
         return;
       }
 
@@ -9061,7 +9071,7 @@ const __gmSetRaw = GM_setValue;
               log(`[START] misja ${mission.type} startuje z [${want.galaxy}:${want.system}:${want.position}]${targetEl !== anchor ? " (księżyc)" : ""} — przełączam aktywne ciało.`, "fleet");
               await AntiDetection.sleep(600 + Math.random() * 600);
               const href = targetEl.getAttribute("href");
-              if (href && href.length > 1) window.location.href = href; else targetEl.click();
+              if (href && href.length > 1) window.location.replace(href); else targetEl.click();
               return;
             }
             // Koordów nie ma na pasku planet (literówka w panelu / nie nasza
@@ -9116,7 +9126,7 @@ const __gmSetRaw = GM_setValue;
                 log(`[RATUNEK] formularz otworzył się na OBCEJ kolonii [${herePair.galaxy}:${herePair.system}:${herePair.position}] zamiast [${wantPair.galaxy}:${wantPair.system}:${wantPair.position}] — przełączam i wracam do formularza.`, "warn");
                 await AntiDetection.sleep(500 + Math.random() * 500);
                 const h2 = el2.getAttribute("href");
-                if (h2 && h2.length > 1) window.location.href = h2; else el2.click();
+                if (h2 && h2.length > 1) window.location.replace(h2); else el2.click();
                 return;
               }
             }
@@ -9490,7 +9500,7 @@ const __gmSetRaw = GM_setValue;
             const w = MoonSave.watch();
             MoonSave.saveWatch({ ...w, homeBody: atkNow, refugeBody: bodyNow });
             await AntiDetection.sleep(500 + Math.random() * 500);
-            window.location.href = "/";
+            window.location.replace("/");
             return;
           }
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -9554,7 +9564,7 @@ const __gmSetRaw = GM_setValue;
                 MoonSave.saveWatch({ ...w, homeBody: other, refugeBody: here });
               }
               await AntiDetection.sleep(500 + Math.random() * 500);
-              window.location.href = "/";
+              window.location.replace("/");
               return;
             }
             log(`[${missionTag("MOON SAVE")}] nothing on this planet to save — aborting.`, "warn");
@@ -9801,7 +9811,7 @@ const __gmSetRaw = GM_setValue;
             GM_setValue("pending_mission", JSON.stringify(mission));
             await AntiDetection.sleep(800 + Math.random() * 400);
             // Navigate to planet page to change active planet
-            window.location.href = nextPlanet.link;
+            window.location.replace(nextPlanet.link);
             return;
           } else {
             GM_setValue("ogamex_tried_planets", "[]"); // reset for next time
@@ -9944,7 +9954,7 @@ const __gmSetRaw = GM_setValue;
               log("[FS] bez przełącznika księżyca NIE wysyłam — flota zostaje w domu.", "error");
               GM_setValue("pending_mission", null);
               await AntiDetection.sleep(600 + Math.random() * 600);
-              window.location.href = "/";
+              window.location.replace("/");
               return;
             }
           }
@@ -10225,7 +10235,7 @@ const __gmSetRaw = GM_setValue;
             }
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
-            window.location.href = "/";
+            window.location.replace("/");
             return;
           }
           // wysyłamy — zapisz zmierzony T w misji, żeby stempel po wysyłce
@@ -10344,7 +10354,7 @@ const __gmSetRaw = GM_setValue;
             log(`[FS] brak misji stacjonowania na kroku 3 — NIE wysyłam. Dostępne: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"}`, "error");
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
-            window.location.href = "/";
+            window.location.replace("/");
             return;
           }
           log(`[FS] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${matched})`, "fleet");
@@ -10368,7 +10378,7 @@ const __gmSetRaw = GM_setValue;
             log(`[ZŁOM] brak misji Collect/Harvest na kroku 3 — NIE wysyłam. Dostępne: ${missions.map(m => `${(m.textContent || "").trim().slice(0, 20)}[${m.className}]`).join(", ") || "NONE"}`, "error");
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
-            window.location.href = "/";
+            window.location.replace("/");
             return;
           }
           log(`[ZŁOM] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
@@ -10393,7 +10403,7 @@ const __gmSetRaw = GM_setValue;
             GM_setValue("ogamex_farm_cooldown_until", String(Date.now() + 30 * 60 * 1000));
             GM_setValue("pending_mission", null);
             await AntiDetection.sleep(600 + Math.random() * 600);
-            window.location.href = "/";
+            window.location.replace("/");
             return;
           }
           log(`[FARM] misja: "${(picked.textContent || "").trim().slice(0, 30)}" (${picked.className})`, "fleet");
@@ -10649,7 +10659,7 @@ const __gmSetRaw = GM_setValue;
         mission.timestamp = Date.now(); // refresh to prevent expiry
         GM_setValue("pending_mission", JSON.stringify(mission));
         await AntiDetection.sleep(500 + Math.random() * 500);
-        window.location.href = mission.fleetUrl;
+        window.location.replace(mission.fleetUrl);
         return;
       } else {
         // Fall-through: we have a pending_mission but no branch matched.
@@ -10753,7 +10763,7 @@ const __gmSetRaw = GM_setValue;
         log("Keepalive: no page load for >12min — reloading to keep session alive.", "info");
         if (window.location.href.includes("fleetSendSuccessfully")) {
           // Don't re-trigger the post-send handler with stale dispatch data
-          window.location.href = "/";
+          window.location.replace("/");
         } else {
           window.location.reload();
         }
@@ -12558,7 +12568,7 @@ const __gmSetRaw = GM_setValue;
             }));
             RateLimiter.record();
             await AntiDetection.shortDelay();
-            window.location.href = result.fleetUrl;
+            window.location.replace(result.fleetUrl);
           }
           return;
         }
@@ -13087,7 +13097,7 @@ const __gmSetRaw = GM_setValue;
           log(`On login/landing page (no game UI) — clicking "${label}" to re-enter game in ~${Math.round(delaySec)}s (attempt ${streak + 1}).`, "warn");
           setTimeout(() => {
             const href = entry.getAttribute && entry.getAttribute("href");
-            if (entry.tagName === "A" && href && href !== "#") window.location.href = entry.href;
+            if (entry.tagName === "A" && href && href !== "#") window.location.replace(entry.href);
             else entry.click();
           }, delaySec * 1000);
         } else {
