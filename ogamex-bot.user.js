@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.93.0
+// @version      2.94.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -607,7 +607,9 @@ const __gmSetRaw = GM_setValue;
     logEntries.unshift(entry);
     if (logEntries.length > MAX_LOG_ENTRIES) logEntries.pop();
     // Persist logs across page navigations
-    GM_setValue(LOG_STORAGE_KEY, JSON.stringify(logEntries));
+    // v2.94.0: zapis z debouncem (1/s) zamiast serializacji 300 wpisow przy
+    // KAZDEJ linii; flush na pagehide lapie wpisy sprzed samej nawigacji.
+    schedulePersistLogs();
     updateLogUI();
   }
 
@@ -936,8 +938,15 @@ const __gmSetRaw = GM_setValue;
 
     isImportant(kind) { return this.IMPORTANT.includes(kind); },
 
+    _cache: null,
+    _cacheAt: 0,
     all() {
-      try { return JSON.parse(GM_getValue(this.KEY, "[]")) || []; } catch { return []; }
+      // v2.94.0: cache 30 s - pasek statusu liczy summary() co 5 s, a kazde
+      // wywolanie parsowalo do 600 wpisow x 400 znakow. add() zeruje cache.
+      if (this._cache && Date.now() - this._cacheAt < 30 * 1000) return this._cache;
+      try { this._cache = JSON.parse(GM_getValue(this.KEY, "[]")) || []; } catch { this._cache = []; }
+      this._cacheAt = Date.now();
+      return this._cache;
     },
 
     add(kind, msg) {
@@ -946,6 +955,7 @@ const __gmSetRaw = GM_setValue;
       const list = this.all();
       list.unshift({ t: stamp, at: Date.now(), k: kind, m: String(msg).slice(0, 400) });
       GM_setValue(this.KEY, JSON.stringify(this._prune(list)));
+      this._cache = null; // v2.94.0: nastepny odczyt widzi swiezy wpis
       try { Notifier.fromJournal(kind, msg); } catch {}  // v2.67.0: push na telefon
       try { updateStatusUI(); } catch {}
     },
@@ -3702,12 +3712,16 @@ const __gmSetRaw = GM_setValue;
     save(db) { GM_setValue(this.KEY, JSON.stringify(db)); },
     updateSystem(galaxy, system, entries) {
       const db = this.load();
+      // v2.94.0: wiekszosc systemow w przemiataniu nie ma zadnych wpisow -
+      // porownanie przed/po oszczedza zapis calej bazy (dziesiatki KB) na
+      // kazdy taki system. Systemy z celami i tak zapisuja (swiezy seenAt).
+      const before = JSON.stringify(db);
       const prefix = `${galaxy}:${system}:`;
       for (const c of Object.keys(db)) if (c.startsWith(prefix)) delete db[c];
       entries.forEach(e => { db[e.coord] = { name: e.name || "?", rank: e.rank ?? null, seenAt: Date.now() }; });
       const cut = Date.now() - this.TTL_DAYS * 86400000;
       for (const c of Object.keys(db)) if ((db[c].seenAt || 0) < cut) delete db[c];
-      this.save(db);
+      if (JSON.stringify(db) !== before) this.save(db);
     },
     stats(maxRank) {
       const db = this.load();
@@ -12622,6 +12636,7 @@ const __gmSetRaw = GM_setValue;
           la.style.display = open ? "block" : "none";
           if (lastLine) lastLine.style.display = open ? "none" : "block";
           if (chev) chev.textContent = open ? "▾" : "▸";
+          if (open) updateLogUI(); // v2.94.0: lista nie byla malowana w tle
         };
         paint(openStored);
         lh.addEventListener("click", (e) => {
@@ -12723,6 +12738,17 @@ const __gmSetRaw = GM_setValue;
       .replace(/'/g, "&#39;");
   }
 
+  let _logPersistTimer = null;
+  function persistLogsNow() {
+    if (_logPersistTimer) { clearTimeout(_logPersistTimer); _logPersistTimer = null; }
+    GM_setValue(LOG_STORAGE_KEY, JSON.stringify(logEntries));
+  }
+  function schedulePersistLogs() {
+    if (_logPersistTimer) return;
+    _logPersistTimer = setTimeout(persistLogsNow, 1000);
+  }
+  window.addEventListener("pagehide", persistLogsNow);
+
   function updateLogUI() {
     const logArea = document.getElementById("ogx-log");
     if (!logArea) return;
@@ -12737,7 +12763,10 @@ const __gmSetRaw = GM_setValue;
     }
 
     // All logs in main area (increased limit)
-    logArea.innerHTML = logEntries
+    // v2.94.0: log domyslnie zwiniety (display:none) - przebudowa 50 wpisow
+    // z escapeHTML przy kazdej linii byla niewidoczna praca; pomijamy ja,
+    // az operator rozwinie log (paint() wola wtedy updateLogUI).
+    if (logArea.style.display !== "none") logArea.innerHTML = logEntries
       .slice(0, 50)
       .map((e) => `<div class="log-entry ${e.type}">${escapeHTML(e.time)} ${escapeHTML(e.msg)}</div>`)
       .join("");

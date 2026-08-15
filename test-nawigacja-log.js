@@ -23,5 +23,17 @@ check(`nawigacje ida przez location.replace() (jest: ${replaces}, min 30)`, repl
 check("log() przycina wpisy przed zapisem (600 znakow + znacznik)",
   /msgStr\.length > 600 \? msgStr\.slice\(0, 600\)/.test(src));
 
+// v2.94.0: dalsze bezpieczniki wydajnosci
+check("zapis logow z debouncem + flush na pagehide",
+  /schedulePersistLogs\(\);/.test(src) && /addEventListener\("pagehide", persistLogsNow\)/.test(src));
+check("updateLogUI nie przebudowuje listy przy zwinietym logu",
+  /if \(logArea\.style\.display !== "none"\) logArea\.innerHTML/.test(src));
+check("rozwiniecie logu odmalowuje liste (paint -> updateLogUI)",
+  /if \(open\) updateLogUI\(\);/.test(src));
+check("ThreatLog.all() ma cache 30 s, add() go zeruje",
+  /_cacheAt < 30 \* 1000\) return this\._cache;/.test(src) && /this\._cache = null; \/\/ v2\.94\.0/.test(src));
+check("FarmTargetDB.updateSystem pomija zapis bez zmian",
+  /if \(JSON\.stringify\(db\) !== before\) this\.save\(db\);/.test(src));
+
 if (fail) { console.error(`\n${fail} PORAŻKA/EK`); process.exit(1); }
 console.log("\nWSZYSTKIE PRZYPADKI PRZESZŁY");

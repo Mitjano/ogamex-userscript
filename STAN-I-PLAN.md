@@ -6,6 +6,31 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 15.08 (15) — v2.94.0: audyt wydajności, 5 optymalizacji
+
+Audyt po v2.93.0 (timery, magazyn, rendering, DOM). Werdykt: timery zdrowe
+(obrona 30 s z 2 lekkimi AJAX-ami jak sama gra, TabLock 10 s po localStorage,
+watchdog 60 s, status 5 s), console.log tylko 6 — główne koszty to były
+serializacje i niewidoczny rendering:
+
+1. **Dziennik logów z debouncem**: zapis do magazynu max 1/s (było: pełna
+   serializacja 300 wpisów przy KAŻDEJ linii) + flush na `pagehide`, żeby
+   wpisy sprzed samej nawigacji nie ginęły.
+2. **updateLogUI**: log jest domyślnie ZWINIĘTY, a mimo to każda linia
+   przebudowywała innerHTML 50 wpisów z escapeHTML — teraz pomijane przy
+   zwiniętym; rozwinięcie (paint) od razu odmalowuje listę.
+3. **ThreatLog.all() cache 30 s**: pasek statusu liczy summary() co 5 s,
+   a każde wywołanie parsowało do 600 wpisów × 400 znaków; add() zeruje cache.
+4. **FarmTargetDB.updateSystem**: większość systemów przemiatania jest pusta —
+   porównanie przed/po pomija zapis całej bazy (dziesiątki KB) na taki system;
+   systemy z celami dalej zapisują (świeży seenAt dla TTL).
+5. (v2.93.0, dla kompletu) location.replace() + przycinanie wpisów do 600 zn.
+
+Testy: test-nawigacja-log rozszerzony o 5 zamrożeń; bateria 110 checków OK.
+Poza zakresem (świadomie): throttling ukrytej karty — to przeglądarka, jedyne
+lekarstwo to klik odblokowujący dźwięk podtrzymujący; oraz koszt samych
+nawigacji gry (pełne przeładowania) — to rytm anty-detekcji, nie marnotrawstwo.
+
 ## AKTUALIZACJA 15.08 (14) — v2.93.0: higiena wydajności (Firefox mulił)
 
 Obserwacja ownera ~10:00: Firefox i strony gry lagują po kilku godzinach
