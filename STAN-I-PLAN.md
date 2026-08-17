@@ -6,6 +6,20 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 17.08 (21) — v2.98.1: głośny alarm „mining martwy przez inną galaktykę"
+
+- Incydent 10:03: asteroida [3:158:17] z TTL 91 min ODRZUCONA logiem
+  „flight ~Infinitymin" — po przeprowadzce aktywne ciało = księżyc
+  [2:151:9] (g2), pole „Start minerów (g:s:p)" PUSTE, więc punkt startu
+  miningu podążał za aktywnym ciałem; asteroidy spawnują się tylko w g3
+  → bramka TTL (inna galaktyka = Infinity, v2.82) odrzucała KAŻDE
+  znalezisko. buildScanQueue filtruje zasięg tylko same-galaxy, więc bot
+  w kółko skanował 63 systemy g3 i po cichu wyrzucał wyniki.
+- Fix operacyjny: owner wpisuje „Start minerów" = ciało w g3, gdzie
+  fizycznie stoją minery z deuterem (jak 3:272:7 przy v2.84).
+- v2.98.1: skip międzygalaktyczny loguje BŁĄD (throttle 1 h) z instrukcją
+  co uzupełnić — koniec cichej śmierci miningu tą ścieżką.
+
 ## AKTUALIZACJA 17.08 (20) — v2.98.0: przełącznik „Sekwencyjnie po kolei"
 
 - Owner zgłosił (z Windows): „bot atakuje losowe osoby z przedziału zamiast

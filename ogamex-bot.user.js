@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.98.0
+// @version      2.98.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -3439,6 +3439,17 @@ const __gmSetRaw = GM_setValue;
           const estSec = estMin * 60;
           const ARRIVAL_BUFFER_SEC = 300;
           if (!Number.isFinite(estSec) || estSec + ARRIVAL_BUFFER_SEC > result.ttlSeconds) {
+            // v2.98.1: skip międzygalaktyczny dostaje JASNY komunikat (throttle
+            // 1 h) — incydent 17.08: baza aktywna w g2, asteroidy w g3, bot
+            // w kółko skanował i po cichu odrzucał każde znalezisko logiem
+            // „flight ~Infinitymin". Operator ma wiedzieć CO uzupełnić.
+            if (!sameGal) {
+              const lastHint = parseInt(GM_getValue("ogamex_crossgal_hint_at", "0")) || 0;
+              if (Date.now() - lastHint > 3600000) {
+                GM_setValue("ogamex_crossgal_hint_at", String(Date.now()));
+                log(`MINING MARTWY: asteroida [${current.galaxy}:${current.system}:17], a start minerów to [${baseForCheck.galaxy}:${baseForCheck.system}] — INNA GALAKTYKA, każde znalezisko będzie odrzucane. Wpisz w panelu „Start minerów (g:s:p)" koordy ciała w gal. ${current.galaxy}, gdzie fizycznie stoją minery z deuterem.`, "error");
+              }
+            }
             log(
               `SKIP [${current.galaxy}:${current.system}:17] — flight ~${estMin}min (${estSec}s) ` +
               `+ ${ARRIVAL_BUFFER_SEC}s buffer > TTL ${result.ttlSeconds}s. Would vanish before arrival.`,
