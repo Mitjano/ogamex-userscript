@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.97.4
+// @version      2.98.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -267,6 +267,14 @@ const __gmSetRaw = GM_setValue;
       // znana drobnice: cel ze SREDNIM lupem < progu jest pomijany
       // (nieznany cel nigdy — eksploracja uczy bazy). 0 = bez progu.
       minTargetProfit: 0,
+      // ── v2.98.0: tryb sekwencyjny (przełącznik ownera, 17.08) ──
+      // Owner zobaczył priorytet łupu w akcji i chce mieć wybór: ON = stare
+      // zachowanie sprzed v2.89 — KAŻDY przebieg przemiata cały zakres po
+      // kolei (1→koniec) i atakuje cele w kolejności napotkania; wyłącza
+      // okrążenia po bazie ORAZ sortowanie po łupie. OFF (domyślnie) =
+      // priorytet łupu: laps po znanych systemach + najtłustsze cele pierwsze.
+      // Filtr rankingu, czarna lista i próg łupu działają w OBU trybach.
+      sequentialSweep: false,
     },
     // ── v2.13.0: auto-claim the green "Online bonus" menu button ──
     // (antimatter + Academy points). Independent of mining/farming — runs
@@ -4233,7 +4241,9 @@ const __gmSetRaw = GM_setValue;
         // skan odświeżający bazę idzie zaraz po nim. Flaga pilnuje, żeby
         // zaległe okrążenie nie odsuwało pełnego skanu w nieskończoność.
         const staleLapDone = GM_getValue("ogamex_farm_stale_lap_done", "0") === "1";
-        if (dbFresh || !staleLapDone) {
+        // v2.98.0: tryb sekwencyjny pomija okrążenia po bazie — każdy przebieg
+        // to pełne przemiatanie zakresów układ po układzie.
+        if (cfg.sequentialSweep !== true && (dbFresh || !staleLapDone)) {
           const sys = FarmTargetDB.eligibleSystems(maxRank, ranges);
           if (sys.length) {
             queue = sys; mode = "lap";
@@ -4409,8 +4419,12 @@ const __gmSetRaw = GM_setValue;
         targets = targets.filter(x => { const a = FarmYieldDB.avg(x.coord); return a == null || a >= floor; });
         if (before - targets.length) log(`Farm: ${before - targets.length} cel(e) ponizej progu lupu (${floor.toLocaleString("pl-PL")}) — pomijam.`, "info");
       }
-      const med = FarmYieldDB.median();
-      if (med != null) targets.sort((a, b) => (FarmYieldDB.avg(b.coord) ?? med) - (FarmYieldDB.avg(a.coord) ?? med));
+      // v2.98.0: w trybie sekwencyjnym cele idą w kolejności napotkania
+      // (układ po układzie) — bez sortowania po łupie.
+      if (CONFIG.inactiveFarming.sequentialSweep !== true) {
+        const med = FarmYieldDB.median();
+        if (med != null) targets.sort((a, b) => (FarmYieldDB.avg(b.coord) ?? med) - (FarmYieldDB.avg(a.coord) ?? med));
+      }
       const t = targets.shift();
       st.targets = targets;
       FarmState.save(st);
@@ -11960,6 +11974,10 @@ const __gmSetRaw = GM_setValue;
               <input id="ogx-farm-from" type="text" placeholder="puste = tu gdzie jestem" value="${CONFIG.inactiveFarming.launchFrom ? `${CONFIG.inactiveFarming.launchFrom.galaxy}:${CONFIG.inactiveFarming.launchFrom.system}:${CONFIG.inactiveFarming.launchFrom.position}` : ""}" style="width:110px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="ON = tryb sekwencyjny: każdy przebieg przemiata CAŁY zakres układ po układzie (1→koniec) i atakuje cele w kolejności napotkania — bez okrążeń po bazie i bez sortowania po łupie (wygląda przewidywalnie, ale tłuste cele nie mają pierwszeństwa). OFF = priorytet łupu (v2.97): szybkie okrążenia po znanych systemach + najtłustsze cele pierwsze — z boku wygląda jak skakanie po losowych graczach. Filtr rankingu, czarna lista i próg łupu działają w OBU trybach. Przełączenie restartuje bieżący przebieg.">Sekwencyjnie po kolei</span>
+              <button class="mini-btn" id="ogx-farm-seq">${CONFIG.inactiveFarming.sequentialSweep === true ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Cel o ZNANYM srednim lupie ponizej progu jest pomijany (slot i limit atakow ida na tlustsze cele). Cele bez historii lupu atakowane normalnie — tak baza sie uczy. 0 = bez progu. Przyklad: 500000000000 = pol biliona.">Min. lup celu (0=off)</span>
               <input id="ogx-farm-minprofit" type="number" min="0" step="1000000000" value="${CONFIG.inactiveFarming.minTargetProfit || 0}" style="width:120px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -12712,6 +12730,20 @@ const __gmSetRaw = GM_setValue;
         el.textContent = CONFIG.inactiveFarming.repeatEachSweep ? "ON" : "OFF";
         saveConfig(CONFIG);
         log(`Nowe okrążenie od nowa: ${CONFIG.inactiveFarming.repeatEachSweep ? "WŁĄCZONE — każdy przebieg atakuje wszystkich od nowa" : "wyłączone — obowiązuje Target cooldown"}.`, "info");
+        updateStatusUI();
+      });
+    }
+    // v2.98.0: tryb sekwencyjny vs priorytet łupu. Przełączenie czyści stan
+    // przebiegu — stara kolejka (lap lub posortowana) nie dokańcza się w
+    // nowym trybie.
+    {
+      const el = document.getElementById("ogx-farm-seq");
+      if (el) el.addEventListener("click", () => {
+        CONFIG.inactiveFarming.sequentialSweep = CONFIG.inactiveFarming.sequentialSweep !== true;
+        el.textContent = CONFIG.inactiveFarming.sequentialSweep ? "ON" : "OFF";
+        saveConfig(CONFIG);
+        FarmState.clear();
+        log(`Tryb farmy: ${CONFIG.inactiveFarming.sequentialSweep ? "SEKWENCYJNY — każdy przebieg przemiata cały zakres po kolei (1→koniec), cele w kolejności napotkania" : "PRIORYTET ŁUPU — okrążenia po znanych systemach, najtłustsze cele pierwsze"}. Bieżący przebieg zrestartowany.`, "info");
         updateStatusUI();
       });
     }

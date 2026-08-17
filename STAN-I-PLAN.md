@@ -6,6 +6,22 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 17.08 (20) — v2.98.0: przełącznik „Sekwencyjnie po kolei"
+
+- Owner zgłosił (z Windows): „bot atakuje losowe osoby z przedziału zamiast
+  po kolei 1→499". Diagnoza: to priorytet łupu z v2.97.0 (jego życzenie
+  z 15.08) + okrążenia po bazie z v2.89 — kolejność wg opłacalności wygląda
+  z boku losowo. Zakres i filtr rankingu były respektowane cały czas.
+- Decyzja ownera: ma być PRZEŁĄCZNIK. v2.98.0 dodaje `sequentialSweep`
+  (UI: „Sekwencyjnie po kolei", domyślnie OFF = priorytet łupu bez zmian).
+  ON = każdy przebieg to pełne przemiatanie zakresów układ po układzie,
+  cele w kolejności napotkania (bez laps, bez sortowania po łupie).
+  Filtr rankingu, czarna lista i próg łupu działają w obu trybach.
+  Przełączenie w UI robi `FarmState.clear()` — stara kolejka nie dokańcza
+  się w nowym trybie. Configi bez klucza dostają OFF przez deepMerge.
+- LEKCJA (Windows↔Mac): lokalne repo na Windows było na v2.90.2, a main na
+  v2.97.4 — przed pracą ZAWSZE `git pull`, pierwszy patch poszedł do kosza.
+
 ## AKTUALIZACJA 15.08 (19) — v2.97.1–4: seeding łupów + dwa bugi z żywego seedowania
 
 Seria po v2.97.0 (wszystko z obserwacji ownera na żywo):
