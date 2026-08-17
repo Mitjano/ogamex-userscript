@@ -6,6 +6,23 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 17.08 (22) — v2.98.2: fałszywy DISPATCH FAILED z własnego logu (podczas PRAWDZIWEGO ataku)
+
+- INCYDENT 14:21-14:23: 3 floty ATTACK na księżyc [3:272:7] (dolot ~5 min).
+  Ratunek księżyc→planeta załadował wszystko (9,5 mld HC + 4,3 mld minerów
+  + 11 DS + 14 bln deuteru), kliknął Send — i dostał „DISPATCH FAILED!
+  Error: 14:22:38 INCOMING: 4 foreign fleet(s)…". To NIE była odmowa gry:
+  kontrola po-wysyłkowa szuka `[class*='error']` i złapała WŁASNY wpis
+  logu (`<div class="log-entry error">INCOMING…</div>`) — alarm dopisał go
+  w trakcie 3-krokowego formularza, log był otwarty. Gra flotę najpewniej
+  PRZYJĘŁA (RECON 14:23:03: ships NONE — hangar pusty, flota w locie);
+  bot mimo to skasował stempel duplikatów i uznał ratunek za nieudany.
+- v2.98.2: errorMsg i successMsg wykluczają `#ogx-bot-panel` (symetrycznie:
+  `[class*='success']` łapał `log-entry success` i mógł MASKOWAĆ prawdziwą
+  odmowę). Ten sam wzorzec-lekcja co [ATAK DOM]/przyciski: KAŻDY odczyt
+  DOM strony musi wykluczać własny panel — grep po `querySelector` bez
+  `#ogx-bot-panel` przy następnym audycie.
+
 ## AKTUALIZACJA 17.08 (21) — v2.98.1: głośny alarm „mining martwy przez inną galaktykę"
 
 - Incydent 10:03: asteroida [3:158:17] z TTL 91 min ODRZUCONA logiem

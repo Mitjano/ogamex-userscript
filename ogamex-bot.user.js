@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.98.1
+// @version      2.98.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -10899,9 +10899,17 @@ const __gmSetRaw = GM_setValue;
           // containers baked into the page — a false positive here wiped the
           // duplicate-guard stamp (line below) after every send, killing the
           // guard exactly when it was needed.
+          // v2.98.2: NIGDY nie czytaj własnego panelu jako odpowiedzi gry.
+          // Incydent 17.08 14:22 (prawdziwy atak): wpis logu „INCOMING…"
+          // (class="log-entry error") wpadł w [class*='error'] i ratunek
+          // księżyc→planeta dostał fałszywy DISPATCH FAILED, choć gra flotę
+          // PRZYJĘŁA — bot skasował stempel duplikatów i uznał ratunek za
+          // nieudany. Symetrycznie [class*='success'] łapał „log-entry
+          // success", więc mógł zamaskować PRAWDZIWĄ odmowę gry.
           const errorMsg = Array.from(document.querySelectorAll(".error, .alert-danger, [class*='error']"))
-            .find(el => el.offsetParent !== null && el.textContent.trim().length > 0);
-          const successMsg = document.querySelector(".success, .alert-success, [class*='success']");
+            .find(el => !el.closest("#ogx-bot-panel") && el.offsetParent !== null && el.textContent.trim().length > 0);
+          const successMsg = Array.from(document.querySelectorAll(".success, .alert-success, [class*='success']"))
+            .find(el => !el.closest("#ogx-bot-panel"));
           const fleetMovement = document.body.textContent.includes("fleet movement") ||
                                 document.body.textContent.includes("Fleet movement");
 
