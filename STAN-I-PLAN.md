@@ -6,6 +6,43 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 18.08 (23) — v2.99.0: kalibracja czasu lotu per-serwer (GENESIS)
+
+Kontekst: 28.08 18:00 GMT startuje nowe uni **Genesis** (eco 2000x dynamiczne
+od 500x +500x/tydz., fleet **x3** vs athena x4, defense debris 0%, ACS off,
+podbity yield ekspedycji i asteroid). **Owner PRZENOSI się na Genesis i
+porzuca athenę** (decyzja 18.08). Pełny audyt gotowości + config startowy
++ plan fazowy F0–F4: `AUDYT-GENESIS-2026-08-18.md`.
+
+Jedyny twardy dług z audytu (P1) wdrożony w **v2.99.0**:
+
+- **Problem**: `estimateFlightMinutes` = `max(11, ceil(11 + Δ/15))` — stałe
+  z dwupunktowej kalibracji NA ATHENIE (x4). Na Genesis (x3) loty są ~4/3
+  dłuższe → wzór ZANIŻA dolot, bramka TTL (margines 5 min) wypuszcza minery
+  na asteroidy, które despawnują przed dolotem (strata slotu i paliwa).
+- **Fix**: blok `FLIGHT-CAL` (markery) — `FlightCalibration`: przy każdej
+  wysyłce górniczej krok 2 i tak czyta realny czas lotu (capturedFlightMs,
+  v2.66.8); teraz para (Δ systemów, minuty) idzie do magazynu per-host
+  (`ogamex_flight_cal`, cap 30 próbek). Po ≥2 próbkach o rozrzucie Δ≥20
+  najmniejsze kwadraty liczą własne `a + b·Δ`; estimate = ceil + 2 min
+  marginesu (bramka woli odpuścić asteroidę niż wysłać na despawn).
+  Uczenie TYLKO z `asteroid_mining_direct` (jeden statek, 100% prędkości,
+  ta sama galaktyka; start z launchAt misji, fallback HomeBase.mining() —
+  to samo źródło, którym planer liczy dystanse). Ujemne nachylenie (szum)
+  przycinane do 0. Do czasu nauki: stary wzór atheny (na x4 konserwatywny).
+- Test `test-kalibracja-lotu.js` (26 checków, wykonuje blok): odtwarza
+  kalibrację atheny z jej 2 punktów, scenariusz Genesis 4/3 (wzór atheny
+  dawał 26 min przy Δ217, realnie 32), cap, zepsuty JSON, zamrożenia
+  integracji. Bateria: wszystko OK.
+- Efekt na Genesis: po pierwszych 2 lotach minerów w różne odległości bot
+  sam się kalibruje — zero konfiguracji. Athena: nic się nie zmienia do
+  czasu nauki, a po nauce estymaty tylko dokładniejsze.
+
+Operacyjnie na dzień 0 Genesis (szczegóły w audycie): baseBody=PLANETA,
+deutReserve=0, ntfy+Gemini wkleić od nowa (magazyn per-host pusty), fale
+ekspedycji 1–2; tygodnie 1–3 zarabiają EKSPEDYCJE, farm martwy do ~04.09
+(statusy (i) po 7 dniach), mining od odblokowania ASTEROID_MINER.
+
 ## AKTUALIZACJA 17.08 (22) — v2.98.2: fałszywy DISPATCH FAILED z własnego logu (podczas PRAWDZIWEGO ataku)
 
 - INCYDENT 14:21-14:23: 3 floty ATTACK na księżyc [3:272:7] (dolot ~5 min).

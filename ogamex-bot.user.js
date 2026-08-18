@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.98.2
+// @version      2.99.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1571,6 +1571,78 @@ const __gmSetRaw = GM_setValue;
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  FLIGHT CALIBRATION (v2.99.0) — czas lotu minerów uczony per-serwer
+  // ═══════════════════════════════════════════════════════════════
+  // estimateFlightMinutes miał stałe z dwupunktowej kalibracji na athenie
+  // (fleet x4). Genesis ma fleet x3 → loty ~4/3 dłuższe, więc stały wzór
+  // ZANIŻA czas dolotu i bramka TTL wypuszcza minery na asteroidy, które
+  // znikną przed dolotem. Bot i tak czyta PRAWDZIWY czas lotu z formularza
+  // na kroku 2 (capturedFlightMs, v2.66.8) — tu zapisujemy pary
+  // (Δ systemów, minuty) do magazynu per-host i po ≥2 próbkach o rozrzucie
+  // ≥20 systemów liczymy własne dopasowanie a + b·Δ (najmniejsze kwadraty).
+  // Uczymy się WYŁĄCZNIE z misji asteroid_mining_direct (jeden typ statku,
+  // 100% prędkości) — farm/ekspedycje/ratunki zatrułyby dopasowanie.
+  // Do czasu nauki: stary wzór atheny (fail-safe, konserwatywny na x4).
+  // ── FLIGHT-CAL-START ──
+  const FlightCalibration = {
+    KEY: "ogamex_flight_cal",
+    MAX_SAMPLES: 30,
+    MIN_SPREAD: 20,     // minimalny rozrzut Δ między próbkami — bez niego nachylenie to szum
+    _cache: null,       // { n, fit } — fit() woła się przy każdym planowaniu skanu
+
+    load() {
+      try { const raw = GM_getValue(this.KEY, null); const st = raw ? JSON.parse(raw) : null; return st && Array.isArray(st.samples) ? st : { samples: [] }; }
+      catch { return { samples: [] }; }
+    },
+    save(st) { GM_setValue(this.KEY, JSON.stringify(st)); this._cache = null; },
+
+    // dist: Δ systemów (ta sama galaktyka), minutes: realny czas w jedną stronę z formularza
+    record(dist, minutes) {
+      if (!Number.isFinite(dist) || dist < 0 || dist > 499) return false;
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 600) return false;
+      const st = this.load();
+      st.samples.push({ d: dist, m: Math.round(minutes * 10) / 10, at: Date.now() });
+      if (st.samples.length > this.MAX_SAMPLES) st.samples = st.samples.slice(-this.MAX_SAMPLES);
+      this.save(st);
+      log(`[KALIBRACJA] lot minerów Δ${dist} → ${minutes.toFixed(1)} min (próbek: ${st.samples.length})`, "asteroid");
+      return true;
+    },
+
+    // Dopasowanie m = a + b·Δ; null = za mało danych → wzór atheny
+    fit() {
+      const st = this.load();
+      const s = st.samples;
+      if (this._cache && this._cache.n === s.length) return this._cache.fit;
+      let fit = null;
+      if (s.length >= 2) {
+        const dMin = Math.min(...s.map(x => x.d)), dMax = Math.max(...s.map(x => x.d));
+        if (dMax - dMin >= this.MIN_SPREAD) {
+          const n = s.length;
+          const sumD = s.reduce((a, x) => a + x.d, 0), sumM = s.reduce((a, x) => a + x.m, 0);
+          const meanD = sumD / n, meanM = sumM / n;
+          const varD = s.reduce((a, x) => a + (x.d - meanD) ** 2, 0);
+          const cov = s.reduce((a, x) => a + (x.d - meanD) * (x.m - meanM), 0);
+          let b = cov / varD;
+          if (b < 0) b = 0; // dalej ≠ szybciej — ujemne nachylenie to szum pomiarowy
+          const a = meanM - b * meanD;
+          if (a > 0) fit = { a, b };
+        }
+      }
+      this._cache = { n: s.length, fit };
+      return fit;
+    },
+
+    // Oszacowanie w minutach z marginesem bezpieczeństwa (+2 min, sufit) —
+    // bramka TTL woli odpuścić asteroidę niż wysłać minery na despawn.
+    estimate(dist) {
+      const f = this.fit();
+      if (!f) return null;
+      return Math.max(3, Math.ceil(f.a + f.b * dist) + 2);
+    },
+  };
+  // ── FLIGHT-CAL-END ──
+
+  // ═══════════════════════════════════════════════════════════════
   //  ASTEROID SCANNER: 2-stage — ranges then galaxy page navigation
   //  Stage 1: Fetch ranges via AJAX (Partial_AsteroidLocation)
   //  Stage 2: Navigate galaxy page system-by-system, read live DOM
@@ -1981,7 +2053,12 @@ const __gmSetRaw = GM_setValue;
     //   Δ=217 sys (3:269 → 3:52)  → ~24min one-way (countdown 23m54s ×2)
     // Linear fit: time_min ≈ 10.5 + 0.064 × distance. Round up + floor at
     // 11 so we never under-estimate even for adjacent systems.
+    // v2.99.0: najpierw dopasowanie nauczone z realnych lotów NA TYM serwerze
+    // (FlightCalibration, per-host — Genesis fleet x3 ≠ athena x4); stałe
+    // atheny zostają jako fallback do czasu ≥2 próbek o sensownym rozrzucie.
     estimateFlightMinutes(systemDistance) {
+      const learned = FlightCalibration.estimate(systemDistance);
+      if (learned !== null) return learned;
       return Math.max(11, Math.ceil(11 + systemDistance / 15));
     },
   };
@@ -10500,6 +10577,21 @@ const __gmSetRaw = GM_setValue;
               log(`Captured flight time from element: ${tm[1]}h${tm[2]}m${tm[3]}s`, "fleet");
             }
           }
+        }
+
+        // ── v2.99.0 KALIBRACJA: para (Δ systemów, minuty) z realnego lotu ──
+        // Tylko misje górnicze — jeden typ statku (ASTEROID_MINER), 100%
+        // prędkości, ta sama galaktyka. Cel z fleetUrl (x=g&y=s), start z
+        // launchAt misji (fallback: HomeBase.mining() — to samo źródło,
+        // którym planer liczy dystanse, więc mapowanie jest spójne).
+        if (capturedFlightMs > 0 && mission.type === "asteroid_mining_direct") {
+          try {
+            const calUrl = (mission.fleetUrl || "").match(/[?&]x=(\d+)&y=(\d+)/);
+            const calFrom = mission.launchAt || HomeBase.mining();
+            if (calUrl && calFrom && parseInt(calUrl[1]) === calFrom.galaxy) {
+              FlightCalibration.record(Math.abs(parseInt(calUrl[2]) - calFrom.system), capturedFlightMs / 60000);
+            }
+          } catch (e) { log(`[KALIBRACJA] zapis próbki nieudany (nie blokuje wysyłki): ${e.message}`, "warn"); }
         }
 
         // ── v2.86.5: KAŻDY ratunek niesie realny czas lotu ──

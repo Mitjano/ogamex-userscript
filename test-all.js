@@ -26,6 +26,7 @@ const SUITES = [
   ["czarna lista farmy (raporty bojowe)", "test-farm-ban.js"],
   ["priorytet lupu (dziennik grabiezy)", "test-farm-lup.js"],
   ["izolacja magazynu per-uni", "test-uni-izolacja.js"],
+  ["kalibracja czasu lotu per-serwer", "test-kalibracja-lotu.js"],
   ["higiena wydajnosci (historia + log)", "test-nawigacja-log.js"],
 ];
 
