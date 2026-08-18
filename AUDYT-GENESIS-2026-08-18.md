@@ -170,6 +170,52 @@ własnej floty) bot ignoruje — nie używa.
 - **F4 — pierwszy księżyc**: baseBody=moon, FS, prom wg potrzeb —
   dokładnie obecna konfiguracja atheny.
 
+## 8. OBRONA FLOTY NA GENESIS (dopisane 18.08 na pytanie ownera)
+
+**Co działa od dnia 1:** threatAlarm (default ON), odczyt
+`fleetmovementlist`, parser paska, klasyfikacja, blitz <120 s, push ntfy.
+Wykrywanie ataku jest kompletne od pierwszej minuty.
+
+**Luka wczesnej gry: ratunek nie ma DOKĄD uciec.** Cała maszyneria
+ewakuacji (MoonSave/AirSave/FS) zakłada, że istnieje drugie ciało:
+- MoonSave: przerzut planeta↔księżyc tej samej pary — **brak księżyca =
+  brak ścieżki**;
+- AirSave: Deploy do najbliższej INNEJ kolonii — **brak kolonii = brak
+  refugium**;
+- FS: celuje jawnie w księżyc (`data-planet-type=2`) — martwy do
+  pierwszego księżyca.
+Z jedną planetą i bez księżyca bot wykryje atak, zaalarmuje, pchnie
+push… i nie będzie miał czym zareagować. To nie bug — to geometria.
+
+**Dlaczego to małe ryzyko na starcie:** flota z tygodni 1–2 to grosze
+(kilka cargo), noob-protection typowo osłania małych, ACS off = tylko
+solo ataki, a falanga wymaga KSIĘŻYCA — których w uni z debris 0% z
+obrony długo prawie nie będzie. Realne zagrożenie rośnie razem z flotą,
+a do tego czasu powinny istnieć kolonie.
+
+**Plan obrony fazami:**
+1. **Tydzień 1–2**: flota żyje w powietrzu — ekspedycje kręcą się
+   niemal ciągle (i tak są głównym dochodem; flota w locie jest
+   nietykalna). Na noc: ostatnia fala przed snem = naturalny mini-FS.
+2. **Druga kolonia = priorytet strategiczny #1** (statek kolonizacyjny
+   zaraz po astro): od tego momentu AirSave i RescueQueue mają cel —
+   pełna automatyczna ewakuacja wraca do gry. Kolonię stawiać w INNYM
+   układzie (ucieczka poza zasięg jednego napastnika).
+3. **Obrona statyczna opłaca się tu BARDZIEJ niż na athenie**: debris
+   0% z obrony = napastnik nie ma z rozbicia wieżyczek ani grama złomu
+   — turtling zniechęca ekonomicznie. Kilka poziomów wież wcześnie =
+   sondy i drobni odpuszczają.
+4. **Pierwszy księżyc**: baseBody=moon, FS nocny, prom — pełna
+   konfiguracja znana z atheny. Wróg z falangą też dopiero od swojego
+   księżyca, więc wyścig jest symetryczny.
+
+**Opcjonalny pomysł (P4, do decyzji — NIE wdrożone):** tryb „ratunek
+bez refugium" = przy potwierdzonym ataku i braku drugiego ciała wysłać
+flotę+surowce w dowolny lot (np. Deploy 10% w stronę własnej przyszłej
+kolonii albo transport na pusty slot) i zawrócić po przejściu ataku —
+mechanika zawracania (x_btn_fleet_return) już jest w FS/AirSave. Sens
+wdrażać tylko, jeśli flota urośnie szybciej niż stanie druga kolonia.
+
 ## WERDYKT
 
 Bot jest w ~90% gotowy na Genesis bez dotykania kodu — architektura
