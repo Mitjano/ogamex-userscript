@@ -20,6 +20,7 @@ const SUITES = [
   ["bramki wysyłek (alarm + paliwo)", "test-bramka-wysylek.js"],
   ["ratunek nietykalny", "test-ratunek-nietykalny.js"],
   ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],
+  ["ślepy alarm — wymuszony przegląd", "test-slepy-alarm.js"],
   ["ranking celu farmy (parser + filtr)", "test-farm-rank.js"],
   ["priorytet mining > farming", "test-farm-priorytet.js"],
   ["punkt startu farmy (launchFrom)", "test-farm-start.js"],

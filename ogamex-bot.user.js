@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.99.0
+// @version      2.99.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6272,6 +6272,13 @@ const __gmSetRaw = GM_setValue;
     SELF_SEND_BLIND_MS: 20 * 1000,            // tyle po NASZEJ wysyłce pasek kłamie
     KEY_SEEN: "ogamex_threat_last_seen",      // v2.29.0: co pasek pokazał ostatnio
     KEY_SEEN_AT: "ogamex_threat_last_seen_at",
+    // ── v2.99.1: ostatni AUTORYTATYWNY odczyt (pasek/cache/świeże zdarzenia) ──
+    // KEY_SEEN_AT stempluje też odczyty ŚLEPE, więc do mierzenia ślepoty jest
+    // bezużyteczny — potrzebny osobny zegar, który rusza tylko, gdy naprawdę
+    // COŚ widzieliśmy.
+    KEY_SIGHT_AT: "ogamex_threat_sight_at",
+    KEY_BLIND_NAV_AT: "ogamex_threat_blind_nav_at",
+    BLIND_NAV_MS: 5 * 60 * 1000,   // tyle ślepoty przy uzbrojonej obronie uzasadnia wymuszony przegląd
     _fetching: false,
 
     // ── v2.40.0: typ misji z serwera zamiast arytmetyki na pasku ──
@@ -7050,7 +7057,38 @@ const __gmSetRaw = GM_setValue;
             `${seen}${r ? "" : ` | strona: ${location.pathname}`}`);
         }
       }
-      if (!r) return; // no mission bar on this page — say nothing, change nothing
+      if (!r) {
+        // ── v2.99.1: ŚLEPY ALARM SAM IDZIE PO WZROK ──
+        // Incydent 20.08 03:59→04:49: po ataku (4×50 mld BC na księżyc) straż
+        // wyczerpała limit 20 zamiatań, a bot został na /galaxy — stronie bez
+        // paska misji. Lista ruchów też nie oddawała odczytu, więc alarm wisiał
+        // ŚLEPY przez 50 minut i zdjęła go dopiero przypadkowa sonda
+        // szpiegowska, która wymusiła świeży odczyt zdarzeń. Flota stała na
+        // refugium ~70 min dłużej niż trzeba, minery nie latały.
+        // Od teraz: gdy obrona jest uzbrojona (alarm aktywny albo straż armed)
+        // i od BLIND_NAV_MS nie było ŻADNEGO autorytatywnego odczytu, bot sam
+        // nawiguje na "/" (przegląd — /overview na tym serwerze nie istnieje),
+        // gdzie pasek misji renderuje się zawsze. Nawigacja celowo POZA
+        // NavRateLimiterem — to ta sama klasa ruchu co ratunek (widoczność
+        // decyduje o flocie), a dławi ją własny zegar 5 min. Nocna cisza nie
+        // blokuje: alarm i tak już nawigował (ratunek), ślepota jest droższa.
+        const armed = (() => { try { return !!MoonSave.watch().armed; } catch { return false; } })();
+        if (this.active() || armed) {
+          const sightAt = parseInt(GM_getValue(this.KEY_SIGHT_AT, "0")) || 0;
+          const lastNav = parseInt(GM_getValue(this.KEY_BLIND_NAV_AT, "0")) || 0;
+          const pending = GM_getValue("pending_mission", null);
+          const busy = (pending && pending !== "null") || MoonSave.running;
+          if (!busy && Date.now() - sightAt > this.BLIND_NAV_MS && Date.now() - lastNav > this.BLIND_NAV_MS) {
+            GM_setValue(this.KEY_BLIND_NAV_AT, String(Date.now()));
+            const blindMin = sightAt ? Math.round((Date.now() - sightAt) / 60000) : null;
+            log(`[THREAT] obrona uzbrojona, a od ${blindMin ?? "?"} min żadna strona nie dała odczytu paska ani zdarzeń — idę na przegląd po wzrok.`, "warn");
+            ThreatLog.add("odczyt", `Ślepota ${blindMin ?? "?"} min przy uzbrojonej obronie — wymuszam przegląd ("/"), żeby alarm mógł zgasnąć albo potwierdzić zagrożenie.`);
+            window.location.replace("/");
+          }
+        }
+        return; // no mission bar on this page — say nothing, change nothing
+      }
+      GM_setValue(this.KEY_SIGHT_AT, String(Date.now()));
       const prev = this.state();
 
       // ── v2.32.0: POTWIERDŹ, zanim ruszysz flotą ──
