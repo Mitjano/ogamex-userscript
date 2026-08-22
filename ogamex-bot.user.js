@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.99.1
+// @version      2.99.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -1354,7 +1354,10 @@ const __gmSetRaw = GM_setValue;
   // 300-system scan can push ~300 requests in 7-8 minutes. NavRateLimiter
   // closes that gap so the scan pauses itself before looking bot-like.
   const NavRateLimiter = {
-    maxPerHour: 300,
+    // v2.99.2: 300 → 450. Przy sweepach ~87 układów limit 300/h wpychał bota
+    // w kilkuminutowe „Nav rate limit pause" W ŚRODKU sweepa (decyzja ownera
+    // 22.08: tempo skanu > margines stealth; jitter i okno nocne zostają).
+    maxPerHour: 450,
     KEY: "ogamex_nav_actions",
 
     _load() {
@@ -1414,12 +1417,13 @@ const __gmSetRaw = GM_setValue;
 
   // v2.10.9: human-pace delay between galaxy-system scans. Was 250-650ms — a
   // clear bot-tell (no human clicks through systems twice a second, and it
-  // meant ~124 galaxy page-loads per sweep at machine speed). 2-6s + the
-  // existing 10% jitter pause looks like a person checking nearby belts.
-  // Balances stealth vs throughput (owner choice 2026-06-08). The
+  // meant ~124 galaxy page-loads per sweep at machine speed). The
   // closest-range-first scan ORDER is unchanged — only the pacing.
+  // v2.99.2: 2-6s → 1-3s (decyzja ownera 22.08). Owner klika ręcznie co
+  // ~1-2 s, więc 1-3 s to wciąż ludzkie tempo, a średnia pauza spada 4s→2s
+  // (sweep ~2× szybszy, asteroidy rzadziej padają na bramce TTL).
   function humanScanDelayMs() {
-    return 2000 + Math.random() * 4000;
+    return 1000 + Math.random() * 2000;
   }
 
   // ═══════════════════════════════════════════════════════════════
