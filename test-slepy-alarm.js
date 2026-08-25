@@ -70,7 +70,7 @@ function runScenario({ alarmActive, armed, gm = {}, moonRunning = false }) {
   };
   const fn = new Function(
     "CONFIG", "GM_getValue", "GM_setValue", "ThreatLog", "log", "location",
-    "window", "MoonSave", "updateStatusUI", "Notification",
+    "window", "MoonSave", "updateStatusUI", "Notification", "SessionWatch", "ScanState",
     `return function({ emergencyOnly = false } = {}) {${body}};`
   )(
     { threatAlarm: { enabled: true } },
@@ -82,7 +82,9 @@ function runScenario({ alarmActive, armed, gm = {}, moonRunning = false }) {
     { location: loc },
     { watch: () => ({ armed }), running: moonRunning },
     () => {},
-    undefined
+    undefined,
+    { lostRecently: () => false },          // v2.102.0: sesja żywa
+    { load: () => null }                    // v2.102.0: skan nieaktywny
   );
   fn.call(self, {});
   return { navs, store };
@@ -153,7 +155,7 @@ function runScenario({ alarmActive, armed, gm = {}, moonRunning = false }) {
   };
   const fn = new Function(
     "CONFIG", "GM_getValue", "GM_setValue", "ThreatLog", "log", "location",
-    "window", "MoonSave", "updateStatusUI", "Notification",
+    "window", "MoonSave", "updateStatusUI", "Notification", "SessionWatch", "ScanState",
     `return function({ emergencyOnly = false } = {}) {${body}};`
   )(
     { threatAlarm: { enabled: true } },
@@ -162,7 +164,8 @@ function runScenario({ alarmActive, armed, gm = {}, moonRunning = false }) {
     { add() {} }, () => {},
     loc2, { location: loc2 },
     { watch: () => ({ armed: false }), running: false },
-    () => {}, undefined
+    () => {}, undefined,
+    { lostRecently: () => false }, { load: () => null }
   );
   fn.call(self, {});
   check("odczyt Z paskiem stempluje KEY_SIGHT_AT (zegar ślepoty od nowa)", !!parseInt(store.get("ogamex_threat_sight_at") || "0"));

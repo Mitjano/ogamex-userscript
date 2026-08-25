@@ -1048,3 +1048,56 @@ Otwarte (kolejność):
 - **v2.99.5 (07:58):** recyklery doszły do formularza i padły na strażniku
   duplikatu („flota już leci na [3:272:16]" — to ekspedycje). Recycle wypięty
   ze wszystkich 3 strażników duplikatu (lokalny + 2× lista ruchów).
+
+## AKTUALIZACJA 25 sierpnia (v2.100.0–2.102.0) — audyt „dlaczego bot nie podniósł floty"
+
+Owner: „pomimo wielu audytów straciłem flotę — w momencie próby i prawdziwego
+ataku bot nie podniósł floty". 4 równoległe audyty adwersarialne (wykrywanie,
+decyzja, formularz, runtime) + 2 recenzje każdego diffu przed pushem.
+
+**Trzy przyczyny systemowe:**
+1. Symulacja ataku wpisywała gotowe zdarzenie i wracała PRZED siecią — nie
+   testowała listy ruchów, arbitrażu pasek-vs-lista, ciała celu, blitza ani
+   strażnika bezpiecznej strony; karta widoczna, operator klika → zero
+   dławienia. Każdy błąd niżej był dla niej niewidoczny z konstrukcji.
+2. Prawdziwe ataki z tego samego układu (księżyc Ibry) są niewidoczne dla listy
+   i endpointów — jedynym źródłem jest pasek, a logika pracowała przeciw niemu.
+3. Kilka mechanizmów „cichej ślepoty" (zawieszony fetch, wylogowanie, karta w
+   tle) — panel czysty, bot nic nie czyta.
+
+**v2.100.x** — straż świadoma ciała (refugeBody vs atakowane ciało), ochrona
+fal w ucieczce w powietrze, N1: run() wywłaszczał WŁASNY start ucieczki na
+1. ticku po przeładowaniu (ucieczka w powietrze prawdopodobnie NIGDY nie
+działała live od 2.85.0).
+**v2.101.0** — zamiatanie wg zegara powrotów (OwnReturns + pamięć lądowań
+10 min; sweepPlan: lądowanie / wróg <3 min → 20 s), ostrzeżenie „fala nie do
+uratowania" (<60 s przed uderzeniem), tick 10 s przez cały alarm.
+**v2.102.0** — blok A: fetchT (timeout 8 s) na każdym fetch obrony, bezpiecznik
+zawieszonego ticku (90 s), SessionWatch (wylogowanie = BŁĄD+push, pasek z DOM
+nie jest odczytem), alarm/kandydat z PASKA gasi tylko ŻYWY pasek (+2 zerowe
+odczyty ≥15 s), backstop 3 h od ostatniego widzenia, CONFIRM 12 s dla ataków
+tylko z paska, ton keepalive −44 dBFS, karta widoczna przejmuje lidera,
+wykrywanie dławienia (3× >45 s), skan bez żywego paska >3 min → strona „/".
+Blok B: `returning` wygasa po czasie lotu (normalizeWatch), kolejka „done"
+dopiero po udanym run(), cel spoza listy planet → ratunek domu floty (tylko
+gdy aktywna para = dom), Gemini nie nadpisuje celu obcymi koordami, AirSave
+wykrywa ręczne zawrócenie (po pierwszym zobaczeniu wiersza), „bezpieczna
+strona" zbroi straż, coordsOf fallback, brak przełącznika księżyca = przerwij.
+Blok C: „Wyślij" czeka na aktywny przycisk, brak potwierdzenia ≠ sukces dla
+ratunku (formularz nadal na stronie po 8 s = porażka), retry z backoffem
+20 s→5 min, guard wyścigu dwóch wywołań obsługi misji.
+Blok D: symulacja PRZEZ PARSER — syntetyczny wrogi wiersz HTML (kształt forka)
+wchodzi do classifyRow razem z prawdziwymi; tryby moon/planet/both; pomiar
+E2E start→wysyłka w logu.
+
+**Środowisko (Firefox, poza kodem):** about:config
+`dom.timeout.enable_budget_timer_throttling=false`,
+`dom.min_background_timeout_value=100`, `browser.tabs.unloadOnLowMemory=false`;
+gra w osobnym, zawsze widocznym oknie, jedna karta. Fizyczny limit: fala
+lądująca <~30 s przed uderzeniem i atak z układu <~60 s dolotu są poza
+zasięgiem automatyki UI — rekomendacja z 12.08 (dom floty poza układem Ibry)
+nadal aktualna.
+
+DO POTWIERDZENIA: symulacja (tryb moon, potem both) z widoczną kartą —
+log `[TEST] E2E: … s` <60 s; potem z kartą w tle — czy pojawia się BŁĄD
+„karta dławiona".
