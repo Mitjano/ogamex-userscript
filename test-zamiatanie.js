@@ -66,11 +66,13 @@ console.log("\n── B. Lądowanie od ostatniego zamiatania → szybki krok 20 
 console.log("\n── C. Wróg za < 3 min → szybki krok nawet bez lądowań ──");
 {
   const now = ATTACK - 2 * M;
-  const p = sweepPlan({ now, lastAt: now - 30 * S, returns: [], attackAt: ATTACK });
-  eq("uderzenie za 2 min, zamiatanie 30 s temu → zamiataj", p.due, true);
+  const p = sweepPlan({ now, lastAt: now - 50 * S, returns: [], attackAt: ATTACK });
+  eq("uderzenie za 2 min, zamiatanie 50 s temu → zamiataj (krok 45 s)", p.due, true);
   eq("flaga soon", p.soon, true);
-  const p2 = sweepPlan({ now, lastAt: now - 10 * S, returns: [], attackAt: ATTACK });
-  eq("…ale nie częściej niż co 20 s", p2.due, false);
+  const p2 = sweepPlan({ now, lastAt: now - 30 * S, returns: [], attackAt: ATTACK });
+  eq("…ale bez lądowania nie częściej niż co 45 s (v2.102.1)", p2.due, false);
+  const p3 = sweepPlan({ now, lastAt: now - 25 * S, returns: [now - 5 * S], attackAt: ATTACK });
+  eq("…a z lądowaniem już po 20 s", p3.due, true);
 }
 {
   const p = sweepPlan({ now: T0, lastAt: T0 - 30 * S, returns: [], attackAt: 0 });

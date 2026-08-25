@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.102.0
+// @version      2.102.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8386,14 +8386,18 @@ const __gmSetRaw = GM_setValue;
     //  • inaczej stary krok MIN (90 s) — spokojny alarm nie mieli strony.
     //  • doomed = powroty lądujące < 60 s przed uderzeniem: nie zdążymy
     //    (3 przeładowania + formularz) — tylko głośne ostrzeżenie.
-    sweepPlan({ now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow }) {
+    sweepPlan({ now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow, soonGap }) {
       const MIN = minGap ?? 90000, FAST = fastGap ?? 20000, WIN = fastWindow ?? 180000, DOOM = doomWindow ?? 60000;
+      // v2.102.1 (test 25.08 11:36-11:37): samo „wróg blisko" bez znanego lądowania
+      // mieliło 4 puste zamiatania po 3 przeładowania w 100 s. Lądowanie → FAST,
+      // sama bliskość → SOON (45 s); MIN zostaje krokiem spokojnym.
+      const SOON = soonGap ?? 45000;
       const last = lastAt || 0;
       const since = now - last;
       const rs = (returns || []).filter(t => Number.isFinite(t));
       const landed = rs.filter(t => t > last && t <= now).length;
       const soon = !!(attackAt && attackAt > now && attackAt - now < WIN);
-      const gap = (landed || soon) ? FAST : MIN;
+      const gap = landed ? FAST : (soon ? Math.min(SOON, MIN) : MIN);
       const doomed = attackAt ? rs.filter(t => t > now && t < attackAt && attackAt - t < DOOM) : [];
       return { due: since >= gap, gap, landed, soon, doomed };
     },
@@ -8469,7 +8473,7 @@ const __gmSetRaw = GM_setValue;
         DefenceHold.stamp();
         const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na [${w.at.galaxy}:${w.at.system}:${w.at.position}] (${reason}).`, sweep ? "fleet" : "success");
-        ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
+        ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Potwierdzonych wysyłek w tym alarmie: ${w.saves || 0}.`);
         await AntiDetection.sleep(400 + Math.random() * 600);
         window.location.replace("/");
         return true;
@@ -13406,8 +13410,8 @@ const __gmSetRaw = GM_setValue;
         GM_setValue("ogamex_threat_sim_e2e_said", "");
         GM_setValue("ogamex_threat_sim_until", String(Date.now() + (mode === "both" ? 330 : 180) * 1000));
         log(`[TEST] SYMULACJA ATAKU uruchomiona (tryb ${mode}) — wiersz wroga idzie przez PRAWDZIWY parser listy ruchów. Zmierzę czas od startu do wysyłki ratunku.`, "error");
-        log("[TEST] SYMULACJA ATAKU uruchomiona (90 s). Obserwuj sekwencję: kandydat → ALARM → RATUNEK → koniec alarmu → POWRÓT. Wszystko poniżej to prawdziwa maszyneria obrony.", "error");
-        ThreatLog.add("odczyt", "TEST: symulacja ataku uruchomiona przez operatora (90 s).");
+        log("[TEST] SYMULACJA ATAKU uruchomiona. Obserwuj sekwencję: kandydat → ALARM → RATUNEK → koniec alarmu → POWRÓT. Wszystko poniżej to prawdziwa maszyneria obrony.", "error");
+        ThreatLog.add("odczyt", `TEST: symulacja ataku uruchomiona przez operatora (tryb ${mode}).`);
       });
 
       // v2.87.0: symulacja ślepego paska — E2E ścieżki, która zawiodła 13:10.
