@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.99.5
+// @version      2.99.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -9752,7 +9752,12 @@ const __gmSetRaw = GM_setValue;
           // recyklerów. Złom niczego nie mówi o tym, gdzie są minery.
           if (mission.recycle) {
             if (dispatchOk) log("[ZŁOM] recyklery wysłane po pole złomu.", "success");
-            else log("[ZŁOM] wysyłka recyklerów nie doszła do skutku — spróbuję przy następnej wizycie.", "warn");
+            else {
+              // v2.99.6: nieudana wysyłka nie pali 10-min blokady ponowienia
+              // (25.08 07:54: duplikat → blokada → 10 min ciszy na galaktyce bazy).
+              GM_setValue(DebrisCollector.KEY_SENT, "0");
+              log("[ZŁOM] wysyłka recyklerów nie doszła do skutku — spróbuję przy następnej wizycie.", "warn");
+            }
             return;
           }
           if (mission.farm) {
