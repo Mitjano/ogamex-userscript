@@ -24,8 +24,8 @@ function bodyOf(name, argList) {
   throw new Error(`nie domknąłem ciała ${name}`);
 }
 
-const body = bodyOf("sweepPlan", "{ now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow }");
-const sweepPlan = new Function("o", "const { now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow } = o;\n" + body);
+const body = bodyOf("sweepPlan", "{ now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow, soonGap }");
+const sweepPlan = new Function("o", "const { now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow, soonGap } = o;\n" + body);
 
 let fails = 0;
 const eq = (name, got, want) => {
