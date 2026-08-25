@@ -1,10 +1,91 @@
-# OGameX Assistant — stan na 25 sierpnia 2026, ~21:55 (v2.103.5)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~23:30 (v2.104.0)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (32) — v2.104.0: PEŁNY AUDYT po dniu symulacji (4 przeglądy) i konsolidacja poprawek
+
+Powód: 21:18–21:50 seria symulacji ujawniła 3 realne dziury, a moje szybkie
+poprawki 2.103.2–2.103.6 dołożyły 2 własne (MoonSave.armed() ≠ straż
+uzbrojona; kotwica czekania na sondy odnawiana co tick). Owner: „za każdym
+razem zweryfikuj, czy zmiany nie psują czegoś w innym miejscu". Cztery
+niezależne audyty (dzisiejsze zmiany / maszyna stanu straży-kolejki-ucieczki /
+alarm z paska vs wszystkie incydenty z historii / symulacja-Odkrywca-mining-
+baza) → jedna łatka 2.104.0.
+
+**Naprawione (zweryfikowane TESTEM offline, NIESPRAWDZONE na żywo):**
+1. `barExcessDecision` — CZYSTA decyzja o nadwyżce paska (blok BAR-EXCESS):
+   nadwyżka = pasek − ataki − sondy w locie; czekanie na sondy tylko gdy mogą
+   ją tłumaczyć WYLĄDOWANE, kotwica = start kandydata (nie odczyt), cap 120 s,
+   pasek z cache + sondy → 20 s na żywy pasek (nadwyżka zostaje). Test
+   `test-nadwyzka.js` wykonuje prawdziwą funkcję: 21:34 (0), 16:22 (alarm po
+   10 s, kotwica nie ucieka), 13:10 (alarm), daleka sonda (alarm), cache.
+   W stanie alarmu `excess=0`, póki trwa czekanie (jedna sonda eta≤30 s przy
+   uzbrojonej straży robiła „oba ciała" → 14-h Deploy).
+2. `attackBodiesFor`: „nadwyżka paska = oba ciała" TYLKO dla pary strzeżonej
+   (dla każdej pary blokowało ratunek drugiej kolonii z kolejki).
+3. `MoonSave.run`: oba ciała pod atakiem + ucieczka nie ruszyła / niedostępna
+   → flota NIE rusza w obrębie pary (dotąd „legalny" skok pod uderzenie =
+   21:23); `shoutBothHit` z dławikiem 5 min (push urgent).
+4. **Ślepy alarm z paska broni DOMU FLOTY**: `FleetRecon.fleetHome()` = pole
+   „Start ekspedycji", chyba że mapa hangarów (48 h) mówi ≥1 mld i ≥2× —
+   wtedy tam. Użyte w `autoSaveOnThreat` i `run()`. (Dotąd 3:272:7 z configu,
+   gdy flota stała na 5:67:5 — kształt 13:10.)
+5. `switch_to_body`: „jesteśmy już na właściwym ciele" tylko w TEJ SAMEJ parze
+   (21:44:56 powrót dla 5:67:5 otworzył formularz na planecie 3:272:7).
+6. Kolejka: `dropPending` przy ucieczce w powietrze / rozbrojeniu / pustym
+   hangarze; jeden wpis na kolonię; TTL 45 min (było 4 h); ręczny WRÓĆ NA
+   BAZĘ nie promuje kolejki (21:44:54 wskoczył wpis z 21:23); wpis kolonii w
+   ucieczce odrzucany; promowany wpis dostaje `lastSendAt`.
+7. Flipy formularza piszą straż tylko, gdy uzbrojona (nie tworzą zjawy).
+8. `saveWatch`: każde uzbrojenie straży zapisuje w dzienniku, KTO (stack) —
+   ślad na „zjawę" 21:49:08 (autotest sprawdzony: nie pisze stanu; jedna
+   instancja — owner potwierdził brak Windows; źródło NIEZNANE, instrumentacja).
+9. Ping-pong resztek: ratunek zapisuje `ogamex_save_total`; automatyczny
+   powrót zastający <20% tego (np. 22 nowo zbudowane BS) nic nie wysyła i
+   rozbraja straż (nie dotyczy ręcznego powrotu i trwającego alarmu; sweep
+   nie nadpisuje sumy).
+10. Symulacje: `simBlockReason` dla OBU przycisków (także „TEST ŚLEPEGO
+    PASKA", który nie miał żadnej blokady): symulacja/alarm/straż/AirSave
+    phase/pending obrony/KEY_SWITCH; stare wpisy kolejki czyszczone przed
+    testem; sprzątanie po symulacji dla klucza CELU + zerowanie sim_target/
+    sim_started.
+11. Mining: rekord `ogamex_last_dispatch` znakowany `consumedAt` (nie
+    kasowany — `minersHomeAfterLastDispatch` go potrzebuje); finishDispatch
+    też znakuje.
+12. Odkrywca: `continue` zamiast `break` przy obcym selekcie z „min";
+    ostrzeżenie o braku opcji 40 min raz na 15 min.
+
+**Recenzja adwersarialna diffu przed pushem (5. przegląd):** brak blokerów;
+wdrożone: TTL kolejki z powrotem 4 h (45 min porzucałoby POTRZEBNY powrót
+drugiej kolonii przy długim dolocie ACS — zombie-wpisy i tak kasuje
+`dropPending`); kotwica czekania na sondy = kandydat, a w trwającym alarmie
+`firstAt` (kandydat resetuje się co 5 min); flip formularza przy ratunku z
+kolejki aktualizuje WPIS kolejki, nie straż pierwszej kolonii (`noteFlip`);
+`ogamex_save_total` kasowane przy rozbrojeniu; czyszczenie kolejki przed
+symulacją poza „powodem blokady". **OTWARTA DECYZJA (W2):** przy koncie z
+JEDNĄ parą (Genesis, dni 1–14) „oba ciała pod atakiem + brak refugium" =
+STOP z pushem, a nie skok na ciało z późniejszym dolotem — bot nie zna
+dolotów per ciało (tylko min/max per para; są w komunikacie). Do zrobienia
+przed Genesis: eta per ciało w `events()` i skok na później atakowane, gdy
+różnica ≥3 min.
+
+**Świadomie NIE zrobione (do decyzji):** sonda w drodze powrotnej jako
+„w locie" (brak dowodu, że fork ją pokazuje z eta>0); koordynacja dwóch
+instancji (owner: jedna); `markFailed` ucieczki nie zdejmuje kolonii z
+`done` kolejki; podwójna ścieżka potwierdzenia powrotu (fleetSendSuccessfully
+vs finishDispatch) nieujednolicona; hipoteza „pasek liczy sondy w locie"
+oparta na 2 obserwacjach (21:34 tak; 16:22 sonda wylądowana) — przy
+nadwyżce log pokazuje ataki/sondy/w locie, żeby zbierać dowody.
+
+**NA ŻYWO niesprawdzone:** wszystko powyżej. Procedura: owner ustawia
+„Start ekspedycji" = 5:67:5, status „czysto", stoi na księżycu 5:67:5,
+TEST ALARMU `both` → oczekiwane: cel [5:67:5] → UCIECZKA W POWIETRZE do
+innej kolonii → ZAWRÓCONA → flota wraca; w dzienniku wpis „Straż UZBROJONA
+… ←" ze śladem.
 
 ## AKTUALIZACJA 25.08 (31) — v2.103.4–2.103.5: komunikat odmowy symulacji + fantom „PARALLEL: sent"
 

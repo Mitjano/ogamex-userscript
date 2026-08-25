@@ -131,8 +131,8 @@ console.log("\n── Y. v2.103.3: NADWYŻKA PASKA vs SONDY W LOCIE (fałszywy a
 {
   const fs = require("fs"), path = require("path");
   const src = fs.readFileSync(path.join(__dirname, "ogamex-bot.user.js"), "utf8");
-  eq("nadwyżka paska = pasek − ataki − sondy W LOCIE", /const listForeign = \(ev\.attacks \|\| 0\) \+ \(CONFIG\.threatAlarm\?\.barCountsProbes \? \(ev\.spies \|\| 0\) : \(ev\.spiesInFlight \|\| 0\)\);/.test(src), true);
-  eq("nadwyżka ≤ sondy → czekaj na lądowanie sond (bez bramki barCountsProbes)", /if \(missing <= \(ev\.spies \|\| 0\)\) probeWaitUntil =/.test(src), true);
+  eq("nadwyżka paska liczona przez barExcessDecision (v2.104.0; pełny test: test-nadwyzka.js)", /barExcessDecision\(\{ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, now \}\)/.test(src), true);
+  eq("stan alarmu nie niesie „excess”, póki nadwyżkę mogą tłumaczyć sondy", /excess: \(probeWaitUntil && Date\.now\(\) < probeWaitUntil\) \? 0 : barExcess/.test(src), true);
   // arytmetyka scenariuszy (ta sama formuła, wykonana lokalnie)
   const excess = (bar, attacks, inFlight) => Math.max(0, bar - attacks - inFlight);
   eq("21:34: pasek 3, ataki 0, 3 sondy w locie → nadwyżka 0 (BEZ alarmu)", excess(3, 0, 3), 0);

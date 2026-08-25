@@ -67,8 +67,8 @@ must("macierz: ręczny RATUJ bez pary → dom floty",
   rrt({ where: null, watchAt: null, manual: true, fleetHome: FH, activePair: null }) === FH);
 must("macierz: nic nie wiadomo → null (coordsOf dośle bazę)",
   rrt({ where: null, watchAt: null, manual: false, fleetHome: null, activePair: null }) === null);
-must("ślepa ścieżka paska syntetyzuje cel = dom floty (switch-first)",
-  /if \(!target\) \{\s*\n\s*const fh = CONFIG\.expeditions\?\.launchFrom;/.test(src));
+must("ślepa ścieżka paska syntetyzuje cel = DOM FLOTY z mapy hangarów (FleetRecon.fleetHome, v2.104.0)",
+  /if \(!target\) \{[\s\S]{0,400}?FleetRecon\.fleetHome\(\)/.test(src) && /fleetHome\(\) \{[\s\S]{0,600}?homeVerdict\(\{ map, homeKey/.test(src));
 must("lot międzykolonijny celuje w KSIĘŻYC celu",
   !!runBody && /crossColony \? "moon"/.test(runBody));
 must("uzbrojona straż PYTA ucieczkę w powietrze przy ataku na oba ciała (v2.87.1)",
@@ -99,8 +99,8 @@ must("strona bez paska czyta cache z TTL 3 min",
 // v2.103.3 (FAŁSZYWY ALARM 25.08 21:34): pasek forka liczy sondy W LOCIE —
 // 3 sondy w locie = „3 Hostile" robiły ucieczkę w powietrze bez ataku. Nadwyżka
 // = pasek − ataki − sondy w locie; WYLĄDOWANE (eta≈0) nadal nie maskują (16:22).
-must("pasek WYGRYWA nadwyżką ponad ATAKI + sondy W LOCIE (wylądowane nie maskują) — v2.103.3",
-  /barEff\.foreign > listForeign/.test(src) && /\(ev\.attacks \|\| 0\) \+ \(CONFIG\.threatAlarm\?\.barCountsProbes \? \(ev\.spies \|\| 0\) : \(ev\.spiesInFlight \|\| 0\)\)/.test(src) && /probeWaitUntil = \(ev\.at \|\| Date\.now\(\)\)/.test(src));
+must("pasek WYGRYWA nadwyżką przez czystą barExcessDecision (kotwica = kandydat, cap 120 s) — v2.104.0",
+  /const bx = barEff \? this\.barExcessDecision\(\{/.test(src) && /probeWaitUntil = bx\.waitUntil;/.test(src) && /candidateAt: candAt/.test(src));
 must("widziany dolot ataku (ogamex_atk_until) blokuje zdjęcie alarmu i powrót — v2.102.3",
   /prev\.count > 0 && Date\.now\(\) < \(parseInt\(GM_getValue\("ogamex_atk_until"/.test(src) && /until && Date\.now\(\) < until \+ 60 \* 1000/.test(src));
 must("sonda policzona przez listę NIE robi ataku (foreign = ataki + nadwyżka)",

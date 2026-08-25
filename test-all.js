@@ -33,6 +33,7 @@ const SUITES = [
   ["higiena wydajnosci (historia + log)", "test-nawigacja-log.js"],
   ["zbieranie zlomu po ekspedycjach (poz. 16)", "test-zlom.js"],
   ["Odkrywca: ekspedycje 40 min", "test-odkrywca.js"],
+  ["nadwyżka paska vs sondy (barExcessDecision)", "test-nadwyzka.js"],
 ];
 
 let failed = [];

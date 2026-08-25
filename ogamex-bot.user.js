@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.103.6
+// @version      2.104.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5931,6 +5931,7 @@ const __gmSetRaw = GM_setValue;
         timestamp: Date.now(),
       }));
       this.save({ phase: "arming", at: atCoords, to, holdUntilMs, reason, createdAt: Date.now() });
+      try { RescueQueue.dropPending(atCoords, "ucieczka w powietrze tej kolonii"); } catch {}   // v2.104.0
       DefenceHold.stamp();
       const hhmm = new Date(holdUntilMs).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
       log(`UCIECZKA W POWIETRZE: atak na OBA ciała [${this.key(atCoords)}] — wysyłam WSZYSTKO powolnym Deployem (${speed}%) do [${this.key(to)}], zawrócę ~${hhmm} (po przejściu ataków).`, "error");
@@ -6724,6 +6725,27 @@ const __gmSetRaw = GM_setValue;
     // tej pary leci). Lista forka gubi wiersze ACS między odczytami — bez tego
     // flipy formularza, zamiatanie i decyzja ucieczki w powietrze ślepły w
     // najgorszym momencie.
+    // ── BAR-EXCESS (v2.104.0) — CZYSTA decyzja o nadwyżce paska (test-nadwyzka.js) ──
+    // Kotwica czasu = start kandydata (nie chwila odczytu — 2.103.3 odnawiała
+    // czekanie co tick i nadwyżka z wylądowanymi sondami NIGDY się nie
+    // potwierdzała: kształt 16:14/16:21 z prawdziwego ataku). Czekanie tylko,
+    // gdy nadwyżkę mogą tłumaczyć sondy WYLĄDOWANE (w locie są już odjęte),
+    // cap 120 s (daleka sonda nie może zamrozić potwierdzenia ataku z układu).
+    // Pasek z cache + sondy na liście = dwie różne chwile → krótkie czekanie
+    // (20 s od kandydata) na żywy pasek, ale nadwyżka ZOSTAJE (woli alarm).
+    barExcessDecision({ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, now }) {
+      const inFlight = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
+      const listForeign = (attacks || 0) + inFlight;
+      const excess = Math.max(0, (barForeign || 0) - listForeign);
+      const anchor = candidateAt || now;
+      if (excess <= 0) return { excess: 0, listForeign, waitUntil: 0, why: "" };
+      if (barCached && (spies || 0) > 0) return { excess, listForeign, waitUntil: anchor + 20000, why: "pasek z cache + sondy — czekam na żywy pasek" };
+      const landed = Math.max(0, (spies || 0) - inFlight);
+      if (excess <= landed) return { excess, listForeign, waitUntil: anchor + (Math.min(spyMaxEta || 0, 120) + 10) * 1000, why: "nadwyżka może być sondą" };
+      return { excess, listForeign, waitUntil: 0, why: "" };
+    },
+    // ── /BAR-EXCESS ──
+
     attackBodiesFor(key) {
       const out = new Set();
       try { for (const b of ((this.events()?.targetBodiesAll || {})[key] || [])) out.add(b); } catch {}
@@ -6733,7 +6755,9 @@ const __gmSetRaw = GM_setValue;
       } catch {}
       // nadwyżka paska przy uzbrojonej straży = niewidoczny wiersz = nie wiemy,
       // w które ciało → traktuj jak OBA (ucieczka w powietrze; flota w locie jest nietykalna)
-      try { const st = this.state(); if (st && st.count > 0 && (st.excess || 0) > 0 && MoonSave.watch().armed) { out.add("moon"); out.add("planet"); } } catch {}
+      // v2.104.0 (audyt): TYLKO dla pary strzeżonej — klauzula dla każdej pary
+      // robiła „oba ciała" drugiej kolonii z kolejki i blokowała jej ratunek.
+      try { const st = this.state(); const w = MoonSave.watch(); if (st && st.count > 0 && (st.excess || 0) > 0 && w.armed && RescueQueue.str(w.at) === key) { out.add("moon"); out.add("planet"); } } catch {}
       return [...out];
     },
     attackBodyFor(key) {
@@ -6784,8 +6808,11 @@ const __gmSetRaw = GM_setValue;
             GM_setValue("ogamex_threat_sim_until", "0");
             try {
               GM_setValue("ogamex_atk_until", "0"); GM_setValue("ogamex_atk_fuse", "0");
-              const b = CONFIG.expeditions?.launchFrom || CONFIG.asteroidMining.minerBase;
+              // v2.104.0: sprzątaj pamięć dla CELU symulacji (od 2.103.1 ≠ baza z configu) i jej klucze.
+              let b = null; try { b = JSON.parse(GM_getValue("ogamex_threat_sim_target", "null")); } catch {}
+              if (!b || !Number.isFinite(b.galaxy)) b = CONFIG.expeditions?.launchFrom || CONFIG.asteroidMining.minerBase;
               if (b) { const k = `${b.galaxy}:${b.system}:${b.position}`; GM_setValue("ogamex_atk_body_" + k, "null"); let map = {}; try { map = JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {}; } catch {} delete map[k]; GM_setValue("ogamex_atk_until_map", JSON.stringify(map)); }
+              GM_setValue("ogamex_threat_sim_target", "null"); GM_setValue("ogamex_threat_sim_started", "0");
             } catch {}
             log("[TEST] symulacja ataku zakończona — obrona wraca na prawdziwe odczyty. Alarm powinien zaraz zgasnąć, a flota wrócić automatycznie.", "info");
           }
@@ -7518,13 +7545,25 @@ const __gmSetRaw = GM_setValue;
         // ≤ liczba wszystkich sond, potwierdzenie czeka, aż sondy MUSIAŁY
         // wylądować (spyMaxEta+10 s) — trwa dalej = to nie sonda.
         // barCountsProbes=true: liczą się WSZYSTKIE sondy (stare zachowanie).
-        const listForeign = (ev.attacks || 0) + (CONFIG.threatAlarm?.barCountsProbes ? (ev.spies || 0) : (ev.spiesInFlight || 0));
-        if (barEff && barEff.foreign > listForeign) {
-          const missing = barEff.foreign - listForeign;
+        // v2.104.0: decyzja przez czystą funkcję barExcessDecision (patrz blok BAR-EXCESS).
+        let candAt = parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0;
+        if (candAt && Date.now() - candAt > 5 * 60 * 1000) candAt = 0;
+        // recenzja 2.104.0 (W3): w trwającym alarmie kandydat resetuje się co 5 min —
+        // kotwicą jest wtedy pierwsze widzenie alarmu (firstAt), inaczej co 5 min
+        // wracało okno bez „oba ciała".
+        if (!candAt) { try { const st0 = this.state(); if (st0 && st0.count > 0 && st0.firstAt) candAt = st0.firstAt; } catch {} }
+        const bx = barEff ? this.barExcessDecision({
+          barForeign: barEff.foreign, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
+          spiesInFlight: ev.spiesInFlight || 0, spyMaxEta: ev.spyMaxEta || 0,
+          barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, now: Date.now(),
+        }) : { excess: 0, listForeign: ev.attacks || 0, waitUntil: 0, why: "" };
+        const listForeign = bx.listForeign;
+        if (bx.excess > 0) {
+          const missing = bx.excess;
           barExcess = missing;
-          if (missing <= (ev.spies || 0)) probeWaitUntil = (ev.at || Date.now()) + ((ev.spyMaxEta || 0) + 10) * 1000;
+          probeWaitUntil = bx.waitUntil;
           r = { ...r, foreign: (ev.attacks || 0) + missing };
-          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}, w locie ${ev.spiesInFlight || 0}) — ${missing} brakujących traktuję jak ATAK${probeWaitUntil ? " (po lądowaniu sond)" : ""}`;
+          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}, w locie ${ev.spiesInFlight || 0}) — ${missing} brakujących traktuję jak ATAK${bx.why ? ` (${bx.why})` : ""}`;
         } else
         evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
           + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
@@ -7714,7 +7753,7 @@ const __gmSetRaw = GM_setValue;
           seenAt: Date.now(),
           firstAt: first ? Date.now() : (prev.firstAt || Date.now()),
           src: barSrc ? "bar" : (prev && prev.src === "bar" && !bar ? "bar" : "list"),   // v2.102.0: skąd alarm — pasek gasi tylko żywy pasek
-          excess: barExcess,   // v2.102.4: niewidoczne dla listy floty z paska (→ ucieczka w powietrze przy uzbrojonej straży)
+          excess: (probeWaitUntil && Date.now() < probeWaitUntil) ? 0 : barExcess,   // v2.102.4 (+2.104.0: nie „oba ciała", póki nadwyżkę mogą tłumaczyć sondy)
         }));
         if (first || r.foreign !== prev.count) {
           log(`INCOMING: ${r.foreign} foreign fleet(s) in the mission bar (${r.own} of ${r.total} are ours). Farming and expedition waves are on hold — CHECK THE GAME.`, "error");
@@ -8061,11 +8100,24 @@ const __gmSetRaw = GM_setValue;
     watch() {
       try { return JSON.parse(GM_getValue(this.KEY_WATCH, "null")) || {}; } catch { return {}; }
     },
-    saveWatch(w) { GM_setValue(this.KEY_WATCH, JSON.stringify(w)); },
+    saveWatch(w) {
+      // v2.104.0: ślad uzbrojenia — 21:49:08 straż pojawiła się „znikąd"; każde
+      // przejście nieuzbrojona → uzbrojona zapisuje wołającego do dziennika.
+      try {
+        const prev = this.watch();
+        if (w && w.armed && !prev.armed) {
+          const st = String((new Error()).stack || "").split("\n").slice(2, 5).map(l => l.trim().replace(/^at\s+/, "").replace(/\(.*?:(\d+):\d+\)$/, ":$1")).join(" < ");
+          ThreatLog.add("odczyt", `Straż UZBROJONA: [${RescueQueue.str(w.at) || "?"}] dom=${w.homeBody || "?"} refugium=${w.refugeBody || "?"} trigger=${w.trigger || "?"} ← ${st.slice(0, 220)}`);
+        }
+      } catch {}
+      GM_setValue(this.KEY_WATCH, JSON.stringify(w));
+    },
     disarm(why) {
       const w = this.watch();
       if (!w.armed) return;
       GM_setValue(this.KEY_WATCH, "null");
+      try { RescueQueue.dropPending(w.at, `rozbrojenie straży (${why})`); } catch {}   // v2.104.0
+      try { GM_setValue("ogamex_save_total", "null"); } catch {}   // v2.104.0: suma ratunku żyje tylko z tą strażą
       log(`[MOON SAVE] straż wyłączona (${why}) — planeta znów pracuje normalnie. Zapisów w tym alarmie: ${w.saves || 0}.`, "info");
       updateStatusUI();
     },
@@ -8172,8 +8224,9 @@ const __gmSetRaw = GM_setValue;
       // planetę). Ścieżka z celem z listy — bez zmian.
       let target = ev?.attacks > 0 ? (ev.targets || [])[0] : null;
       if (!target) {
-        const fh = CONFIG.expeditions?.launchFrom;
-        if (fh && Number.isFinite(fh.galaxy)) target = `${fh.galaxy}:${fh.system}:${fh.position}`;
+        // v2.104.0: dom floty z mapy hangarów (fallback: pole „Start ekspedycji").
+        let fhk = null; try { fhk = FleetRecon.fleetHome(); } catch {}
+        if (fhk) { target = fhk; ThreatLog.add("odczyt", `Ślepy alarm: bronię domu floty [${fhk}] (mapa hangarów / „Start ekspedycji").`); }
       }
       let where = null;
       if (target) {
@@ -8392,6 +8445,7 @@ const __gmSetRaw = GM_setValue;
           type: "moon_return_direct",
           moonSave: true,       // identical form handling: all ships, all resources, stationing
           moonReturn: true,
+          byOperator: !!byOperator,   // v2.104.0
           atCoords: w.at || CONFIG.asteroidMining.minerBase,
           targetBody: home,     // …and this leg flies back to where the fleet lives
           launchBody: refuge,   // …starting from the body it fled to
@@ -8540,6 +8594,33 @@ const __gmSetRaw = GM_setValue;
       this.saveWatch(w2);
       ThreatLog.add("odczyt", `Powrót sprzed ${Math.round((Date.now() - w.returnAt) / 60000)} min uznany za wylądowany — flota na ${w2.refugeBody === "moon" ? "księżycu" : "planecie"} (dom); straż pilnuje dalej.`);
       return w2;
+    },
+
+    // v2.104.0 (recenzja W4): flip formularza (dom/refugium odwrócone) zapisuje
+    // kierunki TAM, gdzie żyje ta kolonia: straż — tylko gdy to strzeżona para;
+    // kolonia z kolejki — jej wpis pending. Nieuzbrojona straż = nic (zjawa).
+    noteFlip(mission, homeBody, refugeBody) {
+      try {
+        const w = this.watch();
+        if (!w.armed) return;
+        const mk = RescueQueue.str(mission && mission.atCoords);
+        if (!mk || RescueQueue.str(w.at) === mk) { this.saveWatch({ ...w, homeBody, refugeBody }); return; }
+        const st = RescueQueue.state();
+        const e = (st.pending || []).find(x => RescueQueue.str(x.at) === mk);
+        if (e) { e.homeBody = homeBody; e.refugeBody = refugeBody; RescueQueue.save(st); }
+      } catch {}
+    },
+
+    // v2.104.0: jeden głośny komunikat na 5 min per para (nie co tick — audyt W2).
+    shoutBothHit(at, why) {
+      const k = AirSave.key(at) || "?";
+      const saidKey = `ogamex_bothhit_said_${k}`;
+      if (Date.now() - (parseInt(GM_getValue(saidKey, "0")) || 0) < 5 * 60 * 1000) { DefenceWatchdog.note(`oba ciała [${k}] atakowane, ${why} — flota nie ruszona (komunikat zdławiony)`); return; }
+      GM_setValue(saidKey, String(Date.now()));
+      let eta = ""; try { const ev = ThreatMonitor.events(); const mn = (ev?.targetMinEta || {})[k], mx = (ev?.targetMaxEta || {})[k]; if (mn || mx) eta = ` Doloty: ${mn ? Math.round(mn / 60) : "?"}–${mx ? Math.round(mx / 60) : "?"} min.`; } catch {}
+      log(`[RATUNEK] OBA ciała [${k}] pod atakiem, a ${why} — NIE przenoszę floty w obrębie pary (leciałaby pod uderzenie).${eta} SPRAWDŹ GRĘ.`, "error");
+      ThreatLog.add("BŁĄD", `Oba ciała [${k}] atakowane, ${why} — flota NIE ruszona. Ratuj ręcznie.`);
+      try { Notifier.push("OGameX: oba ciała kolonii pod atakiem", `[${k}] — bot nie ma jak uciec, ratuj ręcznie.`, "urgent", "rotating_light"); } catch {}
     },
 
     commitGuardSwap(mission) {
@@ -8725,7 +8806,8 @@ const __gmSetRaw = GM_setValue;
         // Ratunek bez znanego celu broni od teraz DOMU FLOTY: punktu startu
         // ekspedycji (tam z definicji stoi flota główna i tam wracają fale),
         // dopiero potem aktywnej pary, na końcu minerBase.
-        const fleetHome = CONFIG.expeditions?.launchFrom || null;
+        let fleetHome = CONFIG.expeditions?.launchFrom || null;
+        try { const fhk = FleetRecon.fleetHome(); if (fhk) fleetHome = RescueQueue.obj(fhk) || fleetHome; } catch {}   // v2.104.0
         // v2.87.0: wybór celu przez CZYSTĄ funkcję (testowaną macierzą
         // offline i w autoteście) — semantyka 2.86.5 bez zmian: ręczny
         // RATUJ chroni parę operatora, automat bez celu chroni dom floty.
@@ -8756,9 +8838,7 @@ const __gmSetRaw = GM_setValue;
             const busy = ast && ast.phase && ["arming", "launched", "recalled"].includes(ast.phase) && AirSave.key(ast.at) !== AirSave.key(at);
             if (busy || airVerdict !== "air") {
               const why = busy ? `ucieczka w powietrze zajęta przez [${AirSave.key(ast.at)}]` : `ucieczka niedostępna (${airVerdict})`;
-              log(`[KOLEJKA] OBA ciała [${AirSave.key(at)}] pod atakiem, a ${why} — NIE przenoszę floty w obrębie pary (leciałaby pod uderzenie). SPRAWDŹ GRĘ.`, "error");
-              ThreatLog.add("BŁĄD", `Kolejka: oba ciała [${AirSave.key(at)}] atakowane, ${why} — flota NIE ruszona. Ratuj ręcznie.`);
-              try { Notifier.push("OGameX: oba ciała kolonii pod atakiem", `[${AirSave.key(at)}] — bot nie ma jak uciec, ratuj ręcznie.`); } catch {}
+              this.shoutBothHit(at, why);
               return false;
             }
           }
@@ -8768,8 +8848,12 @@ const __gmSetRaw = GM_setValue;
             // v2.102.4: wiersz ukryty przez fork → dolot z pamięci pary (inaczej zawrócenie po 2 min = lądowanie pod atak)
             if (!maxEta) { try { const u = (JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {})[AirSave.key(at)] || 0; if (u > Date.now()) maxEta = Math.round((u - Date.now()) / 1000); } catch {} }
             if (await AirSave.launch(at, reason, maxEta)) return true;
-            // porażka startu = markFailed zapisany — lecimy starą ścieżką
+            // v2.104.0 (audyt K2): oba ciała pod atakiem, a ucieczka nie ruszyła
+            // (brak refugium na pasku) → skok w parze = pod uderzenie. NIE ruszamy.
+            if (bothHit) { this.shoutBothHit(at, "ucieczka w powietrze nie wystartowała (brak refugium na pasku planet?)"); return false; }
           }
+          // ucieczka „swap" po świeżej porażce, a oba ciała nadal atakowane → też stop
+          if (bothHit && airVerdict === "swap" && AirSave.enabled()) { this.shoutBothHit(at, `ucieczka niedostępna (${airVerdict})`); return false; }
         }
         const href = this.targetUrl(at);
         // ── v2.28.0: uciekaj na DRUGIE ciało, nie zawsze na księżyc ──
@@ -8937,9 +9021,21 @@ const __gmSetRaw = GM_setValue;
       this.save(st);
     },
     addPending(entry) {
+      this.dropPending(entry && entry.at, "nowy wpis tej samej kolonii");   // v2.104.0: jeden wpis na kolonię
       const st = this.state();
       st.pending.push(entry);
       this.save(st);
+    },
+    // v2.104.0 (audyt): wpis kolejki traci sens, gdy kolonia uciekła w powietrze,
+    // straż została rozbrojona albo hangar okazał się pusty — dotąd przeżywał
+    // wszystko (4 h) i wskakiwał przy zupełnie innym powrocie (21:44:54).
+    dropPending(coords, why) {
+      try {
+        const k = this.str(coords); if (!k) return;
+        const st = this.state(); const before = (st.pending || []).length;
+        st.pending = (st.pending || []).filter(e => this.str(e.at) !== k);
+        if (st.pending.length !== before) { this.save(st); log(`[KOLEJKA] wpis [${k}] skasowany: ${why}.`, "info"); }
+      } catch {}
     },
 
     // Wywoływane WYŁĄCZNIE z gałęzi „straż już uzbrojona".
@@ -8991,7 +9087,7 @@ const __gmSetRaw = GM_setValue;
     // puste — abort"). Wpis przeżył, bo powrót jego alarmu skończył się
     // ścieżką abortu, która nie tyka kolejki — z założenia „pending musi
     // przeżyć alarm", więc TTL i dedup są jedynym płotem.
-    PENDING_MAX_AGE_MS: 4 * 60 * 60 * 1000, // backstop alarmu to 3 h — starszy wpis nie ma już swojego alarmu
+    PENDING_MAX_AGE_MS: 4 * 60 * 60 * 1000, // backstop alarmu to 3 h (długie doloty ACS) — zombie-wpisy kasuje dropPending (v2.104.0)
 
     // CZYSTA decyzja (jak nextTarget) — testowana offline w test-kolejka.js.
     staleReason(nx, justReturned, now, maxAgeMs) {
@@ -9014,7 +9110,8 @@ const __gmSetRaw = GM_setValue;
         const nx = st.pending.shift();
         this.save(st);
         const coords = this.str(nx.at) || "?";
-        const stale = this.staleReason(nx, justReturned, Date.now(), this.PENDING_MAX_AGE_MS);
+        let stale = this.staleReason(nx, justReturned, Date.now(), this.PENDING_MAX_AGE_MS);
+        try { const a = AirSave.state(); if (!stale && a && a.phase && this.str(a.at) === coords) stale = "ta kolonia jest w ucieczce w powietrze — wraca sama"; } catch {}
         if (stale) {
           log(`[KOLEJKA] wpis [${coords}] ODRZUCONY: ${stale}. Flota nie rusza według nieaktualnego kierunku.`, "warn");
           ThreatLog.add("odczyt", `KOLEJKA: wpis [${coords}] odrzucony (${stale}).`);
@@ -9027,6 +9124,7 @@ const __gmSetRaw = GM_setValue;
           // lastAt = moment ratunku TEJ kolonii, więc zapora „130 s na
           // lądowanie" liczy się od prawdy, a nie od chwili promocji.
           lastAt: nx.savedAt || Date.now(),
+          lastSendAt: nx.savedAt || Date.now(),   // v2.104.0 (audyt W4): okno „ratunek jeszcze leci" liczy się od prawdy
           saves: 1, since: Date.now(),
         });
         log(`[KOLEJKA] ${why} — biorę następną kolonię z kolejki: [${coords}]. Zostało: ${st.pending.length}.`, "success");
@@ -9599,6 +9697,21 @@ const __gmSetRaw = GM_setValue;
     // MAKSIMUM z 48 h, żeby chwilowo pusty hangar (fleet save w nocy,
     // flota w powietrzu) nie robił fałszywego alarmu.
     KEY_HANGARS: "ogamex_hangar_map",
+
+    // v2.104.0 (audyt): DOM FLOTY = pole „Start ekspedycji", chyba że mapa
+    // hangarów (48 h) mówi wyraźnie, że flota mieszka gdzie indziej (≥1 mld
+    // i ≥2× maksimum domu) — wtedy tam. Używane przez ślepy alarm z paska
+    // i ratunek bez celu (dotąd broniły bazy z configu, gdy flota stała na
+    // innej kolonii — kształt katastrofy 13:10, 25.08 flota na [5:67:5]).
+    fleetHome() {
+      try {
+        const fh = CONFIG.expeditions?.launchFrom;
+        const homeKey = (fh && Number.isFinite(fh.galaxy)) ? `${fh.galaxy}:${fh.system}:${fh.position}` : null;
+        let map = {}; try { map = JSON.parse(GM_getValue(this.KEY_HANGARS, "{}")) || {}; } catch { map = {}; }
+        const v = this.homeVerdict({ map, homeKey: homeKey || "" });
+        return v ? v.key : homeKey;
+      } catch { return null; }
+    },
 
     homeGuard(snap) {
       try {
@@ -10467,7 +10580,12 @@ const __gmSetRaw = GM_setValue;
           window.location.replace("/");
           return;
         }
-        if (here === want) {
+        // v2.104.0 (audyt): skrót tylko, gdy to TA SAMA PARA — 21:44:56 powrót dla
+        // [5:67:5] „był już na planecie"… planecie [3:272:7].
+        const hereAt = HomeBase.coords();
+        const wantAt = mission.atCoords || null;
+        const samePairHere = !wantAt || !hereAt || (hereAt.galaxy === wantAt.galaxy && hereAt.system === wantAt.system && hereAt.position === wantAt.position);
+        if (here === want && samePairHere) {
           log(`[RATUNEK] jesteśmy już na właściwym ciele (${want === "moon" ? "księżyc" : "planeta"}) — lecę prosto do formularza.`, "fleet");
           mission.step = "select_ships_direct";
           mission.timestamp = Date.now();
@@ -10790,6 +10908,7 @@ const __gmSetRaw = GM_setValue;
               toSend: dispatchInfo.toSend,
               capturedFlightMs,
             });
+            try { const ld = JSON.parse(GM_getValue("ogamex_last_dispatch", "null")); if (ld) GM_setValue("ogamex_last_dispatch", JSON.stringify({ ...ld, consumedAt: Date.now() })); } catch {}   // v2.104.0
             if (goParallel) {
               const remainingScan = ScanState.load();
               if (remainingScan?.active && remainingScan.queue?.length > 0) {
@@ -11016,14 +11135,14 @@ const __gmSetRaw = GM_setValue;
             mission.step = "switch_to_body";
             mission.timestamp = Date.now();
             GM_setValue("pending_mission", JSON.stringify(mission));
-            const w = MoonSave.watch();
-            MoonSave.saveWatch({ ...w, homeBody: atkNow, refugeBody: bodyNow });
+            MoonSave.noteFlip(mission, atkNow, bodyNow);   // v2.104.0: straż tylko dla strzeżonej pary; kolejka → jej wpis
             await AntiDetection.sleep(500 + Math.random() * 500);
             window.location.replace("/");
             return;
           }
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
           const loaded = [];
+          let loadedTotal = 0;   // v2.104.0
           for (const el of document.querySelectorAll("[data-ship-type]")) {
             const type = el.dataset.shipType;
             const available = parseInt(el.dataset.shipQuantity || "0") || 0;
@@ -11035,6 +11154,7 @@ const __gmSetRaw = GM_setValue;
             input.dispatchEvent(new Event("input", { bubbles: true }));
             input.dispatchEvent(new Event("change", { bubbles: true }));
             loaded.push(`${type}×${available}`);
+            loadedTotal += available;
             // Emergency: no human-pacing delay here. Every second counts and a
             // fleet save is exactly the moment a real player also hammers it.
           }
@@ -11078,10 +11198,7 @@ const __gmSetRaw = GM_setValue;
               GM_setValue("pending_mission", JSON.stringify(mission));
               // Straż musi wiedzieć, gdzie jest dom, żeby powrót szedł w dobrą
               // stronę. Ucieczka w powietrze nie zbroi straży — nie tykamy.
-              if (!mission.airSave) {
-                const w = MoonSave.watch();
-                MoonSave.saveWatch({ ...w, homeBody: other, refugeBody: here });
-              }
+              if (!mission.airSave) MoonSave.noteFlip(mission, other, here);   // v2.104.0
               await AntiDetection.sleep(500 + Math.random() * 500);
               window.location.replace("/");
               return;
@@ -11089,6 +11206,7 @@ const __gmSetRaw = GM_setValue;
             log(`[${missionTag("MOON SAVE")}] nothing on this planet to save — aborting.`, "warn");
             DefenceWatchdog.note(`hangar pusty na ${MoonSave.currentBody() || "?"} — nie ma czego ratować`);
             GM_setValue("pending_mission", null);
+            if (!mission.moonReturn) { try { RescueQueue.dropPending(mission.atCoords, "pusty hangar przy ratunku"); } catch {} }   // v2.104.0
             // v2.34.0: przy POWROCIE pusto na refugium znaczy, że nie ma czego
             // ściągać — flota już wróciła albo jest w drodze. Ponawianie tego
             // co pięć minut to była właśnie ta pętla, którą właściciel widział.
@@ -11111,6 +11229,26 @@ const __gmSetRaw = GM_setValue;
             }
             return;
           }
+          // ── v2.104.0: PING-PONG RESZTEK (22 pancerniki 21:44–21:50) ──
+          // Ratunek zapisuje, ile statków zawiózł; automatyczny powrót, który
+          // zastaje na refugium < 20% tego (nowo zbudowane statki, resztki), nie
+          // wysyła nic — statki na refugium są bezpieczne, a straż schodzi.
+          // Nie dotyczy ręcznego WRÓĆ NA BAZĘ ani trwającego alarmu.
+          try {
+            const KEY_ST = "ogamex_save_total";
+            if (mission.moonSave && !mission.moonReturn && !mission.ferry && !mission.fleetSave && !mission.sweep && loadedTotal > 0) {
+              GM_setValue(KEY_ST, JSON.stringify({ at: Date.now(), total: loadedTotal, key: RescueQueue.str(mission.atCoords) }));
+            } else if (mission.moonReturn && !mission.byOperator && !ThreatMonitor.active()) {
+              const sv = JSON.parse(GM_getValue(KEY_ST, "null"));
+              if (sv && sv.total > 0 && sv.key === RescueQueue.str(mission.atCoords) && Date.now() - (sv.at || 0) < 6 * 60 * 60 * 1000 && loadedTotal < 0.2 * sv.total) {
+                log(`[POWRÓT] na refugium tylko resztki (${loadedTotal.toLocaleString()} vs ${sv.total.toLocaleString()} zawiezionych) — nie przerzucam, straż schodzi.`, "warn");
+                ThreatLog.add("POWRÓT", `Na refugium resztki (${loadedTotal} z ${sv.total}) — powrót pominięty, straż zdjęta.`);
+                GM_setValue("pending_mission", null);
+                MoonSave.disarm("na refugium tylko resztki");
+                return;
+              }
+            }
+          } catch {}
           log(`[${missionTag("MOON SAVE")}] loading everything: ${loaded.join(", ")}`, "success");
           await verifyShipInputs("MOON SAVE"); // v2.74.2: formularz gubi pola
           // v2.71.0: prom to logistyka — wpis "odczyt" nie zaburza liczników obrony.
@@ -11974,11 +12112,12 @@ const __gmSetRaw = GM_setValue;
             // v2.103.0: ODKRYWCA — najpierw opcja 40 min; gdy jej nie ma (inna
             // klasa), głośno i na godziny.
             const pick = pickExpeditionDuration(opts, { hours: want, minutes: mission.holdingMinutes || 0 });
-            if (mission.holdingMinutes && !pick.minutesHit) {
+            if (mission.holdingMinutes && !pick.minutesHit && Date.now() - (parseInt(GM_getValue("ogamex_disc40_warned", "0")) || 0) > 15 * 60 * 1000) {
+              GM_setValue("ogamex_disc40_warned", String(Date.now()));
               log(`[ODKRYWCA] brak opcji „${mission.holdingMinutes} min" w formularzu (masz: ${opts.map(o => (o.textContent || "").trim()).join(", ")}) — klasa to nie Odkrywca? Wysyłam na ${want}h.`, "warn");
             }
             const hit = pick.option;
-            if (!hit) { log(`Expedition: no "${want}h" option (have: ${opts.map(o => (o.textContent || "").trim()).join(", ")}) — leaving the default.`, "warn"); break; }
+            if (!hit) { log(`Expedition: no "${want}h" option (have: ${opts.map(o => (o.textContent || "").trim()).join(", ")}) — leaving the default.`, "warn"); continue; }
             sel.value = hit.value;
             sel.dispatchEvent(new Event("input", { bubbles: true }));
             sel.dispatchEvent(new Event("change", { bubbles: true }));
@@ -13643,27 +13782,35 @@ const __gmSetRaw = GM_setValue;
         updateStatusUI();
       });
 
+      // v2.104.0 (audyt): JEDNA blokada startu dla obu symulacji. Każdy warunek
+      // = stan, w którym syntetyczny atak zrobiłby coś prawdziwą flotą lub test
+      // byłby głuchy (21:23 „drugi atak"→kolejka; AirSave `recalled` → ratunek
+      // wstrzymany; stare wpisy kolejki → obcy powrót).
+      function simBlockReason() {
+        try {
+          const now = Date.now();
+          const simUntil = parseInt(GM_getValue("ogamex_threat_sim_until", "0")) || 0;
+          const blindUntil = parseInt(GM_getValue("ogamex_threat_sim_blind_until", "0")) || 0;
+          if (simUntil > now || blindUntil > now) return `symulacja trwa do ${new Date(Math.max(simUntil, blindUntil)).toLocaleTimeString("pl-PL")} — poczekaj`;
+          if (ThreatMonitor.active()) return "alarm aktywny — poczekaj na „czysto”";
+          const w = MoonSave.watch(); if (w.armed) return "STRAŻ UZBROJONA po poprzednim alarmie — kliknij „WRÓĆ NA BAZĘ” i poczekaj na „czysto”";
+          const a = AirSave.state(); if (a && a.phase) return `ucieczka w powietrze w fazie „${a.phase}” — poczekaj na lądowanie floty`;
+          const p = GM_getValue("pending_mission", null); if (p && p !== "null") { try { const pm = JSON.parse(p); if (pm && (pm.moonSave || pm.fleetSave || pm.airSave)) return `trwa zadanie obrony (${pm.type}) — poczekaj`; } catch {} }
+          if (GM_getValue(MoonSave.KEY_SWITCH, "null") !== "null") return "przełączanie kolonii w toku — poczekaj";
+        } catch (e) { return `błąd sprawdzenia stanu: ${e.message}`; }
+        return null;
+      }
+      // stare wpisy kolejki przed testem — osobno od „powodu blokady" (recenzja D1)
+      function simClearQueue() {
+        try { const q = RescueQueue.state(); if ((q.pending || []).length) { RescueQueue.save({ done: q.done || [], pending: [] }); log(`[TEST] wyczyściłem ${q.pending.length} stary(ch) wpis(ów) kolejki ratunków przed symulacją.`, "warn"); } } catch {}
+      }
       // v2.67.0: próba generalna automatu obrony — patrz tooltip przycisku.
       const simBtn = document.getElementById("ogx-threat-sim");
       if (simBtn) simBtn.addEventListener("click", () => {
         if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) { log("[TEST] najpierw włącz bota i alarm obcej floty.", "error"); return; }
-        // v2.103.2: druga symulacja w trwającym alarmie = „drugi atak" → kolejka
-        // (incydent 21:23). Nie startuj, póki poprzedni alarm/symulacja trwa.
-        {
-          const simUntil = parseInt(GM_getValue("ogamex_threat_sim_until", "0")) || 0;
-          let active = false; try { active = ThreatMonitor.active(); } catch {}
-          // v2.103.6: MoonSave.armed() = „znam adres księżyca", NIE „straż uzbrojona”
-          // (2.103.2–2.103.5 odmawiały symulacji ZAWSZE i kłamały o straży).
-          let armed = false; try { armed = !!MoonSave.watch().armed; } catch {}
-          if (simUntil > Date.now() || active || armed) {
-            const why = simUntil > Date.now() ? `symulacja trwa do ${new Date(simUntil).toLocaleTimeString("pl-PL")} — poczekaj`
-              : active ? "alarm aktywny — poczekaj na „czysto”"
-              : "STRAŻ UZBROJONA po poprzednim alarmie — kliknij „WRÓĆ NA BAZĘ” (rozbraja straż), poczekaj na „czysto”";
-            log(`[TEST] nie startuję: ${why}, potem odpal ponownie.`, "error");
-            window.alert(`Symulacja nie ruszyła:\n${why}.`);
-            return;
-          }
-        }
+        // v2.104.0: wspólna blokada obu symulacji (simBlockReason).
+        { const why = simBlockReason(); if (why) { log(`[TEST] nie startuję: ${why}.`, "error"); window.alert(`Symulacja nie ruszyła:\n${why}.`); return; } }
+        simClearQueue();
         // v2.103.1: cel = para aktywnego ciała (tam, gdzie stoi flota), nie baza z configu.
         const here = HomeBase.coords();
         const simTarget = (here && Number.isFinite(here.galaxy) && Number.isFinite(here.position)) ? { galaxy: here.galaxy, system: here.system, position: here.position } : null;
@@ -13691,6 +13838,9 @@ const __gmSetRaw = GM_setValue;
       // v2.87.0: symulacja ślepego paska — E2E ścieżki, która zawiodła 13:10.
       const simBlindBtn = document.getElementById("ogx-threat-sim-blind");
       if (simBlindBtn) simBlindBtn.addEventListener("click", () => {
+        if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) { log("[TEST] najpierw włącz bota i alarm obcej floty.", "error"); return; }
+        { const why = simBlockReason(); if (why) { log(`[TEST] nie startuję: ${why}.`, "error"); window.alert(`Symulacja nie ruszyła:\n${why}.`); return; } }   // v2.104.0
+        simClearQueue();
         if (!window.confirm(
           "SYMULACJA ŚLEPEGO PASKA (scenariusz ataku z 13:10)?\n\n" +
           "Lista ruchów i zdarzenia serwera zostają CZYSTE — tylko pasek misji dostaje syntetyczną +1 obcą flotę, dokładnie jak przy atakach z Twojego układu.\n" +
@@ -15019,8 +15169,10 @@ const __gmSetRaw = GM_setValue;
           // jej własne przestarzałe wpisy (incydent 23:00: drugi powrót tej
           // samej kolonii w odwrotną stronę z wpisu sprzed godzin).
           const justAt = RescueQueue.str(MoonSave.watch()?.at);
-          if (!RescueQueue.promoteNext("powrót poprzedniej kolonii zakończony", justAt)) {
-            MoonSave.disarm("flota wróciła na bazę (potwierdzone po wysyłce)");
+          // v2.104.0: ręczny WRÓĆ NA BAZĘ nie promuje kolejki (21:44:54 wskoczył stary wpis).
+          const byOp = !!(pmSnap && pmSnap.byOperator);
+          if (byOp || !RescueQueue.promoteNext("powrót poprzedniej kolonii zakończony", justAt)) {
+            MoonSave.disarm(byOp ? "powrót ręczny wysłany" : "flota wróciła na bazę (potwierdzone po wysyłce)");
           }
         }
         // v2.74.5: stempel POTWIERDZONEJ wysyłki ratunku — powrót (returnHome)
@@ -15105,10 +15257,11 @@ const __gmSetRaw = GM_setValue;
       // powrotu, +1 lotów — przy miningu OFF i bez jednego wysłanego minera.
       // Decyzja górnicza tylko dla ŚWIEŻEJ (<10 min) wysyłki i włączonego miningu;
       // rekord zużywany jednorazowo.
-      const freshDisp = !!(lastDisp && Date.now() - (lastDisp.at || 0) < 10 * 60 * 1000);
-      if (lastDisp && !freshDisp) { GM_setValue("ogamex_last_dispatch", "null"); lastDisp = null; }
+      const freshDisp = !!(lastDisp && Date.now() - (lastDisp.at || 0) < 10 * 60 * 1000 && !lastDisp.consumedAt);
+      // v2.104.0: rekord NIE jest kasowany (minersHomeAfterLastDispatch liczy z niego
+      // „minery w domu" przez maxFlightMinutes+5), tylko znakowany jako zużyty.
       if (am.enabled && am.parallelDispatch && lastDisp && freshDisp && !recentFarmSend) {
-        GM_setValue("ogamex_last_dispatch", "null");
+        GM_setValue("ogamex_last_dispatch", JSON.stringify({ ...lastDisp, consumedAt: Date.now() }));
         parallelKeepScanning = decideAfterMiningSend({
           available: lastDisp.available,
           toSend: lastDisp.toSend,
