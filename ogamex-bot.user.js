@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.103.1
+// @version      2.103.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8731,11 +8731,29 @@ const __gmSetRaw = GM_setValue;
         // powolnym Deployem do innej kolonii. Każde „nie" (wyłączone, jedno
         // ciało, świeża porażka, zamiatanie, kolejka, ręczny RATUJ) = stara,
         // bojowo potwierdzona ścieżka — dno regresji to 2.84.0.
-        if (!sweep && !queued && !manual) {
+        // v2.103.2: KOLEJKA też — incydent 21:23 (symulacja `both` na [5:67:5]
+        // przy trwającym alarmie bazy): ratunek z kolejki przeniósł flotę
+        // księżyc → planeta TEJ SAMEJ pary, choć planeta też była atakowana.
+        // Kolejka nie może ruszyć floty w obręb pary, gdy oba ciała są celem:
+        // wolna ucieczka w powietrze → leci; zajęta (inna kolonia w locie) →
+        // NIE ruszamy niczego i krzyczymy.
+        if (!sweep && !manual) {
           const airVerdict = AirSave.decideFor(at);
           if (airVerdict === "active") {
             DefenceWatchdog.note(`ucieczka w powietrze w toku dla [${AirSave.key(at)}] — zwykły ratunek wstrzymany`);
             return false;
+          }
+          const bothHit = (() => { try { return ThreatMonitor.attackBodiesFor(AirSave.key(at)).length >= 2; } catch { return false; } })();
+          if (queued && bothHit) {
+            const ast = AirSave.state();
+            const busy = ast && ast.phase && ["arming", "launched", "recalled"].includes(ast.phase) && AirSave.key(ast.at) !== AirSave.key(at);
+            if (busy || airVerdict !== "air") {
+              const why = busy ? `ucieczka w powietrze zajęta przez [${AirSave.key(ast.at)}]` : `ucieczka niedostępna (${airVerdict})`;
+              log(`[KOLEJKA] OBA ciała [${AirSave.key(at)}] pod atakiem, a ${why} — NIE przenoszę floty w obrębie pary (leciałaby pod uderzenie). SPRAWDŹ GRĘ.`, "error");
+              ThreatLog.add("BŁĄD", `Kolejka: oba ciała [${AirSave.key(at)}] atakowane, ${why} — flota NIE ruszona. Ratuj ręcznie.`);
+              try { Notifier.push("OGameX: oba ciała kolonii pod atakiem", `[${AirSave.key(at)}] — bot nie ma jak uciec, ratuj ręcznie.`); } catch {}
+              return false;
+            }
           }
           if (airVerdict === "air") {
             let maxEta = 0;
@@ -13622,6 +13640,16 @@ const __gmSetRaw = GM_setValue;
       const simBtn = document.getElementById("ogx-threat-sim");
       if (simBtn) simBtn.addEventListener("click", () => {
         if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) { log("[TEST] najpierw włącz bota i alarm obcej floty.", "error"); return; }
+        // v2.103.2: druga symulacja w trwającym alarmie = „drugi atak" → kolejka
+        // (incydent 21:23). Nie startuj, póki poprzedni alarm/symulacja trwa.
+        {
+          const simUntil = parseInt(GM_getValue("ogamex_threat_sim_until", "0")) || 0;
+          let active = false; try { active = ThreatMonitor.active(); } catch {}
+          if (simUntil > Date.now() || active || MoonSave.armed()) {
+            log(`[TEST] alarm/symulacja jeszcze trwa (${simUntil > Date.now() ? `symulacja do ${new Date(simUntil).toLocaleTimeString("pl-PL")}` : "alarm aktywny / straż uzbrojona"}) — poczekaj na „czysto" i powrót floty, potem odpal ponownie.`, "error");
+            return;
+          }
+        }
         // v2.103.1: cel = para aktywnego ciała (tam, gdzie stoi flota), nie baza z configu.
         const here = HomeBase.coords();
         const simTarget = (here && Number.isFinite(here.galaxy) && Number.isFinite(here.position)) ? { galaxy: here.galaxy, system: here.system, position: here.position } : null;

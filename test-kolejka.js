@@ -126,6 +126,18 @@ eq("wpis bez koordynatów → odrzucony (nigdy nie zgadujemy kolonii)",
 eq("brak justReturned (straż nie zna koordów) nie blokuje świeżego wpisu",
   staleReason({ at: "2:151:8", savedAt: NOW - 60_000 }, null, NOW, H4), null);
 
+
+console.log("\n── Z. v2.103.2: KOLEJKA vs OBA CIAŁA (incydent 21:23 25.08) ──");
+{
+  const fs = require("fs"), path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "ogamex-bot.user.js"), "utf8");
+  const i = src.indexOf("async run({ manual = false, sweep = false, auto = false");
+  const body = src.slice(i, i + 9000);
+  eq("gałąź ucieczki w powietrze NIE wyklucza już kolejki (`!sweep && !manual`)", /if \(!sweep && !manual\) \{/.test(body), true);
+  eq("kolejka przy obu ciałach pod atakiem: zajęta ucieczka → NIE ruszaj floty", /queued && bothHit[\s\S]*return false;/.test(body), true);
+  eq("start symulacji zablokowany przy trwającym alarmie/symulacji", /symulacja jeszcze trwa/.test(src), true);
+}
+
 console.log(
   fails
     ? `\nKOLEJKA: ${fails} PRZYPADEK/PRZYPADKÓW NIEZDANYCH\n`

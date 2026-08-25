@@ -1,10 +1,27 @@
-# OGameX Assistant — stan na 25 sierpnia 2026, ~21:30 (v2.103.1)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~21:45 (v2.103.2)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (29) — v2.103.2: kolejka ratunków vs atak na OBA ciała drugiej kolonii
+
+- Incydent 21:23 (test): druga symulacja (`both`, cel [5:67:5]) odpalona,
+  gdy alarm pierwszej (baza [3:272:7]) jeszcze trwał → bot uznał ją za
+  „drugi atak w trwającym alarmie" → KOLEJKA przeniosła flotę księżyc →
+  PLANETA [5:67:5], choć planeta też była atakowana. Realna dziura: przy
+  prawdziwym ACS na oba ciała kolonii poza bazą podczas alarmu flota
+  poleciałaby pod uderzenie (ucieczka w powietrze była wyłączona dla
+  `queued`).
+- v2.103.2: gałąź ucieczki w powietrze obejmuje kolejkę. Oba ciała drugiej
+  kolonii pod atakiem: ucieczka wolna → leci; zajęta (inna kolonia w locie)
+  lub niedostępna → flota NIE ruszona + BŁĄD + push „ratuj ręcznie".
+  Start symulacji zablokowany, póki trwa alarm/symulacja/straż uzbrojona
+  (komunikat z godziną końca). Puste zamiatania co 45 s przy „wróg blisko"
+  to zachowanie zamierzone (v2.102.1), nie bug.
+- test-kolejka.js: 3 checki źródłowe. Bateria: wszystko OK.
 
 ## AKTUALIZACJA 25.08 (28) — v2.103.1: symulacja ataku celuje w aktywne ciało
 
