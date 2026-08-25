@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.103.0
+// @version      2.103.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6697,7 +6697,13 @@ const __gmSetRaw = GM_setValue;
       if (!simUntil || Date.now() >= simUntil) return [];
       const mode = String(GM_getValue("ogamex_threat_sim_mode", "moon") || "moon");
       const startedAt = parseInt(GM_getValue("ogamex_threat_sim_started", "0")) || Date.now();
-      const b = CONFIG.expeditions?.launchFrom || CONFIG.asteroidMining.minerBase;
+      // v2.103.1: cel symulacji = para, na której operator STAŁ przy starcie
+      // (zapisana w ogamex_threat_sim_target). Incydent 21:19: flota stała na
+      // księżycu [5:67:5], a symulacja biła w bazę z konfiguracji [3:272:7] —
+      // hangar pusty, „nothing to save", zero testu. Fallback: baza z configu.
+      let b = null;
+      try { b = JSON.parse(GM_getValue("ogamex_threat_sim_target", "null")); } catch {}
+      if (!b || !Number.isFinite(b.galaxy)) b = CONFIG.expeditions?.launchFrom || CONFIG.asteroidMining.minerBase;
       if (!b || !Number.isFinite(b.galaxy)) return [];
       const key = `${b.galaxy}:${b.system}:${b.position}`;
       const etaOf = (base) => Math.max(5, Math.round((startedAt + base * 1000 - Date.now()) / 1000));
@@ -13616,8 +13622,12 @@ const __gmSetRaw = GM_setValue;
       const simBtn = document.getElementById("ogx-threat-sim");
       if (simBtn) simBtn.addEventListener("click", () => {
         if (!CONFIG.enabled || !CONFIG.threatAlarm?.enabled) { log("[TEST] najpierw włącz bota i alarm obcej floty.", "error"); return; }
+        // v2.103.1: cel = para aktywnego ciała (tam, gdzie stoi flota), nie baza z configu.
+        const here = HomeBase.coords();
+        const simTarget = (here && Number.isFinite(here.galaxy) && Number.isFinite(here.position)) ? { galaxy: here.galaxy, system: here.system, position: here.position } : null;
+        const simKey = simTarget ? `[${simTarget.galaxy}:${simTarget.system}:${simTarget.position}]` : "bazę z konfiguracji";
         if (!window.confirm(
-          "SYMULACJA ATAKU na bazę?\n\n" +
+          `SYMULACJA ATAKU na ${simKey} (aktywne ciało — stań tam, gdzie stoi flota)?\n\n` +
           "Przez 90 s obrona będzie widzieć 1 wrogi atak i przejdzie PEŁNĄ ścieżkę naprawdę:\n" +
           "• potwierdzenie ~25-35 s,\n" +
           "• EWAKUACJA całej floty i surowców na drugie ciało (planeta ↔ księżyc),\n" +
@@ -13627,10 +13637,11 @@ const __gmSetRaw = GM_setValue;
         const modeIn = String(window.prompt("Tryb symulacji: moon (atak na księżyc, 150 s) / planet / both (oba ciała → ucieczka w powietrze)", "moon") || "moon").trim().toLowerCase();
         const mode = ["moon", "planet", "both"].includes(modeIn) ? modeIn : "moon";
         GM_setValue("ogamex_threat_sim_mode", mode);
+        GM_setValue("ogamex_threat_sim_target", simTarget ? JSON.stringify(simTarget) : "null");
         GM_setValue("ogamex_threat_sim_started", String(Date.now()));
         GM_setValue("ogamex_threat_sim_e2e_said", "");
         GM_setValue("ogamex_threat_sim_until", String(Date.now() + (mode === "both" ? 330 : 180) * 1000));
-        log(`[TEST] SYMULACJA ATAKU uruchomiona (tryb ${mode}) — wiersz wroga idzie przez PRAWDZIWY parser listy ruchów. Zmierzę czas od startu do wysyłki ratunku.`, "error");
+        log(`[TEST] SYMULACJA ATAKU uruchomiona (tryb ${mode}, cel ${simKey}) — wiersz wroga idzie przez PRAWDZIWY parser listy ruchów. Zmierzę czas od startu do wysyłki ratunku.`, "error");
         log("[TEST] SYMULACJA ATAKU uruchomiona. Obserwuj sekwencję: kandydat → ALARM → RATUNEK → koniec alarmu → POWRÓT. Wszystko poniżej to prawdziwa maszyneria obrony.", "error");
         ThreatLog.add("odczyt", `TEST: symulacja ataku uruchomiona przez operatora (tryb ${mode}).`);
       });

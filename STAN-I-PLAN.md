@@ -1,10 +1,23 @@
-# OGameX Assistant — stan na 25 sierpnia 2026, ~21:00 (v2.103.0)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~21:30 (v2.103.1)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (28) — v2.103.1: symulacja ataku celuje w aktywne ciało
+
+- Incydent 21:19 (test „both" po wgraniu 2.103.0): flota stała na księżycu
+  [5:67:5] (po Deployu), a symulacja wstrzykiwała atak na BAZĘ z configu
+  [3:272:7] — bot przełączył się tam, hangar pusty na obu ciałach → „MOON
+  SAVE nothing to save — aborting". Obrona zadziałała poprawnie wobec tego,
+  co widziała; test po prostu bił w złe miejsce. Prawdziwy atak na [5:67:5]
+  obsłużyłby (od v2.55/2.75.1 ewakuuje TĘ kolonię, na którą leci atak).
+- v2.103.1: przy starcie symulacji cel = para aktywnego ciała
+  (`HomeBase.coords()` → `ogamex_threat_sim_target`); okno potwierdzenia
+  i log pokazują cel. Fallback: baza z configu. Zasada: **symulację
+  odpalać stojąc na ciele, gdzie stoi flota.**
 
 ## AKTUALIZACJA 25.08 (27) — v2.103.0: Odkrywca — ekspedycje 40 min
 
