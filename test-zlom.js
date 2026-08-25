@@ -116,6 +116,12 @@ function run(rows, byId = {}) {
 {
   const rh = bodyOf("recyclersHome", "");
   check("recyclersHome(): brak zwiadu → null (nie 0)", /if \(!recon\?\.ships\) return null;/.test(rh) && /catch \{ return null; \}/.test(rh));
+  // zwiad zapisuje ships jako TABLICĘ [{type, qty}] — wykonaj prawdziwe ciało
+  const rhFn = new Function("document", "GM_getValue", "return (function(){" + rh + "}).call({})");
+  const noDom = { querySelectorAll: () => [] };
+  check("recyclersHome(): tablica ze zwiadu → liczba recyklerów", rhFn(noDom, () => JSON.stringify({ ships: [{ type: "ASTEROID_MINER", qty: 5 }, { type: "RECYCLER", qty: 7898922610 }] })) === 7898922610);
+  check("recyclersHome(): tablica bez recyklerów → 0", rhFn(noDom, () => JSON.stringify({ ships: [{ type: "ASTEROID_MINER", qty: 5 }] })) === 0);
+  check("recyclersHome(): brak zwiadu → null", rhFn(noDom, () => "null") === null);
   const sv = bodyOf("shouldVisit", "");
   check("shouldVisit(): blokuje tylko przy PEWNYM zerze recyklerów", /recyclersHome\(\) === 0\) return false/.test(sv) && !/recyclersHome\(\) <= 0/.test(sv));
 }

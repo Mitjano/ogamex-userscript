@@ -1041,3 +1041,7 @@ Otwarte (kolejność):
   Collect jawnie albo NIE wysyłają). Test: `test-zlom.js` (10 checków).
 - DO POTWIERDZENIA na żywo: log `[ZŁOM] pole złomu na [3:272:16] — wysyłam
   recyklery` → `[ZŁOM] misja: "Collect"`.
+- **v2.99.4 (07:40):** po 2.99.3 bot ZOBACZYŁ złom, ale „zero recyklerów" —
+  `recyclersHome()` czytało `recon.ships.RECYCLER`, a zwiad zapisuje tablicę
+  `[{type, qty}]` → zawsze 0. Ta bramka blokowała zbieranie od 2.48.0.
+  Naprawione (szukanie po `type`), test wykonuje prawdziwe ciało.
