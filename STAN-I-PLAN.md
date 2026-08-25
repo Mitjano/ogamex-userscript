@@ -1,10 +1,66 @@
-# OGameX Assistant — stan na 5 sierpnia 2026, ~17:00 (v2.71.0)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~17:00 (v2.102.4)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (26) — v2.102.3–2.102.4: PRAWDZIWY ATAK 16:13–16:33 i pamięć ataku
+
+- INCYDENT: ACS Ibry z [3:250:3] — 712 mld Reaperów + 2×136 mld BS na
+  księżyc. Flota uratowana **ręcznym klikiem ownera** + zamiataniem 16:28:02.
+  Bot zawiódł: 16:22:47/16:27:48 alarm ZDJĘTY, bo 2 wylądowane sondy
+  (eta~0) na liście ≥ 1 Hostile na pasku → „zero" → 16:25:15 AUTO-POWRÓT
+  wiózł flotę POD atak; 16:14/16:21 kandydat kasowany przez „czystą" listę
+  (fork gubi wiersz ACS); 16:26:11 ratunek z samego paska bez ciała celu
+  PLANETA→KSIĘŻYC (pod atak) — uratował flip pustego hangaru.
+- v2.102.3: nadwyżka paska vs ataki + sondy W LOCIE (wylądowane nie
+  maskują; `barCountsProbes`); **PAMIĘĆ ATAKU** (`ogamex_atk_until` + ciało
+  celu per para) — dopóki widziany dolot nie minął: alarm nie gaśnie,
+  kandydat nie ginie, powrót nie rusza (+60 s), ratunek zna ciało celu;
+  alarm/kandydat gasną WYŁĄCZNIE od żywego paska z zerem.
+- v2.102.4 (3 audyty adwersarialne + recenzja; replay ataku na nowym
+  kodzie: błędy się nie powtarzają): pamięć pisana zawsze gdy są wiersze,
+  sufit 3 h, ETA sanity, bezpiecznik powrotu ≤20 min; wabik zawrócony =
+  żywy pasek 0×2 → czyszczenie; `ThreatMonitor.attackBodiesFor/attackBodyFor`
+  = lista ∪ pamięć — jedno źródło prawdy o ciele celu (flipy formularza,
+  zamiatanie, straż, AirSave); ratunek nigdy NA znane atakowane ciało;
+  refugeBody dopiero po `commitGuardSwap`; auto-powrót OFF nie rozbraja;
+  ręczny RATUJ w oknie kandydata → trigger threat; strandowanie floty =
+  BŁĄD push. Bateria: wszystko OK.
+
+OTWARTE: po wgraniu v2.102.4 klik „TEST: symulacja ataku" w grze; brak
+jeszcze bojowego potwierdzenia pamięci ataku na żywo. Genesis 28.08 18:00 GMT.
+
+## AKTUALIZACJA 25.08 (25) — v2.100.0–2.102.2: straż świadoma ciała, zamiatanie, pierwsza bojowa ucieczka
+
+- v2.100.0 (audyt 25.08): D1 atak w ciało z uratowaną flotą przy uzbrojonej
+  straży → skok na drugie ciało, zamiatanie startuje z ATAKOWANEGO ciała;
+  D2 zegar zawrócenia przesuwa się z dosłanymi falami (max dolot − 1 min);
+  D3 faza `recalled` blokuje ratunek tylko do lądowania; D4 wracające fale
+  ekspedycji/asteroid lecą tym samym Deployem do refugium. Wyłącznik
+  `threatAlarm.bodyAwareGuard` (OFF = 2.99.6). Testy: test-fale.js.
+- v2.100.1: 6 poprawek po 2 recenzjach. v2.101.0: zamiatanie wg zegara
+  powrotów + ostrzeżenie o falach nie do uratowania. v2.102.0: „obrona bez
+  cichej ślepoty" (4 audyty adwersarialne). v2.102.1: puste zamiatania przy
+  „wróg blisko" co 45 s (lądowanie nadal 20 s).
+- 12:45 test „both": **PIERWSZE bojowe potwierdzenie ucieczki w powietrze**.
+  v2.102.2: zegar zawrócenia od czasu odczytu zdarzeń (koniec dryfu +1 s/tick),
+  detektor ręcznego zawrócenia nie zagłusza logu ZAWRÓCONA, BLITZ tylko przy
+  nieaktywnym alarmie.
+
+## AKTUALIZACJA 25.08 (24) — v2.99.1–2.99.6: ślepy alarm, szybszy skan, złom na 16
+
+- v2.99.1 (20.08): ślepy alarm sam idzie po wzrok — wymuszony przegląd „/"
+  po 5 min bez odczytu. v2.99.2 (22.08): skan asteroid 1–3 s między
+  układami, limit nawigacji 450/h (decyzja ownera).
+- v2.99.3–2.99.6: złom na [baza:16] zbierany naprawdę — sprawdzenie na
+  każdym wejściu na galaktykę bazy, link z tooltipa/fallback po koordach
+  (test-zlom.js); `recyclersHome()` czytało zwiad jak mapę, a to tablica →
+  zawsze 0 recyklerów (naprawione); recycle wypięty ze strażników duplikatu
+  (ekspedycje na ten sam cel blokowały wysyłkę); nieudana wysyłka zeruje
+  10-min blokadę.
 
 ## AKTUALIZACJA 18.08 (23) — v2.99.0: kalibracja czasu lotu per-serwer (GENESIS)
 
