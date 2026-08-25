@@ -31,9 +31,9 @@ function bodyOf(name, argList) {
   throw new Error(`nie domknąłem ciała ${name}`);
 }
 
-const decideBody = bodyOf("decide", "{ enabled, bodies, activePhase, failedAt, now }");
+const decideBody = bodyOf("decide", "{ enabled, bodies, activePhase, failedAt, now, landed }");
 if (decideBody.length < 100) throw new Error("ciało decide() podejrzanie krótkie — ekstrakcja się rozjechała");
-const decide = new Function("o", "const { enabled, bodies, activePhase, failedAt, now } = o;\n" + decideBody);
+const decide = new Function("o", "const { enabled, bodies, activePhase, failedAt, now, landed } = o;\n" + decideBody);
 
 const recallBody = bodyOf("recallAtFor", "maxEtaSec, now");
 const recallAtFor = new Function("maxEtaSec", "now", "const this_RECALL = 120000;\n" + recallBody.replace(/this\.RECALL_BUFFER_MS/g, "this_RECALL"));
@@ -77,8 +77,16 @@ eq("ucieczka już w locie → nie wysyłaj drugiej (i nie rób swapa)",
 eq("wysyłka w przygotowaniu → jak wyżej",
   decide({ enabled: true, bodies: ["moon", "planet"], activePhase: "arming", failedAt: 0, now: NOW }), "active");
 
-eq("flota zawrócona, wraca → jak wyżej",
-  decide({ enabled: true, bodies: ["moon", "planet"], activePhase: "recalled", failedAt: 0, now: NOW }), "active");
+eq("flota zawrócona, JESZCZE W LOCIE do domu → jak wyżej",
+  decide({ enabled: true, bodies: ["moon", "planet"], activePhase: "recalled", failedAt: 0, now: NOW, landed: false }), "active");
+
+// v2.100.0 (audyt 25.08, D3): po LĄDOWANIU faza `recalled` nie blokuje
+// obrony — atak dosłany na świeżo wylądowaną flotę musi wywołać reakcję.
+eq("flota zawrócona i WYLĄDOWAŁA, oba ciała pod atakiem → znowu w powietrze",
+  decide({ enabled: true, bodies: ["moon", "planet"], activePhase: "recalled", failedAt: 0, now: NOW, landed: true }), "air");
+
+eq("flota wylądowała, atak w jedno ciało → zwykły skok w parze",
+  decide({ enabled: true, bodies: ["moon"], activePhase: "recalled", failedAt: 0, now: NOW, landed: true }), "swap");
 
 eq("porażka 5 min temu → swap (nie pętlimy nieudanego startu)",
   decide({ enabled: true, bodies: ["moon", "planet"], activePhase: null, failedAt: NOW - 5 * 60 * 1000, now: NOW }), "swap");

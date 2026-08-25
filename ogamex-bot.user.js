@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.99.6
+// @version      2.100.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -167,6 +167,17 @@ const __gmSetRaw = GM_setValue;
       // powolnym Deployem do innej kolonii i ZAWRACA po przejściu ataków
       // (flota w locie jest nietykalna). OFF = zachowanie 2.84.0.
       airSave: true,
+      // ── v2.100.0: STRAŻ ŚWIADOMA CIAŁA (audyt 25.08 — fale + atak kombinowany) ──
+      // Do 2.99.6 uzbrojona straż nie porównywała atakowanego ciała z tym,
+      // na którym STOI uratowana flota (refugium). Scenariusz: fale na
+      // księżyc → flota skacze na planetę → fale przechodzą → napastnik
+      // dosyła atak NA PLANETĘ przy wciąż uzbrojonej straży. Gałąź straży
+      // kończyła się `return false`, a zamiatanie startowało z księżyca
+      // (pusty hangar → „nothing to save"). Flota stała na planecie pod
+      // atakiem. Teraz: atak w ciało z flotą → skok na drugie (jeśli
+      // czyste) albo ucieczka w powietrze (jeśli oba); zamiatanie startuje
+      // z ATAKOWANEGO ciała, nie z aktywnego. OFF = zachowanie 2.99.6.
+      bodyAwareGuard: true,
       // v2.80.0: cichy dźwięk trzymający kartę przy życiu w tle.
       // Skutek uboczny: karta dostaje ikonkę głośnika i pojawia się
       // w sterowaniu multimediami. Dlatego jest wyłącznik.
@@ -5669,9 +5680,13 @@ const __gmSetRaw = GM_setValue;
 
     // CZYSTA decyzja — bez DOM, sieci i zegara systemowego. Testowana
     // offline (test-ucieczka.js) i wołana na żywo przez MoonSave.run().
-    decide({ enabled, bodies, activePhase, failedAt, now }) {
+    // v2.100.0 (audyt 25.08, D3): faza `recalled` blokuje zwykły ratunek
+    // TYLKO do lądowania (`landed`). Dotąd blokowała jeszcze 10 min po nim —
+    // atak dosłany na świeżo wylądowaną flotę nie wywoływał skoku.
+    decide({ enabled, bodies, activePhase, failedAt, now, landed }) {
       if (!enabled) return "swap";
-      if (activePhase === "launched" || activePhase === "recalled" || activePhase === "arming") return "active";
+      if (activePhase === "launched" || activePhase === "arming") return "active";
+      if (activePhase === "recalled" && !landed) return "active";
       if (!bodies || bodies.length < 2) return "swap";
       if (failedAt && now - failedAt < 10 * 60 * 1000) return "swap";
       return "air";
@@ -5679,6 +5694,23 @@ const __gmSetRaw = GM_setValue;
 
     // CZYSTA arytmetyka zawrócenia: ostatni dolot + bufor.
     recallAtFor(maxEtaSec, now) { return now + Math.max(0, maxEtaSec || 0) * 1000 + this.RECALL_BUFFER_MS; },
+
+    // Kiedy zawrócona flota fizycznie ląduje w domu: powrót trwa tyle,
+    // ile lot do chwili zawrócenia.
+    landedAtOf(st) {
+      const backMs = Math.max(60000, (st.recalledAt || 0) - (st.sentAt || 0));
+      return (st.recalledAt || 0) + backMs;
+    },
+
+    // ── v2.100.0 (D2): CZYSTE przeliczenie zegara zawrócenia w locie ──
+    // Napastnik dosyła fale PO starcie ucieczki → zawrócenie przesuwa się na
+    // ostatni dolot + bufor. Górna granica: dolot NASZEGO lotu do refugium
+    // minus minuta — zawrócić można tylko lot, który jeszcze leci.
+    recallAtUpdate({ recallAt, maxEtaSec, now, sentAt, flightMs }) {
+      const want = Math.max(recallAt || 0, now + Math.max(0, maxEtaSec || 0) * 1000 + this.RECALL_BUFFER_MS);
+      const cap = (sentAt && flightMs) ? sentAt + flightMs - 60000 : Infinity;
+      return { recallAt: Math.min(want, cap), capped: want > cap };
+    },
 
     decideFor(atCoords) {
       const k = this.key(atCoords);
@@ -5694,6 +5726,7 @@ const __gmSetRaw = GM_setValue;
         activePhase: (st.phase && this.key(st.at) === k) ? st.phase : null,
         failedAt,
         now: Date.now(),
+        landed: st.phase === "recalled" ? Date.now() >= this.landedAtOf(st) : false,
       });
     },
 
@@ -5762,6 +5795,15 @@ const __gmSetRaw = GM_setValue;
     // obie ścieżki mogą odpalić dla tej samej wysyłki, stąd dedup 15 s).
     afterSend(mission) {
       const st = this.state();
+      // v2.100.0 (D4): dodatkowy lot z zamiatania w trakcie ucieczki —
+      // dopisuje się do stanu, NIE resetuje zegara ani fazy głównego lotu.
+      if (mission && mission.airExtra) {
+        if (st.phase !== "launched") return;
+        if (Date.now() - (st.extraAt || 0) < 15000) return;
+        this.save({ ...st, extra: (st.extra || 0) + 1, extraAt: Date.now() });
+        updateStatusUI();
+        return;
+      }
       if (st.phase === "launched" && Date.now() - (st.sentAt || 0) < 15000) return;
       this.save({
         ...st,
@@ -5789,7 +5831,30 @@ const __gmSetRaw = GM_setValue;
       }
       if (st.phase === "launched") {
         DefenceWatchdog.note("ucieczka w powietrze w locie — zawrócenie wg zegara");
-        if (Date.now() >= (st.recallAt || 0)) await this._recall(st);
+        // ── v2.100.0 (D2): zegar zawrócenia ŻYJE — dosłane fale go przesuwają ──
+        let cur = st;
+        try {
+          const maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[this.key(st.at)] || 0;
+          if (maxEta > 0) {
+            const u = this.recallAtUpdate({ recallAt: st.recallAt, maxEtaSec: maxEta, now: Date.now(), sentAt: st.sentAt, flightMs: st.flightMs });
+            if (u.recallAt > (st.recallAt || 0) + 1000) {
+              cur = { ...st, recallAt: u.recallAt };
+              this.save(cur);
+              const hhmm = new Date(u.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+              log(`[UCIECZKA] dosłana fala z dłuższym dolotem — zawrócenie przesunięte na ~${hhmm}.`, "warn");
+              ThreatLog.add("ATAK", `Nowa fala w trakcie ucieczki — zawrócenie przesunięte na ~${hhmm}.`);
+            }
+            if (u.capped && Date.now() - (st.capSaidAt || 0) > 10 * 60 * 1000) {
+              cur = { ...cur, capSaidAt: Date.now() };
+              this.save(cur);
+              log("[UCIECZKA] UWAGA: ostatni dolot ataku wykracza poza nasz lot do refugium — zawrócę tuż przed dolotem; po powrocie straż/skok w parze przejmuje obronę.", "error");
+            }
+          }
+        } catch {}
+        if (Date.now() >= (cur.recallAt || 0)) { await this._recall(cur); return; }
+        // ── v2.100.0 (D4): zamiatanie w trakcie ucieczki — fale ekspedycji/asteroid,
+        // które lądują na atakowanej parze, też idą w powietrze.
+        await this.sweep(cur);
         return;
       }
       if (st.phase === "recalled") {
@@ -5811,18 +5876,64 @@ const __gmSetRaw = GM_setValue;
       }
     },
 
-    // Nasz lot: Deploy/stacjonowanie z atakowanej pary do refugium, nie-powrotny.
-    _findOurRow(doc, st) {
+    // ── v2.100.0 (D4): ZAMIATANIE W TRAKCIE UCIECZKI ──
+    // Owner (25.08): „bot ma chronić wszystkie fale" — 8 fal ekspedycji
+    // z księżyca wraca w trakcie ucieczki i lądowało na atakowanej parze
+    // bez żadnej reakcji (run() widział „ucieczka w toku" i milczał, straż
+    // nie była uzbrojona). Teraz każda fala, która wyląduje, leci tym samym
+    // powolnym Deployem do tego samego refugium; zawrócenie zbiera WSZYSTKIE
+    // nasze loty (patrz _recall). Pusty hangar = jeden przelot strony.
+    SWEEP_MAX: 40,
+    async sweep(st) {
+      if (!ThreatMonitor.active()) return;
+      if (!st.at || !st.to) return;
+      // Pierwsze 10 min co 90 s (fale wracają gęsto), potem co 5 min.
+      const gap = Date.now() - (st.sentAt || 0) < 10 * 60 * 1000 ? MoonSave.MIN_RESAVE_MS : 5 * 60 * 1000;
+      if (Date.now() - Math.max(st.sweepAt || 0, st.sentAt || 0) < gap) return;
+      if ((st.sweeps || 0) >= this.SWEEP_MAX) {
+        if (!st.sweepCapSaid) { this.save({ ...st, sweepCapSaid: true }); log(`[UCIECZKA] limit ${this.SWEEP_MAX} zamiatań w jednej ucieczce — dalsze fale SPRAWDŹ RĘCZNIE.`, "error"); }
+        return;
+      }
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return;
+      if (MoonSave.running) return;
+      const speed = Math.max(1, Math.min(100, parseInt(CONFIG.fleetSave?.speedPercent) || 10));
+      const fleetUrl = `/fleet?x=${st.to.galaxy}&y=${st.to.system}&z=${st.to.position}`;
+      this.save({ ...st, sweepAt: Date.now(), sweeps: (st.sweeps || 0) + 1 });
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "air_save_direct",
+        moonSave: true,
+        airSave: true,
+        airExtra: true,          // dodatkowy lot: nie resetuje stanu ucieczki
+        atCoords: st.at,
+        holdUntilMs: st.recallAt,
+        speedPercent: speed,
+        fleetUrl,
+        step: "select_ships_direct",
+        timestamp: Date.now(),
+      }));
+      DefenceHold.stamp();
+      ThreatLog.add("STRAŻ", `Zamiatanie w trakcie ucieczki nr ${(st.sweeps || 0) + 1}: co wylądowało na [${this.key(st.at)}], leci do [${this.key(st.to)}].`);
+      log(`[UCIECZKA] zamiatanie nr ${(st.sweeps || 0) + 1}: sprawdzam hangar [${this.key(st.at)}] — wracające fale też idą w powietrze.`, "fleet");
+      await AntiDetection.sleep(300 + Math.random() * 400);
+      window.location.replace(fleetUrl);
+    },
+
+    // Nasze loty: Deploy/stacjonowanie z atakowanej pary do refugium, nie-powrotne.
+    // v2.100.0: może ich być kilka (lot główny + fale z zamiatania).
+    _findOurRows(doc, st) {
       const toKey = this.key(st.to), atKey = this.key(st.at);
+      const out = [];
       for (const tr of doc.querySelectorAll("tr[class*='row-mission-type-']")) {
         const cls = String(tr.className);
         if (!/DEPLOY|STATION/i.test(cls)) continue;
         if (/return/i.test(cls)) continue;
         const txt = tr.textContent || "";
-        if (toKey && txt.includes(`[${toKey}]`) && atKey && txt.includes(`[${atKey}]`)) return tr;
+        if (toKey && txt.includes(`[${toKey}]`) && atKey && txt.includes(`[${atKey}]`)) out.push(tr);
       }
-      return null;
+      return out;
     },
+    _findOurRow(doc, st) { return this._findOurRows(doc, st)[0] || null; },
 
     async _recall(st) {
       if (this._recalling) return;
@@ -5896,8 +6007,20 @@ const __gmSetRaw = GM_setValue;
           if (!row2 || /return|powr|zawr/i.test((row2.className || "") + " " + (row2.textContent || ""))) ok = true;
         } catch {}
         if (ok) {
+          // v2.100.0 (D4): zostały jeszcze nasze loty (fale z zamiatania)?
+          // Zawracamy po jednym na tick — próby liczone od nowa per lot.
+          let left = 0;
+          try {
+            const res3 = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+            if (res3.ok) left = this._findOurRows(new DOMParser().parseFromString(await res3.text(), "text/html"), st).length;
+          } catch {}
+          if (left > 0) {
+            this.save({ ...st, recallTries: 0, recalledSome: (st.recalledSome || 0) + 1 });
+            log(`[UCIECZKA] lot zawrócony, zostało jeszcze ${left} — zawracam kolejny w następnym przebiegu.`, "success");
+            return;
+          }
           this.save({ ...st, recallTries: tries, phase: "recalled", recalledAt: Date.now() });
-          log("[UCIECZKA] flota ZAWRÓCONA — wraca do domu. Ataki przeszły w pustkę.", "success");
+          log(`[UCIECZKA] flota ZAWRÓCONA${st.recalledSome ? ` (${(st.recalledSome || 0) + 1} loty)` : ""} — wraca do domu. Ataki przeszły w pustkę.`, "success");
           ThreatLog.add("POWRÓT", "UCIECZKA W POWIETRZE: flota zawrócona po przejściu ataków — wraca do domu.");
         } else {
           log(`[UCIECZKA] zawrócenie niepotwierdzone (próba ${tries}/5) — ponowię.`, "warn");
@@ -7527,6 +7650,32 @@ const __gmSetRaw = GM_setValue;
             return this.run({ auto: true, where: wNow.at, reason: `AUTOMAT: oba ciała [${guardedKey}] pod atakiem` });
           }
         } catch (e) { log(`[UCIECZKA] błąd sprawdzenia pary strzeżonej: ${e.message}`, "warn"); }
+        // ── v2.100.0: ATAK W CIAŁO, NA KTÓRYM STOI URATOWANA FLOTA ──
+        // Audyt 25.08 (D1): fale na księżyc przeszły, straż wciąż uzbrojona
+        // (flota na planecie = refugium), napastnik dosyła atak NA PLANETĘ.
+        // Jedno atakowane ciało → gałąź wyżej milczy, zamiatanie startuje
+        // z księżyca i zastaje pusty hangar. Flota stała pod atakiem.
+        // Decyzja przez czystą funkcję swapDecision (test-fale.js):
+        // atak w ciało z flotą → skok na drugie; drugie też atakowane →
+        // gałąź „oba ciała" wyżej już to załatwiła.
+        try {
+          if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !wNow.returning) {
+            const guardedKey = RescueQueue.str(wNow.at);
+            const bodiesNow = (ThreatMonitor.events()?.targetBodiesAll || {})[guardedKey] || [];
+            const fleetBody = wNow.refugeBody || null;
+            if (guardedKey && this.swapDecision({ attacked: bodiesNow, fleetBody }) === "move") {
+              const other = fleetBody === "moon" ? "planet" : "moon";
+              const nm = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
+              if (Date.now() - (wNow.lastAt || 0) < this.MIN_RESAVE_MS) {
+                this._sayOnce("moveSoon", `[STRAŻ] atak w ${nm(fleetBody)} [${guardedKey}], gdzie stoi flota — poprzedni ruch jeszcze ląduje, skok za chwilę.`, "warn");
+                return false;
+              }
+              log(`[STRAŻ] atak w ${nm(fleetBody)} [${guardedKey}] — TAM stoi uratowana flota. Przenoszę ją na ${nm(other)} (czyste ciało).`, "error");
+              ThreatLog.add("ATAK", `Atak w ciało z flotą (${fleetBody}) [${guardedKey}] przy uzbrojonej straży — skok ${fleetBody} → ${other}.`);
+              return this.swapWithinPair(wNow, fleetBody, other, `AUTOMAT: atak w ${fleetBody} [${guardedKey}], flota tam stoi`);
+            }
+          }
+        } catch (e) { log(`[STRAŻ] błąd decyzji ciała: ${e.message}`, "warn"); }
         return false;
       }
       if (this.running) return false;
@@ -7771,8 +7920,97 @@ const __gmSetRaw = GM_setValue;
         if (!w.capped) { this.saveWatch({ ...w, capped: true }); log(`[MOON SAVE] limit ${this.MAX_SAVES_PER_ALERT} zapisów na alarm osiągnięty — straż stoi. SPRAWDŹ GRĘ.`, "error"); }
         return false;
       }
+      // ── v2.100.0: ZAMIATANIE STARTUJE Z ATAKOWANEGO CIAŁA ──
+      // Dotąd sweep startował z ciała AKTYWNEGO w UI (= z którego był
+      // pierwszy ratunek). Gdy napastnik przeniósł atak na drugie ciało,
+      // zamiatanie sprzątało puste ciało, a wracające fale ekspedycji
+      // lądowały pod atakiem. Teraz: jedno atakowane ciało → start z niego
+      // (switch_to_body), cel = drugie; oba → ucieczka w powietrze (jej
+      // własne zamiatanie w AirSave.tick() zbiera fale w trakcie lotu).
+      try {
+        if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !w.returning) {
+          const key = RescueQueue.str(w.at);
+          const bodies = (ThreatMonitor.events()?.targetBodiesAll || {})[key] || [];
+          if (bodies.length >= 2) {
+            const v = AirSave.decideFor(w.at);
+            if (v === "active") return false;               // ucieczka w toku — jej tick zamiata
+            if (v === "air") {
+              ThreatLog.add("STRAŻ", `Zamiatanie: oba ciała [${key}] pod atakiem — ucieczka w powietrze zamiast skoku.`);
+              return this.run({ auto: true, where: w.at, reason: `AUTOMAT: oba ciała [${key}] pod atakiem (zamiatanie)` });
+            }
+          } else if (bodies.length === 1 && (bodies[0] === "moon" || bodies[0] === "planet")) {
+            const atk = bodies[0], other = atk === "moon" ? "planet" : "moon";
+            ThreatLog.add("STRAŻ", `Zamiatanie nr ${(w.saves || 0) + 1}: sprzątam atakowane ciało (${atk}) → ${other}.`);
+            return this.swapWithinPair(w, atk, other, `straż wielofalowa — sprzątam ${atk === "moon" ? "księżyc" : "planetę"}`, { sweep: true });
+          }
+        }
+      } catch (e) { log(`[STRAŻ] błąd zamiatania świadomego ciała: ${e.message} — zamiatam po staremu.`, "warn"); }
       ThreatLog.add("STRAŻ", `Zamiatanie nr ${(w.saves || 0) + 1}: sprawdzam, czy coś wróciło na bazę.`);
       return this.run({ sweep: true, reason: "straż wielofalowa — sprzątam planetę" });
+    },
+
+    // ── v2.100.0: CZYSTA decyzja skoku w obrębie pary (test-fale.js) ──
+    // attacked = ciała pary z listy ruchów, fleetBody = ciało, na którym stoi
+    // flota (refugeBody straży). "air" = oba pod atakiem; "move" = atak w ciało
+    // z flotą, drugie czyste; "hold" = flota po bezpiecznej stronie (albo
+    // nic nie leci); "legacy" = nie wiemy, gdzie flota — stara ścieżka.
+    swapDecision({ attacked, fleetBody }) {
+      const a = [...new Set((attacked || []).filter(b => b === "moon" || b === "planet"))];
+      if (a.length >= 2) return "air";
+      if (!a.length) return "hold";
+      if (fleetBody !== "moon" && fleetBody !== "planet") return "legacy";
+      return a[0] === fleetBody ? "move" : "hold";
+    },
+
+    // ── v2.100.0: skok w obrębie strzeżonej pary z JAWNYM ciałem startu ──
+    // Ta sama maszyneria co returnHome (switch_to_body → formularz), ale
+    // kierunek podaje wołający. flippedBody=true wyłącza korekty ciała na
+    // formularzu (one zakładają PIERWSZY ratunek alarmu). homeBody zostaje —
+    // powrót po alarmie nadal wie, gdzie dom; refugeBody = nowe miejsce floty.
+    async swapWithinPair(w, from, to, reason, { sweep = false } = {}) {
+      if (this.running) return false;
+      if (!w || !w.armed || !w.at) return false;
+      if (from === to || !["moon", "planet"].includes(from) || !["moon", "planet"].includes(to)) return false;
+      const url = this.homeUrl(w.at);
+      if (!url) return false;
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") {
+        let kind = "?";
+        try { const pm = JSON.parse(pending); kind = pm.moonSave || pm.fleetSave ? "obrona" : (pm.type || "?"); } catch {}
+        if (kind === "obrona") return false;              // ratunek/powrót w toku — nie dublować
+        ThreatLog.add("RATUNEK", `Wywłaszczenie: przerwane zadanie ${kind}, żeby zrobić skok ${from} → ${to}.`);
+        GM_setValue("pending_mission", null);
+      }
+      this.running = true;
+      try {
+        GM_setValue("pending_mission", JSON.stringify({
+          type: "moon_save_direct",
+          moonSave: true,
+          sweep: !!sweep,
+          flippedBody: true,     // ciało startu jawne — bez korekt formularza
+          atCoords: w.at,
+          launchBody: from,
+          targetBody: to,
+          homeBody: w.homeBody || from,
+          fleetUrl: url,
+          step: "switch_to_body",
+          timestamp: Date.now(),
+        }));
+        this.saveState({ at: Date.now(), reason });
+        this.saveWatch({ ...w, refugeBody: to, lastAt: Date.now(), saves: (w.saves || 0) + 1 });
+        DefenceHold.stamp();
+        const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
+        log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na [${w.at.galaxy}:${w.at.system}:${w.at.position}] (${reason}).`, sweep ? "fleet" : "success");
+        ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
+        await AntiDetection.sleep(400 + Math.random() * 600);
+        window.location.replace("/");
+        return true;
+      } catch (err) {
+        log(`[MOON SAVE] skok ${from} → ${to} nieudany: ${err.message}`, "error");
+        return false;
+      } finally {
+        this.running = false;
+      }
     },
 
     async run({ manual = false, sweep = false, auto = false, reason = "manual", where = null, queued = false } = {}) {
@@ -10676,6 +10914,13 @@ const __gmSetRaw = GM_setValue;
             mission.flightMs = capturedFlightMs;
             GM_setValue("pending_mission", JSON.stringify(mission));
             const neededMs = Math.max(0, (mission.holdUntilMs || 0) - Date.now()) + 60000;
+            if (capturedFlightMs < neededMs && mission.airExtra) {
+              // v2.100.0: lot dodatkowy (zamiatanie) za krótki — NIE tykamy stanu
+              // głównej ucieczki; fala zostaje, straż w parze przejmie ją po powrocie.
+              log(`[UCIECZKA] fala z zamiatania: lot ${Math.round(capturedFlightMs / 60000)} min < wymagane ${Math.ceil(neededMs / 60000)} min — tej fali nie wysyłam w powietrze.`, "warn");
+              GM_setValue("pending_mission", null);
+              return;
+            }
             if (capturedFlightMs < neededMs) {
               log(`[UCIECZKA] lot ${Math.round(capturedFlightMs / 60000)} min KRÓTSZY niż wymagane ${Math.ceil(neededMs / 60000)} min (ostatni dolot + bufor) — NIE wysyłam w powietrze, kolonia wraca na zwykły ratunek.`, "error");
               ThreatLog.add("BŁĄD", `Ucieczka w powietrze odwołana: lot ${Math.round(capturedFlightMs / 60000)} min < wymagane ${Math.ceil(neededMs / 60000)} min. Przechodzę na ratunek na drugie ciało.`);
