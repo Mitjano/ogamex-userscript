@@ -1,10 +1,25 @@
-# OGameX Assistant — stan na 25 sierpnia 2026, ~21:55 (v2.103.3)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~21:55 (v2.103.5)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (31) — v2.103.4–2.103.5: komunikat odmowy symulacji + fantom „PARALLEL: sent"
+
+- 2.103.4: odmowa startu symulacji mówi wprost, co kliknąć (straż uzbrojona →
+  „WRÓĆ NA BAZĘ"), plus alert. Kontekst: po fałszywym alarmie 21:34 straż
+  bazy [3:272:7] została uzbrojona; „WRÓĆ NA BAZĘ" przeniosło 22 nowe
+  pancerniki planeta→księżyc i rozbroiło straż (21:45:09).
+- 2.103.5: fantom 21:35:43 „PARALLEL: sent 2 000 000 000 miners" przy
+  miningu OFF i zerowej wysyłce — strona „flota wysłana" bez rozpoznanej
+  misji wpadała do gałęzi miningu ze STARYM `ogamex_last_dispatch`. Teraz:
+  decyzja górnicza tylko przy `asteroidMining.enabled` i rekordzie <10 min,
+  rekord zużywany jednorazowo (stary kasowany).
+- Stan po 21:45: straż rozbrojona, kolejka pusta, flota na księżycu [5:67:5].
+  **Otwarte: owner ma ustawić „Start ekspedycji" = 5:67:5** (bot broni
+  3:272:7 przy ślepym alarmie) i zrobić test `both` z księżyca 5:67:5.
 
 ## AKTUALIZACJA 25.08 (30) — v2.103.3: FAŁSZYWY ALARM z paska (3 sondy = „3 ataki")
 

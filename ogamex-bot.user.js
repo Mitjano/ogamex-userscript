@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.103.4
+// @version      2.103.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -15097,7 +15097,16 @@ const __gmSetRaw = GM_setValue;
       // double-bump the in-flight counter. The send stamp carries the kind.
       const lastSentInfo = readLastSent();
       const recentFarmSend = !!(lastSentInfo?.farm && Date.now() - (lastSentInfo.at || 0) < 60000);
-      if (am.parallelDispatch && lastDisp && !recentFarmSend) {
+      // v2.103.5 — FANTOM 25.08 21:35:43: strona „flota wysłana" bez rozpoznanej
+      // misji (ratunek/ucieczka już sprzątnięte) wpadała tu i liczyła STARY rekord
+      // minerów jako świeżą wysyłkę: „PARALLEL: sent 2 mld", zerowanie zegara
+      // powrotu, +1 lotów — przy miningu OFF i bez jednego wysłanego minera.
+      // Decyzja górnicza tylko dla ŚWIEŻEJ (<10 min) wysyłki i włączonego miningu;
+      // rekord zużywany jednorazowo.
+      const freshDisp = !!(lastDisp && Date.now() - (lastDisp.at || 0) < 10 * 60 * 1000);
+      if (lastDisp && !freshDisp) { GM_setValue("ogamex_last_dispatch", "null"); lastDisp = null; }
+      if (am.enabled && am.parallelDispatch && lastDisp && freshDisp && !recentFarmSend) {
+        GM_setValue("ogamex_last_dispatch", "null");
         parallelKeepScanning = decideAfterMiningSend({
           available: lastDisp.available,
           toSend: lastDisp.toSend,
