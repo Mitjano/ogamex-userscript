@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.102.4
+// @version      2.103.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -201,6 +201,10 @@ const __gmSetRaw = GM_setValue;
       enabled: false,
       waves: 8,                 // split the fleet into this many flights
       holdingHours: 1,          // "Expedition duration" on the send page
+      // v2.103.0: klasa ODKRYWCA — 40-minutowe ekspedycje (1,5x więcej lotów
+      // na slot, +30% łupu). ON = bot wybiera opcję „40 min" w formularzu;
+      // gdy jej nie ma (inna klasa), ostrzega i wysyła na holdingHours.
+      discoverer40: false,
       // Spacing between waves, randomised in this range. v2.15.1: owner
       // confirmed ~60s is enough separation in practice, so the whole fleet
       // goes out in ~8 minutes and mining gets the rest of the hour.
@@ -9331,6 +9335,7 @@ const __gmSetRaw = GM_setValue;
           fleetUrl: url,
           waves: Math.max(1, cfg.waves || 1),
           holdingHours: Math.max(1, cfg.holdingHours || 1),
+          holdingMinutes: cfg.discoverer40 ? 40 : 0, // v2.103.0: Odkrywca
           launchAt: b, // v2.84.0: skąd ma wyjść fala (formularz przełączy ciało)
           step: "select_ships_direct",
           timestamp: Date.now(),
@@ -9343,7 +9348,7 @@ const __gmSetRaw = GM_setValue;
         // for the small one. Expeditions are capped by something stricter
         // anyway: the game's expedition slots plus the wave gap. Total page
         // traffic stays under NavRateLimiter, which they do share.
-        log(`EXPEDITION wave → [${b.galaxy}:${b.system}:16] for ${cfg.holdingHours}h (1/${cfg.waves} of the fleet, ${slots.used}/${slots.total || "?"} slots used)`, "success");
+        log(`EXPEDITION wave → [${b.galaxy}:${b.system}:16] for ${cfg.discoverer40 ? "40min (Odkrywca)" : cfg.holdingHours + "h"} (1/${cfg.waves} of the fleet, ${slots.used}/${slots.total || "?"} slots used)`, "success");
         await AntiDetection.shortDelay();
         window.location.replace(url);
       } catch (err) {
@@ -9409,6 +9414,35 @@ const __gmSetRaw = GM_setValue;
   //
   // Read by: the expedition composition UI (which ships to send), the wave
   // planner (how many expedition slots exist), the farmer's slot budget.
+
+
+  // ── EXPO-DURATION (v2.103.0) ──────────────────────────────────────────
+  // Wybór opcji „Expedition duration" po TEKŚCIE opcji (markupu selecta nie
+  // znamy). minutes>0 (Odkrywca: 40) → szuka „40 min"/„40 minutes"/„0.67 h";
+  // brak → minutesHit=false i zwykły wybór godzinowy. Czysta funkcja — test
+  // test-odkrywca.js.
+  function pickExpeditionDuration(opts, { hours = "1", minutes = 0 } = {}) {
+    const txt = o => (o.textContent || "").replace(/\s+/g, " ").trim();
+    let minutesHit = false, option = null;
+    if (minutes > 0) {
+      const hFrac = (minutes / 60).toFixed(2).replace(/0+$/, "");
+      option = opts.find(o => {
+        const t = txt(o);
+        const mm = t.match(/^(\d+)\s*min/i);
+        if (mm && parseInt(mm[1]) === minutes) return true;
+        const hh = t.match(/^(\d+[.,]\d+)\s*(h|hour)/i);
+        if (hh && hh[1].replace(",", ".").startsWith(hFrac.slice(0, 3))) return true;
+        const v = String(o.value ?? "");
+        return v === String(minutes) && /min/i.test(t);
+      }) || null;
+      minutesHit = !!option;
+    }
+    if (!option) {
+      option = opts.find(o => { const t = txt(o); return !/min/i.test(t) && t.match(/^(\d+)\b/)?.[1] === String(hours); }) || null;
+    }
+    return { option, minutesHit };
+  }
+  // ── /EXPO-DURATION ─────────────────────────────────────────────────────
 
   const FleetRecon = {
     KEY: "ogamex_fleet_recon",
@@ -11905,8 +11939,14 @@ const __gmSetRaw = GM_setValue;
           let done = false;
           for (const sel of document.querySelectorAll("select")) {
             const opts = [...sel.options];
-            if (!opts.some(o => /\b\d+\s*(hour|hours|h|godz)/i.test(o.textContent || ""))) continue;
-            const hit = opts.find(o => (o.textContent || "").replace(/\s+/g, " ").trim().match(/^(\d+)\b/)?.[1] === want);
+            if (!opts.some(o => /\b\d+\s*(hour|hours|h|godz|min)/i.test(o.textContent || ""))) continue;
+            // v2.103.0: ODKRYWCA — najpierw opcja 40 min; gdy jej nie ma (inna
+            // klasa), głośno i na godziny.
+            const pick = pickExpeditionDuration(opts, { hours: want, minutes: mission.holdingMinutes || 0 });
+            if (mission.holdingMinutes && !pick.minutesHit) {
+              log(`[ODKRYWCA] brak opcji „${mission.holdingMinutes} min" w formularzu (masz: ${opts.map(o => (o.textContent || "").trim()).join(", ")}) — klasa to nie Odkrywca? Wysyłam na ${want}h.`, "warn");
+            }
+            const hit = pick.option;
             if (!hit) { log(`Expedition: no "${want}h" option (have: ${opts.map(o => (o.textContent || "").trim()).join(", ")}) — leaving the default.`, "warn"); break; }
             sel.value = hit.value;
             sel.dispatchEvent(new Event("input", { bubbles: true }));
@@ -13306,6 +13346,10 @@ const __gmSetRaw = GM_setValue;
               <input id="ogx-expo-hours" type="number" min="1" max="24" step="1" value="${CONFIG.expeditions.holdingHours}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
             <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
+              <span title="Klasa ODKRYWCA: ekspedycje 40-minutowe (zamiast min. 1 h). ON = bot wybiera „40 min" w formularzu; gdy tej opcji nie ma (inna klasa), ostrzega i wysyła na tyle godzin, ile wyżej.">Odkrywca: ekspedycje 40 min</span>
+              <button class="mini-btn" id="ogx-expo-disc40">${CONFIG.expeditions.discoverer40 ? "ON" : "OFF"}</button>
+            </label>
+            <label style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;font-size:10px;color:#bbb;">
               <span title="Minimalny odstęp między falami (sekundy). Odstęp = bezpieczeństwo: wracają pojedynczo, więc łowca złapie najwyżej jedną falę.">Odstęp fal min (s)</span>
               <input id="ogx-expo-gapmin" type="number" min="10" step="10" value="${CONFIG.expeditions.waveGapMinSec}" style="width:80px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid #1a5276;border-radius:3px;padding:2px 4px;font-size:10px;">
             </label>
@@ -13658,6 +13702,16 @@ const __gmSetRaw = GM_setValue;
       };
       bindExpo("ogx-expo-waves", "waves", "Expedition waves", { min: 1 });
       bindExpo("ogx-expo-hours", "holdingHours", "Expedition duration (h)", { min: 1 });
+      {
+        const dBtn = document.getElementById("ogx-expo-disc40");
+        if (dBtn) dBtn.addEventListener("click", () => {
+          CONFIG.expeditions.discoverer40 = !CONFIG.expeditions.discoverer40;
+          saveConfig(CONFIG);
+          dBtn.textContent = CONFIG.expeditions.discoverer40 ? "ON" : "OFF";
+          void 0;
+          log(`[ODKRYWCA] ekspedycje 40 min: ${CONFIG.expeditions.discoverer40 ? "ON — wymaga klasy Odkrywca w Academy" : "OFF"}`, "info");
+        });
+      }
       bindExpo("ogx-expo-gapmin", "waveGapMinSec", "Wave gap min (s)", { min: 10 });
       bindExpo("ogx-expo-gapmax", "waveGapMaxSec", "Wave gap max (s)", { min: 10 });
       bindExpo("ogx-expo-hc", "heavyCargoPerWave", "Heavy Cargo per wave", { min: 0 });

@@ -32,6 +32,7 @@ const SUITES = [
   ["kalibracja czasu lotu per-serwer", "test-kalibracja-lotu.js"],
   ["higiena wydajnosci (historia + log)", "test-nawigacja-log.js"],
   ["zbieranie zlomu po ekspedycjach (poz. 16)", "test-zlom.js"],
+  ["Odkrywca: ekspedycje 40 min", "test-odkrywca.js"],
 ];
 
 let failed = [];

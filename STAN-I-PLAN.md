@@ -1,10 +1,29 @@
-# OGameX Assistant — stan na 25 sierpnia 2026, ~17:00 (v2.102.4)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~21:00 (v2.103.0)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (27) — v2.103.0: Odkrywca — ekspedycje 40 min
+
+- Owner rozważa zmianę klasy na ODKRYWCĘ (test jutro 26.08; na Genesis to
+  właściwy wybór: tygodnie 1–3 zarabiają ekspedycje, +30% łupu i 40-min cykl
+  = ~1,5× lotów na slot). Dług: wybór „Expedition duration" łapał tylko
+  „N Hours", opcję „40 Minutes" by pominął → wysyłka na 1 h, zysk z klasy
+  przepada.
+- v2.103.0: przełącznik w Ustawieniach ekspedycji **„Odkrywca: ekspedycje
+  40 min"** (`expeditions.discoverer40`, domyślnie OFF). ON → pending_mission
+  niesie `holdingMinutes: 40`, krok 3 formularza przez `pickExpeditionDuration`
+  (blok EXPO-DURATION) wybiera „40 Minutes"/„40 min"/„0.67 Hours"; gdy opcji
+  nie ma (klasa to nie Odkrywca) — WARN i wysyłka na holdingHours. OFF →
+  zachowanie jak dotąd (opcje w minutach nie maskują godzin).
+- Test `test-odkrywca.js` (10 checków) w baterii. Bateria: wszystko OK.
+
+Procedura jutro: Academy → Discoverer → Select; w panelu Ekspedycje →
+„Odkrywca: ekspedycje 40 min" ON; po pierwszej fali sprawdzić log
+„Expedition duration set to 40 Minutes" (a nie WARN [ODKRYWCA]).
 
 ## AKTUALIZACJA 25.08 (26) — v2.102.3–2.102.4: PRAWDZIWY ATAK 16:13–16:33 i pamięć ataku
 
