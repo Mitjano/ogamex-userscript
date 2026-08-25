@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.102.1
+// @version      2.102.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5990,7 +5990,11 @@ const __gmSetRaw = GM_setValue;
         DefenceWatchdog.note("ucieczka w powietrze w locie — zawrócenie wg zegara");
         // v2.102.0 (C-F6): co 60 s sprawdź, czy nasz lot JESZCZE JEST — ręczne
         // zawrócenie przez ownera zamykało obronę na godziny (faza „launched").
-        if (Date.now() - (st.checkAt || 0) > 60 * 1000 && Date.now() - (st.sentAt || 0) > 90 * 1000) {
+        // v2.102.2 (test 12:52): detektor NIE działa, gdy zegar zawrócenia już
+        // minął albo bot już klikał zawracanie — inaczej zagłuszał log „ZAWRÓCONA"
+        // i zamykał fazę przed potwierdzeniem klikniętego zawrócenia.
+        const recallDue = Date.now() >= (st.recallAt || 0) - 30 * 1000;
+        if (!recallDue && !(st.recallTries > 0) && Date.now() - (st.checkAt || 0) > 60 * 1000 && Date.now() - (st.sentAt || 0) > 90 * 1000) {
           this.save({ ...st, checkAt: Date.now() });
           try {
             const res = await fetchT(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
@@ -6013,12 +6017,15 @@ const __gmSetRaw = GM_setValue;
         // ── v2.100.0 (D2): zegar zawrócenia ŻYJE — dosłane fale go przesuwają ──
         let cur = st;
         try {
-          const maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[this.key(st.at)] || 0;
+          const evNow = ThreatMonitor.events();
+          const maxEta = (evNow?.targetMaxEta || {})[this.key(st.at)] || 0;
           // v2.100.1 (#5): gdy zawracanie już ruszyło (część lotów wraca), zegar
           // się nie przesuwa — reszta ma wrócić razem, nie zostać w powietrzu.
+          // v2.102.2 (test 12:50): ETA liczone od CZASU ODCZYTU zdarzeń — od „teraz"
+          // dryfowało o sekundę na tick i logowało „przesunięte" 6× w 20 s.
           if (maxEta > 0 && !st.recalledSome) {
-            const u = this.recallAtUpdate({ recallAt: st.recallAt, maxEtaSec: maxEta, now: Date.now(), sentAt: st.sentAt, flightMs: st.flightMs });
-            if (u.recallAt > (st.recallAt || 0) + 1000) {
+            const u = this.recallAtUpdate({ recallAt: st.recallAt, maxEtaSec: maxEta, now: evNow.at || Date.now(), sentAt: st.sentAt, flightMs: st.flightMs });
+            if (u.recallAt > (st.recallAt || 0) + 20000) {
               cur = { ...st, recallAt: u.recallAt };
               this.save(cur);
               const hhmm = new Date(u.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
@@ -7583,8 +7590,10 @@ const __gmSetRaw = GM_setValue;
             ThreatLog.add("odczyt", `Kandydat na alarm: ${r.foreign} obcych (${r.own}/${r.total}). Czekam na potwierdzenie ${Math.round(this.CONFIRM_MS / 1000)}s.`);
             return;
           }
-          log(`[THREAT] BLITZ: atak z dolotem ~${ev.minEta}s — alarm NATYCHMIAST, bez potwierdzania.`, "error");
-          ThreatLog.add("ATAK", `BLITZ: dolot ~${ev.minEta}s — potwierdzanie pominięte, ratunek rusza od razu.`);
+          if (!this.active()) {
+            log(`[THREAT] BLITZ: atak z dolotem ~${ev.minEta}s — alarm NATYCHMIAST, bez potwierdzania.`, "error");
+            ThreatLog.add("ATAK", `BLITZ: dolot ~${ev.minEta}s — potwierdzanie pominięte, ratunek rusza od razu.`);
+          }
         } else if (Date.now() - pendingSince < confirmMs && !blitz) {
           return; // jeszcze się nie potwierdziło
         }
