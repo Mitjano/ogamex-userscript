@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.100.0
+// @version      2.100.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5798,16 +5798,27 @@ const __gmSetRaw = GM_setValue;
       // v2.100.0 (D4): dodatkowy lot z zamiatania w trakcie ucieczki —
       // dopisuje się do stanu, NIE resetuje zegara ani fazy głównego lotu.
       if (mission && mission.airExtra) {
-        if (st.phase !== "launched") return;
         if (Date.now() - (st.extraAt || 0) < 15000) return;
+        if (st.phase === "recalled") {
+          // v2.100.1 (F2): fala wysłana już PO zawróceniu lotu głównego —
+          // otwieramy zawracanie ponownie, żeby i ją ściągnąć (zegar bez cofania).
+          this.save({ ...st, phase: "launched", recallAt: Math.max(st.recallAt || 0, Date.now()), extra: (st.extra || 0) + 1, extraAt: Date.now(), reopened: (st.reopened || 0) + 1 });
+          log("[UCIECZKA] fala wystartowała po zawróceniu lotu głównego — zawrócę ją osobno.", "warn");
+          updateStatusUI();
+          return;
+        }
+        if (st.phase !== "launched") return;
         this.save({ ...st, extra: (st.extra || 0) + 1, extraAt: Date.now() });
         updateStatusUI();
         return;
       }
       if (st.phase === "launched" && Date.now() - (st.sentAt || 0) < 15000) return;
+      let fromBody = null;
+      try { fromBody = (mission && mission.launchBody) || MoonSave.currentBody() || null; } catch {}
       this.save({
         ...st,
         phase: "launched",
+        fromBody,               // v2.100.1: ciało startu — tam lądują fale (zamiatanie)
         sentAt: Date.now(),
         flightMs: (mission && mission.flightMs) || st.flightMs || 0,
         recallAt: (mission && mission.holdUntilMs) || st.holdUntilMs || (Date.now() + this.RECALL_BUFFER_MS),
@@ -5835,7 +5846,9 @@ const __gmSetRaw = GM_setValue;
         let cur = st;
         try {
           const maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[this.key(st.at)] || 0;
-          if (maxEta > 0) {
+          // v2.100.1 (#5): gdy zawracanie już ruszyło (część lotów wraca), zegar
+          // się nie przesuwa — reszta ma wrócić razem, nie zostać w powietrzu.
+          if (maxEta > 0 && !st.recalledSome) {
             const u = this.recallAtUpdate({ recallAt: st.recallAt, maxEtaSec: maxEta, now: Date.now(), sentAt: st.sentAt, flightMs: st.flightMs });
             if (u.recallAt > (st.recallAt || 0) + 1000) {
               cur = { ...st, recallAt: u.recallAt };
@@ -5858,6 +5871,13 @@ const __gmSetRaw = GM_setValue;
         return;
       }
       if (st.phase === "recalled") {
+        // v2.100.1 (F4): po LĄDOWANIU zegar bezpiecznika „zator" straży liczy
+        // się od nowa — inaczej wielogodzinna ucieczka (since > 60 min) była
+        // rozbrajana w pierwszym cichym ticku, zanim powrót ściągnął flotę.
+        if (!st.sinceReset && Date.now() >= this.landedAtOf(st)) {
+          this.save({ ...st, sinceReset: true });
+          try { const w = MoonSave.watch(); if (w.armed) MoonSave.saveWatch({ ...w, since: Date.now() }); } catch {}
+        }
         // Powrót trwa tyle, ile lot do chwili zawrócenia; domknij z zapasem.
         const backMs = Math.max(60000, (st.recalledAt || 0) - (st.sentAt || 0));
         if (Date.now() > (st.recalledAt || 0) + backMs + 10 * 60 * 1000) {
@@ -5894,40 +5914,53 @@ const __gmSetRaw = GM_setValue;
         if (!st.sweepCapSaid) { this.save({ ...st, sweepCapSaid: true }); log(`[UCIECZKA] limit ${this.SWEEP_MAX} zamiatań w jednej ucieczce — dalsze fale SPRAWDŹ RĘCZNIE.`, "error"); }
         return;
       }
+      // v2.100.1 (F2): tuż przed zawróceniem nie startujemy nowej fali —
+      // formularz trwa do minuty, a zawrócenie w tym oknie zostawiłoby lot
+      // bez opieki (afterSend i tak go dziś odzyska, ale po co ryzykować).
+      if ((st.recallAt || 0) - Date.now() < 3 * 60 * 1000) return;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") return;
       if (MoonSave.running) return;
       const speed = Math.max(1, Math.min(100, parseInt(CONFIG.fleetSave?.speedPercent) || 10));
       const fleetUrl = `/fleet?x=${st.to.galaxy}&y=${st.to.system}&z=${st.to.position}`;
       this.save({ ...st, sweepAt: Date.now(), sweeps: (st.sweeps || 0) + 1 });
+      // v2.100.1: fale lądują na ciele, z którego wystartował lot główny
+      // (dom ekspedycji) — jedziemy tam JAWNIE (switch_to_body) i bez flipa;
+      // pusty hangar = 1-2 przeloty, aktywne ciało nie skacze co zamiatanie.
+      const launchBody = st.fromBody || (CONFIG.baseBody === "moon" ? "moon" : "planet");
       GM_setValue("pending_mission", JSON.stringify({
         type: "air_save_direct",
         moonSave: true,
         airSave: true,
         airExtra: true,          // dodatkowy lot: nie resetuje stanu ucieczki
+        flippedBody: true,       // bez flipa i korekt — ciało startu jawne
         atCoords: st.at,
+        launchBody,
         holdUntilMs: st.recallAt,
         speedPercent: speed,
         fleetUrl,
-        step: "select_ships_direct",
+        step: "switch_to_body",
         timestamp: Date.now(),
       }));
       DefenceHold.stamp();
       ThreatLog.add("STRAŻ", `Zamiatanie w trakcie ucieczki nr ${(st.sweeps || 0) + 1}: co wylądowało na [${this.key(st.at)}], leci do [${this.key(st.to)}].`);
-      log(`[UCIECZKA] zamiatanie nr ${(st.sweeps || 0) + 1}: sprawdzam hangar [${this.key(st.at)}] — wracające fale też idą w powietrze.`, "fleet");
+      log(`[UCIECZKA] zamiatanie nr ${(st.sweeps || 0) + 1}: sprawdzam hangar ${launchBody === "moon" ? "księżyca" : "planety"} [${this.key(st.at)}] — wracające fale też idą w powietrze.`, "fleet");
       await AntiDetection.sleep(300 + Math.random() * 400);
-      window.location.replace(fleetUrl);
+      window.location.replace("/");   // switch_to_body potrzebuje paska planet
     },
 
     // Nasze loty: Deploy/stacjonowanie z atakowanej pary do refugium, nie-powrotne.
     // v2.100.0: może ich być kilka (lot główny + fale z zamiatania).
     _findOurRows(doc, st) {
       const toKey = this.key(st.to), atKey = this.key(st.at);
+      const done = new Set(st.recalledIds || []);   // v2.100.1 (F5): już zawrócone po id
       const out = [];
       for (const tr of doc.querySelectorAll("tr[class*='row-mission-type-']")) {
         const cls = String(tr.className);
         if (!/DEPLOY|STATION/i.test(cls)) continue;
         if (/return/i.test(cls)) continue;
+        const fid = tr.getAttribute("data-fleet-id") || "";
+        if (fid && done.has(fid)) continue;
         const txt = tr.textContent || "";
         if (toKey && txt.includes(`[${toKey}]`) && atKey && txt.includes(`[${atKey}]`)) out.push(tr);
       }
@@ -6009,6 +6042,10 @@ const __gmSetRaw = GM_setValue;
         if (ok) {
           // v2.100.0 (D4): zostały jeszcze nasze loty (fale z zamiatania)?
           // Zawracamy po jednym na tick — próby liczone od nowa per lot.
+          // v2.100.1 (F5): zawrócony lot zapamiętany po id — fork, który znaczy
+          // powrót tylko tekstem, nie wciągnie go drugi raz na listę.
+          const recalledIds = [...(st.recalledIds || []), ...(fleetId ? [fleetId] : [])];
+          st = { ...st, recalledIds };
           let left = 0;
           try {
             const res3 = await fetch(FleetMovements.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
@@ -7659,7 +7696,9 @@ const __gmSetRaw = GM_setValue;
         // atak w ciało z flotą → skok na drugie; drugie też atakowane →
         // gałąź „oba ciała" wyżej już to załatwiła.
         try {
-          if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !wNow.returning) {
+          // v2.100.1: flota w powietrzu (ucieczka w toku) = nie ma czego przenosić;
+          // skok „w ciemno" psuł refugeBody i palił zapisy (audyt 25.08, F1).
+          if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !wNow.returning && AirSave.decideFor(wNow.at) !== "active") {
             const guardedKey = RescueQueue.str(wNow.at);
             const bodiesNow = (ThreatMonitor.events()?.targetBodiesAll || {})[guardedKey] || [];
             const fleetBody = wNow.refugeBody || null;
@@ -7805,6 +7844,14 @@ const __gmSetRaw = GM_setValue;
         // otherwise (the WRÓĆ NA BAZĘ button).
         if (w.trigger !== "threat") return false;
         if (ThreatMonitor.active()) return false;     // still hostile — stay put
+        // v2.100.1 (F4): flota w powietrzu (ucieczka) — powrót nie ma czego
+        // ściągać i nie wolno mu rozbroić straży „bo pusto"; czeka na lądowanie.
+        try {
+          if (AirSave.decideFor(w.at) === "active") {
+            this._sayOnce("airwait", "[POWRÓT] ucieczka w powietrze jeszcze trwa — powrót po jej lądowaniu.", "info");
+            return false;
+          }
+        } catch {}
       }
       if (this.running) return false;
       const pending = GM_getValue("pending_mission", null);
@@ -7902,7 +7949,9 @@ const __gmSetRaw = GM_setValue;
       // Ostatnia linia obrony przed zatorem: straż uzbrojona godzinę bez
       // zagrożenia to nie alarm, tylko zapomniany stan. Sama się nie odblokuje,
       // a każde jej odpalenie rusza CAŁĄ flotą.
-      if (w.since && Date.now() - w.since > this.MAX_ARMED_MS && !ThreatMonitor.active()) {
+      let airActive = false;
+      try { airActive = AirSave.decideFor(w.at) === "active"; } catch {}
+      if (w.since && Date.now() - w.since > this.MAX_ARMED_MS && !ThreatMonitor.active() && !airActive) {
         ThreatLog.add("BŁĄD", `Straż była uzbrojona ponad ${Math.round(this.MAX_ARMED_MS / 60000)} min bez zagrożenia — zdejmuję jako zator stanu.`);
         this.disarm("bezpiecznik: uzbrojona zbyt długo bez zagrożenia");
         return false;
@@ -7927,13 +7976,16 @@ const __gmSetRaw = GM_setValue;
       // lądowały pod atakiem. Teraz: jedno atakowane ciało → start z niego
       // (switch_to_body), cel = drugie; oba → ucieczka w powietrze (jej
       // własne zamiatanie w AirSave.tick() zbiera fale w trakcie lotu).
+      // v2.100.1 (F3): ucieczka w powietrze tej pary w toku → ŻADNE zamiatanie
+      // straży (ani nowe, ani stare) — stare run() wywłaszcza pending i zabiłoby
+      // lot dodatkowy ucieczki; zamiata wyłącznie AirSave.tick().
+      try { if (AirSave.decideFor(w.at) === "active") return false; } catch {}
       try {
         if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !w.returning) {
           const key = RescueQueue.str(w.at);
           const bodies = (ThreatMonitor.events()?.targetBodiesAll || {})[key] || [];
           if (bodies.length >= 2) {
             const v = AirSave.decideFor(w.at);
-            if (v === "active") return false;               // ucieczka w toku — jej tick zamiata
             if (v === "air") {
               ThreatLog.add("STRAŻ", `Zamiatanie: oba ciała [${key}] pod atakiem — ucieczka w powietrze zamiast skoku.`);
               return this.run({ auto: true, where: w.at, reason: `AUTOMAT: oba ciała [${key}] pod atakiem (zamiatanie)` });
@@ -7954,6 +8006,16 @@ const __gmSetRaw = GM_setValue;
     // flota (refugeBody straży). "air" = oba pod atakiem; "move" = atak w ciało
     // z flotą, drugie czyste; "hold" = flota po bezpiecznej stronie (albo
     // nic nie leci); "legacy" = nie wiemy, gdzie flota — stara ścieżka.
+    // v2.100.1: commit ciała floty po POTWIERDZONEJ wysyłce skoku (obie ścieżki
+    // potwierdzenia mogą wołać — zapis idempotentny).
+    commitGuardSwap(mission) {
+      if (!mission || !mission.guardSwap || !mission.targetBody) return;
+      const w = this.watch();
+      if (!w.armed || w.refugeBody === mission.targetBody) return;
+      this.saveWatch({ ...w, refugeBody: mission.targetBody });
+      ThreatLog.add("RATUNEK", `Straż: flota stoi teraz na ${mission.targetBody === "moon" ? "księżycu" : "planecie"} (potwierdzone).`);
+    },
+
     swapDecision({ attacked, fleetBody }) {
       const a = [...new Set((attacked || []).filter(b => b === "moon" || b === "planet"))];
       if (a.length >= 2) return "air";
@@ -7988,6 +8050,7 @@ const __gmSetRaw = GM_setValue;
           moonSave: true,
           sweep: !!sweep,
           flippedBody: true,     // ciało startu jawne — bez korekt formularza
+          guardSwap: true,       // v2.100.1: refugeBody zapisze się DOPIERO po potwierdzonej wysyłce
           atCoords: w.at,
           launchBody: from,
           targetBody: to,
@@ -7997,7 +8060,10 @@ const __gmSetRaw = GM_setValue;
           timestamp: Date.now(),
         }));
         this.saveState({ at: Date.now(), reason });
-        this.saveWatch({ ...w, refugeBody: to, lastAt: Date.now(), saves: (w.saves || 0) + 1 });
+        // v2.100.1 (F1): refugeBody NIE zmienia się tutaj — pusty hangar (flota
+        // w locie) kończył się „aborting", a straż już wierzyła, że flota stoi
+        // na nowym ciele. Zapis robi commitGuardSwap po potwierdzeniu gry.
+        this.saveWatch({ ...w, lastAt: Date.now(), saves: (w.saves || 0) + 1 });
         DefenceHold.stamp();
         const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na [${w.at.galaxy}:${w.at.system}:${w.at.position}] (${reason}).`, sweep ? "fleet" : "success");
@@ -8033,7 +8099,18 @@ const __gmSetRaw = GM_setValue;
       const pending = GM_getValue("pending_mission", null);
       if (pending && pending !== "null") {
         let kind = "inne zadanie";
-        try { kind = JSON.parse(pending)?.type || kind; } catch {}
+        let pm = null;
+        try { pm = JSON.parse(pending); kind = pm?.type || kind; } catch {}
+        // ── v2.100.1 (N1, luka od 2.85.0): NIE wywłaszczaj WŁASNEJ obrony ──
+        // Start ucieczki w powietrze zapisuje pending i przeładowuje stronę;
+        // pierwszy tick obrony (1,5 s) wchodził tu PRZED obsługą formularza
+        // (3-8 s) i kasował własny start — ucieczka nigdy nie ruszała, po
+        // 5 min markFailed. Świeże (<3 min) zadanie ratunku/FS/skoku zostaje;
+        // starsze = zator formularza, wolno przejąć.
+        if (pm && (pm.moonSave || pm.fleetSave) && Date.now() - (pm.timestamp || 0) < 3 * 60 * 1000) {
+          DefenceWatchdog.note(`ratunek w toku (${kind}) — nowy run() ustępuje`);
+          return false;
+        }
         log(`[RATUNEK] przerywam trwające zadanie (${kind}) — ratunek floty ma pierwszeństwo.`, "warn");
         ThreatLog.add("RATUNEK", `Wywłaszczenie: przerwane zadanie ${kind}, żeby nie czekać na wolny slot.`);
         GM_setValue("pending_mission", null);
@@ -9967,6 +10044,7 @@ const __gmSetRaw = GM_setValue;
           // the mining wait timers (a 1h expedition would pause the scanner).
           if (mission.moonSave) {
             if (mission.airSave && dispatchOk) { try { AirSave.afterSend(mission); } catch {} } // v2.85.0
+            if (mission.guardSwap && dispatchOk) { try { MoonSave.commitGuardSwap(mission); } catch {} } // v2.100.1
             if (dispatchOk) log(`[${missionTag("MOON SAVE")}] fleet and resources are on the moon.`, "success");
             return;
           }
@@ -14132,9 +14210,13 @@ const __gmSetRaw = GM_setValue;
         }
         // v2.74.5: stempel POTWIERDZONEJ wysyłki ratunku — powrót (returnHome)
         // czeka od tego momentu 130 s na lądowanie, zanim ruszy ściągać flotę.
-        if (!wasMoonReturn && !wasFerry) {
+        // v2.100.1 (F4): ucieczka w powietrze (główna i fale) NIE stempluje
+        // straży — wielogodzinny Deploy jako lastFlightMs blokował powrót
+        // aż do 60-min bezpiecznika „zator", który rozbrajał straż.
+        if (!wasMoonReturn && !wasFerry && !(pmSnap && pmSnap.airSave)) {
           // v2.86.5: + realny czas lotu ratunku — od niego liczy się lądowanie.
           try { const w = MoonSave.watch(); if (w.armed) MoonSave.saveWatch({ ...w, lastSendAt: Date.now(), lastFlightMs: (pmSnap && pmSnap.flightMs) || w.lastFlightMs || 0 }); } catch {}
+          try { MoonSave.commitGuardSwap(pmSnap); } catch {}   // v2.100.1 (F1)
         }
         if (wasFerry) {
           // v2.71.0: prom to logistyka, nie obrona — bez wpisu RATUNEK/POWRÓT
