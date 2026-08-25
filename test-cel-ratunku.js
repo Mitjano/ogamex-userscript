@@ -93,8 +93,13 @@ must("udany odczyt paska zapisuje cache (ogamex_bar_cache)",
   /GM_setValue\("ogamex_bar_cache"/.test(src));
 must("strona bez paska czyta cache z TTL 3 min",
   /ogamex_bar_cache[\s\S]{0,200}?3 \* 60 \* 1000/.test(src));
-must("pasek WYGRYWA tylko NADWYŻKĄ ponad wszystkie obce wiersze listy (ataki+sondy) — v2.87.3",
-  /barEff\.foreign > listForeign/.test(src) && /\(ev\.attacks \|\| 0\) \+ \(ev\.spies \|\| 0\)/.test(src));
+// v2.102.3 (ATAK 25.08 16:22): sondy WYLĄDOWANE (eta≈0) nie mogą tłumaczyć obcych
+// z paska — liczą się tylko ataki + sondy W LOCIE. 2 sondy Ibry maskowały ACS,
+// alarm zszedł, auto-powrót wiózł flotę pod uderzenie.
+must("pasek WYGRYWA nadwyżką ponad ataki + sondy W LOCIE (nie wylądowane) — v2.102.3",
+  /barEff\.foreign > listForeign/.test(src) && /\(ev\.attacks \|\| 0\) \+ \(CONFIG\.threatAlarm\?\.barCountsProbes \? \(ev\.spies \|\| 0\) : \(ev\.spiesInFlight \|\| 0\)\)/.test(src));
+must("widziany dolot ataku (ogamex_atk_until) blokuje zdjęcie alarmu i powrót — v2.102.3",
+  /prev\.count > 0 && Date\.now\(\) < \(parseInt\(GM_getValue\("ogamex_atk_until"/.test(src) && /until && Date\.now\(\) < until \+ 60 \* 1000/.test(src));
 must("sonda policzona przez listę NIE robi ataku (foreign = ataki + nadwyżka)",
   /foreign: \(ev\.attacks \|\| 0\) \+ missing/.test(src));
 

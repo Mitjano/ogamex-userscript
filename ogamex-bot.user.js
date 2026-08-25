@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.102.2
+// @version      2.102.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -178,6 +178,10 @@ const __gmSetRaw = GM_setValue;
       // czyste) albo ucieczka w powietrze (jeśli oba); zamiatanie startuje
       // z ATAKOWANEGO ciała, nie z aktywnego. OFF = zachowanie 2.99.6.
       bodyAwareGuard: true,
+      // v2.102.3: czy pasek misji liczy sondy jako „Hostile". Dowód z 25.08 16:22
+      // (ACS + sonda w locie = „1 Hostile") mówi NIE. Gdyby po zmianie forka sondy
+      // wywoływały fałszywe alarmy z paska — ustaw true.
+      barCountsProbes: false,
       // v2.80.0: cichy dźwięk trzymający kartę przy życiu w tle.
       // Skutek uboczny: karta dostaje ikonkę głośnika i pojawia się
       // w sterowaniu multimediami. Dlatego jest wyłącznik.
@@ -6831,6 +6835,9 @@ const __gmSetRaw = GM_setValue;
             sim: !!fm.simInjected,   // v2.102.0: syntetyczne wiersze w tym odczycie
             attacks: attacks.length,
             spies: spies.length,
+            // v2.102.3 (ATAK 16:22): sondy W LOCIE liczą się w pasku, wylądowane (eta≈0)
+            // nie — tylko te pierwsze mogą „tłumaczyć" obcych z paska.
+            spiesInFlight: spies.filter(r => Number.isFinite(r.eta) && r.eta > 30).length,
             classified: true,
             targets: dstSorted,
             origins: [...new Set(attacks.map(r => r.src).filter(Boolean))],
@@ -6842,6 +6849,7 @@ const __gmSetRaw = GM_setValue;
             targetBodiesAll: Object.fromEntries(dstSorted.map(k => [k, [...byDst.get(k).bodies]])),
             targetMaxEta: Object.fromEntries(dstSorted.map(k => [k, byDst.get(k).maxEta || null])),
             // v2.101.0: NAJKRÓTSZY dolot per kolonia — zegar zamiatania wg powrotów.
+            atkUntil: (() => { let m = 0; for (const r of attacks) { if (Number.isFinite(r.eta) && r.eta > 0) m = Math.max(m, Date.now() + r.eta * 1000); } return m || null; })(),
             targetMinEta: Object.fromEntries(dstSorted.map(k => [k, Number.isFinite(byDst.get(k).minEta) && byDst.get(k).minEta < 9e9 ? byDst.get(k).minEta : null])),
             // v2.70.1: najkrótszy czas dolotu ataku — blitz z sąsiedniego
             // układu (<2 min) nie może czekać na pełne potwierdzenie.
@@ -6938,6 +6946,14 @@ const __gmSetRaw = GM_setValue;
               }
             }
           }
+          // v2.102.3: PAMIĘĆ ATAKU — fork gubi wiersz ACS między odczytami (16:21:18→20,
+          // 16:26:49→16:27:30). Ostatni widziany DOLOT i CIAŁO celu zostają w GM:
+          // dopóki dolot nie minął, alarm nie gaśnie, powrót nie rusza, a ratunek
+          // zna ciało celu nawet z samego paska.
+          try {
+            if (out.atkUntil && out.atkUntil > (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0)) GM_setValue("ogamex_atk_until", String(out.atkUntil));
+            for (const k of Object.keys(out.targetBodies || {})) GM_setValue("ogamex_atk_body_" + k, JSON.stringify({ body: out.targetBodies[k], at: Date.now(), until: out.atkUntil || 0 }));
+          } catch {}
           GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
           if (attacks.length) {
             const first = attacks.sort((a, b) => (a.eta || 1e9) - (b.eta || 1e9))[0];
@@ -7415,7 +7431,13 @@ const __gmSetRaw = GM_setValue;
         // v2.102.0 (D-F3): nadwyżka paska liczona względem ROZPOZNANYCH ataków
         // i sond — własny lot z ciała spoza ownBodies() (liczony w `hostile`)
         // maskował prawdziwy, niewidzialny dla listy atak.
-        const listForeign = (ev.attacks || 0) + (ev.spies || 0);
+        // v2.102.3 — ATAK 25.08 16:22 (ACS Ibry, 712 mld): pasek „1 Hostile", lista
+        // 0 ataków + 2 sondy → 1 ≤ 2 → „zero" → alarm zdjęty 16:22:47 → auto-powrót
+        // wiózł flotę POD atak (uratował ręczny klik ownera). Pasek tego forka NIE
+        // liczy sond jako Hostile (16:22:07: ACS + sonda w locie = „1 Hostile"),
+        // więc porównujemy TYLKO z atakami. Gdyby fork jednak liczył sondy,
+        // przełącznik threatAlarm.barCountsProbes przywraca stare zachowanie.
+        const listForeign = (ev.attacks || 0) + (CONFIG.threatAlarm?.barCountsProbes ? (ev.spies || 0) : (ev.spiesInFlight || 0));
         if (barEff && barEff.foreign > listForeign) {
           const missing = barEff.foreign - listForeign;
           r = { ...r, foreign: (ev.attacks || 0) + missing };
@@ -7612,7 +7634,19 @@ const __gmSetRaw = GM_setValue;
           this.dumpMarkupOnce().catch(() => {});
           this.notify(r.foreign);
         }
-      } else if (prev && prev.count > 0 && prev.src === "bar" && !bar) {
+      } else if (prev && prev.count > 0 && Date.now() < (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0)) {
+        // v2.102.3: widzieliśmy atak z dolotem w przyszłości — żaden „zerowy"
+        // odczyt (lista gubi wiersze, sondy) nie zdejmuje alarmu przed dolotem.
+        if (Date.now() - (prev.untilSaidAt || 0) > 5 * 60 * 1000) {
+          GM_setValue(this.KEY, JSON.stringify({ ...prev, untilSaidAt: Date.now() }));
+          const hhmm = new Date(parseInt(GM_getValue("ogamex_atk_until", "0")) || 0).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          log(`[THREAT] odczyt „zero", ale widziany atak dolatuje ${hhmm} — alarm TRZYMANY do dolotu.`, "warn");
+          ThreatLog.add("odczyt", `Zerowy odczyt zignorowany: widziany atak dolatuje ${hhmm} — alarm trzymany.`);
+        }
+      } else if (prev && prev.count > 0 && !bar) {
+        // v2.102.3: lista jest niewiarygodna (fork ukrywa wiersz ACS między
+        // odczytami — 16:21:18→20), więc BEZ żywego paska alarm nie gaśnie
+        // niezależnie od tego, skąd pochodził.
         // ── v2.102.0 (D-F1 — kształt katastrofy 13:10) ──
         // Alarm pochodzi z PASKA (lista nie widzi ataku = start z układu).
         // Ta strona paska nie ma, a cache wygasł — świeża „czysta" lista NIE
@@ -7649,7 +7683,7 @@ const __gmSetRaw = GM_setValue;
         this.clear();
         log("Incoming fleets gone — threat alert cleared.", "success");
         ThreatLog.add("koniec", "Obce floty zniknęły z paska misji — alarm zdjęty.");
-      } else if (r.foreign === 0 && (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0) && !(!bar && GM_getValue("ogamex_threat_cand_src", "") === "bar")) {   // v2.102.0: kandydat z paska gaśnie tylko od żywego paska
+      } else if (r.foreign === 0 && (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0) && !!bar && Date.now() >= (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0)) {   // v2.102.3: kandydat gaśnie tylko od żywego paska z zerem i po widzianym dolocie
         // Kandydat zgasł, zanim się potwierdził — dokładnie ten przypadek, który
         // 2 sierpnia wyewakuował flotę bez powodu. Zostawiamy ślad w dzienniku.
         const held = Math.round((Date.now() - (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0)) / 1000);
@@ -8077,7 +8111,16 @@ const __gmSetRaw = GM_setValue;
         // v2.85.0: ciało celu PER KOLONIA; przy ataku na OBA ciała pary
         // nie istnieje „bezpieczna strona" — strażnik się wyłącza, a decyzję
         // przejmuje ucieczka w powietrze w run().
-        const atkBody = (ev?.targetBodies || {})[target] || ev?.targetBody || null;
+        let atkBody = (ev?.targetBodies || {})[target] || ev?.targetBody || null;
+        // v2.102.3 (16:26:11): odczyt z samego paska nie zna ciała → ratunek
+        // startował z planety NA KSIĘŻYC (pod atak). Pamięć ciała z ostatniego
+        // widzianego wiersza tej pary (ważna do dolotu + 10 min).
+        if (!atkBody) {
+          try {
+            const m = JSON.parse(GM_getValue("ogamex_atk_body_" + target, "null"));
+            if (m && m.body && Date.now() < Math.max(m.until || 0, m.at || 0) + 10 * 60 * 1000) { atkBody = m.body; ThreatLog.add("odczyt", `Ciało celu z pamięci ostatniego wiersza: ${atkBody}.`); }
+          } catch {}
+        }
         const pairBodies = (ev?.targetBodiesAll || {})[target] || [];
         const active = this.activeCoords();
         if (atkBody && active === target && pairBodies.length < 2) {
@@ -8165,6 +8208,15 @@ const __gmSetRaw = GM_setValue;
         // otherwise (the WRÓĆ NA BAZĘ button).
         if (w.trigger !== "threat") return false;
         if (ThreatMonitor.active()) return false;     // still hostile — stay put
+        // v2.102.3 (16:25:15): powrót NIGDY przed widzianym dolotem ataku + 60 s,
+        // nawet gdy alarm zszedł (błędnie). To jest twardy bezpiecznik.
+        {
+          const until = parseInt(GM_getValue("ogamex_atk_until", "0")) || 0;
+          if (until && Date.now() < until + 60 * 1000) {
+            this._sayOnce("untilwait", `[POWRÓT] widziany atak dolatuje ${new Date(until).toLocaleTimeString("pl-PL")} — powrót dopiero minutę po dolocie.`, "warn");
+            return false;
+          }
+        }
         // v2.100.1 (F4): flota w powietrzu (ucieczka) — powrót nie ma czego
         // ściągać i nie wolno mu rozbroić straży „bo pusto"; czeka na lądowanie.
         try {
