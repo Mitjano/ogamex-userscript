@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.102.3
+// @version      2.102.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5867,7 +5867,7 @@ const __gmSetRaw = GM_setValue;
       const st = this.state();
       return this.decide({
         enabled: this.enabled(),
-        bodies: (ev?.targetBodiesAll || {})[k] || [],
+        bodies: ThreatMonitor.attackBodiesFor(k),   // v2.102.4: lista ∪ pamięć ∪ nadwyżka
         activePhase: (st.phase && this.key(st.at) === k) ? st.phase : null,
         failedAt,
         now: Date.now(),
@@ -6710,6 +6710,28 @@ const __gmSetRaw = GM_setValue;
       return [...doc.querySelectorAll("tr")].map(tr => ({ ...FleetMovements.classifyRow(tr, own), sim: true }));
     },
 
+    // v2.102.4: ciała celu dla pary = żywa lista ∪ pamięć (ważna tylko póki atak
+    // tej pary leci). Lista forka gubi wiersze ACS między odczytami — bez tego
+    // flipy formularza, zamiatanie i decyzja ucieczki w powietrze ślepły w
+    // najgorszym momencie.
+    attackBodiesFor(key) {
+      const out = new Set();
+      try { for (const b of ((this.events()?.targetBodiesAll || {})[key] || [])) out.add(b); } catch {}
+      try {
+        const m = JSON.parse(GM_getValue("ogamex_atk_body_" + key, "null"));
+        if (m && m.until && Date.now() < m.until) for (const b of (m.bodies || (m.body ? [m.body] : []))) out.add(b);
+      } catch {}
+      // nadwyżka paska przy uzbrojonej straży = niewidoczny wiersz = nie wiemy,
+      // w które ciało → traktuj jak OBA (ucieczka w powietrze; flota w locie jest nietykalna)
+      try { const st = this.state(); if (st && st.count > 0 && (st.excess || 0) > 0 && MoonSave.watch().armed) { out.add("moon"); out.add("planet"); } } catch {}
+      return [...out];
+    },
+    attackBodyFor(key) {
+      try { const live = (this.events()?.targetBodies || {})[key]; if (live) return live; } catch {}
+      try { const m = JSON.parse(GM_getValue("ogamex_atk_body_" + key, "null")); if (m && m.until && Date.now() < m.until && m.body) return m.body; } catch {}
+      return null;
+    },
+
     ownBodies() {
       const set = new Set();
       for (const opt of document.querySelectorAll("#planetShortcutSelect option[value]")) {
@@ -6750,6 +6772,11 @@ const __gmSetRaw = GM_setValue;
           // razem z prawdziwymi wierszami — patrz simRows() i wstrzyknięcie niżej.
           if (simUntil && Date.now() >= simUntil) {
             GM_setValue("ogamex_threat_sim_until", "0");
+            try {
+              GM_setValue("ogamex_atk_until", "0"); GM_setValue("ogamex_atk_fuse", "0");
+              const b = CONFIG.expeditions?.launchFrom || CONFIG.asteroidMining.minerBase;
+              if (b) { const k = `${b.galaxy}:${b.system}:${b.position}`; GM_setValue("ogamex_atk_body_" + k, "null"); let map = {}; try { map = JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {}; } catch {} delete map[k]; GM_setValue("ogamex_atk_until_map", JSON.stringify(map)); }
+            } catch {}
             log("[TEST] symulacja ataku zakończona — obrona wraca na prawdziwe odczyty. Alarm powinien zaraz zgasnąć, a flota wrócić automatycznie.", "info");
           }
         }
@@ -6838,6 +6865,7 @@ const __gmSetRaw = GM_setValue;
             // v2.102.3 (ATAK 16:22): sondy W LOCIE liczą się w pasku, wylądowane (eta≈0)
             // nie — tylko te pierwsze mogą „tłumaczyć" obcych z paska.
             spiesInFlight: spies.filter(r => Number.isFinite(r.eta) && r.eta > 30).length,
+            spyMaxEta: Math.max(0, ...spies.map(r => (Number.isFinite(r.eta) && r.eta < 48 * 3600) ? r.eta : 0)),
             classified: true,
             targets: dstSorted,
             origins: [...new Set(attacks.map(r => r.src).filter(Boolean))],
@@ -6849,7 +6877,7 @@ const __gmSetRaw = GM_setValue;
             targetBodiesAll: Object.fromEntries(dstSorted.map(k => [k, [...byDst.get(k).bodies]])),
             targetMaxEta: Object.fromEntries(dstSorted.map(k => [k, byDst.get(k).maxEta || null])),
             // v2.101.0: NAJKRÓTSZY dolot per kolonia — zegar zamiatania wg powrotów.
-            atkUntil: (() => { let m = 0; for (const r of attacks) { if (Number.isFinite(r.eta) && r.eta > 0) m = Math.max(m, Date.now() + r.eta * 1000); } return m || null; })(),
+            atkUntil: (() => { let m = 0; for (const r of attacks) { if (Number.isFinite(r.eta) && r.eta > 0 && r.eta < 48 * 3600) m = Math.max(m, Date.now() + Math.min(r.eta, 3 * 3600) * 1000); } return m || null; })(),
             targetMinEta: Object.fromEntries(dstSorted.map(k => [k, Number.isFinite(byDst.get(k).minEta) && byDst.get(k).minEta < 9e9 ? byDst.get(k).minEta : null])),
             // v2.70.1: najkrótszy czas dolotu ataku — blitz z sąsiedniego
             // układu (<2 min) nie może czekać na pełne potwierdzenie.
@@ -6893,6 +6921,40 @@ const __gmSetRaw = GM_setValue;
           // widzi WIĘCEJ obcych niż lista, brakujące wiersze to niewiadoma —
           // a niewiadoma to atak: schodzimy na ścieżkę paska (25 s
           // potwierdzenia + okno ślepoty po własnej wysyłce nadal działają).
+          // ── v2.102.4: PAMIĘĆ ATAKU per para (dolot, ciała) — pisana tu, PRZED
+          // gałęzią nadwyżki paska (tam lista nie trafiała do KEY_EVENTS, więc
+          // pamięć nie powstawała dokładnie wtedy, gdy była najbardziej potrzebna).
+          // ETA z sensem (0 < eta < 48 h), sufit 3 h; bezpiecznik powrotu (fuse)
+          // maks. 20 min — wabik z dolotem za 6 h nie zablokuje powrotu na 6 h.
+          try {
+            if (attacks.length) {
+              let map = {}; try { map = JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {}; } catch {}
+              const per = {};
+              for (const r of attacks) {
+                if (!r.dst) continue;
+                const eta = Number.isFinite(r.eta) && r.eta > 0 && r.eta < 48 * 3600 ? Math.min(r.eta, 3 * 3600) : 0;
+                const u = eta ? Date.now() + eta * 1000 : 0;
+                const rec = per[r.dst] || { until: 0, bodies: new Set() };
+                if (u > rec.until) rec.until = u;
+                if (r.dstBody) rec.bodies.add(r.dstBody);
+                per[r.dst] = rec;
+              }
+              let globalUntil = parseInt(GM_getValue("ogamex_atk_until", "0")) || 0;
+              for (const k of Object.keys(per)) {
+                const rec = per[k];
+                if (rec.until > (map[k] || 0)) map[k] = rec.until;
+                if (rec.until > globalUntil) globalUntil = rec.until;
+                let old = null; try { old = JSON.parse(GM_getValue("ogamex_atk_body_" + k, "null")); } catch {}
+                const bodies = new Set([...(old && old.until > Date.now() ? (old.bodies || []) : []), ...rec.bodies]);
+                GM_setValue("ogamex_atk_body_" + k, JSON.stringify({ body: [...rec.bodies][0] || (old && old.body) || null, bodies: [...bodies], at: Date.now(), until: Math.max(rec.until, (old && old.until) || 0) }));
+              }
+              for (const k of Object.keys(map)) if (Date.now() - map[k] > 6 * 3600 * 1000) delete map[k];
+              GM_setValue("ogamex_atk_until_map", JSON.stringify(map));
+              GM_setValue("ogamex_atk_until", String(globalUntil));
+              const fuse = Math.min(globalUntil, Date.now() + 20 * 60 * 1000);
+              if (fuse > (parseInt(GM_getValue("ogamex_atk_fuse", "0")) || 0)) GM_setValue("ogamex_atk_fuse", String(fuse));
+            }
+          } catch {}
           if (barNow && barNow.foreign > foreign.length) {
             const warnAt = parseInt(GM_getValue("ogamex_fml_blind_warned_at", "0")) || 0;
             if (Date.now() - warnAt > 10 * 60 * 1000) {
@@ -6950,10 +7012,6 @@ const __gmSetRaw = GM_setValue;
           // 16:26:49→16:27:30). Ostatni widziany DOLOT i CIAŁO celu zostają w GM:
           // dopóki dolot nie minął, alarm nie gaśnie, powrót nie rusza, a ratunek
           // zna ciało celu nawet z samego paska.
-          try {
-            if (out.atkUntil && out.atkUntil > (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0)) GM_setValue("ogamex_atk_until", String(out.atkUntil));
-            for (const k of Object.keys(out.targetBodies || {})) GM_setValue("ogamex_atk_body_" + k, JSON.stringify({ body: out.targetBodies[k], at: Date.now(), until: out.atkUntil || 0 }));
-          } catch {}
           GM_setValue(this.KEY_EVENTS, JSON.stringify(out));
           if (attacks.length) {
             const first = attacks.sort((a, b) => (a.eta || 1e9) - (b.eta || 1e9))[0];
@@ -7410,7 +7468,7 @@ const __gmSetRaw = GM_setValue;
       }
       const ev = this.events();
       const evFresh = ev && Date.now() - ev.at < this.EVENT_MAX_AGE_MS;
-      let r = barEff, evSrc = "";
+      let r = barEff, evSrc = "", probeWaitUntil = 0, barExcess = 0;
       if (evFresh && ev.classified) {
         r = { total: barEff?.total ?? 0, own: barEff?.own ?? 0, foreign: ev.attacks };
         // ── v2.86.3: PASEK WYGRYWA, GDY WIDZI WIĘCEJ NIŻ LISTA ──
@@ -7437,9 +7495,17 @@ const __gmSetRaw = GM_setValue;
         // liczy sond jako Hostile (16:22:07: ACS + sonda w locie = „1 Hostile"),
         // więc porównujemy TYLKO z atakami. Gdyby fork jednak liczył sondy,
         // przełącznik threatAlarm.barCountsProbes przywraca stare zachowanie.
-        const listForeign = (ev.attacks || 0) + (CONFIG.threatAlarm?.barCountsProbes ? (ev.spies || 0) : (ev.spiesInFlight || 0));
+        // v2.102.4: nadwyżka paska liczona TYLKO względem ataków. Sondy w locie nie
+        // maskują — tylko OPÓŹNIAJĄ potwierdzenie do chwili, gdy musiały wylądować
+        // (jeśli nadwyżka trwa po tym, to nie była sonda).
+        const listForeign = (ev.attacks || 0) + (CONFIG.threatAlarm?.barCountsProbes ? (ev.spies || 0) : 0);
         if (barEff && barEff.foreign > listForeign) {
           const missing = barEff.foreign - listForeign;
+          barExcess = missing;
+          // (v2.102.4, recenzja): skoro pasek NIE liczy sond, sonda w locie nie tłumaczy
+          // nadwyżki — czekanie na jej lądowanie byłoby czystym opóźnieniem ratunku.
+          // Włączane tylko, gdy owner ustawi barCountsProbes (wtedy sondy są w pasku).
+          if (CONFIG.threatAlarm?.barCountsProbes && missing <= (ev.spiesInFlight || 0)) probeWaitUntil = (ev.at || Date.now()) + ((ev.spyMaxEta || 0) + 10) * 1000;
           r = { ...r, foreign: (ev.attacks || 0) + missing };
           evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}) — ${missing} brakujących traktuję jak ATAK`;
         } else
@@ -7535,7 +7601,7 @@ const __gmSetRaw = GM_setValue;
       // odpowiada zawsze, więc gałąź `!r` nie łapała skanu; atak z układu był
       // niewidoczny przez cały skan. Skan bez żywego paska >3 min → jedna
       // strona „/" po wzrok (skan wznawia się sam).
-      if (bar) GM_setValue("ogamex_threat_bar_at", String(Date.now()));
+      if (bar) { GM_setValue("ogamex_threat_bar_at", String(Date.now())); GM_setValue("ogamex_bar_nav_count", "0"); }
       else {
         try {
           const scanOn = !!ScanState.load()?.active;
@@ -7576,7 +7642,7 @@ const __gmSetRaw = GM_setValue;
       // rośnie przed Own"). Odczyt z listy ruchów flot klasyfikuje po ŹRÓDLE,
       // więc własna wysyłka nie może w nim wyjść jako obca — a fale ekspedycji
       // idą co 60-90 s, czyli pasek-owe 20 s ślepoty zjadało ~25% czasu czuwania.
-      if (!evSrc && r.foreign > 0 && Date.now() - lastOwnSend < this.SELF_SEND_BLIND_MS) {
+      if ((!evSrc || /^PASEK/.test(evSrc)) && r.foreign > 0 && Date.now() - lastOwnSend < this.SELF_SEND_BLIND_MS) {   // v2.102.4
         ThreatLog.add("odczyt", `${r.foreign} „obcych" tuż po NASZEJ wysyłce (${Math.round((Date.now() - lastOwnSend) / 1000)}s) — to własna flota w trakcie dopisywania do paska. Ignoruję.`);
         return;
       }
@@ -7616,10 +7682,14 @@ const __gmSetRaw = GM_setValue;
             log(`[THREAT] BLITZ: atak z dolotem ~${ev.minEta}s — alarm NATYCHMIAST, bez potwierdzania.`, "error");
             ThreatLog.add("ATAK", `BLITZ: dolot ~${ev.minEta}s — potwierdzanie pominięte, ratunek rusza od razu.`);
           }
-        } else if (Date.now() - pendingSince < confirmMs && !blitz) {
+        } else if ((Date.now() - pendingSince < confirmMs || (probeWaitUntil && Date.now() < probeWaitUntil && !this.active())) && !blitz) {
+          if (probeWaitUntil && Date.now() < probeWaitUntil && Date.now() - (parseInt(GM_getValue("ogamex_probe_wait_said", "0")) || 0) > 60 * 1000) {
+            GM_setValue("ogamex_probe_wait_said", String(Date.now()));
+            log(`[THREAT] nadwyżka paska może być sondą w locie — czekam do jej lądowania (${new Date(probeWaitUntil).toLocaleTimeString("pl-PL")}); jeśli zostanie, to atak.`, "warn");
+          }
           return; // jeszcze się nie potwierdziło
         }
-        const first = !prev || !(prev.count > 0);
+        const first = !prev || !(prev.count > 0) || !this.active();   // v2.102.4: po backstopie atak znów „pierwszy" (push)
         GM_setValue(this.KEY, JSON.stringify({
           count: r.foreign,
           total: r.total,
@@ -7627,6 +7697,7 @@ const __gmSetRaw = GM_setValue;
           seenAt: Date.now(),
           firstAt: first ? Date.now() : (prev.firstAt || Date.now()),
           src: barSrc ? "bar" : (prev && prev.src === "bar" && !bar ? "bar" : "list"),   // v2.102.0: skąd alarm — pasek gasi tylko żywy pasek
+          excess: barExcess,   // v2.102.4: niewidoczne dla listy floty z paska (→ ucieczka w powietrze przy uzbrojonej straży)
         }));
         if (first || r.foreign !== prev.count) {
           log(`INCOMING: ${r.foreign} foreign fleet(s) in the mission bar (${r.own} of ${r.total} are ours). Farming and expedition waves are on hold — CHECK THE GAME.`, "error");
@@ -7634,7 +7705,10 @@ const __gmSetRaw = GM_setValue;
           this.dumpMarkupOnce().catch(() => {});
           this.notify(r.foreign);
         }
-      } else if (prev && prev.count > 0 && Date.now() < (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0)) {
+      } else if (prev && prev.count > 0 && Date.now() < (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0) && !(bar && bar.foreign === 0)) {
+        // v2.102.4: ŻYWY pasek z zerem = żaden wróg nie leci (13:10 pokazało, że
+        // pasek liczy nawet loty niewidzialne dla listy) → wabik zawrócony;
+        // wtedy NIE trzymamy — idzie histereza niżej i czyścimy pamięć dolotu.
         // v2.102.3: widzieliśmy atak z dolotem w przyszłości — żaden „zerowy"
         // odczyt (lista gubi wiersze, sondy) nie zdejmuje alarmu przed dolotem.
         if (Date.now() - (prev.untilSaidAt || 0) > 5 * 60 * 1000) {
@@ -7661,7 +7735,10 @@ const __gmSetRaw = GM_setValue;
         const busy = (pending && pending !== "null") || MoonSave.running;
         if (!busy && !SessionWatch.lostRecently() && Date.now() - lastNav > 60 * 1000) {
           GM_setValue(this.KEY_BLIND_NAV_AT, String(Date.now()));
-          window.location.replace("/");
+          const navs = (parseInt(GM_getValue("ogamex_bar_nav_count", "0")) || 0) + 1;
+          GM_setValue("ogamex_bar_nav_count", String(navs));
+          if (navs === 5) { log("[THREAT] 5× przegląd bez paska misji — fork nie renderuje paska? Alarm trzymany, powrót ręczny (WRÓĆ NA BAZĘ). Prześlij zrzut strony przeglądu.", "error"); ThreatLog.add("BŁĄD", "Strona przeglądu 5× bez paska misji — alarm nie ma jak zgasnąć. Sprawdź grę / powrót ręczny."); }
+          if (navs < 5 || Date.now() - lastNav > 10 * 60 * 1000) window.location.replace("/");
         }
       } else if (prev && prev.count > 0 && !prev.zeroAt) {
         // v2.102.0 (D-F8): histereza — jeden zerowy odczyt nie zdejmuje alarmu;
@@ -7672,6 +7749,7 @@ const __gmSetRaw = GM_setValue;
         // czekamy na drugi zerowy odczyt
       } else if (prev && prev.count > 0) {
         GM_setValue(this.KEY_CANDIDATE, "0");
+        GM_setValue("ogamex_atk_until", "0");   // v2.102.4: żywy pasek 2× zero → wabik/atak minął — pamięć dolotu czyszczona
         // ── v2.59.0: this.clear() wróciło na miejsce ──
         // Wypadło stąd w 2.32.0 (przeprowadzka do gałęzi niepotwierdzonego
         // kandydata niżej — która przy AKTYWNYM alarmie jest nieosiągalna, bo
@@ -7683,7 +7761,7 @@ const __gmSetRaw = GM_setValue;
         this.clear();
         log("Incoming fleets gone — threat alert cleared.", "success");
         ThreatLog.add("koniec", "Obce floty zniknęły z paska misji — alarm zdjęty.");
-      } else if (r.foreign === 0 && (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0) && !!bar && Date.now() >= (parseInt(GM_getValue("ogamex_atk_until", "0")) || 0)) {   // v2.102.3: kandydat gaśnie tylko od żywego paska z zerem i po widzianym dolocie
+      } else if (r.foreign === 0 && (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0) && !!bar && bar.foreign === 0) {   // v2.102.4: kandydat gaśnie tylko od ŻYWEGO paska z zerem (wabik zawrócony)
         // Kandydat zgasł, zanim się potwierdził — dokładnie ten przypadek, który
         // 2 sierpnia wyewakuował flotę bez powodu. Zostawiamy ślad w dzienniku.
         const held = Math.round((Date.now() - (parseInt(GM_getValue(this.KEY_CANDIDATE, "0")) || 0)) / 1000);
@@ -7986,7 +8064,10 @@ const __gmSetRaw = GM_setValue;
       if (this.watch().armed) {                  // already saving for this alert
         // Straż trzyma ciało puste — to JEST działanie, ale niech ma stempel:
         // „uzbrojona bez ani jednego zapisu" to stan, o którym chcemy wiedzieć.
-        const wNow = this.normalizeWatch();   // v2.102.0 (C-F1)
+        let wNow = this.normalizeWatch();   // v2.102.0 (C-F1)
+        // v2.102.4 (D6): ręczny RATUJ w oknie kandydata = trigger „manual" → returnHome
+        // nigdy; skoro alarm jest prawdziwy, straż przechodzi na „threat".
+        if (wNow.trigger !== "threat") { wNow = { ...wNow, trigger: "threat" }; this.saveWatch(wNow); }
         if ((wNow.saves || 0) > 0) DefenceWatchdog.note(`straż aktywna, zapisów: ${wNow.saves}`);
         // ── v2.78.0: JEDYNE nowe wyjście z tej gałęzi ──
         // Wszystko powyżej i wszystko poniżej zostaje bez zmian. Tu dotąd był
@@ -8009,7 +8090,7 @@ const __gmSetRaw = GM_setValue;
         // delegacja do AirSave → wszystko w powietrze.
         try {
           const guardedKey = RescueQueue.str(wNow.at);
-          const bodiesNow = (ThreatMonitor.events()?.targetBodiesAll || {})[guardedKey] || [];
+          const bodiesNow = ThreatMonitor.attackBodiesFor(guardedKey);   // v2.102.4
           if (guardedKey && bodiesNow.length >= 2 && AirSave.decideFor(wNow.at) === "air") {
             log(`[UCIECZKA] OBA ciała strzeżonej kolonii [${guardedKey}] pod atakiem — skok w obrębie pary nie ratuje, wysyłam wszystko w powietrze.`, "error");
             ThreatLog.add("ATAK", `Oba ciała [${guardedKey}] pod atakiem przy uzbrojonej straży — ucieczka w powietrze zamiast skoku w parze.`);
@@ -8029,7 +8110,7 @@ const __gmSetRaw = GM_setValue;
           // skok „w ciemno" psuł refugeBody i palił zapisy (audyt 25.08, F1).
           if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !wNow.returning && AirSave.decideFor(wNow.at) !== "active") {
             const guardedKey = RescueQueue.str(wNow.at);
-            const bodiesNow = (ThreatMonitor.events()?.targetBodiesAll || {})[guardedKey] || [];
+            const bodiesNow = ThreatMonitor.attackBodiesFor(guardedKey);   // v2.102.4
             const fleetBody = wNow.refugeBody || null;
             if (guardedKey && this.swapDecision({ attacked: bodiesNow, fleetBody }) === "move") {
               const other = fleetBody === "moon" ? "planet" : "moon";
@@ -8118,7 +8199,7 @@ const __gmSetRaw = GM_setValue;
         if (!atkBody) {
           try {
             const m = JSON.parse(GM_getValue("ogamex_atk_body_" + target, "null"));
-            if (m && m.body && Date.now() < Math.max(m.until || 0, m.at || 0) + 10 * 60 * 1000) { atkBody = m.body; ThreatLog.add("odczyt", `Ciało celu z pamięci ostatniego wiersza: ${atkBody}.`); }
+            if (m && m.body && m.until && Date.now() < m.until) { atkBody = m.body; ThreatLog.add("odczyt", `Ciało celu z pamięci ostatniego wiersza: ${atkBody} (atak tej pary jeszcze leci).`); }
           } catch {}
         }
         const pairBodies = (ev?.targetBodiesAll || {})[target] || [];
@@ -8138,6 +8219,10 @@ const __gmSetRaw = GM_setValue;
                 ThreatLog.add("STRAŻ", `Straż uzbrojona bez ruchu floty (bezpieczna strona) — zamiatam ${atkBody === "moon" ? "księżyc" : "planetę"} z wracających fal.`);
               }
             } catch {}
+            // v2.102.4: currentBody() to ciało AKTYWNE w UI, nie położenie floty —
+            // zamiast ślepo trzymać, WERYFIKUJEMY hangar atakowanego ciała
+            // (pusty = flota naprawdę po bezpiecznej stronie; koszt 2-3 przeładowania).
+            try { return await this.swapWithinPair(this.watch(), atkBody, cur, "strażnik bezpiecznej strony — weryfikacja hangaru", { sweep: true, verify: true }); } catch {}
             return false;
           }
         }
@@ -8188,7 +8273,7 @@ const __gmSetRaw = GM_setValue;
       const w = this.normalizeWatch();   // v2.102.0 (C-F1)
       // v2.102.0 (B6): flota już na ciele domowym (refugium = dom) i cisza →
       // nie ma czego ściągać; straż schodzi bez wysyłania pustej misji.
-      if (!byOperator && w.armed && w.homeBody && w.refugeBody === w.homeBody && !ThreatMonitor.active()) {
+      if (!byOperator && w.armed && w.homeBody && w.refugeBody === w.homeBody && !ThreatMonitor.active() && ((w.saves || 0) > 0 || !w.lastSendAt)) {
         this.disarm("flota na ciele domowym, alarm minął");
         return false;
       }
@@ -8211,7 +8296,13 @@ const __gmSetRaw = GM_setValue;
         // v2.102.3 (16:25:15): powrót NIGDY przed widzianym dolotem ataku + 60 s,
         // nawet gdy alarm zszedł (błędnie). To jest twardy bezpiecznik.
         {
-          const until = parseInt(GM_getValue("ogamex_atk_until", "0")) || 0;
+          let until = 0;
+          try { until = (JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {})[RescueQueue.str(w.at)] || 0; } catch {}
+          // v2.102.4: granica = MIN(dolot pary, bezpiecznik). Prawdziwy atak widziany
+          // ciągle podnosi bezpiecznik aż do dolotu; wabik zawrócony zatrzymuje go
+          // ≤20 min po ostatnim widzeniu — powrót nie czeka 3 h na nic.
+          const fuse = parseInt(GM_getValue("ogamex_atk_fuse", "0")) || 0;
+          if (until && fuse) until = Math.min(until, fuse);
           if (until && Date.now() < until + 60 * 1000) {
             this._sayOnce("untilwait", `[POWRÓT] widziany atak dolatuje ${new Date(until).toLocaleTimeString("pl-PL")} — powrót dopiero minutę po dolocie.`, "warn");
             return false;
@@ -8324,7 +8415,12 @@ const __gmSetRaw = GM_setValue;
       // a każde jej odpalenie rusza CAŁĄ flotą.
       let airActive = false;
       try { airActive = AirSave.decideFor(w.at) === "active"; } catch {}
-      if (w.since && Date.now() - w.since > this.MAX_ARMED_MS && !ThreatMonitor.active() && !airActive) {
+      let untilPair = 0; try { untilPair = (JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {})[RescueQueue.str(w.at)] || 0; const f = parseInt(GM_getValue("ogamex_atk_fuse", "0")) || 0; if (untilPair && f) untilPair = Math.min(untilPair, f); } catch {}
+      if (w.since && Date.now() - w.since > this.MAX_ARMED_MS && !ThreatMonitor.active() && !airActive && Date.now() >= untilPair + 60 * 1000) {
+        if (w.refugeBody && w.homeBody && w.refugeBody !== w.homeBody) {
+          log(`[STRAŻ] bezpiecznik zdejmuje straż, a flota stoi na ${w.refugeBody === "moon" ? "księżycu" : "planecie"} (dom: ${w.homeBody === "moon" ? "księżyc" : "planeta"}) — ŚCIĄGNIJ JĄ RĘCZNIE (WRÓĆ NA BAZĘ).`, "error");
+          ThreatLog.add("BŁĄD", `Straż zdjęta bezpiecznikiem, flota poza domem (${w.refugeBody}) — wróć ręcznie przyciskiem WRÓĆ NA BAZĘ.`);
+        }
         ThreatLog.add("BŁĄD", `Straż była uzbrojona ponad ${Math.round(this.MAX_ARMED_MS / 60000)} min bez zagrożenia — zdejmuję jako zator stanu.`);
         this.disarm("bezpiecznik: uzbrojona zbyt długo bez zagrożenia");
         return false;
@@ -8333,7 +8429,10 @@ const __gmSetRaw = GM_setValue;
         // Don't disarm out from under returnHome() — it needs the armed state
         // to know there is something on the moon to bring back.
         if (CONFIG.threatAlarm?.autoReturn) return false;
-        this.disarm("obce floty zniknęły z paska misji");
+        // v2.102.4 (D5): bez rozbrajania — po włączeniu auto-powrotu straż wraca
+        // normalnie; bezpiecznik 60 min zostaje jedynym wyjściem.
+        this._sayOnce("noautoret", "[STRAŻ] alarm minął, auto-powrót OFF — flota zostaje na refugium; włącz auto-powrót albo WRÓĆ NA BAZĘ.", "warn");
+        return false;
         return false;
       }
       if (this.running) return false;
@@ -8368,7 +8467,7 @@ const __gmSetRaw = GM_setValue;
       try {
         if (CONFIG.threatAlarm?.bodyAwareGuard !== false && !w.returning) {
           const key = RescueQueue.str(w.at);
-          const bodies = (ThreatMonitor.events()?.targetBodiesAll || {})[key] || [];
+          const bodies = ThreatMonitor.attackBodiesFor(key);   // v2.102.4: lista ∪ pamięć (∪ nadwyżka paska = oba)
           if (bodies.length >= 2) {
             const v = AirSave.decideFor(w.at);
             if (v === "air") {
@@ -8435,7 +8534,7 @@ const __gmSetRaw = GM_setValue;
       const stamp = mission.timestamp || 0;
       const counted = stamp && w.lastCountedStamp === stamp;
       if (w.refugeBody === mission.targetBody && counted) return;
-      this.saveWatch({ ...w, refugeBody: mission.targetBody, saves: (w.saves || 0) + (counted ? 0 : 1), lastCountedStamp: stamp || w.lastCountedStamp, fails: 0 });
+      this.saveWatch({ ...w, refugeBody: mission.targetBody, homeBody: (mission.verify && mission.launchBody) ? mission.launchBody : w.homeBody, saves: (w.saves || 0) + (counted ? 0 : 1), lastCountedStamp: stamp || w.lastCountedStamp, fails: 0 });
       if (w.refugeBody !== mission.targetBody) ThreatLog.add("RATUNEK", `Straż: flota stoi teraz na ${mission.targetBody === "moon" ? "księżycu" : "planecie"} (potwierdzone).`);
     },
 
@@ -8495,7 +8594,7 @@ const __gmSetRaw = GM_setValue;
     // kierunek podaje wołający. flippedBody=true wyłącza korekty ciała na
     // formularzu (one zakładają PIERWSZY ratunek alarmu). homeBody zostaje —
     // powrót po alarmie nadal wie, gdzie dom; refugeBody = nowe miejsce floty.
-    async swapWithinPair(w, from, to, reason, { sweep = false } = {}) {
+    async swapWithinPair(w, from, to, reason, { sweep = false, verify = false } = {}) {
       if (this.running) return false;
       if (!w || !w.armed || !w.at) return false;
       if (from === to || !["moon", "planet"].includes(from) || !["moon", "planet"].includes(to)) return false;
@@ -8517,6 +8616,7 @@ const __gmSetRaw = GM_setValue;
           sweep: !!sweep,
           flippedBody: true,     // ciało startu jawne — bez korekt formularza
           guardSwap: true,       // v2.100.1: refugeBody zapisze się DOPIERO po potwierdzonej wysyłce
+          verify: !!verify,      // v2.102.4: strażnik weryfikujący — potwierdzona wysyłka = flota BYŁA na ciele startu (dom)
           atCoords: w.at,
           launchBody: from,
           targetBody: to,
@@ -8630,6 +8730,8 @@ const __gmSetRaw = GM_setValue;
           if (airVerdict === "air") {
             let maxEta = 0;
             try { maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[AirSave.key(at)] || 0; } catch {}
+            // v2.102.4: wiersz ukryty przez fork → dolot z pamięci pary (inaczej zawrócenie po 2 min = lądowanie pod atak)
+            if (!maxEta) { try { const u = (JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {})[AirSave.key(at)] || 0; if (u > Date.now()) maxEta = Math.round((u - Date.now()) / 1000); } catch {} }
             if (await AirSave.launch(at, reason, maxEta)) return true;
             // porażka startu = markFailed zapisany — lecimy starą ścieżką
           }
@@ -8650,11 +8752,23 @@ const __gmSetRaw = GM_setValue;
         const activePair = HomeBase.coords();
         const crossColony = !!(at && activePair && (activePair.galaxy !== at.galaxy || activePair.system !== at.system || activePair.position !== at.position));
         const to = crossColony ? "moon" : (from === "moon" ? "planet" : "moon");
+        // v2.102.4: zamiatanie/ratunek w parze NIE może celować w znane atakowane
+        // ciało (legacy sweep startował z ciała AKTYWNEGO w UI = np. planeta
+        // z uratowaną flotą → lot NA księżyc pod atak).
+        if (!crossColony && at) {
+          const atkBodies = ThreatMonitor.attackBodiesFor(`${at.galaxy}:${at.system}:${at.position}`);
+          if (atkBodies.length === 1 && atkBodies[0] === to) {
+            DefenceWatchdog.note(`ratunek ${from}→${to} odrzucony: ${to} jest atakowane (lista/pamięć)`);
+            log(`[RATUNEK] nie wysyłam ${from === "moon" ? "z księżyca" : "z planety"} NA ${to === "moon" ? "KSIĘŻYC" : "PLANETĘ"} — to ciało jest atakowane. Zamiatanie pójdzie z atakowanego ciała.`, "warn");
+            return false;
+          }
+        }
         const w0 = this.watch();
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
           moonSave: true,
           sweep: !!sweep, // v2.70.3: zamiatanie nie flipuje na drugie ciało
+          guardSwap: true, // v2.102.4: refugeBody/saves dopiero po POTWIERDZONEJ wysyłce (commitGuardSwap)
           atCoords: at,
           targetBody: to,
           // v2.78.0: ratunek z kolejki dotyczy INNEJ kolonii, więc jej
@@ -8687,8 +8801,10 @@ const __gmSetRaw = GM_setValue;
         // homeBody is where the fleet LIVES — recorded on the first save of an
         // alert and never overwritten by the sweeps, so the return always knows
         // where to put everything back regardless of which body it is today.
-        this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: to, at,
-                         lastAt: Date.now(), saves: (w.saves || 0) + 1, since: w.since || Date.now() });
+        // v2.102.4 (D4): refugeBody = tam, gdzie flota JEST (from) do potwierdzenia;
+        // pusty hangar/porażka nie może „przenieść" floty w pamięci straży.
+        this.saveWatch({ armed: true, trigger, homeBody: w.homeBody || from, refugeBody: w.refugeBody || from, at,
+                         lastAt: Date.now(), saves: (w.saves || 0), since: w.since || Date.now() });
         DefenceHold.stamp(); // v2.79.0: ratunek w powietrzu = cisza na wysyłkach
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na tych samych koordach (${reason}). Wszystkie statki i wszystkie surowce.`, "success");
         ThreatLog.add("RATUNEK", `Start: ${nameOf(from)} → ${nameOf(to)} (${reason}). Zapis nr ${(w.saves || 0) + 1} w tym alarmie.`);
@@ -10823,7 +10939,7 @@ const __gmSetRaw = GM_setValue;
           // fallbackiem. Ucieczka w powietrze nie flipuje „na atakowane
           // ciało" — atakowane są OBA; startujemy stamtąd, gdzie stoi flota.
           const missionKey = mission.atCoords ? `${mission.atCoords.galaxy}:${mission.atCoords.system}:${mission.atCoords.position}` : null;
-          const atkNow = (() => { try { const ev = ThreatMonitor.events(); return (missionKey && ev?.targetBodies?.[missionKey]) || ev?.targetBody || null; } catch { return null; } })();
+          const atkNow = (() => { try { return (missionKey && ThreatMonitor.attackBodyFor(missionKey)) || ThreatMonitor.events()?.targetBody || null; } catch { return null; } })();   // v2.102.4: + pamięć ciała
           if (!mission.moonReturn && !mission.flippedBody && !mission.sweep && !mission.airSave
               && (MoonSave.watch().saves || 0) <= 1 && ThreatMonitor.active()
               && atkNow && bodyNow && bodyNow !== atkNow) {
@@ -10877,7 +10993,7 @@ const __gmSetRaw = GM_setValue;
             // uczynić celem ciała, w które leci atak.
             const hereB = MoonSave.currentBody() || "planet";
             const emptyKey = mission.atCoords ? `${mission.atCoords.galaxy}:${mission.atCoords.system}:${mission.atCoords.position}` : null;
-            const atkB = (() => { try { const ev = ThreatMonitor.events(); return (emptyKey && ev?.targetBodies?.[emptyKey]) || ev?.targetBody || null; } catch { return null; } })();
+            const atkB = (() => { try { return (emptyKey && ThreatMonitor.attackBodyFor(emptyKey)) || ThreatMonitor.events()?.targetBody || null; } catch { return null; } })();   // v2.102.4: + pamięć ciała
             // v2.85.0: ucieczka w powietrze MUSI znaleźć flotę — pusty hangar
             // na aktywnym ciele = flota stoi na DRUGIM ciele TEJ pary; flip
             // bez warunku „atak w drugie ciało", bo atakowane są oba.

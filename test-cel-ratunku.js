@@ -96,8 +96,8 @@ must("strona bez paska czyta cache z TTL 3 min",
 // v2.102.3 (ATAK 25.08 16:22): sondy WYLĄDOWANE (eta≈0) nie mogą tłumaczyć obcych
 // z paska — liczą się tylko ataki + sondy W LOCIE. 2 sondy Ibry maskowały ACS,
 // alarm zszedł, auto-powrót wiózł flotę pod uderzenie.
-must("pasek WYGRYWA nadwyżką ponad ataki + sondy W LOCIE (nie wylądowane) — v2.102.3",
-  /barEff\.foreign > listForeign/.test(src) && /\(ev\.attacks \|\| 0\) \+ \(CONFIG\.threatAlarm\?\.barCountsProbes \? \(ev\.spies \|\| 0\) : \(ev\.spiesInFlight \|\| 0\)\)/.test(src));
+must("pasek WYGRYWA nadwyżką ponad ATAKI (sondy tylko opóźniają potwierdzenie) — v2.102.4",
+  /barEff\.foreign > listForeign/.test(src) && /\(ev\.attacks \|\| 0\) \+ \(CONFIG\.threatAlarm\?\.barCountsProbes \? \(ev\.spies \|\| 0\) : 0\)/.test(src) && /probeWaitUntil = \(ev\.at \|\| Date\.now\(\)\)/.test(src));
 must("widziany dolot ataku (ogamex_atk_until) blokuje zdjęcie alarmu i powrót — v2.102.3",
   /prev\.count > 0 && Date\.now\(\) < \(parseInt\(GM_getValue\("ogamex_atk_until"/.test(src) && /until && Date\.now\(\) < until \+ 60 \* 1000/.test(src));
 must("sonda policzona przez listę NIE robi ataku (foreign = ataki + nadwyżka)",
