@@ -127,6 +127,19 @@ eq("brak justReturned (straż nie zna koordów) nie blokuje świeżego wpisu",
   staleReason({ at: "2:151:8", savedAt: NOW - 60_000 }, null, NOW, H4), null);
 
 
+console.log("\n── Y. v2.103.3: NADWYŻKA PASKA vs SONDY W LOCIE (fałszywy alarm 21:34 25.08) ──");
+{
+  const fs = require("fs"), path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "ogamex-bot.user.js"), "utf8");
+  eq("nadwyżka paska = pasek − ataki − sondy W LOCIE", /const listForeign = \(ev\.attacks \|\| 0\) \+ \(CONFIG\.threatAlarm\?\.barCountsProbes \? \(ev\.spies \|\| 0\) : \(ev\.spiesInFlight \|\| 0\)\);/.test(src), true);
+  eq("nadwyżka ≤ sondy → czekaj na lądowanie sond (bez bramki barCountsProbes)", /if \(missing <= \(ev\.spies \|\| 0\)\) probeWaitUntil =/.test(src), true);
+  // arytmetyka scenariuszy (ta sama formuła, wykonana lokalnie)
+  const excess = (bar, attacks, inFlight) => Math.max(0, bar - attacks - inFlight);
+  eq("21:34: pasek 3, ataki 0, 3 sondy w locie → nadwyżka 0 (BEZ alarmu)", excess(3, 0, 3), 0);
+  eq("16:22: pasek 1, ataki 0, 2 sondy WYLĄDOWANE → nadwyżka 1 (ALARM)", excess(1, 0, 0), 1);
+  eq("ACS + sonda w locie: pasek 2, ataki 0, 1 w locie → nadwyżka 1 (ALARM)", excess(2, 0, 1), 1);
+}
+
 console.log("\n── Z. v2.103.2: KOLEJKA vs OBA CIAŁA (incydent 21:23 25.08) ──");
 {
   const fs = require("fs"), path = require("path");

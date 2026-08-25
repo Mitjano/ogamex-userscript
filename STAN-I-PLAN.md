@@ -1,10 +1,27 @@
-# OGameX Assistant — stan na 25 sierpnia 2026, ~21:45 (v2.103.2)
+# OGameX Assistant — stan na 25 sierpnia 2026, ~21:55 (v2.103.3)
 
 Notatka przekazania. Wszystko jest na `main` w `Mitjano/ogamex-userscript`
 (push na main = auto-aktualizacja przez Tampermonkey, CDN cache ~5 min).
 Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
+
+## AKTUALIZACJA 25.08 (30) — v2.103.3: FAŁSZYWY ALARM z paska (3 sondy = „3 ataki")
+
+- 21:32:46 / 21:34:21: pasek 3 obcych, lista 0 ataków + 3 sondy → ścieżka
+  „nadwyżka paska" (v2.102.3: pasek nie liczy sond) uznała 3 za ATAK na
+  oba ciała → **ucieczka w powietrze całej floty** (Deploy 3% 5:67:5→5:67:9,
+  14 h 37 min lotu, 43 bln deuteru) bez żadnego ataku; potem to samo na
+  bazie. Owner: „nie było ataku, tylko trzy skany". Wniosek: pasek forka
+  LICZY sondy W LOCIE; 16:22 („ACS + sonda = 1 Hostile") sonda była już
+  wylądowana — lista trzyma wiersz dłużej niż pasek.
+- v2.103.3: nadwyżka = pasek − ataki − sondy w locie (eta>30 s); wylądowane
+  sondy dalej nie maskują (16:22 pokryte). Nadwyżka ≤ liczba sond →
+  potwierdzenie czeka do lądowania sond (spyMaxEta+10 s) — trwa dalej = atak.
+  Log pokazuje „w locie N". `barCountsProbes=true` = liczyć wszystkie sondy.
+- test-kolejka.js: 5 checków (formuła + scenariusze 21:34 / 16:22 / ACS+sonda).
+- OTWARTE: potwierdzenie, czy zawrócenie ucieczki z 21:33 (zegar ~21:34)
+  faktycznie zawróciło Deploy 14 h — owner sprawdza ruchy floty.
 
 ## AKTUALIZACJA 25.08 (29) — v2.103.2: kolejka ratunków vs atak na OBA ciała drugiej kolonii
 

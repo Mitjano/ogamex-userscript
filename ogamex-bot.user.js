@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.103.2
+// @version      2.103.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7508,16 +7508,23 @@ const __gmSetRaw = GM_setValue;
         // v2.102.4: nadwyżka paska liczona TYLKO względem ataków. Sondy w locie nie
         // maskują — tylko OPÓŹNIAJĄ potwierdzenie do chwili, gdy musiały wylądować
         // (jeśli nadwyżka trwa po tym, to nie była sonda).
-        const listForeign = (ev.attacks || 0) + (CONFIG.threatAlarm?.barCountsProbes ? (ev.spies || 0) : 0);
+        // v2.103.3 — FAŁSZYWY ALARM 25.08 21:32/21:34: pasek 3 obcych, lista 0 ataków
+        // + 3 sondy → „3 brakujących = ATAK" → ucieczka w powietrze CAŁEJ floty
+        // (Deploy 3%, 14 h) bez żadnego ataku. Dowód, że pasek tego forka LICZY
+        // sondy W LOCIE (16:22 „ACS + sonda = 1 Hostile" — tamta sonda już
+        // wylądowała, lista trzyma wiersz dłużej niż pasek). Stąd:
+        //   nadwyżka = pasek − ataki − sondy W LOCIE (eta>30 s).
+        // Wylądowane sondy nadal NIE maskują (16:22 pokryte). Jeśli nadwyżka
+        // ≤ liczba wszystkich sond, potwierdzenie czeka, aż sondy MUSIAŁY
+        // wylądować (spyMaxEta+10 s) — trwa dalej = to nie sonda.
+        // barCountsProbes=true: liczą się WSZYSTKIE sondy (stare zachowanie).
+        const listForeign = (ev.attacks || 0) + (CONFIG.threatAlarm?.barCountsProbes ? (ev.spies || 0) : (ev.spiesInFlight || 0));
         if (barEff && barEff.foreign > listForeign) {
           const missing = barEff.foreign - listForeign;
           barExcess = missing;
-          // (v2.102.4, recenzja): skoro pasek NIE liczy sond, sonda w locie nie tłumaczy
-          // nadwyżki — czekanie na jej lądowanie byłoby czystym opóźnieniem ratunku.
-          // Włączane tylko, gdy owner ustawi barCountsProbes (wtedy sondy są w pasku).
-          if (CONFIG.threatAlarm?.barCountsProbes && missing <= (ev.spiesInFlight || 0)) probeWaitUntil = (ev.at || Date.now()) + ((ev.spyMaxEta || 0) + 10) * 1000;
+          if (missing <= (ev.spies || 0)) probeWaitUntil = (ev.at || Date.now()) + ((ev.spyMaxEta || 0) + 10) * 1000;
           r = { ...r, foreign: (ev.attacks || 0) + missing };
-          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}) — ${missing} brakujących traktuję jak ATAK`;
+          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}, w locie ${ev.spiesInFlight || 0}) — ${missing} brakujących traktuję jak ATAK${probeWaitUntil ? " (po lądowaniu sond)" : ""}`;
         } else
         evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
           + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
