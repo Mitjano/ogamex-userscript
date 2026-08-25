@@ -148,7 +148,7 @@ console.log("\n── Z. v2.103.2: KOLEJKA vs OBA CIAŁA (incydent 21:23 25.08) 
   const body = src.slice(i, i + 9000);
   eq("gałąź ucieczki w powietrze NIE wyklucza już kolejki (`!sweep && !manual`)", /if \(!sweep && !manual\) \{/.test(body), true);
   eq("kolejka przy obu ciałach pod atakiem: zajęta ucieczka → NIE ruszaj floty", /queued && bothHit[\s\S]*return false;/.test(body), true);
-  eq("start symulacji zablokowany przy trwającym alarmie/symulacji", /symulacja jeszcze trwa/.test(src), true);
+  eq("start symulacji zablokowany przy trwającym alarmie/symulacji", /STRAŻ UZBROJONA po poprzednim alarmie/.test(src) && /simUntil > Date.now() || active || armed/.test(src), true);
 }
 
 console.log(

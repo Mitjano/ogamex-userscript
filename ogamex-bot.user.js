@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.103.3
+// @version      2.103.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -13652,8 +13652,13 @@ const __gmSetRaw = GM_setValue;
         {
           const simUntil = parseInt(GM_getValue("ogamex_threat_sim_until", "0")) || 0;
           let active = false; try { active = ThreatMonitor.active(); } catch {}
-          if (simUntil > Date.now() || active || MoonSave.armed()) {
-            log(`[TEST] alarm/symulacja jeszcze trwa (${simUntil > Date.now() ? `symulacja do ${new Date(simUntil).toLocaleTimeString("pl-PL")}` : "alarm aktywny / straż uzbrojona"}) — poczekaj na „czysto" i powrót floty, potem odpal ponownie.`, "error");
+          const armed = MoonSave.armed();
+          if (simUntil > Date.now() || active || armed) {
+            const why = simUntil > Date.now() ? `symulacja trwa do ${new Date(simUntil).toLocaleTimeString("pl-PL")} — poczekaj`
+              : active ? "alarm aktywny — poczekaj na „czysto”"
+              : "STRAŻ UZBROJONA po poprzednim alarmie — kliknij „WRÓĆ NA BAZĘ” (rozbraja straż), poczekaj na „czysto”";
+            log(`[TEST] nie startuję: ${why}, potem odpal ponownie.`, "error");
+            window.alert(`Symulacja nie ruszyła:\n${why}.`);
             return;
           }
         }
