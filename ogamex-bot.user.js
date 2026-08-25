@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.99.2
+// @version      2.99.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4823,8 +4823,17 @@ const __gmSetRaw = GM_setValue;
         }
         const a = cell.querySelector("a[href*='/fleet']");
         if (a) return a.getAttribute("href");
-        // Niektóre buildy wieszają zbieranie na elemencie bez <a> — nie
-        // zgadujemy misji: markup w logu (wyżej), sprawdzamy kolejny wiersz.
+        // v2.99.3: tooltip „Debris field → Recycle" bywa renderowany POZA
+        // komórką (kontener wskazany przez rel/id `debris{g}_{s}_{p}`).
+        const rel = cell.querySelector("[rel^='debris']")?.getAttribute("rel");
+        const tip = (rel && document.getElementById(rel)) || document.getElementById(`debris${b.galaxy}_${b.system}_${idx}`);
+        const ta = tip?.querySelector("a[href*='/fleet']");
+        if (ta) return ta.getAttribute("href");
+        // Bez żadnego linku, ale komórka NIE jest pusta = złom jest. Nie
+        // zgadujemy misji w URL-u: krok 2 sam klika data-planet-type=3, krok 3
+        // sam klika „Collect" (albo NIE wysyła) — wystarczą koordy.
+        log(`[ZŁOM] poz. ${idx}: złom widoczny, ale bez linku zbierania — jadę na formularz po samych koordach.`, "warn");
+        return `/fleet?x=${b.galaxy}&y=${b.system}&z=${idx}`;
       }
       return null;
     },
@@ -4835,10 +4844,13 @@ const __gmSetRaw = GM_setValue;
         const n = parseInt(el.dataset.shipQuantity || "0") || 0;
         if (n > 0) return n;
       }
+      // v2.99.3: brak zwiadu = NIE WIEMY (null), a nie „zero". Zero z
+      // niewiedzy blokowało wizytę na 16 w nieskończoność.
       try {
         const recon = JSON.parse(GM_getValue("ogamex_fleet_recon", "null"));
-        return parseInt(recon?.ships?.RECYCLER || "0") || 0;
-      } catch { return 0; }
+        if (!recon?.ships) return null;
+        return parseInt(recon.ships.RECYCLER || "0") || 0;
+      } catch { return null; }
     },
 
     // Wywoływane, gdy bot STOI na stronie galaktyki systemu bazy.
@@ -4855,7 +4867,7 @@ const __gmSetRaw = GM_setValue;
       if (!href) return false;
       // v2.68.1: pusty hangar (recyklery na księżycu po ratunku/FS) palił
       // 10-minutową blokadę ponowienia bez żadnej wysyłki.
-      if (this.recyclersHome() <= 0) {
+      if (this.recyclersHome() === 0) {
         log("[ZŁOM] pole złomu jest, ale w hangarze zero recyklerów — spróbuję, gdy wrócą.", "warn");
         return false;
       }
@@ -4887,7 +4899,7 @@ const __gmSetRaw = GM_setValue;
       if (GM_getValue("pending_mission", null)) return false;
       if (ThreatMonitor.active()) return false;
       if (Humanizer.isOnBreak() || AntiDetection.isSleepTime()) return false;
-      if (this.recyclersHome() <= 0) return false; // bez recyklerów wizyta nic nie da
+      if (this.recyclersHome() === 0) return false; // bez recyklerów wizyta nic nie da (null = nie wiemy → jedziemy)
       const last = parseInt(GM_getValue(this.KEY_AT, "0")) || 0;
       if (Date.now() - last < this.CHECK_EVERY_MS) return false;
       const scanActive = !!ScanState.load()?.active;
@@ -11283,6 +11295,9 @@ const __gmSetRaw = GM_setValue;
       // v2.48.0: złom po ekspedycjach leży na pozycji 16 systemu bazy i nikt
       // po niego nie przyleci poza nami. Zbieranie ustępuje wszystkiemu innemu
       // (patrz shouldVisit), więc nie konkuruje z miningiem.
+      // v2.99.3: jeśli tick trafił na galaktyce bazy — sprawdź złom od razu
+      // (tryCollectHere sam sprawdza, czy to właściwy układ).
+      try { if (GameState.getCurrentPage() === "galaxy" && DebrisCollector.tryCollectHere()) return; } catch {}
       if (DebrisCollector.shouldVisit()) { DebrisCollector.visit(); return; }
       await ExpeditionRunner.run();
       const pendingAfterExpo = GM_getValue("pending_mission", null);
@@ -14074,6 +14089,16 @@ const __gmSetRaw = GM_setValue;
 
     // Handle pending missions from previous page (fleet dispatch flow)
     setTimeout(handlePendingMission, 2000);
+
+    // ── v2.99.3: złom na galaktyce bazy — sprawdzany na KAŻDYM wejściu ──
+    // Do 2.99.2 tryCollectHere() żyło tylko w gałęzi „skan aktywny", a
+    // visit() jeździło na 16 głównie, gdy skan NIE był aktywny — wizyta
+    // lądowała na stronie i nic nie sprawdzała (25.08: 81 mld/31 mld złomu
+    // na [3:272:16] leżało mimo 20-minutowych wizyt). Teraz sprawdzenie
+    // nie zależy od stanu skanu; bramki (pending/alarm/recyklery) są w środku.
+    if (CONFIG.enabled && CONFIG.expeditions?.enabled && GameState.getCurrentPage() === "galaxy") {
+      try { if (DebrisCollector.tryCollectHere()) return; } catch {}
+    }
 
     // ── Handle active galaxy scan on page load ──
     // If we're on galaxy page and there's an active scan, continue scanning

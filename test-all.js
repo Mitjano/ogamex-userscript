@@ -29,6 +29,7 @@ const SUITES = [
   ["izolacja magazynu per-uni", "test-uni-izolacja.js"],
   ["kalibracja czasu lotu per-serwer", "test-kalibracja-lotu.js"],
   ["higiena wydajnosci (historia + log)", "test-nawigacja-log.js"],
+  ["zbieranie zlomu po ekspedycjach (poz. 16)", "test-zlom.js"],
 ];
 
 let failed = [];

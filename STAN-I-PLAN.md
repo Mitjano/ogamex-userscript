@@ -1025,3 +1025,19 @@ Otwarte (kolejność):
   Debris (data-planet-type=3), krok 3 jawnie klika COLLECT albo NIE wysyła.
   DO POTWIERDZENIA na żywo: pierwszy log `[ZŁOM] misja: "Collect"` po
   przegranej ekspedycji.
+
+## AKTUALIZACJA 25 sierpnia (v2.99.3) — złom na 16 wciąż leżał
+
+- Zgłoszenie: po walce z obcymi na ekspedycji [3:272:16] miało 81 mld metalu
+  / 31 mld kryształu, a bot „zaglądał co 20 min" i nic nie wysyłał.
+- Przyczyna: `visit()` jeździło na galaktykę bazy głównie przy NIEaktywnym
+  skanie, a `tryCollectHere()` po dojeździe żyło tylko w gałęzi init
+  „skan AKTYWNY" — wizyta lądowała na stronie i nic nie sprawdzała. Drugi
+  cichy hamulec: `recyclersHome()` bez zwiadu zwracało 0 = „nie jedź".
+- Naprawa: sprawdzenie złomu na KAŻDYM wejściu na galaktykę bazy (init +
+  tick schedulera), niezależnie od skanu; brak zwiadu = null (jedziemy);
+  `findDebrisLink()` szuka linku także w tooltipie (rel/id `debris{g}_{s}_{p}`),
+  a bez linku jedzie po samych koordach (krok 2/3 i tak klikają Debris +
+  Collect jawnie albo NIE wysyłają). Test: `test-zlom.js` (10 checków).
+- DO POTWIERDZENIA na żywo: log `[ZŁOM] pole złomu na [3:272:16] — wysyłam
+  recyklery` → `[ZŁOM] misja: "Collect"`.
