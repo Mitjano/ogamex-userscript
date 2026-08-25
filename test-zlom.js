@@ -126,5 +126,12 @@ function run(rows, byId = {}) {
   check("shouldVisit(): blokuje tylko przy PEWNYM zerze recyklerów", /recyclersHome\(\) === 0\) return false/.test(sv) && !/recyclersHome\(\) <= 0/.test(sv));
 }
 
+// v2.99.5: strażnicy duplikatu (lokalny + 2× serwerowy) omijają recycle
+{
+  const guards = (src.match(/mission\.fleetSave \|\| mission\.recycle\) \? null : await fleetAlreadyFlyingTo/g) || []).length;
+  check("strażnik serwerowy duplikatu omija recycle (2 miejsca)", guards === 2);
+  check("strażnik lokalny duplikatu omija recycle", /!mission\.fleetSave && !mission\.recycle\) try \{/.test(src));
+}
+
 console.log(failures ? `\n${failures} FAIL` : "\nWSZYSTKO OK");
 process.exit(failures ? 1 : 0);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.99.4
+// @version      2.99.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -9657,7 +9657,9 @@ const __gmSetRaw = GM_setValue;
         // waves 2..N as "duplicates".
         const SEND_GUARD_MS = 10 * 60 * 1000;
         const missionCoord = coordsFromFleetUrl(mission.fleetUrl);
-        if (!mission.expedition && !mission.moonSave && !mission.fleetSave) try {
+        // v2.99.5: recycle wypięty ze strażników duplikatu — ekspedycje lecą na
+        // ten sam cel [baza:16], więc „flota już leci na 16" blokowała recyklery.
+        if (!mission.expedition && !mission.moonSave && !mission.fleetSave && !mission.recycle) try {
           const lastSent = readLastSent(); // v2.10.25: GM + localStorage, newest wins
           const sameTarget = lastSent && (
             (missionCoord && lastSent.coord && lastSent.coord === missionCoord) ||
@@ -9679,7 +9681,7 @@ const __gmSetRaw = GM_setValue;
         // v2.10.25: server-truth check — catches a fleet launched seconds ago
         // by another tab, another browser or another machine, which no local
         // storage guard can see. Expeditions skip it for the same reason as above.
-        const alreadyFlying = (mission.expedition || mission.moonSave || mission.fleetSave) ? null : await fleetAlreadyFlyingTo(missionCoord);
+        const alreadyFlying = (mission.expedition || mission.moonSave || mission.fleetSave || mission.recycle) ? null : await fleetAlreadyFlyingTo(missionCoord);
         if (alreadyFlying) {
           log(`DUPLICATE BLOCKED (server events via ${alreadyFlying}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
           GM_setValue("pending_mission", null);
@@ -11002,7 +11004,7 @@ const __gmSetRaw = GM_setValue;
           // v2.83.0: ostatnia szansa wyłącznika — OFF kliknięty w trakcie
           // kroków 1-3 ma zatrzymać wysyłkę TERAZ, nie po fakcie.
           if (offAbort("Send fleet")) return;
-          const flyingNow = (mission.expedition || mission.moonSave || mission.fleetSave) ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
+          const flyingNow = (mission.expedition || mission.moonSave || mission.fleetSave || mission.recycle) ? null : await fleetAlreadyFlyingTo(missionCoord, { skipDom: true });
           if (flyingNow) {
             log(`DUPLICATE BLOCKED (pre-click, server events via ${flyingNow}): a fleet is already en route to [${missionCoord}]. Aborting send.`, "warn");
             GM_setValue("pending_mission", null);

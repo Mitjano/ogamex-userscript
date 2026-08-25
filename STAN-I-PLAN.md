@@ -1045,3 +1045,6 @@ Otwarte (kolejność):
   `recyclersHome()` czytało `recon.ships.RECYCLER`, a zwiad zapisuje tablicę
   `[{type, qty}]` → zawsze 0. Ta bramka blokowała zbieranie od 2.48.0.
   Naprawione (szukanie po `type`), test wykonuje prawdziwe ciało.
+- **v2.99.5 (07:58):** recyklery doszły do formularza i padły na strażniku
+  duplikatu („flota już leci na [3:272:16]" — to ekspedycje). Recycle wypięty
+  ze wszystkich 3 strażników duplikatu (lokalny + 2× lista ruchów).
