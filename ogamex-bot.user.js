@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.100.1
+// @version      2.101.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5646,6 +5646,93 @@ const __gmSetRaw = GM_setValue;
   };
 
   // ═══════════════════════════════════════════════════════════════
+  //  WŁASNE POWROTY (v2.101.0) — zegar lądowań fal na atakowaną parę
+  // ═══════════════════════════════════════════════════════════════
+  // Owner (25.08): 8 fal ekspedycji + asteroidy wracają na księżyc co kilka
+  // minut, a druga fala wroga jest wycelowana w te powroty. Sztywne 90 s
+  // między zamiataniami gubiło fale lądujące w ostatnich 2 min przed
+  // uderzeniem. Panel Events pokazuje NASZE loty powrotne z odliczaniem —
+  // czytamy je tym samym parserem, co wrogie wiersze (kształt A: upstream
+  // tr.eventFleet + data-return-flight; kształt B: wiersze forka z
+  // markerem powrotu, ale BEZ przycisku zawracania — lot z przyciskiem
+  // dopiero leci). Cache 3 min, bo strony galaktyki panelu nie mają.
+  const OwnReturns = {
+    KEY_CACHE: "ogamex_own_returns_cache",
+
+    read() {
+      const own = ThreatMonitor.ownBodies();
+      const out = [];
+      const push = (dst, body, etaSec) => { if (dst && etaSec > 0) out.push({ dst, dstBody: body, arriveAt: Date.now() + etaSec * 1000 }); };
+      let seen = false;
+      const trsA = [...document.querySelectorAll("tr.eventFleet[data-mission-type]")];
+      if (trsA.length) {
+        seen = true;
+        for (const tr of trsA) {
+          if (tr.dataset.returnFlight !== "true") continue;
+          const dcEl = tr.querySelector(".destCoords");
+          const dc = ((dcEl && dcEl.textContent) || "").match(/(\d+):(\d+):(\d+)/);
+          if (!dc) continue;
+          let eta = 0;
+          const arr = parseInt(tr.dataset.arrivalTime || "0") || 0;
+          if (arr > 0) eta = Math.max(0, Math.round(arr - Date.now() / 1000));
+          if (!eta) {
+            const t = tr.textContent || "";
+            const cd = t.match(/\b(\d{1,2}):(\d{2}):(\d{2})\b/) || t.match(/\b(\d{1,2}):(\d{2})\b/);
+            if (cd) eta = cd[3] !== undefined ? (+cd[1] * 3600 + +cd[2] * 60 + +cd[3]) : (+cd[1] * 60 + +cd[2]);
+          }
+          const body = (dcEl.querySelector("img[src*='moon'], figure.moon, .planetIcon.moon, [class*='moon']") || /\bMoon\b/i.test(dcEl.textContent || "")) ? "moon" : "planet";
+          push(dc[0], body, eta);
+        }
+      } else {
+        const trsB = [...document.querySelectorAll("#fleet-movement-content tr[class*='row-mission-type-'], #layoutFleetMovements tr[class*='row-mission-type-']")];
+        if (trsB.length) seen = true;
+        for (const tr of trsB) {
+          // Recenzja 25.08 (A1): NAJPIERW bojowa klasyfikacja — wrogi/sojuszniczy
+          // wiersz nigdy nie ma przycisku zawracania, więc sam regex „return"
+          // (np. data-return-flight="false") robiłby z ataku „nasz powrót".
+          let r = null; try { r = FleetMovements.classifyRow(tr, own); } catch {}
+          if (!r || !r.mine) continue;
+          if (tr.querySelector("a.x_btn_fleet_return, [class*='btn_fleet_return']")) continue; // dopiero leci
+          if (!/data-return-flight="true"|\(R\)|return/i.test(tr.outerHTML)) continue;
+          // Powrót ląduje w ŹRÓDLE lotu (nasze ciało); zapas: pierwsza nasza koorda.
+          const coords = [...(tr.textContent || "").matchAll(/\[(\d+:\d+:\d+)\]/g)].map(m => m[1]);
+          const home = (r.src && own.has(r.src)) ? r.src : (coords.find(c => own.has(c)) || null);
+          if (!home) continue;
+          const eta = Number.isFinite(r.eta) && r.eta > 0 ? r.eta
+            : (parseInt(tr.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0);
+          push(home, null, eta);   // ciało lądowania nieznane w tym kształcie
+        }
+      }
+      // ── Recenzja 25.08 (#1): lot, który WYLĄDOWAŁ, znika z panelu ──
+      // Sam odczyt DOM zwracałby tylko przyszłe dolot — „lądowanie od
+      // ostatniego zamiatania" nigdy by nie wystąpiło. Dlatego pamiętamy
+      // lądowania z ostatnich 10 min (z poprzednich odczytów) i doklejamy je
+      // do żywej listy; przyszłe wpisy z cache służą tylko stronom bez panelu.
+      const now = Date.now();
+      let c = null;
+      try { c = JSON.parse(GM_getValue(this.KEY_CACHE, "null")); } catch {}
+      const prev = (c && Array.isArray(c.rows)) ? c.rows : [];
+      const landedRecently = prev.filter(r => (r.arriveAt || 0) <= now && now - (r.arriveAt || 0) < 10 * 60 * 1000);
+      const live = seen ? out
+        : ((c && now - (c.at || 0) < 3 * 60 * 1000) ? prev.filter(r => (r.arriveAt || 0) > now) : []);
+      const merged = [...live];
+      for (const r of landedRecently) {
+        if (!merged.some(m => m.dst === r.dst && Math.abs((m.arriveAt || 0) - (r.arriveAt || 0)) < 15000)) merged.push(r);
+      }
+      GM_setValue(this.KEY_CACHE, JSON.stringify({ at: seen ? now : ((c && c.at) || now), rows: merged }));
+      return merged;
+    },
+
+    /** Czasy lądowań (ms epoch) na parę `key`; body=null lub nieznane ciało = licz. */
+    landingsAt(key, body) {
+      return this.read()
+        .filter(r => r.dst === key && (!body || !r.dstBody || r.dstBody === body))
+        .map(r => r.arriveAt)
+        .sort((a, b) => a - b);
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
   //  AIR SAVE (v2.85.0) — UCIECZKA W POWIETRZE na atak obu ciał pary
   // ═══════════════════════════════════════════════════════════════
   // Jedyny scenariusz, w którym ewakuacja księżyc↔planeta NIE ratuje floty:
@@ -5908,8 +5995,23 @@ const __gmSetRaw = GM_setValue;
       if (!ThreatMonitor.active()) return;
       if (!st.at || !st.to) return;
       // Pierwsze 10 min co 90 s (fale wracają gęsto), potem co 5 min.
-      const gap = Date.now() - (st.sentAt || 0) < 10 * 60 * 1000 ? MoonSave.MIN_RESAVE_MS : 5 * 60 * 1000;
-      if (Date.now() - Math.max(st.sweepAt || 0, st.sentAt || 0) < gap) return;
+      // v2.101.0: + zegar powrotów (lądowanie = zamiataj po 20 s; wróg za
+      // < 3 min = też 20 s) tą samą czystą funkcją, co straż.
+      const baseGap = Date.now() - (st.sentAt || 0) < 10 * 60 * 1000 ? MoonSave.MIN_RESAVE_MS : 5 * 60 * 1000;
+      const lastAt = Math.max(st.sweepAt || 0, st.sentAt || 0);
+      let due = Date.now() - lastAt >= baseGap;
+      try {
+        const key = this.key(st.at);
+        const ev = ThreatMonitor.events();
+        const minEta = (ev?.targetMinEta || {})[key] || 0;
+        const attackAt = minEta > 0 ? (ev.at || Date.now()) + minEta * 1000 : 0;
+        // fastGap 60 s: zamiatanie ucieczki to reload + formularz na pustym hangarze;
+        // po lądowaniu/„soon" nie ma sensu gęściej (recenzja #9).
+        const plan = MoonSave.sweepPlan({ now: Date.now(), lastAt, returns: OwnReturns.landingsAt(key, st.fromBody || null), attackAt, minGap: baseGap, fastGap: 60000 });
+        MoonSave.warnDoomed(plan.doomed, attackAt, key);
+        due = plan.due;
+      } catch {}
+      if (!due) return;
       if ((st.sweeps || 0) >= this.SWEEP_MAX) {
         if (!st.sweepCapSaid) { this.save({ ...st, sweepCapSaid: true }); log(`[UCIECZKA] limit ${this.SWEEP_MAX} zamiatań w jednej ucieczce — dalsze fale SPRAWDŹ RĘCZNIE.`, "error"); }
         return;
@@ -6616,6 +6718,8 @@ const __gmSetRaw = GM_setValue;
             targetBodies: Object.fromEntries(dstSorted.filter(k => byDst.get(k).body).map(k => [k, byDst.get(k).body])),
             targetBodiesAll: Object.fromEntries(dstSorted.map(k => [k, [...byDst.get(k).bodies]])),
             targetMaxEta: Object.fromEntries(dstSorted.map(k => [k, byDst.get(k).maxEta || null])),
+            // v2.101.0: NAJKRÓTSZY dolot per kolonia — zegar zamiatania wg powrotów.
+            targetMinEta: Object.fromEntries(dstSorted.map(k => [k, Number.isFinite(byDst.get(k).minEta) && byDst.get(k).minEta < 9e9 ? byDst.get(k).minEta : null])),
             // v2.70.1: najkrótszy czas dolotu ataku — blitz z sąsiedniego
             // układu (<2 min) nie może czekać na pełne potwierdzenie.
             minEta: attacks.length ? Math.min(...attacks.map(r => r.eta || 9e9)) : null,
@@ -7426,7 +7530,7 @@ const __gmSetRaw = GM_setValue;
     KEY_STATE: "ogamex_moonsave_state",
     KEY_WATCH: "ogamex_moonsave_watch",
     MIN_RESAVE_MS: 90 * 1000,   // floor between sweeps: enough for a wave to land
-    MAX_SAVES_PER_ALERT: 20,    // stop rather than loop forever on a stuck alert
+    MAX_SAVES_PER_ALERT: 40,    // v2.101.0: liczone TYLKO potwierdzone wysyłki (było 20 z pustymi hangarami)
     running: false,
 
     // Candidate mission names for "fly there and STAY". The game marks the
@@ -7964,7 +8068,19 @@ const __gmSetRaw = GM_setValue;
         return false;
       }
       if (this.running) return false;
-      if (Date.now() - (w.lastAt || 0) < this.MIN_RESAVE_MS) return false;
+      // ── v2.101.0: tempo zamiatania wg zegara POWROTÓW i dolotu wroga ──
+      let plan = null;
+      try {
+        const key = RescueQueue.str(w.at);
+        const ev = ThreatMonitor.events();
+        const minEta = (ev?.targetMinEta || {})[key] || 0;
+        const attackAt = minEta > 0 ? (ev.at || Date.now()) + minEta * 1000 : 0;
+        const bodies = (ev?.targetBodiesAll || {})[key] || [];
+        const atkBody = bodies.length === 1 ? bodies[0] : null;
+        plan = this.sweepPlan({ now: Date.now(), lastAt: w.lastAt || 0, returns: OwnReturns.landingsAt(key, atkBody), attackAt });
+        this.warnDoomed(plan.doomed, attackAt, key);
+      } catch (e) { plan = null; }
+      if (plan ? !plan.due : (Date.now() - (w.lastAt || 0) < this.MIN_RESAVE_MS)) return false;
       if ((w.saves || 0) >= this.MAX_SAVES_PER_ALERT) {
         if (!w.capped) { this.saveWatch({ ...w, capped: true }); log(`[MOON SAVE] limit ${this.MAX_SAVES_PER_ALERT} zapisów na alarm osiągnięty — straż stoi. SPRAWDŹ GRĘ.`, "error"); }
         return false;
@@ -8011,9 +8127,53 @@ const __gmSetRaw = GM_setValue;
     commitGuardSwap(mission) {
       if (!mission || !mission.guardSwap || !mission.targetBody) return;
       const w = this.watch();
-      if (!w.armed || w.refugeBody === mission.targetBody) return;
-      this.saveWatch({ ...w, refugeBody: mission.targetBody });
-      ThreatLog.add("RATUNEK", `Straż: flota stoi teraz na ${mission.targetBody === "moon" ? "księżycu" : "planecie"} (potwierdzone).`);
+      if (!w.armed) return;
+      // v2.101.0: limit zapisów liczy TYLKO potwierdzone wysyłki (pusty hangar
+      // nie zjada limitu) — dedup po znaczniku misji (dwie ścieżki potwierdzenia).
+      const stamp = mission.timestamp || 0;
+      const counted = stamp && w.lastCountedStamp === stamp;
+      if (w.refugeBody === mission.targetBody && counted) return;
+      this.saveWatch({ ...w, refugeBody: mission.targetBody, saves: (w.saves || 0) + (counted ? 0 : 1), lastCountedStamp: stamp || w.lastCountedStamp });
+      if (w.refugeBody !== mission.targetBody) ThreatLog.add("RATUNEK", `Straż: flota stoi teraz na ${mission.targetBody === "moon" ? "księżycu" : "planecie"} (potwierdzone).`);
+    },
+
+    // ── v2.101.0: CZYSTE tempo zamiatania wg zegara powrotów (test-zamiatanie.js) ──
+    // returns = czasy lądowań naszych fal na atakowanym ciele (ms epoch),
+    // attackAt = najbliższe uderzenie wroga (ms epoch, 0 = nieznane).
+    //  • coś wylądowało od ostatniego zamiatania → zamiataj po FAST (20 s),
+    //  • uderzenie za < 3 min → też FAST (każda sekunda się liczy),
+    //  • inaczej stary krok MIN (90 s) — spokojny alarm nie mieli strony.
+    //  • doomed = powroty lądujące < 60 s przed uderzeniem: nie zdążymy
+    //    (3 przeładowania + formularz) — tylko głośne ostrzeżenie.
+    sweepPlan({ now, lastAt, returns, attackAt, minGap, fastGap, fastWindow, doomWindow }) {
+      const MIN = minGap ?? 90000, FAST = fastGap ?? 20000, WIN = fastWindow ?? 180000, DOOM = doomWindow ?? 60000;
+      const last = lastAt || 0;
+      const since = now - last;
+      const rs = (returns || []).filter(t => Number.isFinite(t));
+      const landed = rs.filter(t => t > last && t <= now).length;
+      const soon = !!(attackAt && attackAt > now && attackAt - now < WIN);
+      const gap = (landed || soon) ? FAST : MIN;
+      const doomed = attackAt ? rs.filter(t => t > now && t < attackAt && attackAt - t < DOOM) : [];
+      return { due: since >= gap, gap, landed, soon, doomed };
+    },
+
+    warnDoomed(doomed, attackAt, key) {
+      if (!doomed || !doomed.length) return;
+      let said = {};
+      try { said = JSON.parse(GM_getValue("ogamex_doomed_said", "{}")) || {}; } catch {}
+      let changed = false;
+      for (const t of doomed) {
+        const id = `${key}:${Math.round(t / 20000)}`;   // kubełek 20 s — odliczanie dryfuje o sekundy między tickami
+        if (said[id]) continue;
+        said[id] = Date.now(); changed = true;
+        const secs = Math.max(0, Math.round((attackAt - t) / 1000));
+        log(`[STRAŻ] FALA NIE DO URATOWANIA: powrót na [${key}] ląduje ${secs} s przed uderzeniem — automat nie zdąży jej przenieść (formularz trwa dłużej). Jeśli możesz, ZAWRÓĆ ją ręcznie albo przenieś od razu po lądowaniu.`, "error");
+        ThreatLog.add("ATAK", `Powrót na [${key}] ląduje ${secs} s przed uderzeniem — poza zasięgiem automatu. Ratuj ręcznie.`);
+      }
+      if (changed) {
+        for (const k of Object.keys(said)) if (Date.now() - said[k] > 6 * 60 * 60 * 1000) delete said[k];
+        GM_setValue("ogamex_doomed_said", JSON.stringify(said));
+      }
     },
 
     swapDecision({ attacked, fleetBody }) {
@@ -8063,7 +8223,8 @@ const __gmSetRaw = GM_setValue;
         // v2.100.1 (F1): refugeBody NIE zmienia się tutaj — pusty hangar (flota
         // w locie) kończył się „aborting", a straż już wierzyła, że flota stoi
         // na nowym ciele. Zapis robi commitGuardSwap po potwierdzeniu gry.
-        this.saveWatch({ ...w, lastAt: Date.now(), saves: (w.saves || 0) + 1 });
+        // v2.101.0: `saves` rośnie dopiero po potwierdzonej wysyłce (commitGuardSwap).
+        this.saveWatch({ ...w, lastAt: Date.now() });
         DefenceHold.stamp();
         const nameOf = (b) => (b === "moon" ? "KSIĘŻYC" : "PLANETĘ");
         log(`RATUNEK FLOTY: ${nameOf(from)} → ${nameOf(to)} na [${w.at.galaxy}:${w.at.system}:${w.at.position}] (${reason}).`, sweep ? "fleet" : "success");
@@ -12114,7 +12275,11 @@ const __gmSetRaw = GM_setValue;
       // leci sekundy; kto nas ogląda, ten zaraz może uderzyć.
       const highAlertAt = parseInt(GM_getValue("ogamex_high_alert_at", "0")) || 0;
       const spyAlertAt = parseInt(GM_getValue("ogamex_spy_alert_at", "0")) || 0;
+      // v2.101.0 (recenzja #8): przez CAŁY trwający alarm tick co 10 s —
+      // inaczej po 10 min alarmu tempo zamiatania spadało do 30 s.
+      let alarmOn = false; try { alarmOn = ThreatMonitor.active(); } catch {}
       if ((parseInt(GM_getValue(ThreatMonitor.KEY_CANDIDATE, "0")) || 0)
+          || alarmOn
           || Date.now() - highAlertAt < 10 * 60 * 1000
           || Date.now() - spyAlertAt < 5 * 60 * 1000) {
         setTimeout(() => { defenceTick().catch(() => {}); }, 10 * 1000);

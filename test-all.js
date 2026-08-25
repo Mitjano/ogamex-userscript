@@ -18,6 +18,7 @@ const SUITES = [
   ["ucieczka w powietrze (oba ciała pary)", "test-ucieczka.js"],
   ["cel ratunku + ślad paska (katastrofa 13:10)", "test-cel-ratunku.js"],
   ["fale + atak kombinowany (straż świadoma ciała)", "test-fale.js"],
+  ["tempo zamiatania wg powrotów (v2.101.0)", "test-zamiatanie.js"],
   ["bramki wysyłek (alarm + paliwo)", "test-bramka-wysylek.js"],
   ["ratunek nietykalny", "test-ratunek-nietykalny.js"],
   ["przerwa w ochronie (uśpiony laptop)", "test-przerwa.js"],
