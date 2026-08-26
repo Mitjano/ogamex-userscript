@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.0
+// @version      2.104.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -9521,7 +9521,10 @@ const __gmSetRaw = GM_setValue;
         const next = scan?.active ? scan.queue?.[0] : null;
         const busy = GM_getValue("pending_mission", null) && GM_getValue("pending_mission", null) !== "null";
         const minersOut = (parseInt(GM_getValue("ogamex_fleet_return_at", "0")) || 0) > Date.now();
-        if (next && !busy && !minersOut && !ThreatMonitor.active()) {
+        // v2.104.1: oddajemy stronę skanerowi TYLKO przy włączonym miningu — przy
+        // wyłączonym wisiał stary skan (3/155, next [3:61]) i po każdej fali bot
+        // jeździł na [3:61], gdzie nikt nic nie skanował (log 26.08 09:33-09:48).
+        if (next && CONFIG.asteroidMining?.enabled && !busy && !minersOut && !ThreatMonitor.active()) {
           log(`Oddaję stronę skanerowi — wracam na [${next.galaxy}:${next.system}] bez czekania na tick.`, "asteroid");
           scanNavigate(`/galaxy?x=${next.galaxy}&y=${next.system}`, "expedition→scan handoff");
         }
@@ -13668,6 +13671,9 @@ const __gmSetRaw = GM_setValue;
       saveConfig(CONFIG);
       paintModuleToggles();
       log(`Asteroid mining ${CONFIG.asteroidMining.enabled ? "enabled" : "disabled"}`, "info");
+      // v2.104.1: wyłączenie miningu kasuje trwający skan — inaczej zostaje „widmo"
+      // (kolejka układów), które ciągnie nawigację po ekspedycjach i po odblokowaniu.
+      if (!CONFIG.asteroidMining.enabled) { try { if (ScanState.load()?.active) { ScanState.clear(); log("Skan asteroid przerwany razem z wyłączeniem miningu — po włączeniu zacznie od nowa.", "info"); } } catch {} }
       if (CONFIG.asteroidMining.enabled && CONFIG.inactiveFarming.enabled) {
         log("Mining + farming razem: asteroidy mają PIERWSZEŃSTWO, farm wypełnia okna między lotami minerów.", "info");
       }
