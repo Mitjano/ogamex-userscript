@@ -41,7 +41,7 @@ function bodyOf(sig) {
 
 console.log("\n── 1. RATUNEK BEZ CELU BRONI DOMU FLOTY ──");
 
-const runBody = bodyOf("async run({ manual = false, sweep = false, auto = false, reason = \"manual\", where = null, queued = false } = {}) {");
+const runBody = bodyOf("async run({ manual = false, sweep = false, auto = false, reason = \"manual\", where = null, queued = false, noGate = false } = {}) {");
 must("MoonSave.run istnieje i ma niepuste ciało (>1000 znaków)", !!runBody && runBody.length > 1000);
 must("dom floty czytany z expeditions.launchFrom",
   !!runBody && /fleetHome\s*=\s*CONFIG\.expeditions\?\.launchFrom/.test(runBody));

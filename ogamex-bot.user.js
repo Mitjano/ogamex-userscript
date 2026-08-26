@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.105.6
+// @version      2.106.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -81,6 +81,11 @@ const __gmSetRaw = GM_setValue;
     // 8944 km = 89 bln metalu) — jeden księżyc nie może zjeść więcej niż ten
     // ułamek posiadanego metalu; 1000 km stawiamy zawsze, gdy stać.
     moonRebuild: { enabled: true, diameterKm: 8944, allPlanets: true, maxMetalShare: 0.25 },
+    // v2.106.0: RATUNEK BRAMĄ SKOKOWĄ — atak na księżyc z flotą → skok bramą na
+    // inny księżyc (0 s, bez lotu, falanga nic nie widzi) zamiast Deployu 81 s na
+    // planetę. targetMoon: {galaxy,system,position} preferowany cel (null =
+    // pierwszy księżyc z listy bramy, który nie jest atakowany).
+    jumpGate: { enabled: true, targetMoon: null, takeResources: true },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -4975,6 +4980,113 @@ const __gmSetRaw = GM_setValue;
     },
   };
 
+  // ═══ v2.106.0: RATUNEK BRAMĄ SKOKOWĄ (/building/jumpgate) ═══
+  // Strona bramy (zrzuty 26.08 18:49): „Destination moon” (select z „Moon
+  // [g:s:p]”), sekcja „Ships” z polem na typ + pomarańczowy „»” (max) przy
+  // każdym i zbiorczy „»” pod listą, sekcja „Resources” z 3 polami i „»”,
+  // „Cargo space X / Y”, zielony przycisk „Jump”. Selektory dobierane
+  // heurystycznie (nagłówki + kolejność) — przy niepowodzeniu zrzut DOM do
+  // logu i AUTOMATYCZNY powrót do zwykłego ratunku Deployem.
+  const GateSave = {
+    KEY: "ogamex_gate_state",    // { at, to, jumpedAt, homeKey }
+    key(c) { return c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : null; },
+    parseKey(k) { const m = String(k || "").match(/^(\d+):(\d+):(\d+)$/); return m ? { galaxy: +m[1], system: +m[2], position: +m[3] } : null; },
+    state() { try { return JSON.parse(GM_getValue(this.KEY, "null")) || null; } catch { return null; } },
+    save(st) { GM_setValue(this.KEY, st ? JSON.stringify(st) : "null"); },
+    enabled() { return CONFIG.jumpGate?.enabled !== false; },
+
+    // Czy warto próbować bramy: flota na KSIĘŻYCU tej pary, para ma księżyc,
+    // atak nie jest „oba ciała" (wtedy i tak w powietrze… ale brama też ratuje —
+    // skok na inny księżyc jest lepszy niż lot), brak świeżej porażki bramy.
+    canTry(at) {
+      if (!this.enabled()) return false;
+      const k = this.key(at);
+      if (!k) return false;
+      const failAt = parseInt(GM_getValue("ogamex_gate_fail_" + k, "0")) || 0;
+      if (Date.now() - failAt < 10 * 60 * 1000) return false;
+      if (HomeBase.pairHasMoon(at) === false) return false;
+      return true;
+    },
+
+    // Start misji skoku: przełącz na księżyc pary → /building/jumpgate → formularz.
+    start(at, reason, { fallbackDeploy = true } = {}) {
+      const k = this.key(at);
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "gate_jump", moonSave: true, gate: true,
+        atCoords: at, launchBody: "moon", homeBody: "moon",
+        fleetUrl: "/building/jumpgate",
+        step: "switch_to_body", timestamp: Date.now(), reason, fallbackDeploy,
+      }));
+      log(`[BRAMA] RATUNEK BRAMĄ: księżyc [${k}] → inny księżyc (${reason}). Przełączam na księżyc i otwieram bramę.`, "success");
+      ThreatLog.add("RATUNEK", `Brama skokowa: start z [${k}] (${reason}).`);
+      return true;
+    },
+
+    // ── Formularz bramy ──
+    sectionOf(title) {
+      const els = [...document.querySelectorAll("h1,h2,h3,h4,div,span,legend,th")].filter(e => !e.closest("#ogx-bot-panel") && (e.textContent || "").trim().toLowerCase() === title.toLowerCase());
+      const h = els[0];
+      if (!h) return null;
+      // najbliższy przodek, który zawiera jakieś inputy
+      let n = h.parentElement;
+      while (n && n !== document.body && !n.querySelector("input, select, button")) n = n.parentElement;
+      return n && n !== document.body ? n : null;
+    },
+    maxButtons(root) {
+      return [...root.querySelectorAll("a, button, img, span, div")].filter(el => {
+        if (el.closest("#ogx-bot-panel") || el.offsetParent === null) return false;
+        const txt = (el.textContent || "").trim();
+        const cls = `${el.className || ""} ${el.id || ""} ${el.getAttribute("title") || ""} ${el.getAttribute("src") || ""}`.toLowerCase();
+        return /^(»|>>|⟫|max|all)$/i.test(txt) || /max|all|arrow|select-?all|fill/.test(cls);
+      });
+    },
+    shipInputs(root) { return [...root.querySelectorAll("input")].filter(i => i.offsetParent !== null && /number|text/i.test(i.type || "text")); },
+    inputSum(inputs) { return inputs.reduce((a, i) => a + (parseInt(String(i.value || "0").replace(/[^\d]/g, ""), 10) || 0), 0); },
+    destSelect() { return [...document.querySelectorAll("select")].find(sel => !sel.closest("#ogx-bot-panel") && [...sel.options].some(o => /\d+:\d+:\d+/.test(o.textContent || ""))) || null; },
+    jumpButton() { return [...document.querySelectorAll("a, button, input[type='submit'], input[type='button']")].find(el => !el.closest("#ogx-bot-panel") && el.offsetParent !== null && /^\s*(jump|skok|skocz)\s*$/i.test(el.value || el.textContent || "")) || null; },
+    pickDestination(sel, at, attackedKeys) {
+      const opts = [...sel.options].map(o => ({ o, c: this.parseKey(((o.textContent || "").match(/(\d+):(\d+):(\d+)/) || []).slice(1).join(":")) })).filter(x => x.c);
+      const here = this.key(at);
+      const want = CONFIG.jumpGate?.targetMoon;
+      const wantK = want ? this.key(want) : null;
+      const ok = opts.filter(x => this.key(x.c) !== here && !attackedKeys.includes(this.key(x.c)));
+      return ok.find(x => wantK && this.key(x.c) === wantK) || ok[0] || null;
+    },
+    async fireChange(el) { el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); await AntiDetection.sleep(500 + Math.random() * 400); },
+
+    // Porażka bramy → zwykły ratunek (Deploy) od razu.
+    async fallback(mission, why) {
+      const k = this.key(mission.atCoords);
+      log(`[BRAMA] nie skoczę (${why}) — przechodzę na zwykły ratunek Deployem.`, "error");
+      ThreatLog.add("BŁĄD", `Brama [${k}]: ${why} — ratunek Deployem.`);
+      GM_setValue("ogamex_gate_fail_" + k, String(Date.now()));
+      GM_setValue("pending_mission", null);
+      if (mission.fallbackDeploy) {
+        try { await MoonSave.run({ auto: true, reason: `brama nieudana: ${why}`, where: mission.atCoords, noGate: true }); } catch (e) { log(`[BRAMA] fallback nie ruszył: ${e.message}`, "error"); }
+      }
+    },
+
+    // Powrót bramą po alarmie: z księżyca-refugium na księżyc domowy.
+    async returnHome(w, { byOperator = false } = {}) {
+      const st = this.state();
+      if (!st || !st.to) return false;
+      const home = this.parseKey(st.homeKey), refuge = this.parseKey(st.to);
+      if (!home || !refuge) return false;
+      if (GM_getValue("pending_mission", null) && GM_getValue("pending_mission", null) !== "null") return false;
+      const lastTry = parseInt(GM_getValue("ogamex_gate_return_try", "0")) || 0;
+      if (!byOperator && Date.now() - lastTry < 5 * 60 * 1000) return false;   // cooldown bramy — próbuj co 5 min
+      GM_setValue("ogamex_gate_return_try", String(Date.now()));
+      GM_setValue("pending_mission", JSON.stringify({
+        type: "gate_jump", moonSave: true, gate: true, gateReturn: true,
+        atCoords: refuge, forceTarget: home, launchBody: "moon", homeBody: "moon",
+        fleetUrl: "/building/jumpgate", step: "switch_to_body", timestamp: Date.now(),
+        reason: byOperator ? "powrót bramą (operator)" : "powrót bramą po alarmie", fallbackDeploy: false,
+      }));
+      log(`[BRAMA] POWRÓT: księżyc [${st.to}] → księżyc [${st.homeKey}] bramą (jeśli brama ma cooldown, ponowię za 5 min).`, "info");
+      return true;
+    },
+  };
+
   const DebrisCollector = {
     KEY_AT: "ogamex_debris_check_at",
     KEY_SENT: "ogamex_debris_sent_at",
@@ -8521,6 +8633,11 @@ const __gmSetRaw = GM_setValue;
     // the bot resumes on its own.
     async returnHome({ byOperator = false } = {}) {
       const w = this.normalizeWatch();   // v2.102.0 (C-F1)
+      // v2.106.0: flota skoczyła BRAMĄ na inny księżyc → powrót też bramą.
+      if (w.armed && w.refugeBody === "gate") {
+        if (!byOperator && ThreatMonitor.active()) return false;
+        return GateSave.returnHome(w, { byOperator });
+      }
       // v2.102.0 (B6): flota już na ciele domowym (refugium = dom) i cisza →
       // nie ma czego ściągać; straż schodzi bez wysyłania pustej misji.
       if (!byOperator && w.armed && w.homeBody && w.refugeBody === w.homeBody && !ThreatMonitor.active() && ((w.saves || 0) > 0 || !w.lastSendAt)) {
@@ -8937,7 +9054,7 @@ const __gmSetRaw = GM_setValue;
       }
     },
 
-    async run({ manual = false, sweep = false, auto = false, reason = "manual", where = null, queued = false } = {}) {
+    async run({ manual = false, sweep = false, auto = false, reason = "manual", where = null, queued = false, noGate = false } = {}) {
       if (this.running) return false;
       if (!this.armed()) return this.learnThenSave(reason);
       // A sweep is paced by MIN_RESAVE_MS instead: the 15-minute guard exists
@@ -9048,6 +9165,24 @@ const __gmSetRaw = GM_setValue;
           // ucieczka „swap" po świeżej porażce, a oba ciała nadal atakowane → też stop
           if (bothHit && airVerdict === "swap" && AirSave.enabled()) { this.shoutBothHit(at, `ucieczka niedostępna (${airVerdict})`); return false; }
         }
+        // ── v2.106.0: BRAMA SKOKOWA PRZED DEPLOYEM ──
+        // Flota na KSIĘŻYCU tej pary, ratunek nie jest zamiataniem/kolejką,
+        // brama włączona i bez świeżej porażki → skok na inny księżyc (0 s).
+        // Każda porażka bramy wraca tu z noGate=true → Deploy jak dotąd.
+        try {
+          const activePair0 = HomeBase.coords();
+          const samePair0 = !!(at && activePair0 && activePair0.galaxy === at.galaxy && activePair0.system === at.system && activePair0.position === at.position);
+          if (!noGate && !sweep && !queued && samePair0 && this.currentBody() === "moon" && GateSave.canTry(at)) {
+            this.saveState({ at: Date.now(), reason });
+            const w0g = this.watch();
+            this.saveWatch({ ...w0g, armed: true, at, homeBody: "moon", refugeBody: w0g.refugeBody || "moon", since: w0g.since || Date.now(), trigger: w0g.trigger || (manual ? "manual" : "threat"), saves: w0g.saves || 0, lastAt: Date.now() });
+            DefenceHold.stamp();
+            GateSave.start(at, reason);
+            await AntiDetection.sleep(300 + Math.random() * 400);
+            window.location.replace("/");
+            return true;
+          }
+        } catch (e) { log(`[BRAMA] błąd decyzji: ${e.message} — ratunek Deployem.`, "warn"); }
         const href = this.targetUrl(at);
         // ── v2.28.0: uciekaj na DRUGIE ciało, nie zawsze na księżyc ──
         // Właściciel: „jeśli flota stoi na księżycu i leci atak na księżyc, ma
@@ -10741,6 +10876,101 @@ const __gmSetRaw = GM_setValue;
     log(`Continuing mission: ${mission.type}, step: ${mission.step}, page: ${page}`, "fleet");
 
     try {
+      // ═══ v2.106.0: SKOK BRAMĄ — krok formularza (switch_to_body idzie generyczną ścieżką niżej) ═══
+      if (mission.type === "gate_jump" && mission.step === "select_ships_direct") {
+        const onGate = /jumpgate/i.test(location.pathname);
+        if (!onGate) {
+          if (mission.gateNavOnce) return GateSave.fallback(mission, "nie jestem na stronie bramy (brak bramy na tym księżycu?)");
+          mission.gateNavOnce = true; mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          await AntiDetection.sleep(500 + Math.random() * 500);
+          window.location.replace("/building/jumpgate");
+          return;
+        }
+        if (MoonSave.currentBody() !== "moon") return GateSave.fallback(mission, "aktywne ciało nie jest księżycem");
+        const hereAt = HomeBase.coords();
+        if (hereAt && GateSave.key(hereAt) !== GateSave.key(mission.atCoords)) return GateSave.fallback(mission, `brama otwarta na [${GateSave.key(hereAt)}], a ratunek dotyczy [${GateSave.key(mission.atCoords)}]`);
+        await AntiDetection.sleep(800 + Math.random() * 700);
+        const sel = GateSave.destSelect();
+        const shipsSec = GateSave.sectionOf("Ships");
+        const resSec = GateSave.sectionOf("Resources");
+        const jump = GateSave.jumpButton();
+        if (!sel || !shipsSec || !jump) {
+          const host = document.querySelector("#content, .content, main") || document.body;
+          log(`[BRAMA DOM] jumpgate (brak: ${!sel ? "select celu " : ""}${!shipsSec ? "sekcji Ships " : ""}${!jump ? "przycisku Jump" : ""}): ${(host.innerHTML || "").replace(/\s+/g, " ").slice(0, 3500)}`, "error");
+          return GateSave.fallback(mission, "nie rozpoznałem formularza bramy — zrzut wyżej");
+        }
+        // cel
+        let attacked = [];
+        try { attacked = Object.keys(ThreatMonitor.events()?.targetBodiesAll || {}); } catch {}
+        let dest = null;
+        if (mission.forceTarget) {
+          const fk = GateSave.key(mission.forceTarget);
+          dest = [...sel.options].map(o => ({ o, k: (((o.textContent || "").match(/(\d+):(\d+):(\d+)/) || []).slice(1).join(":")) })).find(x => x.k === fk) || null;
+          if (!dest) return GateSave.fallback(mission, `księżyca domowego [${fk}] nie ma na liście bramy`);
+        } else {
+          dest = GateSave.pickDestination(sel, mission.atCoords, attacked);
+          if (!dest) return GateSave.fallback(mission, "brak księżyca docelowego (wszystkie atakowane albo lista pusta)");
+        }
+        sel.value = dest.o.value; await GateSave.fireChange(sel);
+        const destKey = (((dest.o.textContent || "").match(/(\d+):(\d+):(\d+)/) || []).slice(1).join(":"));
+        // statki: zbiorczy „»" (ostatni kandydat w sekcji Ships), potem per-statek
+        const inputs = GateSave.shipInputs(shipsSec);
+        const btns = GateSave.maxButtons(shipsSec);
+        if (btns.length) { btns[btns.length - 1].click(); await AntiDetection.sleep(700); }
+        if (GateSave.inputSum(inputs) === 0) { for (const b of btns) { b.click(); await AntiDetection.sleep(120); } await AntiDetection.sleep(500); }
+        const total = GateSave.inputSum(inputs);
+        if (total === 0) {
+          log(`[BRAMA DOM] Ships (przyciski max nie zadziałały, kandydatów: ${btns.length}): ${(shipsSec.innerHTML || "").replace(/\s+/g, " ").slice(0, 3000)}`, "error");
+          return GateSave.fallback(mission, "nie udało się zaznaczyć statków (hangar pusty albo nieznany przycisk max)");
+        }
+        // surowce (opcjonalnie)
+        if (CONFIG.jumpGate?.takeResources !== false && resSec) {
+          for (const b of GateSave.maxButtons(resSec)) { b.click(); await AntiDetection.sleep(150); }
+          await AntiDetection.sleep(400);
+        }
+        const jb = GateSave.jumpButton();
+        if (!jb || jb.disabled || /disabled/i.test(jb.className || "")) return GateSave.fallback(mission, "przycisk Jump nieaktywny (cooldown bramy?)");
+        log(`[BRAMA] skaczę: [${GateSave.key(mission.atCoords)}] → [${destKey}], statków w polach: ${total.toLocaleString("pl-PL")}.`, "success");
+        ThreatLog.add("RATUNEK", `Brama: skok [${GateSave.key(mission.atCoords)}] → [${destKey}] (${total.toLocaleString("pl-PL")} statków).`);
+        mission.step = "verify"; mission.destKey = destKey; mission.timestamp = Date.now();
+        GM_setValue("pending_mission", JSON.stringify(mission));
+        jb.click();
+        await AntiDetection.sleep(3500 + Math.random() * 1500);
+        window.location.replace("/fleet");
+        return;
+      }
+      if (mission.type === "gate_jump" && mission.step === "verify") {
+        if (page !== "fleet") {
+          if (mission.verifyOnce) { GM_setValue("pending_mission", null); return; }
+          mission.verifyOnce = true; mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          await AntiDetection.sleep(500); window.location.replace("/fleet"); return;
+        }
+        await AntiDetection.sleep(1200);
+        const left = [...document.querySelectorAll("[data-ship-type]")].reduce((a, e) => a + (parseInt(e.dataset.shipQuantity || "0", 10) || 0), 0);
+        GM_setValue("pending_mission", null);
+        const fromK = GateSave.key(mission.atCoords);
+        if (left === 0) {
+          if (mission.gateReturn) {
+            GateSave.save(null);
+            log(`[BRAMA] ✅ flota wróciła bramą na księżyc domowy [${mission.destKey}].`, "success");
+            ThreatLog.add("POWRÓT", `Brama: flota z powrotem na [${mission.destKey}].`);
+            MoonSave.disarm("powrót bramą zakończony");
+          } else {
+            GateSave.save({ at: mission.atCoords, homeKey: fromK, to: mission.destKey, jumpedAt: Date.now() });
+            const w = MoonSave.watch();
+            MoonSave.saveWatch({ ...w, armed: true, at: mission.atCoords, homeBody: "moon", refugeBody: "gate", gateTo: mission.destKey, saves: (w.saves || 0) + 1, lastAt: Date.now(), lastSendAt: Date.now(), since: w.since || Date.now(), trigger: w.trigger || "threat" });
+            log(`[BRAMA] ✅ flota skoczyła na księżyc [${mission.destKey}] — poza zasięgiem ataku, bez lotu. Po alarmie wrócę bramą (cooldown → próby co 5 min).`, "success");
+            ThreatLog.add("RATUNEK", `Brama: flota na [${mission.destKey}]. Powrót bramą po alarmie.`);
+          }
+        } else {
+          log(`[BRAMA] po kliknięciu Jump na księżycu [${fromK}] nadal stoi ${left.toLocaleString("pl-PL")} statków — skok NIE zadziałał.`, "error");
+          if (!mission.gateReturn) await GateSave.fallback(mission, "po Jump flota nadal na miejscu");
+        }
+        return;
+      }
+
       // ═══ v2.105.0: ODBUDOWA KSIĘŻYCA — misja bez formularza floty ═══
       if (mission.type === "moon_form") {
         const c = mission.atCoords, k = MoonRebuild.key(c);
@@ -13894,6 +14124,7 @@ const __gmSetRaw = GM_setValue;
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
           <button class="mini-btn" id="ogx-api-test" title="Odpytuje po kolei endpointy gry (eventbox, eventlist, galaxy, check-target, messages) i wypisuje do logu status HTTP oraz początek odpowiedzi. Od tego zależy, czy szybki skan i wysyłka przez API mogą działać.">Test API</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
+          <button class="mini-btn" id="ogx-gate-jump" title="Skok BRAMĄ: cała flota (+surowce) z AKTYWNEGO księżyca na inny księżyc z bramą — bez lotu. Ten sam mechanizm bot używa automatycznie przy ataku na księżyc. Shift+klik = POWRÓT bramą na księżyc domowy.">Skok bramą</button>
           <button class="mini-btn" id="ogx-moon-form" title="Utwórz księżyc wokół AKTYWNEJ planety (strona Moon Creation, koszt w metalu; średnica z konfiguracji, schodzi w dół, gdy brakuje metalu). Bot robi to też sam po zniszczeniu księżyca bazy.">Utwórz księżyc (tu)</button>
           <button class="mini-btn" id="ogx-flights" title="Pokazuje rejestr własnych lotów górniczych (to on wyznacza budżet równoległych wysyłek) i porównuje go z liczbą misji, którą widzi gra. Shift+klik czyści rejestr awaryjnie, gdy budżet stoi mimo pustego nieba.">Loty</button>
         
@@ -14393,6 +14624,21 @@ const __gmSetRaw = GM_setValue;
         }
         paint();
       }
+      const gateBtn = document.getElementById("ogx-gate-jump");
+      if (gateBtn) gateBtn.addEventListener("click", (ev) => {
+        if (ev.shiftKey) {
+          const w = MoonSave.watch();
+          if (w.refugeBody !== "gate") { log("[BRAMA] nie ma zapisanego skoku do cofnięcia.", "warn"); return; }
+          GateSave.returnHome(w, { byOperator: true }).then(ok => { if (ok) handlePendingMission(); });
+          return;
+        }
+        const c = HomeBase.coords();
+        if (!c) { log("[BRAMA] nie odczytałem koordów aktywnej pary.", "warn"); return; }
+        if (MoonSave.currentBody() !== "moon") { log("[BRAMA] aktywne ciało nie jest księżycem — przełącz na księżyc z bramą.", "warn"); return; }
+        if (!window.confirm(`Skoczyć bramą CAŁĄ flotą z księżyca [${GateSave.key(c)}] na inny księżyc?`)) return;
+        GM_setValue("ogamex_gate_fail_" + GateSave.key(c), "0");
+        MoonSave.run({ manual: true, reason: "skok bramą (operator)", where: c }).catch(err => log(`[BRAMA] ${err.message}`, "error"));
+      });
       const moonForm = document.getElementById("ogx-moon-form");
       if (moonForm) moonForm.addEventListener("click", () => {
         const c = HomeBase.coords();

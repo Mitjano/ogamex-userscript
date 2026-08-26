@@ -104,7 +104,7 @@ const RESCUE = [
   ["MoonSave.autoSaveOnThreat", "    async autoSaveOnThreat() {"],
   ["MoonSave.returnHome", "    async returnHome({ byOperator = false } = {}) {"],
   ["MoonSave.keepPlanetEmpty (straż wielofalowa)", "    async keepPlanetEmpty() {"],
-  ["MoonSave.run (sama wysyłka ratunku)", "    async run({ manual = false, sweep = false, auto = false, reason = \"manual\", where = null, queued = false } = {}) {"],
+  ["MoonSave.run (sama wysyłka ratunku)", "    async run({ manual = false, sweep = false, auto = false, reason = \"manual\", where = null, queued = false, noGate = false } = {}) {"],
   ["RescueQueue.tryNext (2. kolonia)", "    async tryNext(w) {"],
   ["handlePendingMission (formularz floty)", "  async function handlePendingMission() {"],
 ];
@@ -142,7 +142,7 @@ for (const [name, marker, wanted] of EARNERS) {
 // ── 3. Stempel okna obrony musi być stawiany przy KAŻDYM ruchu ratunku ──
 // Bez niego hold kończy się w sekundzie zdjęcia alarmu, a ratunek/powrót
 // jest jeszcze w powietrzu razem z paliwem (dokładnie luka z 11:21:50).
-const saveBody = cutBody("    async run({ manual = false, sweep = false, auto = false, reason = \"manual\", where = null, queued = false } = {}) {");
+const saveBody = cutBody("    async run({ manual = false, sweep = false, auto = false, reason = \"manual\", where = null, queued = false, noGate = false } = {}) {");
 const returnBody = cutBody("    async returnHome({ byOperator = false } = {}) {");
 ok(/DefenceHold\s*\.\s*stamp\s*\(/.test(saveBody), "ratunek stempluje okno obrony (DefenceHold.stamp)");
 ok(/DefenceHold\s*\.\s*stamp\s*\(/.test(returnBody), "powrót stempluje okno obrony (DefenceHold.stamp)");
