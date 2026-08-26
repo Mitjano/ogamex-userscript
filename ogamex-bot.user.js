@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.105.1
+// @version      2.105.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4826,15 +4826,30 @@ const __gmSetRaw = GM_setValue;
     KEY_AT: "ogamex_ferry_at",
     EVERY_MS: 2 * 60 * 60 * 1000,
 
+    // v2.105.2: OKNO PO ODBUDOWIE — fale (ekspedycje/mining) wysłane ze
+    // zniszczonego księżyca lądują na PLANECIE, także po odbudowie (nowy
+    // księżyc = nowe ciało). Przez 24 h od odbudowy prom chodzi co 30 min
+    // dla tej pary niezależnie od ustawienia moonFerry/baseBody.
+    REBUILT_WINDOW_MS: 24 * 60 * 60 * 1000,
+    REBUILT_EVERY_MS: 30 * 60 * 1000,
+    rebuiltRecently(c) {
+      if (!c) return false;
+      const at = parseInt(GM_getValue(`ogamex_moon_rebuilt_${c.galaxy}:${c.system}:${c.position}`, "0")) || 0;
+      return at > 0 && Date.now() - at < this.REBUILT_WINDOW_MS;
+    },
     due() {
-      // v2.83.0: prom tylko na wyraźne życzenie operatora (domyślnie OFF).
-      if (!CONFIG.moonFerry?.enabled) return false;
-      if (CONFIG.baseBody !== "moon" || !CONFIG.enabled) return false;
+      if (!CONFIG.enabled) return false;
+      const here = HomeBase.read();
+      const postRebuild = this.rebuiltRecently(here);
+      // v2.83.0: prom tylko na wyraźne życzenie operatora (domyślnie OFF) —
+      // wyjątek: okno po odbudowie księżyca (v2.105.2).
+      if (!postRebuild && !CONFIG.moonFerry?.enabled) return false;
+      if (!postRebuild && CONFIG.baseBody !== "moon") return false;
       if (ThreatMonitor.active() || MoonSave.watch().armed) return false;
       const p = GM_getValue("pending_mission", null);
       if (p && p !== "null") return false;
       if (Humanizer.isOnBreak() || AntiDetection.isSleepTime()) return false;
-      return Date.now() - (parseInt(GM_getValue(this.KEY_AT, "0")) || 0) > this.EVERY_MS;
+      return Date.now() - (parseInt(GM_getValue(this.KEY_AT, "0")) || 0) > (postRebuild ? this.REBUILT_EVERY_MS : this.EVERY_MS);
     },
 
     async run() {
@@ -4866,7 +4881,7 @@ const __gmSetRaw = GM_setValue;
         step: "switch_to_body",
         timestamp: Date.now(),
       }));
-      log("[PROM] planeta → księżyc: przewożę wszystko, co stoi na planecie (produkcja, surowce, zabłąkana flota). Pusta planeta = nic się nie stanie.", "info");
+      log(`[PROM] planeta → księżyc: przewożę wszystko, co stoi na planecie (produkcja, surowce, zabłąkana flota${this.rebuiltRecently(b) ? ", fale wracające na planetę po zniszczeniu starego księżyca" : ""}). Pusta planeta = nic się nie stanie.`, "info");
       return true;
     },
   };
@@ -10817,7 +10832,8 @@ const __gmSetRaw = GM_setValue;
           if (has) {
             const wasLost = !!GM_getValue("ogamex_moon_lost_" + k, "");
             GM_setValue("ogamex_moon_lost_" + k, "");
-            log(`[KSIĘŻYC] ✅ księżyc [${k}] ODBUDOWANY (${mission.chosenKm} km).${wasLost ? " Flota stoi na planecie po ucieczce — przenoszę ją z powrotem na księżyc." : ""}`, "success");
+            if (wasLost) GM_setValue("ogamex_moon_rebuilt_" + k, String(Date.now()));   // v2.105.2: okno promu 24 h
+            log(`[KSIĘŻYC] ✅ księżyc [${k}] ODBUDOWANY (${mission.chosenKm} km).${wasLost ? " Flota stoi na planecie po ucieczce — przenoszę ją z powrotem na księżyc. Fale wysłane ze starego księżyca wylądują na PLANECIE — przez 24 h prom co 30 min przewozi je na nowy księżyc." : ""}`, "success");
             ThreatLog.add("ATAK", `🌕 Księżyc [${k}] odbudowany (${mission.chosenKm} km).${wasLost ? " Flota wraca na księżyc." : ""}`);
             // v2.105.1: po Destroy flota uciekła na planetę — po odbudowie sama
             // wraca na nowy księżyc (ten sam ratunek co RATUJ FLOTĘ, cel = księżyc
