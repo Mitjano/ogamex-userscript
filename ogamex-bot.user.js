@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.105.0
+// @version      2.105.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -10815,9 +10815,17 @@ const __gmSetRaw = GM_setValue;
           }
           GM_setValue("pending_mission", null);
           if (has) {
+            const wasLost = !!GM_getValue("ogamex_moon_lost_" + k, "");
             GM_setValue("ogamex_moon_lost_" + k, "");
-            log(`[KSIĘŻYC] ✅ księżyc [${k}] ODBUDOWANY (${mission.chosenKm} km). Flota stoi na planecie — RATUJ FLOTĘ → księżyc, albo poczekaj: kolejny start z tej pary pójdzie już z księżyca.`, "success");
-            ThreatLog.add("ATAK", `🌕 Księżyc [${k}] odbudowany (${mission.chosenKm} km). Przenieś flotę na księżyc (RATUJ FLOTĘ).`);
+            log(`[KSIĘŻYC] ✅ księżyc [${k}] ODBUDOWANY (${mission.chosenKm} km).${wasLost ? " Flota stoi na planecie po ucieczce — przenoszę ją z powrotem na księżyc." : ""}`, "success");
+            ThreatLog.add("ATAK", `🌕 Księżyc [${k}] odbudowany (${mission.chosenKm} km).${wasLost ? " Flota wraca na księżyc." : ""}`);
+            // v2.105.1: po Destroy flota uciekła na planetę — po odbudowie sama
+            // wraca na nowy księżyc (ten sam ratunek co RATUJ FLOTĘ, cel = księżyc
+            // tej pary; cel nieznany → bot doczyta go z galaktyki).
+            if (wasLost) {
+              _handlingMission = false;
+              setTimeout(() => MoonSave.run({ manual: true, reason: "powrót na odbudowany księżyc", where: c }).catch(err => log(`[KSIĘŻYC] powrót floty na nowy księżyc nie ruszył: ${err.message}`, "error")), 2500 + Math.random() * 1500);
+            }
           } else {
             log(`[KSIĘŻYC] po kliknięciu „Form a moon" pasek planet nadal nie pokazuje księżyca [${k}] — sprawdź w grze (komunikat błędu? koszt?). Ponowię za 10 min (maks. 3/dobę).`, "error");
             ThreatLog.add("BŁĄD", `Form a moon nie dał księżyca [${k}] — sprawdź w grze.`);
