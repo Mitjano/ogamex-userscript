@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.2
+// @version      2.104.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6648,6 +6648,7 @@ const __gmSetRaw = GM_setValue;
     KEY_DUMPED: "ogamex_threat_markup_dumped_v2381",
     KEY_CANDIDATE: "ogamex_threat_candidate", // v2.32.0: od kiedy widzimy obcych
     KEY_EXCESS_SINCE: "ogamex_bar_excess_since", // v2.104.2: od kiedy trwa BIEŻĄCA nadwyżka paska (kotwica „może być sondą")
+    KEY_EXCESS_LAND: "ogamex_bar_excess_land",   // v2.104.3: zapamiętane lądowanie sond tłumaczących nadwyżkę (nie kurczy się z eta)
     CONFIRM_MS: 25 * 1000,                    // tyle musi się utrzymać, zanim ruszymy flotą
     SELF_SEND_BLIND_MS: 10 * 1000,            // v2.102.0: 20→10 s (D-F6) — tyle po NASZEJ wysyłce pasek kłamie
     CONFIRM_BAR_MS: 12 * 1000,                // v2.102.0 (D-F5): atak widoczny TYLKO na pasku (lista ślepa = z układu) potwierdza się szybciej
@@ -6741,7 +6742,7 @@ const __gmSetRaw = GM_setValue;
     // → ucieczka w powietrze z 11 GŚ na 10% = 4 h 24 min lotu bez ataku na
     // planetę. Kotwica = początek TEJ nadwyżki (excessSince, ustawiany w check()
     // przy przejściu 0→>0, kasowany przy 0), nie starsza od kandydata.
-    barExcessDecision({ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, now }) {
+    barExcessDecision({ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, landAt, now }) {
       const inFlight = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
       const listForeign = (attacks || 0) + inFlight;
       const excess = Math.max(0, (barForeign || 0) - listForeign);
@@ -6749,7 +6750,20 @@ const __gmSetRaw = GM_setValue;
       if (excess <= 0) return { excess: 0, listForeign, waitUntil: 0, why: "" };
       if (barCached && (spies || 0) > 0) return { excess, listForeign, waitUntil: anchor + 20000, why: "pasek z cache + sondy — czekam na żywy pasek" };
       const landed = Math.max(0, (spies || 0) - inFlight);
-      if (excess <= landed) return { excess, listForeign, waitUntil: anchor + (Math.min(spyMaxEta || 0, 120) + 10) * 1000, why: "nadwyżka może być sondą" };
+      // v2.104.3 — 26.08 16:33: 3 sondy, pasek 3→2, lista 0 ataków. Stare okno
+      // = kotwica + eta(TERAZ) + 10 s kurczyło się z każdym tickiem, bo eta
+      // maleje — 1 s po lądowaniu sond „minęło" i alarm ruszył flotą, choć
+      // pasek zdjął sondy 4 s później. Koniec czekania = LĄDOWANIE (now+eta)
+      // + 30 s karencji na odświeżenie paska, nie mniej niż kotwica + 30 s,
+      // cap kotwica + 150 s (16:22: wylądowane sondy + ukryty ACS → alarm po 30 s).
+      if (excess <= landed) {
+        // Lądowanie ZAPAMIĘTANE (landAt z check(), max przez czas nadwyżki) — liczone
+        // od nowa z eta=0 przesuwałoby się z każdym odczytem (błąd 2.103.3).
+        const landNow = (spyMaxEta || 0) > 0 ? now + Math.min(spyMaxEta, 120) * 1000 : 0;
+        const land = Math.max(anchor, landAt || 0, landNow);
+        const waitUntil = Math.min(land + 30000, anchor + 150000);
+        return { excess, listForeign, waitUntil, why: "nadwyżka może być sondą", landAt: land };
+      }
       return { excess, listForeign, waitUntil: 0, why: "" };
     },
     // ── /BAR-EXCESS ──
@@ -7225,7 +7239,7 @@ const __gmSetRaw = GM_setValue;
       return true;
     },
 
-    clear() { GM_setValue(this.KEY, "null"); GM_setValue(this.KEY_EXCESS_SINCE, "0"); },   // v2.104.2: koniec alarmu = koniec nadwyżki
+    clear() { GM_setValue(this.KEY, "null"); GM_setValue(this.KEY_EXCESS_SINCE, "0"); GM_setValue(this.KEY_EXCESS_LAND, "0"); },   // v2.104.2: koniec alarmu = koniec nadwyżki
 
     // ── v2.88.1: PARSER PASKA — czysta funkcja, zamrożona testami ──
     // INCYDENT 12.08 15:24 (ACS na [3:272:7]): pasek pokazywał
@@ -7563,14 +7577,17 @@ const __gmSetRaw = GM_setValue;
         // v2.104.2: początek TEJ nadwyżki — kotwica czekania „może być sondą"
         // w trwającym alarmie (firstAt alarmu robił z każdej sondy „oba ciała").
         let excSince = parseInt(GM_getValue(this.KEY_EXCESS_SINCE, "0")) || 0;
+        let excLand = parseInt(GM_getValue(this.KEY_EXCESS_LAND, "0")) || 0;   // v2.104.3: zapamiętane lądowanie sond
         const decideBx = () => barEff ? this.barExcessDecision({
           barForeign: barEff.foreign, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
           spiesInFlight: ev.spiesInFlight || 0, spyMaxEta: ev.spyMaxEta || 0,
-          barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, excessSince: excSince, now: Date.now(),
+          barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, excessSince: excSince, landAt: excLand, now: Date.now(),
         }) : { excess: 0, listForeign: ev.attacks || 0, waitUntil: 0, why: "" };
         let bx = decideBx();
-        if (bx.excess > 0 && !excSince) { excSince = Date.now(); GM_setValue(this.KEY_EXCESS_SINCE, String(excSince)); bx = decideBx(); }
-        else if (bx.excess <= 0 && excSince) { excSince = 0; GM_setValue(this.KEY_EXCESS_SINCE, "0"); }
+        if (bx.excess > 0 && !excSince) { excSince = Date.now(); excLand = 0; GM_setValue(this.KEY_EXCESS_SINCE, String(excSince)); bx = decideBx(); }
+        else if (bx.excess <= 0 && excSince) { excSince = 0; excLand = 0; GM_setValue(this.KEY_EXCESS_SINCE, "0"); }
+        if (bx.excess > 0 && (bx.landAt || 0) > excLand) { excLand = bx.landAt; GM_setValue(this.KEY_EXCESS_LAND, String(excLand)); }
+        else if (bx.excess <= 0) GM_setValue(this.KEY_EXCESS_LAND, "0");
         const listForeign = bx.listForeign;
         if (bx.excess > 0) {
           const missing = bx.excess;
