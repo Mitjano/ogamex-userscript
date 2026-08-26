@@ -107,3 +107,13 @@ eq("ujemny/śmieciowy dolot nie cofa zegara",
 
 console.log(fails ? `\nUCIECZKA: ${fails} PRZYPADKÓW PADŁO` : "\nUCIECZKA: WSZYSTKIE PRZYPADKI PRZESZŁY");
 process.exit(fails ? 1 : 0);
+
+console.log("\n── F. v2.104.7: PARA BEZ KSIĘŻYCA (Destroy 26.08 18:26) ──");
+eq("bez księżyca: atak w planetę → w powietrze (nie ma dokąd skakać)",
+  decide({ enabled: true, bodies: ["planet"], activePhase: null, failedAt: 0, now: NOW, noMoon: true }), "air");
+eq("bez księżyca: brak rozpoznanych ciał → zwykły ratunek (nic nie wiemy)",
+  decide({ enabled: true, bodies: [], activePhase: null, failedAt: 0, now: NOW, noMoon: true }), "swap");
+eq("bez księżyca, ale ucieczka nieudana <10 min → swap (bez pętli)",
+  decide({ enabled: true, bodies: ["planet"], activePhase: null, failedAt: NOW - 60000, now: NOW, noMoon: true }), "swap");
+eq("z księżycem: atak w planetę → nadal swap (stare zachowanie)",
+  decide({ enabled: true, bodies: ["planet"], activePhase: null, failedAt: 0, now: NOW, noMoon: false }), "swap");

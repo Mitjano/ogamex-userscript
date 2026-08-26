@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.6
+// @version      2.104.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -4802,6 +4802,13 @@ const __gmSetRaw = GM_setValue;
 
     // Wpis planety o danych koordach na pasku planet (koordy siedzą w tekście
     // kotwicy — potwierdzone na żywo przez FleetRecon.activePlanet).
+    // v2.104.7: czy para o tych koordach MA księżyc (wg paska planet).
+    // true/false, albo null gdy pary nie widać na pasku (nie wiemy).
+    pairHasMoon(c) {
+      const a = this.pairAnchor(c);
+      if (!a) return null;
+      return !!this.moonOf(a);
+    },
     pairAnchor(c) {
       if (!c) return null;
       for (const p of document.querySelectorAll("a.planet-select, .planet-select")) {
@@ -5832,11 +5839,14 @@ const __gmSetRaw = GM_setValue;
     // v2.100.0 (audyt 25.08, D3): faza `recalled` blokuje zwykły ratunek
     // TYLKO do lądowania (`landed`). Dotąd blokowała jeszcze 10 min po nim —
     // atak dosłany na świeżo wylądowaną flotę nie wywoływał skoku.
-    decide({ enabled, bodies, activePhase, failedAt, now, landed }) {
+    decide({ enabled, bodies, activePhase, failedAt, now, landed, noMoon }) {
       if (!enabled) return "swap";
       if (activePhase === "launched" || activePhase === "arming") return "active";
       if (activePhase === "recalled" && !landed) return "active";
-      if (!bodies || bodies.length < 2) return "swap";
+      // v2.104.7: para BEZ księżyca (zniszczony 26.08 18:26 przez 3× Destroy)
+      // nie ma dokąd skakać — każdy atak na planetę = ucieczka w powietrze.
+      if (noMoon && (!bodies || !bodies.length)) return "swap";
+      if (!noMoon && (!bodies || bodies.length < 2)) return "swap";
       if (failedAt && now - failedAt < 10 * 60 * 1000) return "swap";
       return "air";
     },
@@ -5876,6 +5886,7 @@ const __gmSetRaw = GM_setValue;
         failedAt,
         now: Date.now(),
         landed: st.phase === "recalled" ? Date.now() >= this.landedAtOf(st) : false,
+        noMoon: HomeBase.pairHasMoon(atCoords) === false,   // v2.104.7
       });
     },
 
@@ -8478,6 +8489,18 @@ const __gmSetRaw = GM_setValue;
           this._sayOnce("waitland", `[POWRÓT] ratunek jeszcze w locie (~${Math.ceil((landAt - Date.now()) / 1000)}s do lądowania) — powrót poczeka.`, "info");
           return false;
         }
+      }
+      // v2.104.7: dom = księżyc, a księżyca już NIE MA (Destroy 26.08 18:26)?
+      // Powrót „na księżyc" kręciłby się w kółko (brak przełącznika na kroku 2,
+      // 3 nieudane próby, backoff 5 min, i od nowa). Flota zostaje na planecie,
+      // straż zdjęta, głośny wpis — start misji sam spada na planetę (v2.82).
+      if ((w.homeBody || "planet") === "moon" && HomeBase.pairHasMoon(w.at) === false) {
+        const k = RescueQueue.str(w.at) || "?";
+        log(`[KSIĘŻYC ZNISZCZONY] para [${k}] nie ma już księżyca — powrót odwołany, flota ZOSTAJE na planecie. Wszystkie starty (ekspedycje/FS/mining) idą teraz z planety; falanga je widzi. Plan odbudowy: MOON-STRATEGY-2026-08-26.md.`, "error");
+        ThreatLog.add("ATAK", `🌑 KSIĘŻYC [${k}] ZNISZCZONY — flota zostaje na planecie, straż zdjęta. Bez księżyca falanga widzi loty. Odbuduj (moonshot) — MOON-STRATEGY-2026-08-26.md.`);
+        GM_setValue("ogamex_moon_lost_" + k, String(Date.now()));
+        this.disarm("księżyc zniszczony — powrót niemożliwy");
+        return false;
       }
       const url = this.homeUrl(w.at);
       if (!url) return false;
