@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.105.3
+// @version      2.105.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -77,7 +77,10 @@ const __gmSetRaw = GM_setValue;
     moonFerry: { enabled: false },
     // v2.105.0: automatyczna ODBUDOWA księżyca (fork ma /home/moonformation —
     // „Form a moon" za metal). Po zniszczeniu księżyca bazy bot sam go stawia.
-    moonRebuild: { enabled: true, diameterKm: 8944, allPlanets: true },   // allPlanets: księżyc przy KAŻDEJ planecie bez księżyca
+    // maxMetalShare: koszt rośnie wykładniczo (na żywo 26.08: 6000 km = 1,8 bln,
+    // 8944 km = 89 bln metalu) — jeden księżyc nie może zjeść więcej niż ten
+    // ułamek posiadanego metalu; 1000 km stawiamy zawsze, gdy stać.
+    moonRebuild: { enabled: true, diameterKm: 8944, allPlanets: true, maxMetalShare: 0.25 },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -10787,12 +10790,16 @@ const __gmSetRaw = GM_setValue;
           const metal = MoonRebuild.readMetal();
           const want = parseInt(mission.diameterKm) || 8944;
           const cands = [want, ...MoonRebuild.DIAMETERS.filter(d => d < want)];
+          const share = Math.min(1, Math.max(0.01, parseFloat(CONFIG.moonRebuild?.maxMetalShare) || 0.25));
+          const budget = metal === null ? null : Math.floor(metal * share);
           let chosen = null, cost = null;
           for (const d of cands) {
             await MoonRebuild.setDiameter(input, d);
             cost = MoonRebuild.readRequirement();
-            log(`[KSIĘŻYC] średnica ${d} km → koszt ${cost === null ? "?" : cost.toLocaleString("pl-PL")} metalu (mam ${metal === null ? "?" : metal.toLocaleString("pl-PL")}).`, "info");
-            if (cost === null || metal === null || cost <= metal) { chosen = d; break; }
+            const last = d === cands[cands.length - 1];
+            log(`[KSIĘŻYC] średnica ${d} km → koszt ${cost === null ? "?" : cost.toLocaleString("pl-PL")} metalu (mam ${metal === null ? "?" : metal.toLocaleString("pl-PL")}, budżet ${Math.round(share * 100)}% = ${budget === null ? "?" : budget.toLocaleString("pl-PL")}).`, "info");
+            // v2.105.4: w budżecie → bierzemy; najmniejsza średnica → wystarczy, że stać
+            if (cost === null || metal === null || cost <= budget || (last && cost <= metal)) { chosen = d; break; }
           }
           if (!chosen) return bail(`za mało metalu nawet na 1 000 km (koszt ${cost}, mam ${metal})`);
           if (btn.disabled || /disabled/i.test(btn.className || "")) return bail("przycisk Form a moon nieaktywny");
