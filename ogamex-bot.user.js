@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.106.0
+// @version      2.106.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5521,14 +5521,25 @@ const __gmSetRaw = GM_setValue;
       // faza idle — czy pora startować?
       const c = this.cfg();
       if (!CONFIG.enabled || !c.enabled || this.running) return;
+      // v2.106.1 — 19:07–19:12: FS zmierzony, plan OK, a start nie ruszał i log
+      // milczał. Każdy powód czekania idzie do logu (dławiony do 1× na 5 min).
+      const waitWhy = (why) => {
+        const at = parseInt(GM_getValue("ogamex_fs_wait_said", "0")) || 0;
+        const last = GM_getValue("ogamex_fs_wait_why", "");
+        if (why !== last || Date.now() - at > 5 * 60 * 1000) {
+          GM_setValue("ogamex_fs_wait_said", String(Date.now())); GM_setValue("ogamex_fs_wait_why", why);
+          log(`[FS] czekam ze startem: ${why}.`, "warn");
+        }
+      };
       // Alarm ma bezwzględne pierwszeństwo: gdy MoonSave ewakuuje/pilnuje bazy,
       // FS nie zabiera mu floty spod ręki.
-      if (ThreatMonitor.active() || MoonSave.watch().armed) return;
+      if (ThreatMonitor.active()) return waitWhy("trwa alarm");
+      if (MoonSave.watch().armed) { const w = MoonSave.watch(); return waitWhy(`straż obrony uzbrojona (para [${RescueQueue.str(w.at) || "?"}], flota: ${w.refugeBody || "?"}, od ${w.since ? new Date(w.since).toLocaleTimeString("pl-PL") : "?"}) — WRÓĆ NA BAZĘ albo zdejmij straż`); }
       const pending = GM_getValue("pending_mission", null);
-      if (pending && pending !== "null") return; // FS może poczekać 30 s, rutyna nie musi być wywłaszczana
+      if (pending && pending !== "null") { let k = "?"; try { k = JSON.parse(pending)?.type || "?"; } catch {} return waitWhy(`inne zadanie w toku (${k})`); } // FS może poczekać 30 s
       // v2.66.0: nieudany start (np. pusty księżyc) nie jest ponawiany co tick.
       const failAt = parseInt(GM_getValue("ogamex_fs_fail_at", "0")) || 0;
-      if (Date.now() - failAt < 10 * 60 * 1000) return;
+      if (Date.now() - failAt < 10 * 60 * 1000) return waitWhy(`pauza po nieudanym starcie (${Math.ceil((10 * 60 * 1000 - (Date.now() - failAt)) / 60000)} min)`);
       // v2.75.0: start z aktualnego ciała — FS czeka, aż aktywny będzie księżyc
       // (właściciel przenosi flotę podczas eventu; wysyłka z planety byłaby
       // widoczna w falandze, więc z planety NIE startujemy).
@@ -5541,7 +5552,7 @@ const __gmSetRaw = GM_setValue;
         return;
       }
       const p = this.plan();
-      if (!p.ok && !p.measure) return;           // za wcześnie / wyłączony / brak godziny
+      if (!p.ok && !p.measure) return waitWhy(p.why || "plan nie gotowy");   // za wcześnie / wyłączony / brak godziny
       if (!p.ok && p.measure) {
         // Nie znamy T: wejdź w formularz, zmierz i NIE wysyłaj (bramka w kroku 2
         // odmówi, bo okno >> 2T przy nieznanym T zawsze kończy się odmową albo
