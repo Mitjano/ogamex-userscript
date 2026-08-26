@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.105.5
+// @version      2.105.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7394,7 +7394,11 @@ const __gmSetRaw = GM_setValue;
       const total = parseInt(m[1]) || 0;
       // segmenty czytamy z okna tuż za „N Missions:", żeby liczby z reszty
       // strony (odliczania, koordynaty) nie weszły do rachunku
-      const win = t.slice(m.index, m.index + 160);
+      // v2.105.6 — 18:33: „Type: Spy” NIE był widziany, bo textContent ma między
+      // segmentami długie ciągi białych znaków (wcięcia HTML) i 160 znaków
+      // kończyło się przed „Type:”. Okno = 1200 znaków ZWINIĘTE do pojedynczych
+      // spacji, potem 220 znaków.
+      const win = t.slice(m.index, m.index + 1200).replace(/\s+/g, " ").slice(0, 220);
       const seg = (re) => { const x = win.match(re); return x ? (parseInt(x[1]) || 0) : null; };
       const own = seg(/(\d+)\s*Own/);
       const hostile = seg(/(\d+)\s*Hostile/);

@@ -177,3 +177,13 @@ must("strażnik domu wołany przy każdym skanie floty", /this\.homeGuard\(snap\
 
 console.log(fails ? `\nCEL RATUNKU: ${fails} BEZPIECZNIKÓW BRAK — NIE WYPUSZCZAĆ` : "\nCEL RATUNKU: WSZYSTKIE BEZPIECZNIKI NA MIEJSCU");
 process.exit(fails ? 1 : 0);
+
+// v2.105.6 — 18:33: textContent z wcięciami HTML między segmentami paska
+{
+  const ws = "\n                                  ";
+  const txt = `5 Missions:${ws}4 Own${ws},${ws}1 Hostile${ws}${ws}Next:${ws}-${ws}${ws}Type:${ws}Spy${ws}Events`;
+  const r = pb(txt);
+  must("pasek z wcięciami: 1 Hostile + Type: Spy → spyOnly", !!r && r.foreign === 1 && r.spyOnly === true && r.spyType === true);
+  const r2 = pb(`7 Missions:${ws}4 Own${ws},${ws}3 Hostile${ws}Next:${ws}-${ws}Type:${ws}Deploy (R)`);
+  must("pasek z wcięciami: Type Deploy → nie spy", !!r2 && r2.foreign === 3 && !r2.spyType);
+}
