@@ -19,7 +19,17 @@ Bot wykrył atak w 25 s i przerzucił całą flotę + surowce (poza rezerwą 100
 3. **Po alarmie, dom = księżyc, a księżyca nie ma** → od v2.104.7 powrót odwołany, straż zdjęta, wpis ATAK (push) „KSIĘŻYC ZNISZCZONY", flota zostaje na planecie. Ekspedycje/FS/mining startują z planety automatycznie (v2.82: „układ bez księżyca = start z planety").
 4. **Koszt braku księżyca**: falanga widzi loty z planety → FS z zawróceniem jest snajperowalny. Do odbudowy: FS przez **stacjonowanie na innej kolonii** (bez zawracania) albo krótkie FS z losowym czasem powrotu.
 
-## Odbudowa księżyca — jedyna droga: moonshot
+## Odbudowa księżyca — fork MA własny mechanizm (poprawka 18:16)
+Athena ma stronę **`/home/moonformation`** (Overview → ikona „Create a Moon around this planet"): pole **Diameter**, koszt w **metalu** (1 000 km = 17,3 M), przycisk **„Form a moon"**. Moonshot NIE jest potrzebny.
+
+**Bot od v2.105.0 (`MoonRebuild`):**
+- co tick skanuje pasek planet; każda planeta bez księżyca = kandydat (baza ze znacznikiem utraty najpierw; `moonRebuild.allPlanets=true`),
+- przełącza aktywne ciało na tę planetę → `/home/moonformation` → ustawia średnicę (`moonRebuild.diameterKm`, domyślnie 8 944; schodzi w dół 8000…1000, aż koszt ≤ metal) → klika „Form a moon" → weryfikuje księżyc na pasku,
+- limit 3 próby/dobę na parę, nie działa w trakcie alarmu; pierwsze wejście bez rozpoznanego pola/przycisku zrzuca markup panelu do logu (`[KSIĘŻYC DOM]`) — selektory NIE są potwierdzone na żywo,
+- przycisk „Utwórz księżyc (tu)" w Szybkich akcjach dla aktywnej planety,
+- po odbudowie: wpis z pushem; flotę przenieść RATUJ FLOTĘ → księżyc (albo bot wystartuje z księżyca przy kolejnej misji).
+
+## (historyczne) Moonshot — niepotrzebny na athenie
 Potrzebny **drugi gracz** (sojusznik albo drugie konto — na prywatnym serwerze sprawdź regulamin athena):
 1. Na planecie [5:125:4] stawiasz obronę zdolną zestrzelić flotę „strzelca" (albo strzelec wysyła flotę, którą Twoja flota na planecie zniszczy — flota musi wtedy stać na planecie, straż OFF na czas moonshota).
 2. Strzelec atakuje Twoją planetę flotą wartą **≥ 2 M złomu** w dowolnym (metal+kryształ) — przy domyślnym 30 % złomu to ok. **6,7 M wartości statków** (np. ~1 700 lekkich myśliwców). Wynik: 20 % szansy na księżyc na próbę (jeśli serwer ma cap 20 %).

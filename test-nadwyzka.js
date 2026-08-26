@@ -98,3 +98,11 @@ process.exit(failures ? 1 : 0);
   const r2 = barExcessDecision({ barForeign: 2, barSpyOnly: false, attacks: 0, spies: 0, spiesInFlight: 0, spyMaxEta: 0, candidateAt: 0, excessSince: 0, landAt: 0, now: 1000000 });
   must("2 obcych bez typu = nadwyżka jak dotąd", r2.excess === 2);
 }
+
+// v2.105.0 — 18:14: pasek „4 Hostile, Type: Spy” (rój sond), lista bez ataków
+{
+  const r = barExcessDecision({ barForeign: 4, barSpyType: true, attacks: 0, spies: 0, spiesInFlight: 0, spyMaxEta: 0, candidateAt: 1000000, excessSince: 1000000, landAt: 0, now: 1000000 });
+  must("rój sond (Type Spy): nadwyżka czeka 5 min", r.excess === 4 && r.waitUntil === 1000000 + 300000);
+  const r2 = barExcessDecision({ barForeign: 4, barSpyType: true, attacks: 1, spies: 0, spiesInFlight: 0, spyMaxEta: 0, candidateAt: 1000000, excessSince: 1000000, landAt: 0, now: 1000000 });
+  must("Type Spy + atak na liście = stara ścieżka (bez 5 min)", r2.waitUntil !== 1000000 + 300000);
+}

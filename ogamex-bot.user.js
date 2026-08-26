@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.7
+// @version      2.105.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -75,6 +75,9 @@ const __gmSetRaw = GM_setValue;
     // na złym ciele" działa odtąd tylko, gdy operator świadomie ją włączy
     // (przycisk PROM w sekcji Mining); przenosiny ręczne = RATUJ / Deploy.
     moonFerry: { enabled: false },
+    // v2.105.0: automatyczna ODBUDOWA księżyca (fork ma /home/moonformation —
+    // „Form a moon" za metal). Po zniszczeniu księżyca bazy bot sam go stawia.
+    moonRebuild: { enabled: true, diameterKm: 8944, allPlanets: true },   // allPlanets: księżyc przy KAŻDEJ planecie bez księżyca
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -4868,6 +4871,107 @@ const __gmSetRaw = GM_setValue;
     },
   };
 
+  // ═══ v2.105.0: ODBUDOWA KSIĘŻYCA ═══
+  // Fork athena ma stronę /home/moonformation (Overview → ikona „Create a
+  // Moon around this planet"): pole Diameter, koszt w metalu, przycisk
+  // „Form a moon". Incydent 26.08 18:26: 3× Destroy zniszczyło księżyc bazy
+  // [5:125:4]. Bot: (1) po wykryciu utraty (MoonSave.returnHome → pairHasMoon
+  // === false) planuje odbudowę, (2) przełącza aktywne ciało na planetę pary,
+  // (3) wchodzi na moonformation, ustawia średnicę (schodzi w dół, aż koszt
+  // zmieści się w metalu), klika „Form a moon", (4) weryfikuje na pasku planet.
+  // Ręcznie: przycisk „Utwórz księżyc (tu)" w Szybkich akcjach — dla AKTYWNEJ
+  // planety. Selektory formularza NIE są potwierdzone na żywo (lekcja 02.08):
+  // pierwsze wejście zrzuca markup panelu Options do logu.
+  const MoonRebuild = {
+    KEY_TRY: "ogamex_moonform_try",   // { key: { n, at } }
+    MAX_TRIES_24H: 3,
+    DIAMETERS: [8944, 8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000],
+
+    key(c) { return c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : null; },
+    tries() { try { return JSON.parse(GM_getValue(this.KEY_TRY, "{}")) || {}; } catch { return {}; } },
+    noteTry(k) { const t = this.tries(); const e = t[k] || { n: 0, at: 0 }; if (Date.now() - e.at > 24 * 3600 * 1000) e.n = 0; e.n += 1; e.at = Date.now(); t[k] = e; GM_setValue(this.KEY_TRY, JSON.stringify(t)); return e.n; },
+    canTry(k) { const e = this.tries()[k]; if (!e) return true; if (Date.now() - e.at > 24 * 3600 * 1000) return true; return e.n < this.MAX_TRIES_24H && Date.now() - e.at > 10 * 60 * 1000; },
+
+    // Zaplanuj odbudowę pary (wołane z returnHome po wykryciu utraty księżyca
+    // i ze schedulera przy znaczniku ogamex_moon_lost_<k>).
+    schedule(c, reason) {
+      const k = this.key(c);
+      if (!k) return false;
+      if (CONFIG.moonRebuild?.enabled === false) { log(`[KSIĘŻYC] odbudowa wyłączona w konfiguracji — [${k}] zostaje bez księżyca.`, "warn"); return false; }
+      if (GM_getValue("pending_mission", null)) return false;
+      if (!this.canTry(k)) { return false; }
+      if (ThreatMonitor.active && ThreatMonitor.active()) { return false; }   // najpierw alarm
+      const n = this.noteTry(k);
+      GM_setValue("pending_mission", JSON.stringify({ type: "moon_form", step: "switch_planet", atCoords: { galaxy: c.galaxy, system: c.system, position: c.position }, diameterKm: CONFIG.moonRebuild?.diameterKm || 8944, timestamp: Date.now(), moonSave: false, reason }));
+      log(`[KSIĘŻYC] odbudowa [${k}] — próba ${n}/${this.MAX_TRIES_24H} (${reason}). Przełączam na planetę i wchodzę na Moon Creation.`, "warn");
+      ThreatLog.add("KSIĘŻYC", `Odbudowa księżyca [${k}] — próba ${n} (${reason}).`);
+      return true;
+    },
+
+    // Tick: KAŻDA planeta z paska bez księżyca = kandydat (życzenie operatora
+    // 26.08: „bot musi wiedzieć, gdzie nie ma moona, żeby go stworzyć").
+    // Kolejność: zniszczony księżyc bazy (znacznik utraty) → reszta po pasku.
+    // Jedna odbudowa na tick; kolejne po weryfikacji poprzedniej.
+    maybeStart() {
+      try {
+        if (!CONFIG.enabled || CONFIG.moonRebuild?.enabled === false) return;
+        if (GM_getValue("pending_mission", null)) return;
+        const all = this.planetsWithoutMoon();
+        if (!all.length) return;
+        const lost = all.filter(c => !!GM_getValue("ogamex_moon_lost_" + this.key(c), ""));
+        const list = CONFIG.moonRebuild?.allPlanets === false ? lost : [...lost, ...all.filter(c => !lost.includes(c))];
+        for (const c of list) {
+          if (this.schedule(c, lost.includes(c) ? "znacznik utraty księżyca" : "planeta bez księżyca")) return;
+        }
+      } catch (e) { log(`[KSIĘŻYC] błąd planowania odbudowy: ${e.message}`, "warn"); }
+    },
+    // Pasek planet: wpisy planet, po których NIE następuje moon-select tej pary.
+    planetsWithoutMoon() {
+      const out = [];
+      for (const p of document.querySelectorAll("a.planet-select, .planet-select")) {
+        if (HomeBase.moonOf(p)) continue;
+        const m = (p.textContent || "").replace(/\s+/g, " ").match(/(\d+):(\d+):(\d+)/);
+        if (m) out.push({ galaxy: +m[1], system: +m[2], position: +m[3] });
+      }
+      return out;
+    },
+
+    readMetal() {
+      try {
+        const el = document.querySelector(".resource-item-metal");
+        const m = el && (el.textContent || "").match(/\d[\d.,\s ']*/);
+        const n = m ? parseInt(m[0].replace(/[^\d]/g, ""), 10) : NaN;
+        return Number.isFinite(n) ? n : null;
+      } catch { return null; }
+    },
+    // Panel Options na stronie moonformation: pole średnicy + koszt + przycisk.
+    formEls() {
+      const inputs = [...document.querySelectorAll("input")].filter(i => i.offsetParent !== null && !i.closest("#ogx-bot-panel") && /number|text/i.test(i.type || "text"));
+      const byName = inputs.find(i => /diam/i.test(`${i.id} ${i.name} ${i.className}`));
+      const input = byName || inputs.find(i => /^\s*[\d.,]+\s*$/.test(i.value || ""));
+      const btn = [...document.querySelectorAll("a, button, input[type='submit']")].find(el => el.offsetParent !== null && !el.closest("#ogx-bot-panel") && /form\s*a\s*moon|utw[oó]rz\s*ksi/i.test(el.value || el.textContent || ""));
+      return { input, btn };
+    },
+    readRequirement() {
+      // liczba przy „Requirements" (koszt metalu) — pierwszy blok cyfr po nagłówku
+      const t = (document.body.textContent || "");
+      const i = t.search(/Requirements|Wymagania/i);
+      if (i < 0) return null;
+      const m = t.slice(i, i + 400).match(/\d{1,3}(?:[.,\s]\d{3})+|\d{4,}/);
+      return m ? parseInt(m[0].replace(/[^\d]/g, ""), 10) : null;
+    },
+    async setDiameter(input, km) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      input.focus();
+      if (setter) setter.call(input, String(km)); else input.value = String(km);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+      input.blur();
+      await AntiDetection.sleep(900 + Math.random() * 500);
+    },
+  };
+
   const DebrisCollector = {
     KEY_AT: "ogamex_debris_check_at",
     KEY_SENT: "ogamex_debris_sent_at",
@@ -6753,10 +6857,19 @@ const __gmSetRaw = GM_setValue;
     // → ucieczka w powietrze z 11 GŚ na 10% = 4 h 24 min lotu bez ataku na
     // planetę. Kotwica = początek TEJ nadwyżki (excessSince, ustawiany w check()
     // przy przejściu 0→>0, kasowany przy 0), nie starsza od kandydata.
-    barExcessDecision({ barForeign, barSpyOnly, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, landAt, now }) {
+    barExcessDecision({ barForeign, barSpyOnly, barSpyType, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, landAt, now }) {
       // v2.104.6: pasek „1 Hostile, Type: Spy” = jedyny obcy lot to sonda —
       // nie ma czego traktować jak atak (lista ataków nadal liczy się osobno).
       if (barSpyOnly && (barForeign || 0) === 1 && (attacks || 0) === 0) return { excess: 0, listForeign: 0, waitUntil: 0, why: "pasek: Type Spy — sonda, nie atak" };
+      // v2.105.0: rój sond (Type Spy, >1 obcych, lista bez ataków) — nadwyżka
+      // liczy się dopiero po 5 min trwałości (sondy wracają w minuty).
+      if (barSpyType && (attacks || 0) === 0) {
+        const inF = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
+        const ex = Math.max(0, (barForeign || 0) - (attacks || 0) - inF);
+        if (ex <= 0) return { excess: 0, listForeign: (attacks || 0) + inF, waitUntil: 0, why: "" };
+        const anchor0 = Math.max(candidateAt || 0, excessSince || 0) || now;
+        return { excess: ex, listForeign: (attacks || 0) + inF, waitUntil: anchor0 + 5 * 60 * 1000, why: "pasek: Type Spy (rój sond) — czekam 5 min na trwałość" };
+      }
       const inFlight = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
       const listForeign = (attacks || 0) + inFlight;
       const excess = Math.max(0, (barForeign || 0) - listForeign);
@@ -7292,8 +7405,13 @@ const __gmSetRaw = GM_setValue;
       // v2.104.6 — 26.08 17:50: pasek „1 Hostile, Type: Spy”, lista bez wiersza
       // sondy (leciała już z powrotem) → nadwyżka trwała >60 s → moon-save
       // całej floty bez ataku. Pasek SAM mówi, czym jest najbliższy obcy lot.
-      const spyOnly = foreign === 1 && /Type\s*:\s*(Spy|Espionage|Szpieg)/i.test(win);
-      return { total, own: own || 0, foreign, spyOnly };
+      const spyType = /Type\s*:\s*(Spy|Espionage|Szpieg)/i.test(win);
+      const spyOnly = foreign === 1 && spyType;
+      // v2.105.0 — 18:14: pasek „4 Hostile, Type: Spy” (rój sond). Typ dotyczy
+      // najbliższego lotu, więc >1 nie wyklucza ataku za sondą — ale sondy
+      // wracają w minuty, atak wisi dłużej: przy Type Spy nadwyżka musi
+      // utrzymać się 5 min, zanim ruszymy flotą.
+      return { total, own: own || 0, foreign, spyOnly, spyType };
     },
 
     // Reads the mission bar of whatever page we're on. Returns null when the
@@ -7331,7 +7449,7 @@ const __gmSetRaw = GM_setValue;
       // śladu, flota stracona. Każdy udany odczyt paska (także 0 — realne
       // odwołanie) zapisuje się na 3 min i zastępuje pasek tam, gdzie go
       // nie ma.
-      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own, spyOnly: !!out.spyOnly }));
+      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own, spyOnly: !!out.spyOnly, spyType: !!out.spyType }));
       return out;
     },
 
@@ -7550,7 +7668,7 @@ const __gmSetRaw = GM_setValue;
       if (!barEff) {
         try {
           const c = JSON.parse(GM_getValue("ogamex_bar_cache", "null"));
-          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, spyOnly: !!c.spyOnly, cached: true };
+          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, spyOnly: !!c.spyOnly, spyType: !!c.spyType, cached: true };
         } catch {}
       }
       const ev = this.events();
@@ -7607,7 +7725,7 @@ const __gmSetRaw = GM_setValue;
         let excSince = parseInt(GM_getValue(this.KEY_EXCESS_SINCE, "0")) || 0;
         let excLand = parseInt(GM_getValue(this.KEY_EXCESS_LAND, "0")) || 0;   // v2.104.3: zapamiętane lądowanie sond
         const decideBx = () => barEff ? this.barExcessDecision({
-          barForeign: barEff.foreign, barSpyOnly: !!barEff.spyOnly, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
+          barForeign: barEff.foreign, barSpyOnly: !!barEff.spyOnly, barSpyType: !!barEff.spyType, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
           spiesInFlight: ev.spiesInFlight || 0, spyMaxEta: ev.spyMaxEta || 0,
           barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, excessSince: excSince, landAt: excLand, now: Date.now(),
         }) : { excess: 0, listForeign: ev.attacks || 0, waitUntil: 0, why: "" };
@@ -8500,6 +8618,7 @@ const __gmSetRaw = GM_setValue;
         ThreatLog.add("ATAK", `🌑 KSIĘŻYC [${k}] ZNISZCZONY — flota zostaje na planecie, straż zdjęta. Bez księżyca falanga widzi loty. Odbuduj (moonshot) — MOON-STRATEGY-2026-08-26.md.`);
         GM_setValue("ogamex_moon_lost_" + k, String(Date.now()));
         this.disarm("księżyc zniszczony — powrót niemożliwy");
+        try { MoonRebuild.schedule(w.at, "księżyc zniszczony"); } catch {}   // v2.105.0
         return false;
       }
       const url = this.homeUrl(w.at);
@@ -10619,6 +10738,95 @@ const __gmSetRaw = GM_setValue;
     log(`Continuing mission: ${mission.type}, step: ${mission.step}, page: ${page}`, "fleet");
 
     try {
+      // ═══ v2.105.0: ODBUDOWA KSIĘŻYCA — misja bez formularza floty ═══
+      if (mission.type === "moon_form") {
+        const c = mission.atCoords, k = MoonRebuild.key(c);
+        const bail = async (why, lvl) => {
+          log(`[KSIĘŻYC] odbudowa [${k}] przerwana: ${why}`, lvl || "error");
+          ThreatLog.add("BŁĄD", `Odbudowa księżyca [${k}] przerwana: ${why}`);
+          GM_setValue("pending_mission", null);
+        };
+        const onPage = /moonformation/i.test(location.pathname);
+        if (mission.step === "switch_planet") {
+          const anchor = HomeBase.pairAnchor(c);
+          if (!anchor) {
+            if (mission.noSidebarOnce) return bail("nie widzę pary na pasku planet");
+            mission.noSidebarOnce = true; mission.timestamp = Date.now();
+            GM_setValue("pending_mission", JSON.stringify(mission));
+            await AntiDetection.sleep(500 + Math.random() * 500);
+            window.location.replace("/");
+            return;
+          }
+          if (HomeBase.moonOf(anchor)) return bail("para ma już księżyc — nic do roboty", "info");
+          const hereAt = HomeBase.coords();
+          const samePair = hereAt && hereAt.galaxy === c.galaxy && hereAt.system === c.system && hereAt.position === c.position;
+          const onPlanet = MoonSave.currentBody() === "planet";
+          mission.step = "open_page"; mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          await AntiDetection.sleep(600 + Math.random() * 600);
+          if (samePair && onPlanet) { window.location.replace("/home/moonformation"); return; }
+          log(`[KSIĘŻYC] przełączam aktywne ciało na planetę [${k}]…`, "fleet");
+          anchor.click();
+          return;
+        }
+        if (mission.step === "open_page") {
+          mission.step = "form"; mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          if (!onPage) { await AntiDetection.sleep(600 + Math.random() * 600); window.location.replace("/home/moonformation"); return; }
+        }
+        if (mission.step === "form") {
+          if (!onPage) return bail("nie jestem na stronie Moon Creation (przekierowanie?)");
+          const head = (document.body.textContent || "").match(/Moon\s*Creation\s*\[(\d+):(\d+):(\d+)\]/i);
+          if (head && `${head[1]}:${head[2]}:${head[3]}` !== k) return bail(`strona pokazuje [${head[1]}:${head[2]}:${head[3]}], a odbudowa dotyczy [${k}]`);
+          const { input, btn } = MoonRebuild.formEls();
+          if (!input || !btn) {
+            const host = document.querySelector("#content, .content, main") || document.body;
+            log(`[KSIĘŻYC DOM] moonformation (brak ${!input ? "pola średnicy" : "przycisku Form a moon"}): ${(host.innerHTML || "").replace(/\s+/g, " ").slice(0, 3000)}`, "error");
+            return bail("nie znalazłem pola/przycisku — zrzut markupu wyżej, dopiszę selektor");
+          }
+          const metal = MoonRebuild.readMetal();
+          const want = parseInt(mission.diameterKm) || 8944;
+          const cands = [want, ...MoonRebuild.DIAMETERS.filter(d => d < want)];
+          let chosen = null, cost = null;
+          for (const d of cands) {
+            await MoonRebuild.setDiameter(input, d);
+            cost = MoonRebuild.readRequirement();
+            log(`[KSIĘŻYC] średnica ${d} km → koszt ${cost === null ? "?" : cost.toLocaleString("pl-PL")} metalu (mam ${metal === null ? "?" : metal.toLocaleString("pl-PL")}).`, "info");
+            if (cost === null || metal === null || cost <= metal) { chosen = d; break; }
+          }
+          if (!chosen) return bail(`za mało metalu nawet na 1 000 km (koszt ${cost}, mam ${metal})`);
+          if (btn.disabled || /disabled/i.test(btn.className || "")) return bail("przycisk Form a moon nieaktywny");
+          log(`[KSIĘŻYC] klikam „Form a moon" — ${chosen} km dla [${k}].`, "warn");
+          ThreatLog.add("KSIĘŻYC", `Form a moon: ${chosen} km dla [${k}] (koszt ${cost ? cost.toLocaleString("pl-PL") : "?"} metalu).`);
+          mission.step = "verify"; mission.chosenKm = chosen; mission.timestamp = Date.now();
+          GM_setValue("pending_mission", JSON.stringify(mission));
+          btn.click();
+          await AntiDetection.sleep(3500 + Math.random() * 1500);
+          if (/moonformation/i.test(location.pathname)) window.location.replace("/");
+          return;
+        }
+        if (mission.step === "verify") {
+          const has = HomeBase.pairHasMoon(c);
+          if (has === null) {
+            if (mission.verifyOnce) return bail("nie widzę paska planet do weryfikacji");
+            mission.verifyOnce = true; mission.timestamp = Date.now();
+            GM_setValue("pending_mission", JSON.stringify(mission));
+            await AntiDetection.sleep(500); window.location.replace("/"); return;
+          }
+          GM_setValue("pending_mission", null);
+          if (has) {
+            GM_setValue("ogamex_moon_lost_" + k, "");
+            log(`[KSIĘŻYC] ✅ księżyc [${k}] ODBUDOWANY (${mission.chosenKm} km). Flota stoi na planecie — RATUJ FLOTĘ → księżyc, albo poczekaj: kolejny start z tej pary pójdzie już z księżyca.`, "success");
+            ThreatLog.add("ATAK", `🌕 Księżyc [${k}] odbudowany (${mission.chosenKm} km). Przenieś flotę na księżyc (RATUJ FLOTĘ).`);
+          } else {
+            log(`[KSIĘŻYC] po kliknięciu „Form a moon" pasek planet nadal nie pokazuje księżyca [${k}] — sprawdź w grze (komunikat błędu? koszt?). Ponowię za 10 min (maks. 3/dobę).`, "error");
+            ThreatLog.add("BŁĄD", `Form a moon nie dał księżyca [${k}] — sprawdź w grze.`);
+          }
+          return;
+        }
+        return bail(`nieznany krok ${mission.step}`);
+      }
+
       // ── Planet switch step: we landed on a planet page, now go to fleet ──
       if (mission.step === "switch_planet_then_fleet" && mission.switchToFleetUrl) {
         log(`Planet switched. Navigating to fleet: ${mission.switchToFleetUrl}`, "fleet");
@@ -12519,6 +12727,9 @@ const __gmSetRaw = GM_setValue;
     // v2.10.27: background yield learning (30min throttle inside, fail-open).
     AsteroidYieldTracker.fetchReportsPeriodic().catch(() => {});
 
+    // v2.105.0: odbudowa zniszczonego księżyca (znacznik ogamex_moon_lost_*).
+    MoonRebuild.maybeStart();
+
     // Sleep check
     if (AntiDetection.isSleepTime()) {
       log("Night mode active - sleeping until " + CONFIG.antiDetection.sleepEndHour + ":00 (czas lokalny)", "delay");
@@ -13668,6 +13879,7 @@ const __gmSetRaw = GM_setValue;
           <button class="mini-btn" id="ogx-bonus-now" title="Sprawdź TERAZ, czy na stronie jest przycisk Online bonus, i kliknij go (ignoruje cooldown).">Claim Bonus</button>
           <button class="mini-btn" id="ogx-api-test" title="Odpytuje po kolei endpointy gry (eventbox, eventlist, galaxy, check-target, messages) i wypisuje do logu status HTTP oraz początek odpowiedzi. Od tego zależy, czy szybki skan i wysyłka przez API mogą działać.">Test API</button>
           <button class="mini-btn" id="ogx-fleet-recon" title="Wypisz do logu, co bot widzi na stronie floty: typy statków (data-ship-type), zapisane grupy flot, sloty flot i ekspedycji. Na stronie /fleet skanuje na świeżo, gdzie indziej pokazuje ostatni zapis.">Fleet Recon</button>
+          <button class="mini-btn" id="ogx-moon-form" title="Utwórz księżyc wokół AKTYWNEJ planety (strona Moon Creation, koszt w metalu; średnica z konfiguracji, schodzi w dół, gdy brakuje metalu). Bot robi to też sam po zniszczeniu księżyca bazy.">Utwórz księżyc (tu)</button>
           <button class="mini-btn" id="ogx-flights" title="Pokazuje rejestr własnych lotów górniczych (to on wyznacza budżet równoległych wysyłek) i porównuje go z liczbą misji, którą widzi gra. Shift+klik czyści rejestr awaryjnie, gdy budżet stoi mimo pustego nieba.">Loty</button>
         
           <label style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:10px;color:#bbb;" title="Klucz API Google AI Studio (aistudio.google.com/apikey). Model czyta TYLKO raporty z misji (urobek z asteroid) tam, gdzie zwykłe parsery nie rozumieją formatu strony. Nigdy nie podejmuje decyzji o flocie. Klucz zostaje lokalnie w Tampermonkey.">
@@ -14166,6 +14378,16 @@ const __gmSetRaw = GM_setValue;
         }
         paint();
       }
+      const moonForm = document.getElementById("ogx-moon-form");
+      if (moonForm) moonForm.addEventListener("click", () => {
+        const c = HomeBase.coords();
+        if (!c) { log("[KSIĘŻYC] nie odczytałem koordów aktywnej pary — wejdź na Overview.", "warn"); return; }
+        if (HomeBase.pairHasMoon(c) === true) { log(`[KSIĘŻYC] para [${MoonRebuild.key(c)}] ma już księżyc.`, "info"); return; }
+        if (!window.confirm(`Utworzyć księżyc wokół [${MoonRebuild.key(c)}]?\n\nKoszt w metalu wg średnicy (${CONFIG.moonRebuild?.diameterKm || 8944} km, w dół gdy brakuje metalu).`)) return;
+        GM_setValue("pending_mission", null);
+        GM_setValue(MoonRebuild.KEY_TRY, "{}");
+        if (MoonRebuild.schedule(c, "przycisk operatora")) handlePendingMission();
+      });
       const recon = document.getElementById("ogx-fleet-recon");
       if (recon) recon.addEventListener("click", () => {
         // On the fleet page take a fresh reading; elsewhere show what the last
