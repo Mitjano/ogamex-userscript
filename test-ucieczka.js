@@ -31,9 +31,9 @@ function bodyOf(name, argList) {
   throw new Error(`nie domknąłem ciała ${name}`);
 }
 
-const decideBody = bodyOf("decide", "{ enabled, bodies, activePhase, failedAt, now, landed }");
+const decideBody = bodyOf("decide", "{ enabled, bodies, activePhase, failedAt, now, landed, noMoon }");
 if (decideBody.length < 100) throw new Error("ciało decide() podejrzanie krótkie — ekstrakcja się rozjechała");
-const decide = new Function("o", "const { enabled, bodies, activePhase, failedAt, now, landed } = o;\n" + decideBody);
+const decide = new Function("o", "const { enabled, bodies, activePhase, failedAt, now, landed, noMoon } = o;\n" + decideBody);
 
 const recallBody = bodyOf("recallAtFor", "maxEtaSec, now");
 const recallAtFor = new Function("maxEtaSec", "now", "const this_RECALL = 120000;\n" + recallBody.replace(/this\.RECALL_BUFFER_MS/g, "this_RECALL"));
