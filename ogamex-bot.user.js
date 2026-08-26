@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.106.1
+// @version      2.106.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8654,6 +8654,18 @@ const __gmSetRaw = GM_setValue;
       if (!byOperator && w.armed && w.homeBody && w.refugeBody === w.homeBody && !ThreatMonitor.active() && ((w.saves || 0) > 0 || !w.lastSendAt)) {
         this.disarm("flota na ciele domowym, alarm minął");
         return false;
+      }
+      // v2.106.2 — 18:37:56→19:22: straż uzbrojona przez ratunek, który 20 s
+      // później skończył się „nothing to save — aborting" (saves=0). Powrót
+      // wymaga saves≥1, więc taka straż wisiała 45 min i blokowała FS
+      // („czekam ze startem: straż obrony uzbrojona"). Alarm zgasł, żadna
+      // wysyłka nie została potwierdzona, 3 min ciszy → straż schodzi sama.
+      if (!byOperator && w.armed && !w.saves && !ThreatMonitor.active()) {
+        const ref = Math.max(w.since || 0, w.lastAt || 0, w.lastSendAt || 0);
+        if (ref && Date.now() - ref > 3 * 60 * 1000) {
+          this.disarm("straż bez żadnej potwierdzonej wysyłki, alarm minął — nie ma czego ściągać");
+          return false;
+        }
       }
       // v2.26.2: the operator's own request never needs the guard to be armed.
       // A failed return used to disarm it, which then made this button refuse
