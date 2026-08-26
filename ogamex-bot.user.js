@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.105.4
+// @version      2.105.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6864,15 +6864,11 @@ const __gmSetRaw = GM_setValue;
       // v2.104.6: pasek „1 Hostile, Type: Spy” = jedyny obcy lot to sonda —
       // nie ma czego traktować jak atak (lista ataków nadal liczy się osobno).
       if (barSpyOnly && (barForeign || 0) === 1 && (attacks || 0) === 0) return { excess: 0, listForeign: 0, waitUntil: 0, why: "pasek: Type Spy — sonda, nie atak" };
-      // v2.105.0: rój sond (Type Spy, >1 obcych, lista bez ataków) — nadwyżka
-      // liczy się dopiero po 5 min trwałości (sondy wracają w minuty).
-      if (barSpyType && (attacks || 0) === 0) {
-        const inF = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
-        const ex = Math.max(0, (barForeign || 0) - (attacks || 0) - inF);
-        if (ex <= 0) return { excess: 0, listForeign: (attacks || 0) + inF, waitUntil: 0, why: "" };
-        const anchor0 = Math.max(candidateAt || 0, excessSince || 0) || now;
-        return { excess: ex, listForeign: (attacks || 0) + inF, waitUntil: anchor0 + 5 * 60 * 1000, why: "pasek: Type Spy (rój sond) — czekam 5 min na trwałość" };
-      }
+      // v2.105.5 (decyzja operatora 26.08): pasek „Type: Spy” + lista bez
+      // ataków = SONDY, flota NIE rusza — niezależnie od liczby. Ryzyko
+      // szczątkowe: atak z własnego układu (lista go gubi) lecący ZA sondą —
+      // pokaże się w pasku po lądowaniu sondy jako Type ≠ Spy → alarm wtedy.
+      if (barSpyType && (attacks || 0) === 0) return { excess: 0, listForeign: 0, waitUntil: 0, why: "pasek: Type Spy — sondy, nie atak" };
       const inFlight = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
       const listForeign = (attacks || 0) + inFlight;
       const excess = Math.max(0, (barForeign || 0) - listForeign);
