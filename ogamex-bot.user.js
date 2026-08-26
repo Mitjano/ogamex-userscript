@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.4
+// @version      2.104.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11907,14 +11907,21 @@ const __gmSetRaw = GM_setValue;
         // do powrotu musi mieścić się w 2×T minus margines na samo zawrócenie.
         // Nie mieści się (albo to tylko pomiar) → NIE wysyłamy, T zapisany,
         // planer od teraz liczy start bez wchodzenia w formularz.
+        let fsOnStep3 = false;
         if (mission.fleetSave) {
           // v2.63.0: pomiar 16:36 pokazał, że krok 2 tego forka NIE pokazuje
           // czasu lotu tam, gdzie czyta go mining (capturedFlightMs=0).
           // Przy pomiarze wchodzimy więc na krok 3 (misja + podsumowanie) —
           // BEZ dotykania „Send fleet" — i próbujemy odczytać czas tam.
           // Nadal nic → zrzut kroku 3 do logu i uczciwa odmowa.
-          if (mission.fsMeasure && !(capturedFlightMs > 0)) {
-            if (await clickButtonWhenEnabled("Next", "fs-measure step2→3")) {
+          // v2.104.5: 26.08 17:46 — pomiar odczytał 432 min na kroku 3, a
+          // PRAWDZIWY start FS 3 s później odmówił „nie odczytałem czasu lotu",
+          // bo krok 3 czytał tylko pomiar. Teraz każda wysyłka FS bez czasu
+          // z kroku 2 idzie na krok 3 po odczyt (dalej bez „Send fleet");
+          // wysyłka pomija potem drugie „Next", bo już jest na kroku 3.
+          if (mission.fleetSave && !(capturedFlightMs > 0)) {
+            if (await clickButtonWhenEnabled("Next", mission.fsMeasure ? "fs-measure step2→3" : "fs step2→3 (odczyt czasu)")) {
+              fsOnStep3 = true;
               await waitForStepChange(() => Array.from(document.querySelectorAll("a, button, input[type='submit'], input[type='button']")).some(el => {
                 if (el.offsetParent === null) return false;
                 const txt = (el.value || el.textContent || "").trim().toLowerCase();
@@ -11985,8 +11992,8 @@ const __gmSetRaw = GM_setValue;
         await AntiDetection.sleep(800 + Math.random() * 1200);
         if (offAbort("step2→3")) return;
 
-        // Click "Next" — step 2 → step 3
-        if (!await clickButtonWhenEnabled("Next", "step2→3")) {
+        // Click "Next" — step 2 → step 3 (FS mógł już tam wejść po czas lotu)
+        if (!fsOnStep3 && !await clickButtonWhenEnabled("Next", "step2→3")) {
           dumpButtons("step2-fail");
           // v2.66.6: jak w kroku 1 — prawdziwy powód jest linijkę wyżej.
           log("Krok 2 nieudany — wycofuję wysyłkę (szczegóły wyżej).", "error");
