@@ -5,6 +5,7 @@
 Bot wykrył atak w 25 s i przerzucił całą flotę + surowce (poza rezerwą 100 mld deuteru) na planetę (Deploy 81 s). Flota bezpieczna.
 
 ## Mechanika OGameX (ze źródła lanedirt/OGameX)
+**ZASTRZEŻENIE:** athena to fork .NET, nie Laravel — wzory poniżej to najlepsze przybliżenie (fork kopiuje reguły OGame), ale liczby (cap 20 %, próg złomu) trzeba potwierdzić na żywo: raport bitwy po moonshocie pokazuje „szansa na księżyc”. Nie budować automatu na tych liczbach bez potwierdzenia.
 - **Destroy = najpierw bitwa na księżycu** (flota+obrona księżyca vs napastnik), potem rzut na zniszczenie.
   Szansa = `(100 − √średnica) · √liczbaGŚ` → przy ≥ ~4 GŚ na duży księżyc = **100 %**. 500 mld GŚ = pewne zniszczenie, jeśli wygrają bitwę.
 - **Utrata GŚ napastnika**: jeden rzut na całą flotę, szansa `√średnica / 2` (≈ 47 % dla księżyca 8 944 km). Nawet przegrany rzut nie ratuje księżyca.
