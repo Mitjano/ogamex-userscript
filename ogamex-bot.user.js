@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.5
+// @version      2.104.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6742,7 +6742,10 @@ const __gmSetRaw = GM_setValue;
     // → ucieczka w powietrze z 11 GŚ na 10% = 4 h 24 min lotu bez ataku na
     // planetę. Kotwica = początek TEJ nadwyżki (excessSince, ustawiany w check()
     // przy przejściu 0→>0, kasowany przy 0), nie starsza od kandydata.
-    barExcessDecision({ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, landAt, now }) {
+    barExcessDecision({ barForeign, barSpyOnly, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, landAt, now }) {
+      // v2.104.6: pasek „1 Hostile, Type: Spy” = jedyny obcy lot to sonda —
+      // nie ma czego traktować jak atak (lista ataków nadal liczy się osobno).
+      if (barSpyOnly && (barForeign || 0) === 1 && (attacks || 0) === 0) return { excess: 0, listForeign: 0, waitUntil: 0, why: "pasek: Type Spy — sonda, nie atak" };
       const inFlight = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
       const listForeign = (attacks || 0) + inFlight;
       const excess = Math.max(0, (barForeign || 0) - listForeign);
@@ -7275,7 +7278,11 @@ const __gmSetRaw = GM_setValue;
       const friendly = seg(/(\d+)\s*Friendly/);
       if (own === null && hostile === null && friendly === null) return null;
       const foreign = hostile !== null ? hostile : Math.max(0, total - (own || 0) - (friendly || 0));
-      return { total, own: own || 0, foreign };
+      // v2.104.6 — 26.08 17:50: pasek „1 Hostile, Type: Spy”, lista bez wiersza
+      // sondy (leciała już z powrotem) → nadwyżka trwała >60 s → moon-save
+      // całej floty bez ataku. Pasek SAM mówi, czym jest najbliższy obcy lot.
+      const spyOnly = foreign === 1 && /Type\s*:\s*(Spy|Espionage|Szpieg)/i.test(win);
+      return { total, own: own || 0, foreign, spyOnly };
     },
 
     // Reads the mission bar of whatever page we're on. Returns null when the
@@ -7313,7 +7320,7 @@ const __gmSetRaw = GM_setValue;
       // śladu, flota stracona. Każdy udany odczyt paska (także 0 — realne
       // odwołanie) zapisuje się na 3 min i zastępuje pasek tam, gdzie go
       // nie ma.
-      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own }));
+      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own, spyOnly: !!out.spyOnly }));
       return out;
     },
 
@@ -7532,7 +7539,7 @@ const __gmSetRaw = GM_setValue;
       if (!barEff) {
         try {
           const c = JSON.parse(GM_getValue("ogamex_bar_cache", "null"));
-          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, cached: true };
+          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, spyOnly: !!c.spyOnly, cached: true };
         } catch {}
       }
       const ev = this.events();
@@ -7589,7 +7596,7 @@ const __gmSetRaw = GM_setValue;
         let excSince = parseInt(GM_getValue(this.KEY_EXCESS_SINCE, "0")) || 0;
         let excLand = parseInt(GM_getValue(this.KEY_EXCESS_LAND, "0")) || 0;   // v2.104.3: zapamiętane lądowanie sond
         const decideBx = () => barEff ? this.barExcessDecision({
-          barForeign: barEff.foreign, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
+          barForeign: barEff.foreign, barSpyOnly: !!barEff.spyOnly, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
           spiesInFlight: ev.spiesInFlight || 0, spyMaxEta: ev.spyMaxEta || 0,
           barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, excessSince: excSince, landAt: excLand, now: Date.now(),
         }) : { excess: 0, listForeign: ev.attacks || 0, waitUntil: 0, why: "" };

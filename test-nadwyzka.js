@@ -90,3 +90,11 @@ check("attackBodiesFor: klauzula „nadwyżka = oba ciała” tylko dla pary str
 
 console.log(failures ? `\n${failures} FAIL` : "\nWSZYSTKO OK");
 process.exit(failures ? 1 : 0);
+
+// v2.104.6 — 26.08 17:50: pasek „1 Hostile, Type: Spy”, lista bez wiersza sondy
+{
+  const r = barExcessDecision({ barForeign: 1, barSpyOnly: true, attacks: 0, spies: 0, spiesInFlight: 0, spyMaxEta: 0, candidateAt: 0, excessSince: 0, landAt: 0, now: 1000000 });
+  must("pasek Type:Spy przy 1 obcym = brak nadwyżki", r.excess === 0);
+  const r2 = barExcessDecision({ barForeign: 2, barSpyOnly: false, attacks: 0, spies: 0, spiesInFlight: 0, spyMaxEta: 0, candidateAt: 0, excessSince: 0, landAt: 0, now: 1000000 });
+  must("2 obcych bez typu = nadwyżka jak dotąd", r2.excess === 2);
+}
