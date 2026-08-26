@@ -49,8 +49,23 @@ check("barCountsProbes=true: wszystkie sondy odejmowane → 0", r.excess === 0);
 r = decide({ ...base, barForeign: 1, attacks: 0, spies: 2, spiesInFlight: 0, spyMaxEta: 0, candidateAt: 0 });
 check("brak kandydata → kotwica = now", r.waitUntil === T + 10000);
 
+// v2.104.2 — 26.08 16:03:18 / 16:06:03: alarm trwa (firstAt = 16:02:26), atak na
+// księżyc na liście, wylądowana sonda też, pasek 2 vs lista 1. Kotwicą MUSI być
+// początek tej nadwyżki, nie firstAt alarmu — inaczej „oba ciała" i 4 h lotu.
+const FIRST = T, ONSET = T + 52000;
+r = decide({ ...base, barForeign: 2, attacks: 1, spies: 1, spiesInFlight: 0, spyMaxEta: 0, candidateAt: FIRST, excessSince: ONSET, now: ONSET });
+check("26.08 16:03: alarm trwa, atak(księżyc)+wylądowana sonda, pasek 2 → nadwyżka 1 czeka 10 s od POCZĄTKU NADWYŻKI (nie od firstAt)", r.excess === 1 && r.waitUntil === ONSET + 10000 && r.why === "nadwyżka może być sondą");
+r = decide({ ...base, barForeign: 2, attacks: 1, spies: 1, spiesInFlight: 0, spyMaxEta: 0, candidateAt: FIRST, excessSince: 0, now: ONSET });
+check("bez excessSince (stary kod) czekanie już minęło → to był błąd 26.08", r.waitUntil === FIRST + 10000 && ONSET >= r.waitUntil);
+r = decide({ ...base, barForeign: 1, attacks: 0, spies: 2, spiesInFlight: 0, spyMaxEta: 0, candidateAt: T + 5000, excessSince: T, now: T + 5000 });
+check("nadwyżka starsza niż kandydat (16:22) → kotwica = kandydat (nie cofa się)", r.waitUntil === T + 5000 + 10000);
+check("check() śledzi początek nadwyżki (KEY_EXCESS_SINCE) i kasuje go przy zerze / clear()",
+  /excessSince: excSince/.test(src) && /GM_setValue\(this\.KEY_EXCESS_SINCE, String\(excSince\)\); bx = decideBx\(\);/.test(src)
+  && /else if \(bx\.excess <= 0 && excSince\) \{ excSince = 0; GM_setValue\(this\.KEY_EXCESS_SINCE, "0"\); \}/.test(src)
+  && /clear\(\) \{ GM_setValue\(this\.KEY, "null"\); GM_setValue\(this\.KEY_EXCESS_SINCE, "0"\); \}/.test(src));
+
 check("check() używa barExcessDecision z kandydatem i wpisuje excess=0 w czasie czekania",
-  /const bx = barEff \? this\.barExcessDecision\(\{/.test(src) && /candidateAt: candAt/.test(src) && /excess: \(probeWaitUntil && Date\.now\(\) < probeWaitUntil\) \? 0 : barExcess/.test(src));
+  /const decideBx = \(\) => barEff \? this\.barExcessDecision\(\{/.test(src) && /candidateAt: candAt/.test(src) && /excess: \(probeWaitUntil && Date\.now\(\) < probeWaitUntil\) \? 0 : barExcess/.test(src));
 check("attackBodiesFor: klauzula „nadwyżka = oba ciała” tylko dla pary strzeżonej",
   /w\.armed && RescueQueue\.str\(w\.at\) === key\) \{ out\.add\("moon"\); out\.add\("planet"\); \}/.test(src));
 

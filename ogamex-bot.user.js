@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.1
+// @version      2.104.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6647,6 +6647,7 @@ const __gmSetRaw = GM_setValue;
     KEY: "ogamex_threat",
     KEY_DUMPED: "ogamex_threat_markup_dumped_v2381",
     KEY_CANDIDATE: "ogamex_threat_candidate", // v2.32.0: od kiedy widzimy obcych
+    KEY_EXCESS_SINCE: "ogamex_bar_excess_since", // v2.104.2: od kiedy trwa BIEŻĄCA nadwyżka paska (kotwica „może być sondą")
     CONFIRM_MS: 25 * 1000,                    // tyle musi się utrzymać, zanim ruszymy flotą
     SELF_SEND_BLIND_MS: 10 * 1000,            // v2.102.0: 20→10 s (D-F6) — tyle po NASZEJ wysyłce pasek kłamie
     CONFIRM_BAR_MS: 12 * 1000,                // v2.102.0 (D-F5): atak widoczny TYLKO na pasku (lista ślepa = z układu) potwierdza się szybciej
@@ -6733,11 +6734,18 @@ const __gmSetRaw = GM_setValue;
     // cap 120 s (daleka sonda nie może zamrozić potwierdzenia ataku z układu).
     // Pasek z cache + sondy na liście = dwie różne chwile → krótkie czekanie
     // (20 s od kandydata) na żywy pasek, ale nadwyżka ZOSTAJE (woli alarm).
-    barExcessDecision({ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, now }) {
+    // v2.104.2 — FAŁSZYWE „OBA CIAŁA" 26.08 16:03/16:06: atak TYLKO na księżyc,
+    // wylądowana sonda na liście, pasek 2 vs lista 1 → nadwyżka 1 „może być
+    // sondą" — ale kotwicą był firstAt ALARMU (16:02:26), więc czekanie 10 s
+    // minęło zanim się zaczęło → excess>0 → attackBodiesFor dołożył oba ciała
+    // → ucieczka w powietrze z 11 GŚ na 10% = 4 h 24 min lotu bez ataku na
+    // planetę. Kotwica = początek TEJ nadwyżki (excessSince, ustawiany w check()
+    // przy przejściu 0→>0, kasowany przy 0), nie starsza od kandydata.
+    barExcessDecision({ barForeign, barCached, attacks, spies, spiesInFlight, spyMaxEta, barCountsProbes, candidateAt, excessSince, now }) {
       const inFlight = barCountsProbes ? (spies || 0) : (spiesInFlight || 0);
       const listForeign = (attacks || 0) + inFlight;
       const excess = Math.max(0, (barForeign || 0) - listForeign);
-      const anchor = candidateAt || now;
+      const anchor = Math.max(candidateAt || 0, excessSince || 0) || now;
       if (excess <= 0) return { excess: 0, listForeign, waitUntil: 0, why: "" };
       if (barCached && (spies || 0) > 0) return { excess, listForeign, waitUntil: anchor + 20000, why: "pasek z cache + sondy — czekam na żywy pasek" };
       const landed = Math.max(0, (spies || 0) - inFlight);
@@ -7217,7 +7225,7 @@ const __gmSetRaw = GM_setValue;
       return true;
     },
 
-    clear() { GM_setValue(this.KEY, "null"); },
+    clear() { GM_setValue(this.KEY, "null"); GM_setValue(this.KEY_EXCESS_SINCE, "0"); },   // v2.104.2: koniec alarmu = koniec nadwyżki
 
     // ── v2.88.1: PARSER PASKA — czysta funkcja, zamrożona testami ──
     // INCYDENT 12.08 15:24 (ACS na [3:272:7]): pasek pokazywał
@@ -7552,11 +7560,17 @@ const __gmSetRaw = GM_setValue;
         // kotwicą jest wtedy pierwsze widzenie alarmu (firstAt), inaczej co 5 min
         // wracało okno bez „oba ciała".
         if (!candAt) { try { const st0 = this.state(); if (st0 && st0.count > 0 && st0.firstAt) candAt = st0.firstAt; } catch {} }
-        const bx = barEff ? this.barExcessDecision({
+        // v2.104.2: początek TEJ nadwyżki — kotwica czekania „może być sondą"
+        // w trwającym alarmie (firstAt alarmu robił z każdej sondy „oba ciała").
+        let excSince = parseInt(GM_getValue(this.KEY_EXCESS_SINCE, "0")) || 0;
+        const decideBx = () => barEff ? this.barExcessDecision({
           barForeign: barEff.foreign, barCached: !!barEff.cached, attacks: ev.attacks || 0, spies: ev.spies || 0,
           spiesInFlight: ev.spiesInFlight || 0, spyMaxEta: ev.spyMaxEta || 0,
-          barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, now: Date.now(),
+          barCountsProbes: !!CONFIG.threatAlarm?.barCountsProbes, candidateAt: candAt, excessSince: excSince, now: Date.now(),
         }) : { excess: 0, listForeign: ev.attacks || 0, waitUntil: 0, why: "" };
+        let bx = decideBx();
+        if (bx.excess > 0 && !excSince) { excSince = Date.now(); GM_setValue(this.KEY_EXCESS_SINCE, String(excSince)); bx = decideBx(); }
+        else if (bx.excess <= 0 && excSince) { excSince = 0; GM_setValue(this.KEY_EXCESS_SINCE, "0"); }
         const listForeign = bx.listForeign;
         if (bx.excess > 0) {
           const missing = bx.excess;

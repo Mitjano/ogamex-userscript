@@ -100,7 +100,7 @@ must("strona bez paska czyta cache z TTL 3 min",
 // 3 sondy w locie = „3 Hostile" robiły ucieczkę w powietrze bez ataku. Nadwyżka
 // = pasek − ataki − sondy w locie; WYLĄDOWANE (eta≈0) nadal nie maskują (16:22).
 must("pasek WYGRYWA nadwyżką przez czystą barExcessDecision (kotwica = kandydat, cap 120 s) — v2.104.0",
-  /const bx = barEff \? this\.barExcessDecision\(\{/.test(src) && /probeWaitUntil = bx\.waitUntil;/.test(src) && /candidateAt: candAt/.test(src));
+  /const decideBx = \(\) => barEff \? this\.barExcessDecision\(\{/.test(src) && /probeWaitUntil = bx\.waitUntil;/.test(src) && /candidateAt: candAt/.test(src));
 must("widziany dolot ataku (ogamex_atk_until) blokuje zdjęcie alarmu i powrót — v2.102.3",
   /prev\.count > 0 && Date\.now\(\) < \(parseInt\(GM_getValue\("ogamex_atk_until"/.test(src) && /until && Date\.now\(\) < until \+ 60 \* 1000/.test(src));
 must("sonda policzona przez listę NIE robi ataku (foreign = ataki + nadwyżka)",
