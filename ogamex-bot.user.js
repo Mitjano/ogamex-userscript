@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.104.3
+// @version      2.104.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6756,13 +6756,20 @@ const __gmSetRaw = GM_setValue;
       // pasek zdjął sondy 4 s później. Koniec czekania = LĄDOWANIE (now+eta)
       // + 30 s karencji na odświeżenie paska, nie mniej niż kotwica + 30 s,
       // cap kotwica + 150 s (16:22: wylądowane sondy + ukryty ACS → alarm po 30 s).
-      if (excess <= landed) {
+      // v2.104.4 — 26.08 16:45: pasek 4, lista 0 ataków + 2 sondy → nadwyżka 4 > 2
+      // „nie może być sondą” → alarm po 12 s → ucieczka w powietrze. Przy roju
+      // sond lista i pasek gubią wiersze w różnym tempie, więc LICZBY nie
+      // rozstrzygają — rozstrzyga TRWAŁOŚĆ: sondy znikają z paska w kilkanaście
+      // sekund, atak wisi minuty. Jakiekolwiek sondy na liście → nadwyżka musi
+      // utrzymać się ≥ 60 s od początku (i ≥ 30 s po lądowaniu sond), cap 150 s.
+      // Bez sond (13:10) — bez czekania, jak dotąd.
+      if ((spies || 0) > 0) {
         // Lądowanie ZAPAMIĘTANE (landAt z check(), max przez czas nadwyżki) — liczone
         // od nowa z eta=0 przesuwałoby się z każdym odczytem (błąd 2.103.3).
         const landNow = (spyMaxEta || 0) > 0 ? now + Math.min(spyMaxEta, 120) * 1000 : 0;
         const land = Math.max(anchor, landAt || 0, landNow);
-        const waitUntil = Math.min(land + 30000, anchor + 150000);
-        return { excess, listForeign, waitUntil, why: "nadwyżka może być sondą", landAt: land };
+        const waitUntil = Math.min(Math.max(anchor + 60000, land + 30000), anchor + 150000);
+        return { excess, listForeign, waitUntil, why: excess <= landed ? "nadwyżka może być sondą" : "sondy na liście — czekam na trwałość", landAt: land };
       }
       return { excess, listForeign, waitUntil: 0, why: "" };
     },
@@ -7254,7 +7261,10 @@ const __gmSetRaw = GM_setValue;
     parseBar(text) {
       const t = String(text || "");
       const m = t.match(/(\d+)\s*Missions?\s*:/);
-      if (!m) return null;
+      // v2.104.4 — 26.08 16:46: strona floty pokazywała „No fleet movement”, a
+      // parser zwracał null → obrona brała CACHE paska (4 obcych sprzed minuty)
+      // i ruszała flotą. Brak ruchów to ŻYWY odczyt zera, nie brak paska.
+      if (!m) return /No fleet movement/i.test(t) ? { total: 0, own: 0, foreign: 0 } : null;
       const total = parseInt(m[1]) || 0;
       // segmenty czytamy z okna tuż za „N Missions:", żeby liczby z reszty
       // strony (odliczania, koordynaty) nie weszły do rachunku
