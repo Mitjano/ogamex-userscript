@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.1
+// @version      2.107.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5090,6 +5090,13 @@ const __gmSetRaw = GM_setValue;
     // Porażka bramy → zwykły ratunek (Deploy) od razu.
     async fallback(mission, why) {
       const k = this.key(mission.atCoords);
+      // v2.107.2: POWRÓT bramą po alarmie nie jest ratunkiem — brama w cooldownie
+      // (30-40 min po skoku) to stan oczekiwany: info bez pusha, ponowienie co 5 min.
+      if (mission.gateReturn) {
+        GM_setValue("pending_mission", null);
+        log(`[BRAMA] powrót nie poszedł (${why}) — najpewniej cooldown bramy; ponowię za 5 min. Flota bezpieczna na [${k}].`, "info");
+        return;
+      }
       log(`[BRAMA] nie skoczę (${why}) — przechodzę na zwykły ratunek Deployem.`, "error");
       ThreatLog.add("BŁĄD", `Brama [${k}]: ${why} — ratunek Deployem.`);
       GM_setValue("ogamex_gate_fail_" + k, String(Date.now()));
@@ -11018,8 +11025,12 @@ const __gmSetRaw = GM_setValue;
         const resSec = GateSave.sectionOf("Resources");
         const jump = GateSave.jumpButton();
         if (!sel || !shipsSec || !jump) {
-          const host = document.querySelector("#content, .content, main") || document.body;
-          log(`[BRAMA DOM] jumpgate (brak: ${!sel ? "select celu " : ""}${!shipsSec ? "sekcji Ships " : ""}${!jump ? "przycisku Jump" : ""}): ${(host.innerHTML || "").replace(/\s+/g, " ").slice(0, 3500)}`, "error");
+          // v2.107.2 (27.08 09:34, powrót bramą po teście): zrzut był PUSTY — #content/.content
+          // trafiło w pusty element. Bierzemy pierwszy host z treścią, a do zrzutu
+          // dokładamy TEKST strony (cooldown bramy fork pisze tekstem, nie formularzem).
+          const host = [...document.querySelectorAll("#content, .content, main")].find(h => (h.textContent || "").trim().length > 40) || document.body;
+          const pageTxt = (document.body.textContent || "").replace(/\s+/g, " ").trim().slice(0, 600);
+          log(`[BRAMA DOM] jumpgate (brak: ${!sel ? "select celu " : ""}${!shipsSec ? "sekcji Ships " : ""}${!jump ? "przycisku Jump" : ""}) TEKST: ${pageTxt} | HTML: ${(host.innerHTML || "").replace(/\s+/g, " ").slice(0, 3000)}`, mission.gateReturn ? "info" : "error");
           return GateSave.fallback(mission, "nie rozpoznałem formularza bramy — zrzut wyżej");
         }
         // cel
