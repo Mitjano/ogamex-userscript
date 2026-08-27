@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.5
+// @version      2.107.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11102,6 +11102,28 @@ const __gmSetRaw = GM_setValue;
             log(`[BRAMA] surowce wpisane ręcznie (max nie zadziałał): metal ${have.metal.toLocaleString("pl-PL")}, kryształ ${have.crystal.toLocaleString("pl-PL")}, deuter ${have.deuterium.toLocaleString("pl-PL")} → suma w polach ${resTotal.toLocaleString("pl-PL")}.`, resTotal ? "info" : "warn");
           }
           if (resTotal === 0) log(`[BRAMA DOM] Resources (pól: ${resInputs.length}, suma 0): ${(resSec.innerHTML || "").replace(/\s+/g, " ").slice(0, 2500)}`, "warn");
+          // v2.107.6 (zasada operatora 27.08): REZERWA DEUTERU obowiązuje też przy bramie —
+          // na księżycu musi zostać paliwo dla flot lądujących później (fale z ekspedycji),
+          // bo bez niego same nie uciekną. Przycinamy pole deuteru niezależnie od tego,
+          // czy wypełnił je przycisk „max", czy wpis ręczny.
+          try {
+            const reserve = Number(CONFIG.threatAlarm?.deutReserve ?? 0) || 0;
+            if (reserve > 0) {
+              const hdr = (() => { const el = document.querySelector(".resource-item-deuterium"); const m = el && (el.textContent || "").match(/\d[\d.,\s ']*/); const n = m ? parseInt(m[0].replace(/[^\d]/g, ""), 10) : NaN; return Number.isFinite(n) ? n : null; })();
+              const dIn = resInputs.find(i => /deut/i.test(`${i.id} ${i.name} ${i.className} ${i.placeholder} ${(i.closest("tr, li, div")?.textContent || "").slice(0, 60)}`)) || resInputs[2] || null;
+              if (dIn && hdr !== null) {
+                const cur = parseInt(String(dIn.value || "0").replace(/[^\d]/g, ""), 10) || 0;
+                const allowed = Math.max(0, hdr - reserve);
+                if (cur > allowed) {
+                  dIn.value = String(allowed);
+                  dIn.dispatchEvent(new Event("input", { bubbles: true })); dIn.dispatchEvent(new Event("change", { bubbles: true }));
+                  await AntiDetection.sleep(300);
+                  resTotal = GateSave.inputSum(resInputs);
+                  log(`[BRAMA] rezerwa deuteru: zostawiam ${reserve.toLocaleString("pl-PL")} na księżycu, zabieram ${allowed.toLocaleString("pl-PL")} (pole miało ${cur.toLocaleString("pl-PL")}).`, "info");
+                }
+              }
+            }
+          } catch (e) { log(`[BRAMA] rezerwa deuteru: błąd przycinania (${e.message}) — pole bez zmian.`, "warn"); }
         } else if (CONFIG.jumpGate?.takeResources !== false) {
           log(`[BRAMA DOM] brak sekcji Resources na stronie bramy — skok bez surowców. Strona: ${(document.body.textContent || "").replace(/\s+/g, " ").trim().slice(0, 500)}`, "warn");
         }
