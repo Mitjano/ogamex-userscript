@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.2
+// @version      2.107.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11030,6 +11030,18 @@ const __gmSetRaw = GM_setValue;
           // dokładamy TEKST strony (cooldown bramy fork pisze tekstem, nie formularzem).
           const host = [...document.querySelectorAll("#content, .content, main")].find(h => (h.textContent || "").trim().length > 40) || document.body;
           const pageTxt = (document.body.textContent || "").replace(/\s+/g, " ").trim().slice(0, 600);
+          // v2.107.3 (zrzut ekranu 27.08 09:36): „Jumpgate is cooling down : 25:57" — czysty
+          // tekst zamiast formularza. Odczytujemy czas: powrót ponowi się PO cooldownie
+          // (nie co 5 min na ślepo); ratunek → od razu Deploy (brama i tak nie skoczy).
+          const cd = pageTxt.match(/cooling\s*down\s*:?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/i);
+          if (cd) {
+            const secs = cd[3] ? (+cd[1] * 3600 + +cd[2] * 60 + +cd[3]) : (+cd[1] * 60 + +cd[2]);
+            const readyAt = Date.now() + secs * 1000;
+            GM_setValue("ogamex_gate_ready_at_" + GateSave.key(mission.atCoords), String(readyAt));
+            if (mission.gateReturn) GM_setValue("ogamex_gate_return_try", String(readyAt - 5 * 60 * 1000 + 15 * 1000));
+            log(`[BRAMA] cooldown bramy [${GateSave.key(mission.atCoords)}]: ${cd[1]}:${cd[2]}${cd[3] ? ":" + cd[3] : ""} — gotowa ok. ${new Date(readyAt).toLocaleTimeString("pl-PL")}.`, "info");
+            return GateSave.fallback(mission, `brama w cooldownie (${cd[1]}:${cd[2]})`);
+          }
           log(`[BRAMA DOM] jumpgate (brak: ${!sel ? "select celu " : ""}${!shipsSec ? "sekcji Ships " : ""}${!jump ? "przycisku Jump" : ""}) TEKST: ${pageTxt} | HTML: ${(host.innerHTML || "").replace(/\s+/g, " ").slice(0, 3000)}`, mission.gateReturn ? "info" : "error");
           return GateSave.fallback(mission, "nie rozpoznałem formularza bramy — zrzut wyżej");
         }
