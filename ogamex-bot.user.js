@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.109.0
+// @version      2.109.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5025,6 +5025,33 @@ const __gmSetRaw = GM_setValue;
   // logu i AUTOMATYCZNY powrót do zwykłego ratunku Deployem.
   const GateSave = {
     KEY: "ogamex_gate_state",    // { at, to, jumpedAt, homeKey }
+    // v2.109.1 (27.08, pytanie operatora „co gdy atak na [2:151:9] po skoku?"): po skoku
+    // mapa hangarów NIE znała nowego miejsca floty (weryfikowany był pusty hangar źródła),
+    // więc ślepy alarm z paska broniłby złej kolonii. Po udanym skoku bot odwiedza /fleet
+    // na księżycu docelowym — FleetRecon.scan() zapisuje hangar + ciało. Ważne 10 min.
+    KEY_RECON: "ogamex_post_jump_recon",
+    reconAfterJump() {
+      let f = null; try { f = JSON.parse(GM_getValue(this.KEY_RECON, "null")); } catch {}
+      if (!f || !f.key) return false;
+      if (Date.now() - (f.at || 0) > 10 * 60 * 1000) { GM_setValue(this.KEY_RECON, "null"); return false; }
+      const pending = GM_getValue("pending_mission", null);
+      if (pending && pending !== "null") return false;
+      if (ThreatMonitor.active()) { /* w alarmie nie chodzimy po koloniach — obrona ma pierwszeństwo */ return false; }
+      const active = MoonSave.activeCoords();
+      if (active !== f.key || MoonSave.currentBody() !== "moon") {
+        const a = MoonSave.planetAnchor(f.key);
+        const m = a ? HomeBase.moonOf(a) : null;
+        if (!m) { GM_setValue(this.KEY_RECON, "null"); log(`[BRAMA] rekonesans po skoku: nie widzę księżyca [${f.key}] na pasku — pomijam.`, "warn"); return false; }
+        log(`[BRAMA] rekonesans po skoku: przełączam na księżyc [${f.key}], żeby mapa hangarów znała nowe miejsce floty.`, "info");
+        m.click();
+        return true;
+      }
+      if (GameState.getCurrentPage() !== "fleet") { window.location.replace("/fleet"); return true; }
+      GM_setValue(this.KEY_RECON, "null");
+      try { FleetRecon.scan(); } catch {}
+      log(`[BRAMA] rekonesans po skoku: hangar księżyca [${f.key}] zapisany w mapie hangarów.`, "info");
+      return false;
+    },
     key(c) { return c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : null; },
     parseKey(k) { const m = String(k || "").match(/^(\d+):(\d+):(\d+)$/); return m ? { galaxy: +m[1], system: +m[2], position: +m[3] } : null; },
     state() { try { return JSON.parse(GM_getValue(this.KEY, "null")) || null; } catch { return null; } },
@@ -11238,12 +11265,14 @@ const __gmSetRaw = GM_setValue;
             log(`[BRAMA] ✅ flota wróciła bramą na księżyc domowy [${mission.destKey}].`, "success");
             ThreatLog.add("POWRÓT", `Brama: flota z powrotem na [${mission.destKey}].`);
             MoonSave.disarm("powrót bramą zakończony");
+            GM_setValue(GateSave.KEY_RECON, JSON.stringify({ key: mission.destKey, at: Date.now() }));   // v2.109.1
           } else {
             GateSave.save({ at: mission.atCoords, homeKey: fromK, to: mission.destKey, jumpedAt: Date.now() });
             const w = MoonSave.watch();
             MoonSave.saveWatch({ ...w, armed: true, at: mission.atCoords, homeBody: "moon", refugeBody: "gate", gateTo: mission.destKey, saves: (w.saves || 0) + 1, lastAt: Date.now(), lastSendAt: Date.now(), since: w.since || Date.now(), trigger: w.trigger || "threat" });
             log(`[BRAMA] ✅ flota skoczyła na księżyc [${mission.destKey}] — poza zasięgiem ataku, bez lotu. Po alarmie wrócę bramą (cooldown → próby co 5 min).`, "success");
             ThreatLog.add("RATUNEK", `Brama: flota na [${mission.destKey}]. Powrót bramą po alarmie.`);
+            GM_setValue(GateSave.KEY_RECON, JSON.stringify({ key: mission.destKey, at: Date.now() }));   // v2.109.1
           }
         } else {
           log(`[BRAMA] po kliknięciu Jump na księżycu [${fromK}] nadal stoi ${left.toLocaleString("pl-PL")} statków — skok NIE zadziałał.`, "error");
@@ -13237,6 +13266,7 @@ const __gmSetRaw = GM_setValue;
 
     // Handle any pending multi-page mission first
     await handlePendingMission();
+    try { if (GateSave.reconAfterJump()) return; } catch {}   // v2.109.1
 
     // v2.36.0: obrona NIE jest już częścią ticku — ma własny zegar
     // (startDefenceLoop). Powód w audycie: jitter śpi WEWNĄTRZ ticku, a łańcuch
