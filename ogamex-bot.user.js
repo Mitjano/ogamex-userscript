@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.3
+// @version      2.107.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11070,9 +11070,36 @@ const __gmSetRaw = GM_setValue;
           return GateSave.fallback(mission, "nie udało się zaznaczyć statków (hangar pusty albo nieznany przycisk max)");
         }
         // surowce (opcjonalnie)
+        let resTotal = 0;
         if (CONFIG.jumpGate?.takeResources !== false && resSec) {
           for (const b of GateSave.maxButtons(resSec)) { b.click(); await AntiDetection.sleep(150); }
           await AntiDetection.sleep(400);
+          // v2.107.4 (27.08 09:31): skok poszedł BEZ surowców — przyciski max sekcji
+          // Resources nie zadziałały (zero logu), flota wylądowała na księżycu z 0 deuteru
+          // = unieruchomiona, a 33 bln deuteru zostało na atakowanym księżycu.
+          // Teraz: sprawdzamy sumę pól; gdy 0 → wpisujemy ręcznie z nagłówka gry
+          // (metal/kryształ/deuter, deuter minus rezerwa MoonSave); dalej 0 → zrzut DOM.
+          const resInputs = GateSave.shipInputs(resSec);
+          resTotal = GateSave.inputSum(resInputs);
+          if (resTotal === 0 && resInputs.length) {
+            const readHdr = (cls) => { try { const el = document.querySelector(cls); const m = el && (el.textContent || "").match(/\d[\d.,\s ']*/); const n = m ? parseInt(m[0].replace(/[^\d]/g, ""), 10) : NaN; return Number.isFinite(n) ? n : 0; } catch { return 0; } };
+            const reserve = Number(CONFIG.threatAlarm?.deutReserve ?? 0) || 0;
+            const have = { metal: readHdr(".resource-item-metal"), crystal: readHdr(".resource-item-crystal"), deuterium: Math.max(0, readHdr(".resource-item-deuterium") - reserve) };
+            const kindOf = (i) => { const s = `${i.id} ${i.name} ${i.className} ${i.placeholder} ${(i.closest("tr, li, div")?.textContent || "").slice(0, 60)}`.toLowerCase(); return /deut/.test(s) ? "deuterium" : /cryst|krysz/.test(s) ? "crystal" : /metal/.test(s) ? "metal" : null; };
+            const order = ["metal", "crystal", "deuterium"];
+            resInputs.forEach((i, idx) => {
+              const k = kindOf(i) || order[idx] || null;
+              if (!k) return;
+              i.value = String(have[k] || 0);
+              i.dispatchEvent(new Event("input", { bubbles: true })); i.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+            await AntiDetection.sleep(400);
+            resTotal = GateSave.inputSum(resInputs);
+            log(`[BRAMA] surowce wpisane ręcznie (max nie zadziałał): metal ${have.metal.toLocaleString("pl-PL")}, kryształ ${have.crystal.toLocaleString("pl-PL")}, deuter ${have.deuterium.toLocaleString("pl-PL")} → suma w polach ${resTotal.toLocaleString("pl-PL")}.`, resTotal ? "info" : "warn");
+          }
+          if (resTotal === 0) log(`[BRAMA DOM] Resources (pól: ${resInputs.length}, suma 0): ${(resSec.innerHTML || "").replace(/\s+/g, " ").slice(0, 2500)}`, "warn");
+        } else if (CONFIG.jumpGate?.takeResources !== false) {
+          log(`[BRAMA DOM] brak sekcji Resources na stronie bramy — skok bez surowców. Strona: ${(document.body.textContent || "").replace(/\s+/g, " ").trim().slice(0, 500)}`, "warn");
         }
         const jb = GateSave.jumpButton();
         if (!jb || jb.disabled || /disabled/i.test(jb.className || "")) return GateSave.fallback(mission, "przycisk Jump nieaktywny (cooldown bramy?)");
