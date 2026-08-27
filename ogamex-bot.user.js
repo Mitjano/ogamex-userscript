@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.10
+// @version      2.108.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7936,6 +7936,29 @@ const __gmSetRaw = GM_setValue;
         r = { total: barEff?.total ?? 0, own: barEff?.own ?? 0, foreign: ev.hostile };
         evSrc = `zdarzenia BEZ klasyfikacji: ${ev.hostile} obcych (typu misji nie dało się odczytać — traktuję jak atak)`;
       }
+      // ── v2.108.0 (27.08 10:10:36, PRAWDZIWY ATAK): PAMIĘĆ ATAKU Z LISTY ──
+      // Lista pokazała wiersz ATTACK → [2:151:8], ETA 07:16 (lądowanie 10:17:53),
+      // sekundę później lista i pasek = 0 → „kandydat zniknął po 0 s", zero ratunku.
+      // Atak był prawdziwy — operator sam skoczył bramą w ostatniej chwili.
+      // Fork pokazuje wiersze/pasek najwyraźniej tylko dla AKTYWNEJ pary, więc
+      // odczyt gaśnie, gdy bot przełączy ciało. Reguła: sklasyfikowany wiersz
+      // ATTACK z celem i dolotem ≤ 20 min = atak aż do dolotu, niezależnie od
+      // tego, co potem mówią lista i pasek. Cel do ratunku bierzemy z tej pamięci.
+      if (r.foreign === 0) {
+        try {
+          const mem = JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {};
+          const now = Date.now();
+          const live = Object.keys(mem).filter(k => /^\d+:\d+:\d+$/.test(k) && mem[k] > now && mem[k] - now <= 20 * 60 * 1000).sort((a, b) => mem[a] - mem[b]);
+          if (live.length) {
+            r = { ...r, foreign: live.length };
+            const hhmm = (t) => new Date(t).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            evSrc = `PAMIĘĆ ATAKU: ${live.map(k => `[${k}] dolot ${hhmm(mem[k])}`).join(", ")} — lista i pasek milczą, ale wiersz ATTACK był widziany`;
+            GM_setValue("ogamex_atk_memory_targets", JSON.stringify(live));
+          } else {
+            GM_setValue("ogamex_atk_memory_targets", "null");
+          }
+        } catch {}
+      }
       // ── v2.29.0: powiedz, CO właściwie odczytałeś ──
       // 2026-08-01 23:30:20 obca flota (KARAGUMRUK z [3:307:7]) doleciała pod
       // planetę właściciela i zrobiła skan. Bot tykał o 23:30:38, :41 i :47 —
@@ -8595,6 +8618,16 @@ const __gmSetRaw = GM_setValue;
       // międzykolonijny z aktywnego ciała (13:41: 38 min na widoczną
       // planetę). Ścieżka z celem z listy — bez zmian.
       let target = ev?.attacks > 0 ? (ev.targets || [])[0] : null;
+      // v2.108.0: cel z PAMIĘCI ATAKU (wiersz ATTACK widziany wcześniej, dolot ≤ 20 min),
+      // zanim ślepa ścieżka zacznie bronić „wszystkich kolonii z flotą".
+      if (!target) {
+        try {
+          const mem = JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {};
+          const now = Date.now();
+          const live = Object.keys(mem).filter(k => /^\d+:\d+:\d+$/.test(k) && mem[k] > now && mem[k] - now <= 20 * 60 * 1000).sort((a, b) => mem[a] - mem[b]);
+          if (live.length) { target = live[0]; ThreatLog.add("odczyt", `Cel ratunku z PAMIĘCI ATAKU: [${target}] (lista/pasek nie oddają wiersza).`); }
+        } catch {}
+      }
       if (!target) {
         // v2.106.5 — 27.08 08:17 (prawdziwy atak z własnego układu, lista ślepa):
         // „dom floty" z pola panelu wskazał [5:125:4], gdzie hangar był PUSTY,

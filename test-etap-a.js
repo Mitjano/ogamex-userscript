@@ -113,3 +113,13 @@ function check(name, cond) { console.log(`${cond ? "OK  " : "FAIL"} | ${name}`);
 
 console.log(failures ? `\n${failures} FAIL` : "\nETAP A: wszystko OK");
 process.exit(failures ? 1 : 0);
+
+// ── 6. v2.108.0: PAMIĘĆ ATAKU Z LISTY (27.08 10:10:36 — prawdziwy atak, kandydat zniknął po 0 s) ──
+{
+  const src2 = require("fs").readFileSync(require("path").join(__dirname, "ogamex-bot.user.js"), "utf8").replace(/\r\n/g, "\n");
+  let f = 0;
+  const c = (n, ok) => { console.log(`${ok ? "OK  " : "FAIL"} | ${n}`); if (!ok) f++; };
+  c("odczyt r.foreign===0 → pamięć ataku (atk_until_map, dolot ≤ 20 min) podnosi foreign", /if \(r\.foreign === 0\) \{[\s\S]{0,600}?ogamex_atk_until_map[\s\S]{0,400}?mem\[k\] - now <= 20 \* 60 \* 1000[\s\S]{0,300}?r = \{ \.\.\.r, foreign: live\.length \}/.test(src2));
+  c("cel ratunku z pamięci PRZED ślepą ścieżką hangarów", (() => { const a = src2.indexOf("Cel ratunku z PAMIĘCI ATAKU"); const b = src2.indexOf("FleetRecon.hangarTargets(1)"); return a > 0 && b > 0 && a < b; })());
+  if (f) process.exit(1);
+}
