@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.9
+// @version      2.107.10
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11106,8 +11106,7 @@ const __gmSetRaw = GM_setValue;
             // v2.107.8 (zrzut 27.08 09:50): „Cargo space : used / total" — surowce wchodzą tylko
             // do ładowni zaznaczonych statków. Gdy suma > ładownia, priorytet: DEUTER (paliwo
             // dla floty na schronie) → kryształ → metal.
-            const cargoM = (document.body.textContent || "").replace(/s+/g, " ").match(/cargo\s*space\s*:?\s*([\d.,\s ']+)\s*\/\s*([\d.,\s ']+)/i)
-              || (document.body.textContent || "").replace(/\s+/g, " ").match(/cargo\s*space\s*:?\s*([\d.,\s ']+)\s*\/\s*([\d.,\s ']+)/i);
+            const cargoM = (document.body.textContent || "").replace(/\s+/g, " ").match(/cargo\s*space\s*:?\s*([\d.,\s ']+)\s*\/\s*([\d.,\s ']+)/i);
             const cargoTotal = cargoM ? (parseInt(String(cargoM[2]).replace(/[^\d]/g, ""), 10) || 0) : 0;
             if (cargoTotal > 0) {
               let left = cargoTotal;
