@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.108.3
+// @version      2.109.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -91,7 +91,10 @@ const __gmSetRaw = GM_setValue;
     // v2.108.1 DECYZJA OPERATORA 27.08: brama WYŁĄCZONA — bot NIE teleportuje floty
     // (test 09:31: skok bez surowców, cooldown 30 min, napastnik znalazł flotę na
     // schronie po 40 min). Ratunek = Deploy w parze / ucieczka w powietrze.
-    jumpGate: { enabled: false, targetMoon: null, takeResources: true, havens: [] },
+    // v2.109.0 DECYZJA OPERATORA 27.08 (po skoku 10:37 z całą flotą i surowcami): brama ON.
+    // havens = jedyne cele skoku: [7:209:7] (ma bramę; [7:499:6] NIE ma). Ustawienia bramy
+    // są sterowane z repo (loadConfig nadpisuje zapis z przeglądarki).
+    jumpGate: { enabled: true, targetMoon: null, takeResources: true, havens: [{ galaxy: 7, system: 209, position: 7 }] },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -359,7 +362,7 @@ const __gmSetRaw = GM_setValue;
       // v2.108.3 (27.08 10:37): zapisany config miał stare jumpGate.enabled:true i wygrał
       // z domyślnym false → bot skoczył bramą mimo decyzji operatora. Brama dla RATUNKÓW
       // jest wymuszona OFF z kodu; zapis w przeglądarce nie może tego włączyć.
-      merged.jumpGate = { ...DEFAULT_CONFIG.jumpGate, ...(merged.jumpGate || {}), enabled: false };
+      merged.jumpGate = { ...DEFAULT_CONFIG.jumpGate, ...(merged.jumpGate || {}), enabled: DEFAULT_CONFIG.jumpGate.enabled, havens: DEFAULT_CONFIG.jumpGate.havens };   // v2.109.0: enabled+havens z repo
       // antiDetection is code-controlled — never override from saved config.
       // v2.12.0 exception: the SLEEP WINDOW is user-configurable (UI inputs),
       // so those two fields survive the reset.

@@ -94,7 +94,8 @@ function check(name, cond) { console.log(`${cond ? "OK  " : "FAIL"} | ${name}`);
   CONFIG.jumpGate.havens = [{ galaxy: 9, system: 9, position: 9 }];
   r = pick.call(helpers, sel, at, []);
   check("schron spoza listy bramy → null (nie skaczę byle gdzie)", r === null);
-  check("config ma jumpGate.havens: [] i bramę WYŁĄCZONĄ (decyzja operatora 27.08)", /jumpGate: \{ enabled: false, targetMoon: null, takeResources: true, havens: \[\] \}/.test(src));
+  check("config: brama ON, schron [7:209:7] jedynym celem (decyzja operatora 27.08)", /jumpGate: \{ enabled: true, targetMoon: null, takeResources: true, havens: \[\{ galaxy: 7, system: 209, position: 7 \}\] \}/.test(src));
+  check("loadConfig: enabled+havens bramy sterowane z repo (zapis z przeglądarki nie nadpisze)", /merged\.jumpGate = \{ \.\.\.DEFAULT_CONFIG\.jumpGate, \.\.\.\(merged\.jumpGate \|\| \{\}\), enabled: DEFAULT_CONFIG\.jumpGate\.enabled, havens: DEFAULT_CONFIG\.jumpGate\.havens \}/.test(src));
 }
 
 // ── 5. keepalive + samonaprawa sesji PRZED bramkami przerwy/nocy ──
