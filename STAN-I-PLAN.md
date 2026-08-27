@@ -1347,3 +1347,8 @@ log `[TEST] E2E: … s` <60 s; potem z kartą w tle — czy pojawia się BŁĄD
 - Nie do zamknięcia kodem: snajperka wracających ekspedycji po Destroy (nie da się ich zawrócić), ETA < 30 s, laptop uśpiony.
 
 **Stan w grze 26.08 wieczór:** baza [5:125:4] (księżyc odbudowany? — sprawdzić pasek planet), flota była na księżycu [2:21:1] (operator skoczył bramą), FS cel [2:21:4] zmierzony 876 min. Napastnik [5:126:4].
+
+## AKTUALIZACJA 27.08 rano (v2.106.3–2.106.5) — prawdziwy atak, flota NIE podniesiona
+08:17 atak widoczny TYLKO w pasku (1→2 obcych, lista 0, sondy 0; atak z własnego układu — lista forka go nie oddaje). Cel nieznany → bot bronił „domu floty" [5:125:4] (pole „Start ekspedycji"), gdzie hangar był PUSTY; flota stała na innej kolonii (sonda o 08:19 poszła na [3:269:9]; hangar z LF 51 mld widziany na [3:272:7]). „Oba ciała" z nadwyżki paska → ucieczka w powietrze pustej pary; formularze otwierały się na obcych koloniach; operator wyłączył bota 08:17:48. Push na telefon NIE dotarł (log milczał — nie wiadomo: OFF/inny temat/sieć).
+Wdrożone: 2.106.3 pasek loguje `Type:`; 2.106.4 push loguje wysyłkę (temat, HTTP) i pominięcie; **2.106.5 ślepy alarm broni WSZYSTKICH kolonii z flotą** (`FleetRecon.hangarTargets`, największa pierwsza, reszta przez `RescueQueue.tryNext` z `ogamex_blind_targets`, ważne 15 min). To domyka ścieżkę A2 z audytu 2 dla obecnej bazy. NIEPOTWIERDZONE na żywo.
+Do sprawdzenia na laptopie w pracy: panel „Push na telefon (ntfy)" ON + ten sam temat co w telefonie (temat jest per przeglądarka!); gdzie stała flota i czy została stracona.
