@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.6
+// @version      2.111.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6188,7 +6188,7 @@ const __gmSetRaw = GM_setValue;
       // nie ma dokąd skakać — każdy atak na planetę = ucieczka w powietrze.
       if (noMoon && (!bodies || !bodies.length)) return "swap";
       if (!noMoon && (!bodies || bodies.length < 2)) return "swap";
-      if (failedAt && now - failedAt < 10 * 60 * 1000) return "swap";
+      if (failedAt && now - failedAt < 2 * 60 * 1000) return "swap";   // v2.111.7: 10 → 2 min (doloty wroga ~5 min; porażka formularza to sekundy)
       return "air";
     },
 
@@ -9521,7 +9521,7 @@ const __gmSetRaw = GM_setValue;
             const ref = AirSave.refuge(at);
             const sameSys = !!(ref && ref.galaxy === at.galaxy && ref.system === at.system);
             const verdict = AirSave.decideFor(at);   // "swap" = tylko jedno ciało atakowane (nasz przypadek), "active" = już leci
-            let recentFail = false; try { const fa = (JSON.parse(GM_getValue(AirSave.KEY_FAIL, "{}")) || {})[AirSave.key(at)] || 0; recentFail = fa && Date.now() - fa < 10 * 60 * 1000; } catch {}
+            let recentFail = false; try { const fa = (JSON.parse(GM_getValue(AirSave.KEY_FAIL, "{}")) || {})[AirSave.key(at)] || 0; recentFail = fa && Date.now() - fa < 2 * 60 * 1000; } catch {}
             if (sameSys && (verdict === "air" || (verdict === "swap" && !recentFail))) {
               let maxEta = 0;
               try { maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[AirSave.key(at)] || 0; } catch {}

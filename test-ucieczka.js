@@ -88,8 +88,8 @@ eq("flota zawrócona i WYLĄDOWAŁA, oba ciała pod atakiem → znowu w powietrz
 eq("flota wylądowała, atak w jedno ciało → zwykły skok w parze",
   decide({ enabled: true, bodies: ["moon"], activePhase: "recalled", failedAt: 0, now: NOW, landed: true }), "swap");
 
-eq("porażka 5 min temu → swap (nie pętlimy nieudanego startu)",
-  decide({ enabled: true, bodies: ["moon", "planet"], activePhase: null, failedAt: NOW - 5 * 60 * 1000, now: NOW }), "swap");
+eq("porażka 1 min temu → swap (nie pętlimy nieudanego startu; okno 2 min od 2.111.7)",
+  decide({ enabled: true, bodies: ["moon", "planet"], activePhase: null, failedAt: NOW - 1 * 60 * 1000, now: NOW }), "swap");
 
 eq("porażka 11 min temu → wolno próbować znowu",
   decide({ enabled: true, bodies: ["moon", "planet"], activePhase: null, failedAt: NOW - 11 * 60 * 1000, now: NOW }), "air");
