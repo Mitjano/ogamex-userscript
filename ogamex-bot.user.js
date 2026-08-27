@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.4
+// @version      2.111.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -9021,8 +9021,19 @@ const __gmSetRaw = GM_setValue;
         // started; the refuge is the other one. The return therefore has to
         // launch FROM the refuge and target HOME — both read from the watch
         // instead of being hard-wired to moon→planet.
-        const home = w.homeBody || "planet";
+        let home = w.homeBody || "planet";
+        // v2.111.5 (27.08 12:42): straż z ataku NA PLANETĘ (zamiatanie planety) zapisała
+        // „dom = planeta" i auto-powrót przeniósł GŁÓWNĄ flotę z księżyca na planetę —
+        // 3 s przed prawdziwym atakiem. W trybie baseBody=moon flota MIESZKA na
+        // księżycu: dom = księżyc zawsze, gdy para go ma (Z1: księżyc > planeta).
+        try {
+          if (CONFIG.baseBody === "moon" && home !== "moon" && w.at && HomeBase.pairHasMoon(w.at) !== false) {
+            log(`[POWRÓT] straż zapisała dom = planeta, ale tryb księżycowy: dom floty = KSIĘŻYC [${RescueQueue.str(w.at)}] — nie sprowadzam floty na planetę.`, "warn");
+            home = "moon";
+          }
+        } catch {}
         const refuge = w.refugeBody || (home === "moon" ? "planet" : "moon");
+        if (refuge === home) { this.disarm("dom = refugium (flota już na właściwym ciele)"); return false; }   // v2.111.5
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_return_direct",
           moonSave: true,       // identical form handling: all ships, all resources, stationing
