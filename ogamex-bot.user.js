@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.106.2
+// @version      2.106.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -7532,12 +7532,13 @@ const __gmSetRaw = GM_setValue;
       // sondy (leciała już z powrotem) → nadwyżka trwała >60 s → moon-save
       // całej floty bez ataku. Pasek SAM mówi, czym jest najbliższy obcy lot.
       const spyType = /Type\s*:\s*(Spy|Espionage|Szpieg)/i.test(win);
+      const barType = ((win.match(/Type\s*:\s*([A-Za-z][A-Za-z ()]{0,24})/) || [])[1] || "").trim() || null;   // v2.106.3: do logu
       const spyOnly = foreign === 1 && spyType;
       // v2.105.0 — 18:14: pasek „4 Hostile, Type: Spy” (rój sond). Typ dotyczy
       // najbliższego lotu, więc >1 nie wyklucza ataku za sondą — ale sondy
       // wracają w minuty, atak wisi dłużej: przy Type Spy nadwyżka musi
       // utrzymać się 5 min, zanim ruszymy flotą.
-      return { total, own: own || 0, foreign, spyOnly, spyType };
+      return { total, own: own || 0, foreign, spyOnly, spyType, barType };
     },
 
     // Reads the mission bar of whatever page we're on. Returns null when the
@@ -7575,7 +7576,7 @@ const __gmSetRaw = GM_setValue;
       // śladu, flota stracona. Każdy udany odczyt paska (także 0 — realne
       // odwołanie) zapisuje się na 3 min i zastępuje pasek tam, gdzie go
       // nie ma.
-      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own, spyOnly: !!out.spyOnly, spyType: !!out.spyType }));
+      GM_setValue("ogamex_bar_cache", JSON.stringify({ at: Date.now(), foreign: out.foreign, total: out.total, own: out.own, spyOnly: !!out.spyOnly, spyType: !!out.spyType, barType: out.barType || null }));
       return out;
     },
 
@@ -7794,7 +7795,7 @@ const __gmSetRaw = GM_setValue;
       if (!barEff) {
         try {
           const c = JSON.parse(GM_getValue("ogamex_bar_cache", "null"));
-          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, spyOnly: !!c.spyOnly, spyType: !!c.spyType, cached: true };
+          if (c && Date.now() - (c.at || 0) < 3 * 60 * 1000) barEff = { total: c.total || 0, own: c.own || 0, foreign: c.foreign || 0, spyOnly: !!c.spyOnly, spyType: !!c.spyType, barType: c.barType || null, cached: true };
         } catch {}
       }
       const ev = this.events();
@@ -7866,7 +7867,7 @@ const __gmSetRaw = GM_setValue;
           barExcess = missing;
           probeWaitUntil = bx.waitUntil;
           r = { ...r, foreign: (ev.attacks || 0) + missing };
-          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}, w locie ${ev.spiesInFlight || 0}) — ${missing} brakujących traktuję jak ATAK${bx.why ? ` (${bx.why})` : ""}`;
+          evSrc = `PASEK${barEff.cached ? " (cache <3 min)" : ""}${barEff.barType ? ` [Type: ${barEff.barType}]` : " [Type: ?]"}: ${barEff.foreign} obcych vs lista ${listForeign} (ataki ${ev.attacks || 0}, sondy ${ev.spies || 0}, w locie ${ev.spiesInFlight || 0}) — ${missing} brakujących traktuję jak ATAK${bx.why ? ` (${bx.why})` : ""}`;
         } else
         evSrc = `zdarzenia: ataki ${ev.attacks}${ev.spies ? `, sondy ${ev.spies} (IGNORUJĘ)` : ""}`
           + (ev.targets?.length ? ` → cel: ${ev.targets.join(", ")}` : "");
