@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.6
+// @version      2.107.7
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -11037,6 +11037,15 @@ const __gmSetRaw = GM_setValue;
           // v2.107.3 (zrzut ekranu 27.08 09:36): „Jumpgate is cooling down : 25:57" — czysty
           // tekst zamiast formularza. Odczytujemy czas: powrót ponowi się PO cooldownie
           // (nie co 5 min na ślepo); ratunek → od razu Deploy (brama i tak nie skoczy).
+          // v2.107.7 (zrzut ekranu 27.08 09:48, [4:297:9]): pusty hangar = brak formularza,
+          // tylko „There are no ships on this planet at this time." → nie ma czego skakać:
+          // ratunek = hangar pusty (cicho, bez Deployu z pustego), powrót = flota nie tu.
+          if (/no ships on this planet/i.test(pageTxt)) {
+            GM_setValue("pending_mission", null);
+            log(`[BRAMA] hangar księżyca [${GateSave.key(mission.atCoords)}] pusty — nic do przeniesienia bramą${mission.gateReturn ? " (powrót: floty tu nie ma — sprawdź, gdzie stoi)" : ""}.`, mission.gateReturn ? "warn" : "info");
+            if (mission.gateReturn) ThreatLog.add("BŁĄD", `Powrót bramą z [${GateSave.key(mission.atCoords)}]: hangar pusty — flota stoi gdzie indziej.`);
+            return;
+          }
           const cd = pageTxt.match(/cooling\s*down\s*:?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/i);
           if (cd) {
             const secs = cd[3] ? (+cd[1] * 3600 + +cd[2] * 60 + +cd[3]) : (+cd[1] * 60 + +cd[2]);
