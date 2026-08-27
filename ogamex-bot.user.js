@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.0
+// @version      2.111.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6554,8 +6554,20 @@ const __gmSetRaw = GM_setValue;
         if (!row) {
           const etaAbs = (st.sentAt || 0) + (st.flightMs || 0);
           if (st.flightMs && Date.now() < etaAbs - 60000) {
-            this.save({ ...st, phase: "recalled", recalledAt: Date.now() });
-            log("[UCIECZKA] lotu nie ma na liście przed czasem dolotu — zawrócony (możliwe, że ręcznie). Zamykam cykl.", "info");
+            // v2.111.1 (27.08 10:18 / 11:28 / 11:54 — 3× „zawrócony (możliwe, że ręcznie)",
+            // a lot LECIAŁ dalej; operator zawracał ręcznie): lista ruchów nie oddaje naszego
+            // lotu (widzi tylko aktywną parę / inne ciało). Brak wiersza NIE jest sukcesem:
+            // ponawiamy (5×), zrzucamy listę i panel Events do logu, krzyczymy pushem.
+            const listRows = [...doc.querySelectorAll("tr[class*='row-mission-type-']")].map(tr => `${String(tr.className).replace(/\s+/g, " ")} :: ${(tr.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160)}`);
+            let evRows = [];
+            try { evRows = [...document.querySelectorAll("#fleet-movement-content tr, #layoutFleetMovements tr")].map(tr => `${String(tr.className).replace(/\s+/g, " ")} :: ${(tr.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160)}`); } catch {}
+            if (!st.noRowDumped) {
+              this.save({ ...st, recallTries: tries, noRowDumped: true });
+              log(`[UCIECZKA DOM] brak naszego lotu [${this.key(st.at)}]→[${this.key(st.to)}] na liście (${listRows.length} wierszy): ${listRows.join(" || ").slice(0, 2500)}`, "error");
+              log(`[UCIECZKA DOM] panel Events (${evRows.length} wierszy): ${evRows.join(" || ").slice(0, 2500)}`, "error");
+            }
+            log(`[UCIECZKA] nie znajduję naszego lotu na liście (próba ${tries}/5) — NIE zakładam zawrotu, ponowię. Jeśli flota leci do [${this.key(st.to)}], ZAWRÓĆ RĘCZNIE.`, "error");
+            if (tries === 2) ThreatLog.add("BŁĄD", `Ucieczka: nie widzę własnego lotu do [${this.key(st.to)}] na liście — zawrót niepewny, sprawdź i zawróć ręcznie.`);
           } else {
             this.save({ ...st, phase: "recall_failed" });
             log("[UCIECZKA] nie znajduję naszego lotu na liście — doleciał do refugium? Ściągnij flotę ręcznie.", "error");
