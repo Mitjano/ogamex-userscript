@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.106.4
+// @version      2.106.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8535,9 +8535,22 @@ const __gmSetRaw = GM_setValue;
       // planetę). Ścieżka z celem z listy — bez zmian.
       let target = ev?.attacks > 0 ? (ev.targets || [])[0] : null;
       if (!target) {
-        // v2.104.0: dom floty z mapy hangarów (fallback: pole „Start ekspedycji").
-        let fhk = null; try { fhk = FleetRecon.fleetHome(); } catch {}
-        if (fhk) { target = fhk; ThreatLog.add("odczyt", `Ślepy alarm: bronię domu floty [${fhk}] (mapa hangarów / „Start ekspedycji").`); }
+        // v2.106.5 — 27.08 08:17 (prawdziwy atak z własnego układu, lista ślepa):
+        // „dom floty" z pola panelu wskazał [5:125:4], gdzie hangar był PUSTY,
+        // a flota stała na innej kolonii — bot ratował pustkę, flota nie ruszona.
+        // Ślepy alarm broni WSZYSTKICH kolonii z flotą w hangarze (mapa
+        // hangarów, największa pierwsza); pozostałe idą do kolejki ratunków.
+        let cands = []; try { cands = FleetRecon.hangarTargets(1); } catch {}
+        if (cands.length) {
+          target = cands[0];
+          GM_setValue("ogamex_blind_targets", JSON.stringify({ at: Date.now(), keys: cands }));
+          ThreatLog.add("ATAK", `Ślepy alarm (cel nieznany): bronię WSZYSTKICH kolonii z flotą — ${cands.map(k => `[${k}]`).join(", ")} (największa pierwsza).`);
+          log(`[RATUNEK] ślepy alarm — cel nieznany, ratuję po kolei kolonie z flotą: ${cands.join(", ")}.`, "error");
+        } else {
+          // v2.104.0: dom floty z mapy hangarów (fallback: pole „Start ekspedycji").
+          let fhk = null; try { fhk = FleetRecon.fleetHome(); } catch {}
+          if (fhk) { target = fhk; ThreatLog.add("odczyt", `Ślepy alarm: bronię domu floty [${fhk}] (mapa hangarów / „Start ekspedycji").`); }
+        }
       }
       let where = null;
       if (target) {
@@ -9332,6 +9345,7 @@ const __gmSetRaw = GM_setValue;
     // Koniec alarmu kasuje listę obsłużonych kolonii, ale NIE oczekujące
     // powroty — one mają sens dopiero po alarmie i muszą go przeżyć.
     endAlarm() {
+      GM_setValue("ogamex_blind_targets", "null");   // v2.106.5
       const st = this.state();
       if (!(st.done || []).length) return;
       st.done = [];
@@ -9401,11 +9415,14 @@ const __gmSetRaw = GM_setValue;
     async tryNext(w) {
       if (CONFIG.threatAlarm?.rescueQueue === false) return false;
       const ev = ThreatMonitor.events();
-      if (!ev || !(ev.attacks > 0)) return false;
+      // v2.106.5: ślepy alarm — lista celów z mapy hangarów (ważna 15 min, tylko w alarmie)
+      let blind = [];
+      try { const b = JSON.parse(GM_getValue("ogamex_blind_targets", "null")); if (b && Date.now() - (b.at || 0) < 15 * 60 * 1000 && ThreatMonitor.active()) blind = b.keys || []; } catch {}
+      if ((!ev || !(ev.attacks > 0)) && !blind.length) return false;
       if (MoonSave.running) return false;
       const st = this.state();
       const guarded = this.str(w && w.at);
-      const next = this.nextTarget({ targets: ev.targets || [], guarded, done: st.done });
+      const next = this.nextTarget({ targets: [...new Set([...((ev && ev.targets) || []), ...blind])], guarded, done: st.done });
       if (!next) return false;
       const at = this.obj(next);
       if (!at) return false;
@@ -10075,6 +10092,13 @@ const __gmSetRaw = GM_setValue;
       } catch { return null; }
     },
 
+    // v2.106.5: wszystkie pary z flotą w hangarze (ostatni odczyt <48 h), największa pierwsza.
+    hangarTargets(minTotal = 1) {
+      let map = {}; try { map = JSON.parse(GM_getValue(this.KEY_HANGARS, "{}")) || {}; } catch { map = {}; }
+      return Object.keys(map)
+        .filter(k => /^\d+:\d+:\d+$/.test(k) && (map[k].total || 0) >= minTotal && Date.now() - (map[k].at || 0) < 48 * 60 * 60 * 1000)
+        .sort((a, b) => (map[b].total || 0) - (map[a].total || 0));
+    },
     homeGuard(snap) {
       try {
         if (!snap || !snap.planet || !/^\d+:\d+:\d+$/.test(snap.planet)) return;
