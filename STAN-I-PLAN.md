@@ -1319,3 +1319,31 @@ nadal aktualna.
 DO POTWIERDZENIA: symulacja (tryb moon, potem both) z widoczną kartą —
 log `[TEST] E2E: … s` <60 s; potem z kartą w tle — czy pojawia się BŁĄD
 „karta dławiona".
+
+## AKTUALIZACJA 26–27 sierpnia (v2.104.0 → v2.106.2) — Destroy księżyca, brama, huby
+**Co się stało 26.08:** dzień fałszywych alarmów od sond (2.104.2–.4 kręciły stoperami; rozwiązanie 2.104.6/2.105.6: pasek gry pisze wprost `Type: Spy` — parseBar czyta to pole, okno 1200 znaków zwinięte do spacji, bo wcięcia HTML wypychały „Type:” poza 160 znaków). 18:26 i 18:28 **3× Destroy po 500 mld GŚ z [5:126:4]** zniszczyło księżyc bazy [5:125:4]; flota uratowana na planetę (25 s + 81 s). Napastnik sonduje co minutę, blitzuje 1-statkowymi atakami, uderza w chwilę po lądowaniu floty na planecie (falanga).
+
+**Wdrożone i na żywo potwierdzone:**
+- 2.104.5 FS: czas lotu z kroku 3 także przy wysyłce (fork nie pokazuje go w kroku 2) — bez tego FS nigdy nie wysyłał.
+- 2.104.7 para bez księżyca: powrót odwołany, atak na planetę = ucieczka w powietrze; `HomeBase.pairHasMoon`.
+- **2.105.x ODBUDOWA KSIĘŻYCA** (`MoonRebuild`): fork ma `/home/moonformation` („Form a moon” za metal); bot stawia księżyc przy KAŻDEJ planecie bez księżyca (baza po Destroy najpierw), średnica 8944→1000 w dół aż koszt ≤ 25 % metalu (`moonRebuild.maxMetalShare`), po odbudowie flota sama wraca z planety na księżyc. **Potwierdzone 18:32: [2:21:4] 6000 km za 1,8 bln.** Koszt rośnie wykładniczo (8944 km = 89 bln).
+- 2.105.5 decyzja operatora: pasek `Type: Spy` + lista bez ataków = sondy, flota NIE rusza (dowolna liczba). Ruch tylko na ATTACK/DESTROY.
+- 2.106.1 FS loguje powód czekania; 2.106.2 martwa straż (saves=0 po „nothing to save”) schodzi sama 3 min po alarmie (blokowała FS 45 min).
+- Odrzucone przez operatora: okresowy prom po odbudowie (2.105.2, cofnięty), bot na serwerze Hetzner (obce IP = ryzyko multikonta; alternatywa: stary laptop w domu na domowym IP).
+
+**Wdrożone, NIEPOTWIERDZONE na żywo:**
+- **2.106.0 RATUNEK BRAMĄ (`GateSave`, `/building/jumpgate`)**: atak na księżyc z flotą → skok bramą na inny nieatakowany księżyc (statki + surowce przez przyciski „»”, weryfikacja pustego hangaru), porażka → Deploy jak dotąd, powrót bramą po alarmie (cooldown → co 5 min). Przycisk „Skok bramą” (Shift = powrót). **Selektory ze zrzutów, do pierwszego testu przyciskiem; przy porażce log `[BRAMA DOM]`.** Cooldown bramy 30–40 min — patrz audyt 2 (finta wypala bramy).
+
+**Audyty do przeczytania przed dalszą pracą (kolejność):**
+1. `MOON-STRATEGY-2026-08-26.md` — mechanika Destroy/odbudowy.
+2. `AUDYT-HUBY-2026-08-27.md` — plan „ekspedycje z 2–3 księżyców”: rotacja tania, FS per hub średni, OBRONA najdroższa (jedna straż = jedna para).
+3. `AUDYT-HUBY-2-OBRONA-2026-08-27.md` — atakujący vs obrońca: hub nieaktywny ratowany w 55–100 s (`switchTo` klika tylko planetę, brama nieosiągalna), finta wypalająca bramy → księżyce-SCHRONY, ślepy alarm → bronić wszystkich hubów, keepalive wyłączony w przerwach/nocy.
+
+**DO WDROŻENIA (uzgodniona kolejność; obrona przed rotacją):**
+- **Etap A (obrona per para — warunek hubów, warte zrobienia i bez hubów):** straż jako mapa po `g:s:p` + zamiatanie/licznik/DefenceHold per para; `switchTo` na KSIĘŻYC pary gdy tam stoi flota + brama dla ratunków z kolejki; ślepy alarm → wszystkie huby wg `ogamex_hangar_map`; `jumpGate.havens[]` (schrony jako jedyne cele skoków); AirSave refugium wyklucza atakowane, stan per para; wszystkie `ev.targets` w 1. przebiegu; GOTOWOŚĆ zamraża rutynę hubu + prewencyjne ciało aktywne; keepalive poza bramkami przerw/nocy, wylogowanie → próba `/` po 2 min; symulator celujący w hub nieaktywny. Do zrobienia OD RAZU (jedna baza): switchTo na księżyc, schrony, keepalive.
+- **Etap B (rotacja ekspedycji):** `expeditions.hubs[]`, kursor, burst/roster per hub, bramka paliwa PO przełączeniu hubu, `DebrisCollector` po hubach, `fleetHome` = zbiór, przycisk „Rozwieź flotę” Deployem (nie bramą).
+- **Etap C (FS per hub):** `ogamex_fs_state` → mapa z migracją, zapisany `fleetId`, `routeKey(origin)`, klucze pauz per hub, kolejka startów, zawracania na jednej wizycie `/fleet`, UI per hub; poprawić utajony błąd `_findOurRow` bez `st` (L~5784).
+- Otwarte decyzje operatora: koordy 2–3 hubów, koordy schronów (daleko od [5:126]), cel FS (wspólny), czy przywrócić „Type: Spy + 2+ obcych = 5 min trwałości”, mniejsze fale (1/28), FS nocny z minerami.
+- Nie do zamknięcia kodem: snajperka wracających ekspedycji po Destroy (nie da się ich zawrócić), ETA < 30 s, laptop uśpiony.
+
+**Stan w grze 26.08 wieczór:** baza [5:125:4] (księżyc odbudowany? — sprawdzić pasek planet), flota była na księżycu [2:21:1] (operator skoczył bramą), FS cel [2:21:4] zmierzony 876 min. Napastnik [5:126:4].
