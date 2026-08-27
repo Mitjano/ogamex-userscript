@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.108.1
+// @version      2.108.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5120,6 +5120,19 @@ const __gmSetRaw = GM_setValue;
     async returnHome(w, { byOperator = false } = {}) {
       const st = this.state();
       if (!st || !st.to) return false;
+      // v2.108.2 (27.08 10:20–10:26): flota wróciła do domu ręcznie, a straż „refugium=brama"
+      // co 5 min przełączała ciało na [2:151:8] i próbowała powrotu. Brama WYŁĄCZONA
+      // albo hangar domu NIEPUSTY wg mapy hangarów (<15 min) → straż schodzi, stan bramy czyszczony.
+      try {
+        let homeHas = null;
+        try { const e = (JSON.parse(GM_getValue(FleetRecon.KEY_HANGARS, "{}")) || {})[st.homeKey]; if (e && Date.now() - (e.at || 0) < 15 * 60 * 1000) homeHas = e.total || 0; } catch {}
+        if (!this.enabled() || (homeHas !== null && homeHas > 0)) {
+          log(`[BRAMA] powrót bramą odwołany (${!this.enabled() ? "brama wyłączona" : `flota już w domu [${st.homeKey}] wg hangaru`}) — straż schodzi, stan bramy czyszczony.`, "info");
+          GM_setValue(this.KEY, "null");
+          try { MoonSave.disarm("powrót bramą odwołany — brama wyłączona / flota w domu"); } catch {}
+          return false;
+        }
+      } catch {}
       const home = this.parseKey(st.homeKey), refuge = this.parseKey(st.to);
       if (!home || !refuge) return false;
       if (GM_getValue("pending_mission", null) && GM_getValue("pending_mission", null) !== "null") return false;
