@@ -1362,3 +1362,18 @@ Wdrożone, testy offline zielone (`test-etap-a.js`, 24 sprawdzenia), **NIEPOTWIE
 - **Keepalive + samonaprawa sesji PRZED bramkami przerwy/nocy** (Z7/A8): blok keepalive (12 min) przeniesiony nad `Humanizer.isOnBreak()`/`isSleepTime()`; nowe `SessionWatch.maybeRecover()` — 2 min po wykryciu strony logowania jedna nawigacja na `/` (nie częściej niż co 15 min, nie przy `pending_mission`).
 Nie zrobione z Etapu A (wymaga decyzji/koordów lub większej przebudowy): straż jako mapa per para, brama dla ratunków Z KOLEJKI (`queued` nadal wyłącza bramę — stan `GateSave` jest jeden), AirSave per para, GOTOWOŚĆ, wszystkie `ev.targets`, symulator celujący w hub nieaktywny, obchód kolonii przy nadwyżce paska (czeka na wynik testu Events).
 Do potwierdzenia w grze: (1) po wizycie `/fleet` na księżycu z flotą — w `ogamex_hangar_map` wpis ma `body:"moon"`; (2) symulacja ataku na kolonię nieaktywną z flotą na księżycu → log „przełączam się na KSIĘŻYC [...]”; (3) brama z pustym `havens` działa jak dotąd.
+
+## AKTUALIZACJA 27.08 (praca, cd.) — v2.107.1–2.107.8: BRAMA POTWIERDZONA NA ŻYWO + 7 poprawek z testu
+**Test 09:30 (symulacja `moon` na [2:21:1], cała flota 1,55 bln statków na księżycu):** brama zadziałała pierwszy raz na żywo — skok [2:21:1] → [2:151:8] w ~34 s od pierwszego zobaczenia (09:30:34 → 09:31:08), weryfikacja pustego hangaru OK. Straż 2× zamiotła pusty księżyc (Deploy → planeta, „nothing to save"). Powrót bramą po alarmie: cooldown (~30 min po skoku).
+**Ujawnione i naprawione:**
+- 2.107.1 bezpiecznik straży podaje koordy pary; pusty hangar wg mapy = info, nie push (09:12 fałszywy push „flota poza domem" z zwietrzałej straży [5:125:4] po 16 h przerwy).
+- 2.107.2 powrót bramą w cooldownie = info bez pusha; zrzut strony bramy z TEKSTEM (dotąd pusty HTML).
+- 2.107.3 parser „Jumpgate is cooling down : mm:ss" → `ogamex_gate_ready_at_<k>`; powrót ponawiany PO cooldownie, ratunek od razu Deployem.
+- **2.107.4 SKOK POSZEDŁ BEZ SUROWCÓW** (przyciski „»" sekcji Resources nie zadziałały, zero logu; flota na [2:151:8] z 0 deuteru = unieruchomiona, 33 bln deuteru zostało na [2:21:1]). Teraz: suma pól po „max", gdy 0 → wpis ręczny z nagłówka gry, gdy nadal 0 → `[BRAMA DOM] Resources`. NIEPOTWIERDZONE na żywo.
+- 2.107.5 `canTry` zna cooldown (parser + 30 min po własnym skoku) → kolejny atak na tę parę od razu Deployem (bez 10–15 s na stronie bramy).
+- 2.107.6 **zasada operatora: rezerwa deuteru (`threatAlarm.deutReserve` = 100 mld) obowiązuje też przy bramie** — pole deuteru przycięte do dostępny−rezerwa po „max" i po wpisie ręcznym.
+- 2.107.7 strona bramy z pustym hangarem = tylko tekst „There are no ships on this planet at this time." (zrzut [4:297:9]) → cicho, bez Deployu z pustego.
+- 2.107.8 zrzut formularza bramy (Ships: per statek „»"+pole, zbiorczo „»" i czerwony **„0"** = czyść; Resources: 3 pola z „»", „Cargo space : used / total", przycisk Jump) → „0" wykluczony z kandydatów max; limit ładowni z priorytetem deuter → kryształ → metal.
+**Stan floty:** po teście na księżycu [2:151:8] (Colony 2) bez surowców; powrót bramą na [2:21:1] oczekiwany ~09:57–10:00 (brama nie potrzebuje deuteru). Surowce zostały na [2:21:1].
+**Otwarte decyzje operatora (zadane 27.08):** koordy 2 schronów (propozycja [7:499:6], [7:209:7] — wszystkie 30 planet mają księżyce); rezerwa deuteru także na schronie przy powrocie; fale 1/28; straż starsza niż 6 h przy starcie bota = zdjąć bez ruchu floty. Push: temat `ogamex-mch-6v3khpb6h388` działa (HTTP 200).
+**Do potwierdzenia na żywo:** surowce przy skoku (2.107.4/6/8), test B (switchTo na KSIĘŻYC kolonii nieaktywnej — tryb `planet`, po powrocie floty i zejściu cooldownu), test Events przy sondzie.
