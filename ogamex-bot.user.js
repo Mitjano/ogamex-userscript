@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.106.3
+// @version      2.106.4
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -712,15 +712,22 @@ const __gmSetRaw = GM_setValue;
     },
 
     push(title, msg, priority = "default", tags = "") {
-      if (!this.enabled()) return;
+      // v2.106.4 — 27.08 08:17: alarm był, push na telefon nie dotarł, a log
+      // milczał (nie wiadomo: OFF? inny temat? błąd sieci?). Każda próba i
+      // każde pominięcie zostawia ślad z tematem.
+      if (!this.enabled()) {
+        if (priority === "urgent" || priority === "high") log(`[PUSH] POMINIĘTE — „Push na telefon (ntfy)" jest OFF na tym komputerze (${title}).`, "warn");
+        return;
+      }
+      const topic = this.topic();
       try {
         GM_xmlhttpRequest({
           method: "POST",
-          url: "https://ntfy.sh/" + this.topic(),
+          url: "https://ntfy.sh/" + topic,
           headers: { Title: title, Priority: priority, Tags: tags },
           data: String(msg).slice(0, 600),
           timeout: 15000,
-          onload: () => {},
+          onload: (r) => log(`[PUSH] wysłano (${priority}) na temat ${topic}: ${title} — HTTP ${r && r.status}`, (r && r.status >= 200 && r.status < 300) ? "info" : "warn"),
           onerror: () => log("[PUSH] ntfy.sh nie odpowiedziało — powiadomienie nie wyszło.", "warn"),
           ontimeout: () => log("[PUSH] ntfy.sh timeout — powiadomienie nie wyszło.", "warn"),
         });
