@@ -68,7 +68,7 @@ must("macierz: ręczny RATUJ bez pary → dom floty",
 must("macierz: nic nie wiadomo → null (coordsOf dośle bazę)",
   rrt({ where: null, watchAt: null, manual: false, fleetHome: null, activePair: null }) === null);
 must("ślepa ścieżka paska: NAJPIERW wszystkie kolonie z flotą (hangarTargets, v2.106.5), potem dom floty (fleetHome)",
-  /if \(!target\) \{[\s\S]{0,900}?FleetRecon\.hangarTargets\(1\)[\s\S]{0,900}?FleetRecon\.fleetHome\(\)/.test(src) && /fleetHome\(\) \{[\s\S]{0,600}?homeVerdict\(\{ map, homeKey/.test(src));
+  /if \(!target\) \{[\s\S]{0,1800}?FleetRecon\.hangarTargets\(1\)[\s\S]{0,900}?FleetRecon\.fleetHome\(\)/.test(src) && /fleetHome\(\) \{[\s\S]{0,600}?homeVerdict\(\{ map, homeKey/.test(src));
 must("kolejka ratunków bierze też cele ślepego alarmu (ogamex_blind_targets)",
   /async tryNext\(w\) \{[\s\S]{0,900}?ogamex_blind_targets/.test(src));
 must("lot międzykolonijny celuje w KSIĘŻYC celu",

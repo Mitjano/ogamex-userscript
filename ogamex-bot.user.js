@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.110.1
+// @version      2.110.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6257,6 +6257,18 @@ const __gmSetRaw = GM_setValue;
     // para (autoSaveOnThreat przełączył się wcześniej). Zwraca true, gdy
     // misja ruszyła; false = wracaj na zwykły ratunek.
     async launch(atCoords, reason, maxEtaSec) {
+      // v2.110.2 (27.08 11:26): DRUGA ucieczka (inna para) NADPISAŁA stan pierwszej —
+      // główna flota leciała na [2:21:4] bez pamięci o zawrocie. Stan powietrza jest
+      // jeden na bota: dopóki jedna para leci (arming/launched/recalled), inna para
+      // NIE dostaje powietrza (wraca do zwykłego ratunku w parze). Per-para = Etap A.
+      try {
+        const cur = this.state();
+        if (cur && cur.phase && ["arming", "launched", "recalled"].includes(cur.phase) && this.key(cur.at) !== this.key(atCoords)) {
+          log(`[UCIECZKA] w powietrzu jest już flota z [${this.key(cur.at)}] — nie nadpisuję jej stanu; [${this.key(atCoords)}] dostaje zwykły ratunek w parze.`, "error");
+          ThreatLog.add("BŁĄD", `Ucieczka dla [${this.key(atCoords)}] wstrzymana: w powietrzu już [${this.key(cur.at)}] (jeden stan). Ratunek w parze.`);
+          return false;
+        }
+      } catch {}
       const to = this.refuge(atCoords);
       if (!to) {
         log("[UCIECZKA] nie widzę żadnej innej kolonii na pasku planet — wracam do zwykłego ratunku.", "error");
@@ -8692,6 +8704,13 @@ const __gmSetRaw = GM_setValue;
         // a flota stała na innej kolonii — bot ratował pustkę, flota nie ruszona.
         // Ślepy alarm broni WSZYSTKICH kolonii z flotą w hangarze (mapa
         // hangarów, największa pierwsza); pozostałe idą do kolejki ratunków.
+        // v2.110.2 (27.08 11:26:13): po końcu symulacji alarm jeszcze „żył" (histereza),
+        // a lista pokazała 0 ataków → ślepa ścieżka poleciała bronić [3:272:7] i wysłała
+        // DRUGĄ ucieczkę. Ślepy alarm tylko, gdy to PASEK (żywy, <90 s) widzi obcych
+        // i nie trwa właśnie zerowy odczyt — gasnący alarm z listy nie jest „celem nieznanym".
+        let blindOk = false;
+        try { const st = ThreatMonitor.state(); blindOk = !!(st && st.count > 0 && st.src === "bar" && Date.now() - (st.seenAt || 0) < 90 * 1000 && !st.zeroAt); } catch {}
+        if (!blindOk) { DefenceWatchdog.note("alarm bez celu i bez żywego paska z obcymi — ślepa ścieżka wstrzymana (gasnący alarm?)"); return false; }
         let cands = []; try { cands = FleetRecon.hangarTargets(1); } catch {}
         if (cands.length) {
           target = cands[0];
