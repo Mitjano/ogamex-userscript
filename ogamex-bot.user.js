@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.2
+// @version      2.111.3
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6563,6 +6563,20 @@ const __gmSetRaw = GM_setValue;
         const doc = new DOMParser().parseFromString(html, "text/html");
         const row = this._findOurRow(doc, st);
         if (!row) {
+          // v2.111.3 (zrzut 12:16:45): lista MIAŁA nasz lot, ale już jako `row-fleet-return`
+          // (zawrót z próby 1 zadziałał; przeładowanie strony zjadło zapis stanu) —
+          // _findOurRows wyklucza wiersze return → „nie znajduję lotu" ×5, push, recall_failed.
+          // Wiersz POWROTNY z naszymi koordami = zawrót potwierdzony.
+          try {
+            const toKey = this.key(st.to), atKey = this.key(st.at);
+            const back = [...doc.querySelectorAll("tr[class*='row-mission-type-']")].find(tr => /return/i.test(String(tr.className)) && /DEPLOY|STATION/i.test(String(tr.className)) && (tr.textContent || "").includes(`[${toKey}]`) && (tr.textContent || "").includes(`[${atKey}]`));
+            if (back) {
+              this.save({ ...st, phase: "recalled", recalledAt: st.recalledAt || Date.now(), recallTries: 0 });
+              log(`[UCIECZKA] ✅ lot [${atKey}]→[${toKey}] już WRACA (wiersz powrotny na liście) — zawrót potwierdzony.`, "success");
+              ThreatLog.add("POWRÓT", `Ucieczka: flota zawrócona, wraca na [${atKey}].`);
+              return;
+            }
+          } catch {}
           const etaAbs = (st.sentAt || 0) + (st.flightMs || 0);
           if (st.flightMs && Date.now() < etaAbs - 60000) {
             // v2.111.1 (27.08 10:18 / 11:28 / 11:54 — 3× „zawrócony (możliwe, że ręcznie)",
