@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.5
+// @version      2.111.6
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8892,7 +8892,7 @@ const __gmSetRaw = GM_setValue;
     // itself 10min after the last foreign sighting; everything comes back and
     // the bot resumes on its own.
     async returnHome({ byOperator = false } = {}) {
-      const w = this.normalizeWatch();   // v2.102.0 (C-F1)
+      let w = this.normalizeWatch();   // v2.102.0 (C-F1)
       // v2.106.0: flota skoczyła BRAMĄ na inny księżyc → powrót też bramą.
       if (w.armed && w.refugeBody === "gate") {
         if (!byOperator && ThreatMonitor.active()) return false;
@@ -8900,6 +8900,15 @@ const __gmSetRaw = GM_setValue;
       }
       // v2.102.0 (B6): flota już na ciele domowym (refugium = dom) i cisza →
       // nie ma czego ściągać; straż schodzi bez wysyłania pustej misji.
+      // v2.111.6 (12:55:00): straż „dom = planeta, refugium = planeta" zeszła jako
+      // „flota na ciele domowym", a flota ZOSTAŁA na planecie — w trybie księżycowym
+      // dom to księżyc; korekta z 2.111.5 musi być PRZED tym sprawdzeniem.
+      try {
+        if (CONFIG.baseBody === "moon" && w.armed && w.homeBody && w.homeBody !== "moon" && w.at && HomeBase.pairHasMoon(w.at) !== false) {
+          log(`[POWRÓT] straż miała dom = planeta; tryb księżycowy → dom = KSIĘŻYC [${RescueQueue.str(w.at)}].`, "warn");
+          w = { ...w, homeBody: "moon" }; this.saveWatch(w);
+        }
+      } catch {}
       if (!byOperator && w.armed && w.homeBody && w.refugeBody === w.homeBody && !ThreatMonitor.active() && ((w.saves || 0) > 0 || !w.lastSendAt)) {
         this.disarm("flota na ciele domowym, alarm minął");
         return false;
