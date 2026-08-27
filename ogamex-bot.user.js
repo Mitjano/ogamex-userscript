@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.109.1
+// @version      2.110.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -94,7 +94,10 @@ const __gmSetRaw = GM_setValue;
     // v2.109.0 DECYZJA OPERATORA 27.08 (po skoku 10:37 z całą flotą i surowcami): brama ON.
     // havens = jedyne cele skoku: [7:209:7] (ma bramę; [7:499:6] NIE ma). Ustawienia bramy
     // są sterowane z repo (loadConfig nadpisuje zapis z przeglądarki).
-    jumpGate: { enabled: true, targetMoon: null, takeResources: true, havens: [{ galaxy: 7, system: 209, position: 7 }] },
+    // v2.110.0 DECYZJA OSTATECZNA OPERATORA 27.08: „nie mieliśmy używać jumpgate" — brama OFF
+    // dla ratunków (wymuszone w loadConfig). Powrót do domu z już zajętego schronu dozwolony.
+    // Ratunek przy ataku na księżyc = Deploy na księżyc-sąsiada w układzie + zawrót (airOnMoonAttack).
+    jumpGate: { enabled: false, targetMoon: null, takeResources: true, havens: [{ galaxy: 7, system: 209, position: 7 }] },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -187,6 +190,9 @@ const __gmSetRaw = GM_setValue;
       // powolnym Deployem do innej kolonii i ZAWRACA po przejściu ataków
       // (flota w locie jest nietykalna). OFF = zachowanie 2.84.0.
       airSave: true,
+      // v2.110.0: atak na SAM księżyc z flotą → Deploy na księżyc-sąsiada w układzie + zawrót
+      // (zamiast planety pary). OFF = jak dotąd (planeta pary).
+      airOnMoonAttack: true,
       // ── v2.100.0: STRAŻ ŚWIADOMA CIAŁA (audyt 25.08 — fale + atak kombinowany) ──
       // Do 2.99.6 uzbrojona straż nie porównywała atakowanego ciała z tym,
       // na którym STOI uratowana flota (refugium). Scenariusz: fale na
@@ -362,7 +368,7 @@ const __gmSetRaw = GM_setValue;
       // v2.108.3 (27.08 10:37): zapisany config miał stare jumpGate.enabled:true i wygrał
       // z domyślnym false → bot skoczył bramą mimo decyzji operatora. Brama dla RATUNKÓW
       // jest wymuszona OFF z kodu; zapis w przeglądarce nie może tego włączyć.
-      merged.jumpGate = { ...DEFAULT_CONFIG.jumpGate, ...(merged.jumpGate || {}), enabled: DEFAULT_CONFIG.jumpGate.enabled, havens: DEFAULT_CONFIG.jumpGate.havens };   // v2.109.0: enabled+havens z repo
+      merged.jumpGate = { ...DEFAULT_CONFIG.jumpGate, ...(merged.jumpGate || {}), enabled: false, havens: DEFAULT_CONFIG.jumpGate.havens };   // v2.110.0: brama OFF z kodu, zapis nie włączy
       // antiDetection is code-controlled — never override from saved config.
       // v2.12.0 exception: the SLEEP WINDOW is user-configurable (UI inputs),
       // so those two fields survive the reset.
@@ -9410,6 +9416,28 @@ const __gmSetRaw = GM_setValue;
             return false;
           }
         }
+        // ── v2.110.0 (decyzja operatora 27.08): ATAK NA KSIĘŻYC z flotą → nie na planetę pary
+        // (widoczna w falandze), tylko Deploy na KSIĘŻYC-SĄSIADA w tym samym układzie
+        // (AirSave: 10 %, wszystko + surowce − rezerwa, zawrót po przejściu ataków — dziś 10:17
+        // zadziałało wzorowo). Planeta pary zostaje jako ostatnia deska, gdy sąsiada nie ma.
+        try {
+          if (!sweep && !manual && !queued && !crossColony && from === "moon" && to === "planet" && at && AirSave.enabled() && CONFIG.threatAlarm?.airOnMoonAttack !== false) {
+            const ref = AirSave.refuge(at);
+            const sameSys = !!(ref && ref.galaxy === at.galaxy && ref.system === at.system);
+            const verdict = AirSave.decideFor(at);   // "swap" = tylko jedno ciało atakowane (nasz przypadek), "active" = już leci
+            let recentFail = false; try { const fa = (JSON.parse(GM_getValue(AirSave.KEY_FAIL, "{}")) || {})[AirSave.key(at)] || 0; recentFail = fa && Date.now() - fa < 10 * 60 * 1000; } catch {}
+            if (sameSys && (verdict === "air" || (verdict === "swap" && !recentFail))) {
+              let maxEta = 0;
+              try { maxEta = (ThreatMonitor.events()?.targetMaxEta || {})[AirSave.key(at)] || 0; } catch {}
+              if (!maxEta) { try { const u = (JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {})[AirSave.key(at)] || 0; if (u > Date.now()) maxEta = Math.round((u - Date.now()) / 1000); } catch {} }
+              log(`[RATUNEK] atak na KSIĘŻYC [${AirSave.key(at)}] — zamiast planety pary lecę na księżyc-sąsiada [${AirSave.key(ref)}] (Deploy, zawrót po przejściu ataków).`, "warn");
+              if (await AirSave.launch(at, reason + " — atak na księżyc, sąsiad w układzie", maxEta)) return true;
+              log("[RATUNEK] ucieczka na sąsiada nie ruszyła — ratuję na planetę pary.", "warn");
+            } else if (!sameSys) {
+              DefenceWatchdog.note(`brak księżyca-sąsiada w układzie [${AirSave.key(at)}] — ratunek na planetę pary`);
+            }
+          }
+        } catch (e) { log(`[RATUNEK] błąd wyboru sąsiada: ${e.message} — ratuję na planetę pary.`, "warn"); }
         const w0 = this.watch();
         GM_setValue("pending_mission", JSON.stringify({
           type: "moon_save_direct",
