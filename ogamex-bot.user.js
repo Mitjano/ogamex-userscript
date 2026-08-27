@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.0
+// @version      2.107.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -8890,8 +8890,18 @@ const __gmSetRaw = GM_setValue;
       let untilPair = 0; try { untilPair = (JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {})[RescueQueue.str(w.at)] || 0; const f = parseInt(GM_getValue("ogamex_atk_fuse", "0")) || 0; if (untilPair && f) untilPair = Math.min(untilPair, f); } catch {}
       if (w.since && Date.now() - w.since > this.MAX_ARMED_MS && !ThreatMonitor.active() && !airActive && Date.now() >= untilPair + 60 * 1000) {
         if (w.refugeBody && w.homeBody && w.refugeBody !== w.homeBody) {
-          log(`[STRAŻ] bezpiecznik zdejmuje straż, a flota stoi na ${w.refugeBody === "moon" ? "księżycu" : "planecie"} (dom: ${w.homeBody === "moon" ? "księżyc" : "planeta"}) — ŚCIĄGNIJ JĄ RĘCZNIE (WRÓĆ NA BAZĘ).`, "error");
-          ThreatLog.add("BŁĄD", `Straż zdjęta bezpiecznikiem, flota poza domem (${w.refugeBody}) — wróć ręcznie przyciskiem WRÓĆ NA BAZĘ.`);
+          // v2.107.1 (27.08 09:12): push „flota poza domem (moon)" bez koordów po
+          // 16 h przerwy — straż z wczoraj na [5:125:4] (hangar PUSTY), a flota
+          // stała bezpiecznie na księżycu [2:21:1]. Teraz: koordy w komunikacie,
+          // a gdy mapa hangarów (<48 h) mówi „hangar tej pary pusty" → info, nie BŁĄD.
+          const pairK = RescueQueue.str(w.at);
+          let known = null; try { const e = (JSON.parse(GM_getValue(FleetRecon.KEY_HANGARS, "{}")) || {})[pairK]; if (e && Date.now() - (e.at || 0) < 48 * 60 * 60 * 1000) known = e.total || 0; } catch {}
+          if (known === 0) {
+            log(`[STRAŻ] bezpiecznik zdejmuje zwietrzałą straż [${pairK}] — hangar tej pary pusty wg ostatniego odczytu, nic do ściągania.`, "info");
+          } else {
+            log(`[STRAŻ] bezpiecznik zdejmuje straż [${pairK}], a flota stoi na ${w.refugeBody === "moon" ? "księżycu" : "planecie"} (dom: ${w.homeBody === "moon" ? "księżyc" : "planeta"}) — ŚCIĄGNIJ JĄ RĘCZNIE (WRÓĆ NA BAZĘ).`, "error");
+            ThreatLog.add("BŁĄD", `Straż [${pairK}] zdjęta bezpiecznikiem, flota poza domem (${w.refugeBody}) — wróć ręcznie przyciskiem WRÓĆ NA BAZĘ.`);
+          }
         }
         ThreatLog.add("BŁĄD", `Straż była uzbrojona ponad ${Math.round(this.MAX_ARMED_MS / 60000)} min bez zagrożenia — zdejmuję jako zator stanu.`);
         this.disarm("bezpiecznik: uzbrojona zbyt długo bez zagrożenia");
