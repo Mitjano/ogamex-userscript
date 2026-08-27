@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.4
+// @version      2.107.5
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5030,6 +5030,10 @@ const __gmSetRaw = GM_setValue;
       if (!k) return false;
       const failAt = parseInt(GM_getValue("ogamex_gate_fail_" + k, "0")) || 0;
       if (Date.now() - failAt < 10 * 60 * 1000) return false;
+      // v2.107.5: znany cooldown bramy (z parsera „cooling down" albo 30 min po
+      // własnym skoku) → nie tracimy 10-15 s na stronę bramy, od razu Deploy.
+      const readyAt = parseInt(GM_getValue("ogamex_gate_ready_at_" + k, "0")) || 0;
+      if (readyAt && Date.now() < readyAt) return false;
       if (HomeBase.pairHasMoon(at) === false) return false;
       return true;
     },
@@ -11106,6 +11110,9 @@ const __gmSetRaw = GM_setValue;
         log(`[BRAMA] skaczę: [${GateSave.key(mission.atCoords)}] → [${destKey}], statków w polach: ${total.toLocaleString("pl-PL")}.`, "success");
         ThreatLog.add("RATUNEK", `Brama: skok [${GateSave.key(mission.atCoords)}] → [${destKey}] (${total.toLocaleString("pl-PL")} statków).`);
         mission.step = "verify"; mission.destKey = destKey; mission.timestamp = Date.now();
+        // v2.107.5: po skoku brama ŹRÓDŁOWA ma cooldown (na żywo 27.08: ~30 min) — zapamiętaj,
+        // żeby kolejny alarm na tej parze nie próbował bramy, tylko od razu zamiatał Deployem.
+        GM_setValue("ogamex_gate_ready_at_" + GateSave.key(mission.atCoords), String(Date.now() + 30 * 60 * 1000));
         GM_setValue("pending_mission", JSON.stringify(mission));
         jb.click();
         await AntiDetection.sleep(3500 + Math.random() * 1500);
