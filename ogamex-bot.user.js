@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.106.5
+// @version      2.107.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -85,7 +85,10 @@ const __gmSetRaw = GM_setValue;
     // inny księżyc (0 s, bez lotu, falanga nic nie widzi) zamiast Deployu 81 s na
     // planetę. targetMoon: {galaxy,system,position} preferowany cel (null =
     // pierwszy księżyc z listy bramy, który nie jest atakowany).
-    jumpGate: { enabled: true, targetMoon: null, takeResources: true },
+    // v2.107.0 (audyt 2, Z2): havens = księżyce-SCHRONY — gdy lista niepusta, brama
+    // skacze WYŁĄCZNIE na nie (nigdy na hub); finta wypala bramę bazy + schronu,
+    // huby zostają naładowane. Format: [{ galaxy, system, position }, ...].
+    jumpGate: { enabled: true, targetMoon: null, takeResources: true, havens: [] },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -2438,6 +2441,22 @@ const __gmSetRaw = GM_setValue;
     },
     ok() { GM_setValue(this.KEY, "0"); },
     lostRecently() { const t = parseInt(GM_getValue(this.KEY, "0")) || 0; return t && Date.now() - t < 15 * 60 * 1000; },
+    // v2.107.0 (audyt 2, Z7/A8): sesja padła → po 2 min JEDNA próba nawigacji na "/"
+    // (fork bywa zalogowany po ciasteczku, tylko AJAX dostał stronę logowania),
+    // zamiast 15 min ślepoty. Kolejna próba nie częściej niż co 15 min.
+    KEY_RETRY: "ogamex_session_retry_at",
+    maybeRecover() {
+      const lost = parseInt(GM_getValue(this.KEY, "0")) || 0;
+      if (!lost || Date.now() - lost < 2 * 60 * 1000) return false;
+      const tried = parseInt(GM_getValue(this.KEY_RETRY, "0")) || 0;
+      if (Date.now() - tried < 15 * 60 * 1000) return false;
+      const pendingRaw = GM_getValue("pending_mission", null);
+      if (pendingRaw && pendingRaw !== "null") return false;
+      GM_setValue(this.KEY_RETRY, String(Date.now()));
+      log("[SESJA] 2 min od wykrycia wylogowania — próbuję wejść na \"/\" (jeśli gra wpuści, obrona odzyska wzrok).", "warn");
+      window.location.replace("/");
+      return true;
+    },
   };
 
   const TabLock = {
@@ -5056,7 +5075,14 @@ const __gmSetRaw = GM_setValue;
       const here = this.key(at);
       const want = CONFIG.jumpGate?.targetMoon;
       const wantK = want ? this.key(want) : null;
-      const ok = opts.filter(x => this.key(x.c) !== here && !attackedKeys.includes(this.key(x.c)));
+      let ok = opts.filter(x => this.key(x.c) !== here && !attackedKeys.includes(this.key(x.c)));
+      // v2.107.0 (audyt 2, Z2): schrony = JEDYNE cele skoku; brak dostępnego
+      // schronu → null (ratunek Deployem), nigdy skok na hub.
+      const havens = (CONFIG.jumpGate?.havens || []).map(h => this.key(h)).filter(Boolean);
+      if (havens.length) {
+        ok = ok.filter(x => havens.includes(this.key(x.c)));
+        if (!ok.length) log(`[BRAMA] żaden schron (${havens.join(", ")}) nie jest dostępny na liście bramy (brak/atakowany) — nie skaczę na hub, ratunek Deployem.`, "warn");
+      }
       return ok.find(x => wantK && this.key(x.c) === wantK) || ok[0] || null;
     },
     async fireChange(el) { el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); await AntiDetection.sleep(500 + Math.random() * 400); },
@@ -8284,18 +8310,39 @@ const __gmSetRaw = GM_setValue;
 
     // Zwraca true, gdy kliknięto (strona się przeładuje i ratunek wznowi się
     // z zapamiętanego stanu). false = nie znaleziono kolonii → NIE ruszamy floty.
-    switchTo(coords, reason) {
+    switchTo(coords, reason, opts = {}) {
       const a = this.planetAnchor(coords);
       if (!a) {
         log(`[RATUNEK] nie znajduję kolonii [${coords}] na liście planet — NIE ruszam floty. Reaguj ręcznie.`, "error");
         ThreatLog.add("BŁĄD", `Kolonii [${coords}] nie ma na liście planet — ewakuacja przerwana, flota nietknięta.`);
         return false;
       }
-      GM_setValue(this.KEY_SWITCH, JSON.stringify({ coords, at: Date.now(), reason: reason || "atak" }));
-      log(`[RATUNEK] przełączam się na [${coords}], żeby wysłać flotę Z TEJ kolonii.`, "warn");
-      ThreatLog.add("RATUNEK", `Przełączam aktywną planetę na [${coords}] — wysyłka musi wyjść z atakowanej kolonii.`);
-      a.click();
+      // v2.107.0 (audyt 2, Z4): klikamy CIAŁO, na którym stoi flota. Dotąd zawsze
+      // planeta → przy flocie na księżycu run() odmawiał („NA księżyc, bo atakowany"),
+      // straż zbroiła się z błędnym ciałem, brama była nieosiągalna, a ratunek
+      // trwał 55-100 s. Ciało z mapy hangarów (ostatni odczyt <48 h, hangar
+      // niepusty) albo z opts.body; księżyc tylko, gdy para GO MA na pasku.
+      let body = this.switchBodyFor(coords, opts.body || null);
+      let el = a;
+      if (body === "moon") {
+        const m = HomeBase.moonOf(a);
+        if (m) el = m; else body = "planet";
+      }
+      GM_setValue(this.KEY_SWITCH, JSON.stringify({ coords, at: Date.now(), reason: reason || "atak", body: body || "planet" }));
+      log(`[RATUNEK] przełączam się na ${body === "moon" ? "KSIĘŻYC" : "planetę"} [${coords}], żeby wysłać flotę Z TEGO ciała.`, "warn");
+      ThreatLog.add("RATUNEK", `Przełączam aktywne ciało na ${body === "moon" ? "księżyc" : "planetę"} [${coords}] — wysyłka musi wyjść stamtąd, gdzie stoi flota.`);
+      el.click();
       return true;
+    },
+    // czysta decyzja (testowalna): "moon" | "planet" | null (nie wiemy → planeta)
+    switchBodyFor(coords, forced = null) {
+      if (forced === "moon" || forced === "planet") return forced;
+      try {
+        const map = JSON.parse(GM_getValue(FleetRecon.KEY_HANGARS, "{}")) || {};
+        const e = map[coords];
+        if (e && (e.total || 0) > 0 && Date.now() - (e.at || 0) < 48 * 60 * 60 * 1000 && (e.body === "moon" || e.body === "planet")) return e.body;
+      } catch {}
+      return null;
     },
 
     // Po przeładowaniu: jeśli jesteśmy tam, gdzie mieliśmy być, dokończ ratunek.
@@ -9966,10 +10013,18 @@ const __gmSetRaw = GM_setValue;
     // The entry's own text is just the NAME here, so fall back to it when the
     // sidebar doesn't render coords.
     activePlanet() {
-      const el = document.querySelector(
+      let el = document.querySelector(
         "a.planet-select.selected, .planet-select.selected, .smallplanet.active, .planetlink.active"
       );
-      if (!el) return null;
+      // v2.107.0: flota na KSIĘŻYCU — zaznaczony jest moon-select, nie planet-select;
+      // bez tego hangar księżyca nigdy nie trafiał do mapy hangarów (ślepy alarm
+      // i switchTo go nie widziały). Koordy siedzą w wierszu pary (jak activeCoords).
+      if (!el) {
+        const mEl = document.querySelector("a.moon-select.selected, .moon-select.selected");
+        const row = mEl ? (mEl.closest("li, div, tr") || mEl.parentElement) : null;
+        const mm = String(row?.textContent || "").match(/(\d+):(\d+):(\d+)/);
+        return mm ? `${mm[1]}:${mm[2]}:${mm[3]}` : null;
+      }
       const txt = (el.textContent || "").replace(/\s+/g, " ").trim();
       const m = txt.match(/\[?(\d+):(\d+):(\d+)\]?/);
       return m ? `${m[1]}:${m[2]}:${m[3]}` : (txt.slice(0, 30) || null);
@@ -10041,6 +10096,7 @@ const __gmSetRaw = GM_setValue;
       const snap = {
         at: Date.now(),
         planet: this.activePlanet(),
+        body: (() => { try { return MoonSave.currentBody(); } catch { return null; } })(),   // v2.107.0: ciało hangaru (moon/planet)
         ships,
         groups,
         fleetSlots: fm ? { used: parseInt(fm[1]), total: parseInt(fm[2]) } : null,
@@ -10106,9 +10162,10 @@ const __gmSetRaw = GM_setValue;
         const cur = (snap.ships || []).reduce((a, sh) => a + (sh.qty || 0), 0);
         const e = map[snap.planet] || {};
         const maxFresh = (Date.now() - (e.maxAt || 0) < 48 * 60 * 60 * 1000) ? (e.max || 0) : 0;
+        // v2.107.0: body = na którym ciele pary widzieliśmy flotę (switchTo klika to ciało)
         map[snap.planet] = cur >= maxFresh
-          ? { total: cur, max: cur, maxAt: Date.now(), at: Date.now() }
-          : { total: cur, max: maxFresh, maxAt: e.maxAt, at: Date.now() };
+          ? { total: cur, max: cur, maxAt: Date.now(), at: Date.now(), body: snap.body || null }
+          : { total: cur, max: maxFresh, maxAt: e.maxAt, at: Date.now(), body: snap.body || null };
         for (const k of Object.keys(map)) if (Date.now() - (map[k].at || 0) > 48 * 60 * 60 * 1000) delete map[k];
         GM_setValue(this.KEY_HANGARS, JSON.stringify(map));
         const fh = CONFIG.expeditions?.launchFrom;
@@ -13017,6 +13074,37 @@ const __gmSetRaw = GM_setValue;
     // jest szeregowy, więc „przed każdą pauzą" nie chroniło przed pauzą, która
     // zatrzymuje cały zegar.
 
+    // v2.107.0 (audyt 2, Z7/A8): keepalive + samonaprawa sesji stoją PRZED bramkami
+    // przerwy kawowej i nocy. Dotąd siedziały ZA nimi → w 5-15 min przerwy i przez
+    // całą noc zero przeładowań → sesja wygasała → odczyt paska/listy dostawał
+    // stronę logowania = obrona ślepa dokładnie wtedy, gdy napastnik gra na
+    // statystykę (sondy co minutę). Przeładowanie strony nie jest „aktywnością"
+    // gracza — człowiek też zostawia otwartą kartę.
+    if (SessionWatch.maybeRecover()) return;
+    // v2.10.10 keepalive: guarantee a REAL page load at least every ~12min.
+    // After "scan complete — no asteroids" the bot used to sit 45min on one
+    // galaxy page with zero requests; the session could expire in that window
+    // and every later range-AJAX silently returned the login page (= blind
+    // bot, see scanRanges). A periodic reload keeps the session fresh AND
+    // resets any wedged in-page state (stuck flags, dead timer chains,
+    // browser tab throttling). During an active scan navigation happens every
+    // few seconds anyway, so this only fires during long waits/cooldowns.
+    {
+      const lastPageLoad = parseInt(GM_getValue("ogamex_last_pageload_at", "0"));
+      const pendingRaw = GM_getValue("pending_mission", null);
+      const hasPending = pendingRaw && pendingRaw !== "null";
+      if (!hasPending && lastPageLoad && Date.now() - lastPageLoad > 12 * 60 * 1000) {
+        log("Keepalive: no page load for >12min — reloading to keep session alive.", "info");
+        if (window.location.href.includes("fleetSendSuccessfully")) {
+          // Don't re-trigger the post-send handler with stale dispatch data
+          window.location.replace("/");
+        } else {
+          window.location.reload();
+        }
+        return;
+      }
+    }
+
     // v2.12.0: coffee breaks — full-bot pause with human macro-pacing.
     if (Humanizer.isOnBreak()) {
       log(`On break (~${Humanizer.breakLeftMin()}min left) — no activity.`, "delay");
@@ -13053,30 +13141,6 @@ const __gmSetRaw = GM_setValue;
     // przerwy, więc tu wystarczy jedno wywołanie. Jeśli utworzył misję —
     // kończymy tick, handlePendingMission przejmie od następnego przebiegu.
     if (await MoonFerry.run().catch(() => false)) return;
-
-    // v2.10.10 keepalive: guarantee a REAL page load at least every ~12min.
-    // After "scan complete — no asteroids" the bot used to sit 45min on one
-    // galaxy page with zero requests; the session could expire in that window
-    // and every later range-AJAX silently returned the login page (= blind
-    // bot, see scanRanges). A periodic reload keeps the session fresh AND
-    // resets any wedged in-page state (stuck flags, dead timer chains,
-    // browser tab throttling). During an active scan navigation happens every
-    // few seconds anyway, so this only fires during long waits/cooldowns.
-    {
-      const lastPageLoad = parseInt(GM_getValue("ogamex_last_pageload_at", "0"));
-      const pendingRaw = GM_getValue("pending_mission", null);
-      const hasPending = pendingRaw && pendingRaw !== "null";
-      if (!hasPending && lastPageLoad && Date.now() - lastPageLoad > 12 * 60 * 1000) {
-        log("Keepalive: no page load for >12min — reloading to keep session alive.", "info");
-        if (window.location.href.includes("fleetSendSuccessfully")) {
-          // Don't re-trigger the post-send handler with stale dispatch data
-          window.location.replace("/");
-        } else {
-          window.location.reload();
-        }
-        return;
-      }
-    }
 
     // ── v2.14.0: expedition waves go BEFORE mining ──
     // Not a priority statement — a mechanical one. AsteroidMiner.run() usually

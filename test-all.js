@@ -34,6 +34,7 @@ const SUITES = [
   ["zbieranie zlomu po ekspedycjach (poz. 16)", "test-zlom.js"],
   ["Odkrywca: ekspedycje 40 min", "test-odkrywca.js"],
   ["nadwyżka paska vs sondy (barExcessDecision)", "test-nadwyzka.js"],
+  ["Etap A: switchTo na księżyc, schrony bramy, keepalive (v2.107.0)", "test-etap-a.js"],
 ];
 
 let failed = [];
