@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.107.7
+// @version      2.107.8
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5067,6 +5067,9 @@ const __gmSetRaw = GM_setValue;
         if (el.closest("#ogx-bot-panel") || el.offsetParent === null) return false;
         const txt = (el.textContent || "").trim();
         const cls = `${el.className || ""} ${el.id || ""} ${el.getAttribute("title") || ""} ${el.getAttribute("src") || ""}`.toLowerCase();
+        // v2.107.8 (zrzut 27.08 09:50): obok „»" stoi czerwony przycisk „0" (czyść) —
+        // kliknięty jako ostatni wyzerowałby statki. Wykluczamy zerowanie/czyszczenie.
+        if (/^0$/.test(txt) || /clear|reset|zero|empty|none/.test(cls)) return false;
         return /^(»|>>|⟫|max|all)$/i.test(txt) || /max|all|arrow|select-?all|fill/.test(cls);
       });
     },
@@ -11100,6 +11103,17 @@ const __gmSetRaw = GM_setValue;
             const have = { metal: readHdr(".resource-item-metal"), crystal: readHdr(".resource-item-crystal"), deuterium: Math.max(0, readHdr(".resource-item-deuterium") - reserve) };
             const kindOf = (i) => { const s = `${i.id} ${i.name} ${i.className} ${i.placeholder} ${(i.closest("tr, li, div")?.textContent || "").slice(0, 60)}`.toLowerCase(); return /deut/.test(s) ? "deuterium" : /cryst|krysz/.test(s) ? "crystal" : /metal/.test(s) ? "metal" : null; };
             const order = ["metal", "crystal", "deuterium"];
+            // v2.107.8 (zrzut 27.08 09:50): „Cargo space : used / total" — surowce wchodzą tylko
+            // do ładowni zaznaczonych statków. Gdy suma > ładownia, priorytet: DEUTER (paliwo
+            // dla floty na schronie) → kryształ → metal.
+            const cargoM = pageTxt.match(/cargo\s*space\s*:?\s*([\d.,\s ']+)\s*\/\s*([\d.,\s ']+)/i)
+              || (document.body.textContent || "").replace(/\s+/g, " ").match(/cargo\s*space\s*:?\s*([\d.,\s ']+)\s*\/\s*([\d.,\s ']+)/i);
+            const cargoTotal = cargoM ? (parseInt(String(cargoM[2]).replace(/[^\d]/g, ""), 10) || 0) : 0;
+            if (cargoTotal > 0) {
+              let left = cargoTotal;
+              for (const k of ["deuterium", "crystal", "metal"]) { const take = Math.min(have[k] || 0, left); have[k] = take; left -= take; }
+              log(`[BRAMA] ładownia bramy: ${cargoTotal.toLocaleString("pl-PL")} — po limicie deuter ${have.deuterium.toLocaleString("pl-PL")}, kryształ ${have.crystal.toLocaleString("pl-PL")}, metal ${have.metal.toLocaleString("pl-PL")}.`, "info");
+            }
             resInputs.forEach((i, idx) => {
               const k = kindOf(i) || order[idx] || null;
               if (!k) return;
