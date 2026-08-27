@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.1
+// @version      2.111.2
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -6426,6 +6426,17 @@ const __gmSetRaw = GM_setValue;
           this.save({ ...st, sinceReset: true });
           try { const w = MoonSave.watch(); if (w.armed) MoonSave.saveWatch({ ...w, since: Date.now() }); } catch {}
         }
+        // v2.111.2 (27.08 12:01): flota stała w hangarze, a stan „recalled" blokował
+        // symulację i ratunek do 10 min po wyliczonym lądowaniu. Świeży odczyt hangaru
+        // pary (FleetRecon, PO zawrocie) z flotą = wylądowała → cykl domknięty od razu.
+        try {
+          const e = (JSON.parse(GM_getValue(FleetRecon.KEY_HANGARS, "{}")) || {})[this.key(st.at)];
+          if (e && (e.total || 0) > 0 && (e.at || 0) > (st.recalledAt || 0) + 30 * 1000) {
+            this.save(null);
+            log(`[UCIECZKA] cykl domknięty — hangar [${this.key(st.at)}] pełny wg odczytu z ${new Date(e.at).toLocaleTimeString("pl-PL")} (flota wylądowała).`, "success");
+            return;
+          }
+        } catch {}
         // Powrót trwa tyle, ile lot do chwili zawrócenia; domknij z zapasem.
         const backMs = Math.max(60000, (st.recalledAt || 0) - (st.sentAt || 0));
         if (Date.now() > (st.recalledAt || 0) + backMs + 10 * 60 * 1000) {
