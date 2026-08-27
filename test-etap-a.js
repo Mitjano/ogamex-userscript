@@ -124,5 +124,27 @@ function check(name, cond) { console.log(`${cond ? "OK  " : "FAIL"} | ${name}`);
   failures += f;
 }
 
+// ── 7. v2.111.0: wiersz ACS z jedną współrzędną (zrzut 27.08 10:16:55 — „Players: 1/2" → Moon [2:151:8]) ──
+{
+  const body = bodyOf("classifyRow", "tr, own");
+  const fn = new Function("tr", "own", body.replace(/this\./g, "SELF."));
+  const SELF = { ATTACK: /ATTACK|DESTROY|ACS/i, SAFE: /TRANSPORT|DEPLOY|EXPEDITION|COLONI|HARVEST|RECYCL/i, SPY: /ESPIONAGE|SPY/i };
+  global.SELF = SELF;
+  const td = (text, html = "") => ({ textContent: text, querySelector: (s) => (/moon-icon/.test(s) && /moon-icon/.test(html)) ? {} : null, closest: () => null });
+  const mkTr = (cls, text, coordsA) => ({
+    className: cls, textContent: text, dataset: {},
+    getAttribute: (a) => a === "data-fleet-id" ? "x" : null,
+    querySelector: (s) => s === "[data-remaining-seconds]" ? { getAttribute: () => "58" } : null,
+    querySelectorAll: (s) => s === "a" ? coordsA.map(c => ({ textContent: `[${c.k}]`, closest: () => td(c.txt, c.html) })) : [],
+  });
+  const acs = mkTr("row-mission-type-ACS_ATTACK row-hostile-mission", "00:58 Players : 1 / 2 1.680.530.236.491 Moon [2:151:8]", [{ k: "2:151:8", txt: "Moon [2:151:8]", html: "moon-icon" }]);
+  const r = fn(acs, new Set(["2:21:1", "2:151:8"]));
+  check("ACS z jedną współrzędną: cel = [2:151:8] (nie źródło)", r && r.dst === "2:151:8" && r.src === null);
+  check("ACS: atak, nie własna misja, ciało = księżyc, ETA 58 s", r && r.attack === true && r.mine === false && r.dstBody === "moon" && r.eta === 58);
+  const norm = mkTr("row-mission-type-ATTACK row-hostile-mission", "05:02 Moon [2:22:1] 1.680.530.236.491 Moon [2:21:1]", [{ k: "2:22:1", txt: "Moon [2:22:1]", html: "moon-icon" }, { k: "2:21:1", txt: "Moon [2:21:1]", html: "moon-icon" }]);
+  const r2 = fn(norm, new Set(["2:21:1"]));
+  check("zwykły ATTACK z dwiema współrzędnymi: źródło [2:22:1], cel [2:21:1] (bez regresji)", r2 && r2.src === "2:22:1" && r2.dst === "2:21:1" && r2.attack === true);
+}
+
 console.log(failures ? `\n${failures} FAIL` : "\nETAP A: wszystko OK");
 process.exit(failures ? 1 : 0);

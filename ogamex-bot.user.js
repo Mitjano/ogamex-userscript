@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.110.2
+// @version      2.111.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -5364,8 +5364,14 @@ const __gmSetRaw = GM_setValue;
         const type = (String(tr.className).match(/row-mission-type-([A-Z_]+)/i) || [])[1] || "?";
         const srcEl = tr.querySelector(".fleet-source-coords");
         const coords = [...(tr.textContent || "").matchAll(/\[(\d+:\d+:\d+)\]/g)].map(m => m[1]);
-        const src = (String(srcEl?.textContent || "").match(/(\d+:\d+:\d+)/) || [])[1] || coords[0] || null;
-        const dst = coords.filter(c => c !== src).pop() || null;
+        // v2.111.0 (zrzut 27.08 10:16:55): wiersz ACS Attack ma ZAMIAST koordów źródła
+        // „Players: 1/2" — w wierszu jest TYLKO cel „Moon [2:151:8]". Dotąd jedyna
+        // współrzędna szła jako ŹRÓDŁO, cel = null → wiersz odrzucony → atak na
+        // [2:151:8] widziany był tylko jako goły licznik paska. Reguła: brak
+        // .fleet-source-coords i jedna współrzędna = to jest CEL (gra zawsze pokazuje cel).
+        const srcExplicit = (String(srcEl?.textContent || "").match(/(\d+:\d+:\d+)/) || [])[1] || null;
+        const src = srcExplicit || (coords.length >= 2 ? coords[0] : null);
+        const dst = (!srcExplicit && coords.length === 1) ? coords[0] : (coords.filter(c => c !== src).pop() || null);
         const eta = parseInt(tr.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0;
         // Skład floty siedzi w tooltipie („Light Cargo : 330.000.000").
         const tip = tr.querySelector("[data-tooltip-content*='Ships']")?.getAttribute("data-tooltip-content") || "";
