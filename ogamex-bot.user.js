@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.108.0
+// @version      2.108.1
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://*.ogamex.net/*
@@ -88,7 +88,10 @@ const __gmSetRaw = GM_setValue;
     // v2.107.0 (audyt 2, Z2): havens = księżyce-SCHRONY — gdy lista niepusta, brama
     // skacze WYŁĄCZNIE na nie (nigdy na hub); finta wypala bramę bazy + schronu,
     // huby zostają naładowane. Format: [{ galaxy, system, position }, ...].
-    jumpGate: { enabled: true, targetMoon: null, takeResources: true, havens: [] },
+    // v2.108.1 DECYZJA OPERATORA 27.08: brama WYŁĄCZONA — bot NIE teleportuje floty
+    // (test 09:31: skok bez surowców, cooldown 30 min, napastnik znalazł flotę na
+    // schronie po 40 min). Ratunek = Deploy w parze / ucieczka w powietrze.
+    jumpGate: { enabled: false, targetMoon: null, takeResources: true, havens: [] },
     asteroidMining: {
       enabled: false,
       minersPerMission: 0, // 0 = send all available. Used as fallback ONLY when
@@ -7944,13 +7947,13 @@ const __gmSetRaw = GM_setValue;
       // odczyt gaśnie, gdy bot przełączy ciało. Reguła: sklasyfikowany wiersz
       // ATTACK z celem i dolotem ≤ 20 min = atak aż do dolotu, niezależnie od
       // tego, co potem mówią lista i pasek. Cel do ratunku bierzemy z tej pamięci.
-      if (r.foreign === 0) {
+      if (!r || r.foreign === 0) {   // v2.108.1: r bywa null (brak paska i zdarzeń) — pamięć ma pierwszeństwo przed ślepotą
         try {
           const mem = JSON.parse(GM_getValue("ogamex_atk_until_map", "{}")) || {};
           const now = Date.now();
           const live = Object.keys(mem).filter(k => /^\d+:\d+:\d+$/.test(k) && mem[k] > now && mem[k] - now <= 20 * 60 * 1000).sort((a, b) => mem[a] - mem[b]);
           if (live.length) {
-            r = { ...r, foreign: live.length };
+            r = { total: r?.total ?? 0, own: r?.own ?? 0, ...(r || {}), foreign: live.length };
             const hhmm = (t) => new Date(t).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
             evSrc = `PAMIĘĆ ATAKU: ${live.map(k => `[${k}] dolot ${hhmm(mem[k])}`).join(", ")} — lista i pasek milczą, ale wiersz ATTACK był widziany`;
             GM_setValue("ogamex_atk_memory_targets", JSON.stringify(live));
