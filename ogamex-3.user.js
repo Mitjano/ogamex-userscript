@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.9.0
+// @version      3.9.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.9.0";
+  const VERSION = "3.9.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -99,6 +99,17 @@
     tooLateSec: 40,         // dolot krótszy = nie zdążymy z formularzem (tylko alarm)
     recallBufferSec: 90,    // zawrót: ostatni dolot + bufor
     tickMs: 20000,
+    // ── ŚLEPY ALARM (pasek misji jako trzecie źródło prawdy) ──
+    // Fork nie pokazuje na liście ruchów ataków z WŁASNEGO układu (2.x: katastrofa
+    // 12.08 13:10 i atak 25.08 16:22 — pasek widział, lista nie). Pasek podaje samą
+    // LICZBĘ obcych flot, bez celu: nadwyżka utrzymująca się dłużej niż `barHoldMs`
+    // to atak w ciemno — bronimy kolonii, w której naprawdę stoi flota.
+    barExcess: true,
+    barHoldMs: 60e3,        // ile musi trwać nadwyżka, zanim ruszymy flotą
+    barSpyHoldMs: 5 * 60e3, // gdy pasek mówi „Type: Spy" — dłużej (sondy wracają w minuty)
+    // ── LIMITY TEMPA (bezpieczeństwo konta) ──
+    maxNavPerHour: 240,     // sufit nawigacji/h dla EKONOMII (obrona nigdy nie liczona)
+    quietHours: { enabled: true, startHour: 23, endHour: 5 },   // cisza ekonomii, niezależna od FS
     recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
     reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru, zanim pójdziemy sprawdzić
     // ── HUMANIZER ──
@@ -343,6 +354,11 @@
         if (!prev && r.attack) log(`[ATAK DOM] wrogi wiersz (${r.type}, ${r.source}): ${r.html}`, "error");
       }
       s.threats = [...seen.values()];
+      // v3.9.1 (audyt): PASEK JAKO TRZECIE ŹRÓDŁO PRAWDY. Fork gubi na liście ataki
+      // z własnego układu — pasek widzi je jako goły licznik. Nadwyżka „pasek minus
+      // rozpoznane wiersze" utrzymująca się dłużej niż próg = atak, którego nie widzimy.
+      s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), now, CFG);
+      Store.set("bar_excess", s.barExcess);
       // własne loty (z Events — globalne; z listy — aktywna para)
       s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
       // v3.7.2 (audyt): refresh() czeka na AJAX listy ruchów, więc obiekt załadowany
@@ -399,6 +415,19 @@
     const endD = new Date(d); endD.setMinutes(0, 0, 0); endD.setHours(end);
     if (endD.getTime() <= d.getTime()) endD.setDate(endD.getDate() + 1);
     return { active: inWin, endsAt: endD.getTime(), startHour: start, endHour: end, nowHM: `${h}:${String(m).padStart(2, "0")}` };
+  }
+
+  // CZYSTA funkcja: ile obcych lotów widzi pasek ponad to, co rozpoznaliśmy, i jak
+  // długo to trwa. Reguła z 2.x: liczby same nie rozstrzygają — rozstrzyga TRWAŁOŚĆ
+  // nadwyżki (sondy wracają w minuty, atak wisi), a „Type: Spy" wydłuża próg.
+  function barExcessState(bar, threats, prev, now, cfg) {
+    if (!cfg.barExcess || !bar) return { active: false, count: 0, since: 0 };
+    const live = (threats || []).filter(t => t.arriveAt > now);
+    const excess = Math.max(0, (bar.foreign || 0) - live.length);
+    if (excess <= 0) return { active: false, count: 0, since: 0 };
+    const since = (prev && prev.count > 0 && prev.since) ? prev.since : (bar.at || now);
+    const hold = bar.spyType ? (cfg.barSpyHoldMs || 5 * 60e3) : (cfg.barHoldMs || 60e3);
+    return { active: now - since >= hold, count: excess, since, spyType: !!bar.spyType, waitMs: Math.max(0, hold - (now - since)) };
   }
 
   // ═══ decide — CZYSTA FUNKCJA ════════════════════════════════════════════
@@ -482,6 +511,25 @@
       if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]`, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
     }
+    // ŚLEPY ALARM: pasek widzi obce loty, których nie umiemy przypisać do celu.
+    // Nie zgadujemy celu — ratujemy tam, gdzie stoi flota (największy hangar),
+    // dokładnie tak, jak 2.x po katastrofie 12.08.
+    if (s.barExcess && s.barExcess.active && !(s.threats || []).some(t => t.attack && t.arriveAt > now)) {
+      const withFleet = Object.keys(pairs)
+        .map(k => ({ k, f: fleetsAt(k).sort((a, b) => b.total - a.total)[0] }))
+        .filter(x => x.f && !inFlightFrom(x.k))
+        .sort((a, b) => b.f.total - a.f.total);
+      if (withFleet.length) {
+        const t = withFleet[0];
+        alerts.push({ key: t.k, level: "error", blind: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });
+        const nb = neighbourMoon(t.k);
+        const dest = nb ? { key: nb, body: "moon" } : anyRefuge(t.k);
+        if (dest) actions.push({ kind: "fly", fromKey: t.k, fromBody: t.f.body, toKey: dest.key, toBody: dest.body, why: "ŚLEPY ALARM (pasek widzi atak, listy brak)", speed: cfg.airSpeedPct, recall: true, air: true, blind: true, recallAt: now + 10 * 60e3 });
+        else alerts.push({ key: t.k, level: "error", msg: "ŚLEPY ALARM, ale nie mam dokąd uciec — reaguj ręcznie" });
+      } else {
+        alerts.push({ key: "?", level: "warn", msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych, ale nie wiem, gdzie stoi flota` });
+      }
+    }
     // v3.7.0 (audyt 28.08): zagrożenie na kolonię, której NIE MA na pasku planet
     // (strona bez sidebara, świeża kolonia, literówka w koordach) nie może zniknąć
     // bez śladu — cisza przy ataku to najgorszy możliwy błąd tego bota.
@@ -492,6 +540,14 @@
     }
     return { actions, alerts };
   }
+
+  // v3.9.1 (audyt): sufit nawigacji na godzinę — skan galaktyki potrafi zrobić
+  // setki żądań w kilka minut, co jest widoczne z drugiej strony. Dotyczy WYŁĄCZNIE
+  // ekonomii; obrona i rekonesans nie są liczone ani ograniczane.
+  const NavRate = {
+    note() { const a = (Store.get("nav_log", []) || []).filter(t => Date.now() - t < 3600e3); a.push(Date.now()); Store.set("nav_log", a); },
+    over() { const a = (Store.get("nav_log", []) || []).filter(t => Date.now() - t < 3600e3); return a.length >= (CFG.maxNavPerHour || 240); },
+  };
 
   // ═══ HUMANIZER (tylko ekonomia) ═════════════════════════════════════════
   const Human = {
@@ -515,7 +571,26 @@
       if (this.onBreak()) return `przerwa (~${this.breakLeftMin()} min)`;
       if (this.maybeStart()) return "przerwa właśnie się zaczęła";
       if (!CFG.human.economyAtNight && s && s.night && s.night.active) return "okno nocne — ekonomia śpi, flota jest na FS";
+      // v3.9.1 (audyt): okno nocne było podpięte pod Fleet Save — przy FS OFF
+      // (domyślnie!) ekonomia chodziła 24/7, co jest głośniejsze niż cokolwiek
+      // w arytmetyce floty. Cisza ma własne, niezależne okno z jitterem granic.
+      if (!CFG.human.economyAtNight && this.quiet()) return "godziny ciszy (konto ma wyglądać na śpiące)";
+      if (NavRate.over()) return `sufit ${CFG.maxNavPerHour} nawigacji/h — ekonomia czeka`;
       return null;
+    },
+    quiet() {
+      const q = CFG.quietHours || {};
+      if (!q.enabled || q.startHour === q.endHour) return false;
+      const d = new Date();
+      // jitter granic per dzień: cisza zaczynająca się co do sekundy o tej samej
+      // godzinie jest odciskiem palca (lekcja 2.x v2.12.0).
+      const day = d.toISOString().slice(0, 10);
+      let j = Store.get("quiet_jitter", null);
+      if (!j || j.day !== day) { j = { day, a: Math.round(Math.random() * 40 - 20), b: Math.round(Math.random() * 40 - 20) }; Store.set("quiet_jitter", j); }
+      const nowMin = d.getHours() * 60 + d.getMinutes();
+      const norm = (m) => ((m % 1440) + 1440) % 1440;
+      const a = norm(q.startHour * 60 + j.a), b = norm(q.endHour * 60 + j.b);
+      return a < b ? (nowMin >= a && nowMin < b) : (nowMin >= a || nowMin < b);
     },
   };
 
@@ -708,6 +783,7 @@
         return false;
       }
       this.save({ ...st, lastScanAt: now });
+      NavRate.note();
       location.replace(`/galaxy?x=${target.galaxy}&y=${target.system}`);
       return true;
     },
@@ -750,7 +826,7 @@
       if (!rec || rec.qty <= 0) return false;
       const [g, sy] = homeKey.split(":");
       const onGal = page() === "galaxy" && new RegExp(`[?&]x=${g}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${sy}(?:&|$)`).test(location.search);
-      if (!onGal) { Store.set("debris_at", now - (CFG.debris.everyMin || 20) * 60e3 + 60e3); location.replace(`/galaxy?x=${g}&y=${sy}`); return true; }
+      if (!onGal) { Store.set("debris_at", now - (CFG.debris.everyMin || 20) * 60e3 + 60e3); NavRate.note(); location.replace(`/galaxy?x=${g}&y=${sy}`); return true; }
       Store.set("debris_at", now);
       const hit = this.findLink(homeKey);
       if (!hit) return false;
@@ -1128,6 +1204,7 @@
   async function defenceTick() {
     if (running || !CFG.enabled) return; running = true;
     try {
+      if (errorPageGuard()) return;
       if (!TabLock.acquire()) return;
       Store.set("last_tick", Date.now());
       Wake.ensure();
@@ -1139,7 +1216,7 @@
         const k = `alert|${a.key}|${a.msg.slice(0, 40)}`;
         if (Once.said(k, 60e3)) continue;
         log(`[OBRONA] ${a.msg}`, a.level === "error" ? "error" : "warn");
-        if (a.unknownPair && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
+        if ((a.unknownPair || a.blind) && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
       }
       const attacks = (s.threats || []).filter(t => t.attack && t.arriveAt > Date.now());
       if (attacks.length) { const k = `atak|${attacks.map(t => t.id || t.dst).join(",")}`; if (!Once.said(k, 10 * 60e3)) Journal.add("ATAK", attacks.map(t => `${t.type} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - Date.now()) / 1000)}s (${t.source})`).join("; ")); }
@@ -1220,6 +1297,22 @@
     log(`[NADZORCA] pętla obrony milczy od ${Math.round((Date.now() - last) / 60000)} min — przeładowuję stronę.`, "error");
     Journal.add("BŁĄD", "Pętla obrony milczała 3 min — przeładowanie strony (nadzorca).");
     setTimeout(() => location.replace("/"), 1500);
+  }
+
+  // v3.9.1 (audyt): fork serwuje własną stronę błędu bez UI gry. 2.x stał na niej
+  // GODZINAMI (incydent 03.08 ×2). Wykrycie + powrót do gry, z dławikiem.
+  function errorPageGuard() {
+    const url = location.href;
+    const txt = (document.body.textContent || "").slice(0, 400);
+    const bad = /aspxerrorpath|\/Error\//i.test(url) || (/Error occurred|Page not found|Wystąpił błąd/i.test(txt) && !document.querySelector("a.planet-select, .planet-select"));
+    if (!bad) return false;
+    const at = Store.get("errpage_at", 0) || 0;
+    if (Date.now() - at < 2 * 60e3) return true;
+    Store.set("errpage_at", Date.now());
+    log("[BŁĄD STRONY] jestem na stronie błędu gry — wracam na stronę główną.", "error");
+    const back = [...document.querySelectorAll("a, button")].find(e => /back to game|wróć|powrót/i.test(e.textContent || ""));
+    setTimeout(() => { if (back) back.click(); else location.replace("/"); }, 1200);
+    return true;
   }
 
   function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); location.replace("/"); } }

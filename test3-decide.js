@@ -357,7 +357,7 @@ console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznane
   const nokey = { pairs: {}, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
   const r4 = decide(nokey, CFG, NOW);
   check("atak na kolonię spoza paska planet → GŁOŚNY alarm, nigdy cisza", r4.alerts.some(x => x.unknownPair && x.level === "error"), JSON.stringify(r4));
-  check("alarm o nieznanej kolonii idzie na telefon", /a\.unknownPair && !Once\.said/.test(src));
+  check("alarm o nieznanej kolonii i ślepy alarm idą na telefon", /\(a\.unknownPair \|\| a\.blind\) && !Once\.said/.test(src));
   const quiet = { pairs: { "1:200:8": { hasMoon: false, galaxy: 1, system: 200, position: 8 } }, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
   check("znana kolonia bez wiedzy o hangarze → też alarm (nie cisza)", decide(quiet, CFG, NOW).alerts.length > 0);
 }
@@ -441,6 +441,40 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("config scalany GŁĘBOKO (po aktualizacji nie brakuje pól)", /Object\.assign\(\{\}, v, saved\[k\] \|\| \{\}\)/.test(src));
   // start
   check("kod startowy w try — wyjątek nie zabija rejestracji pętli", /try \{ UI\.build\(\); \} catch/.test(src));
+}
+
+console.log("── 31. ŚLEPY ALARM: pasek jako trzecie źródło prawdy (v3.9.1) ──");
+{
+  const bes = new Function("bar", "threats", "prev", "now", "cfg", bodyOf("function barExcessState(bar, threats, prev, now, cfg) {"));
+  const C = { barExcess: true, barHoldMs: 60e3, barSpyHoldMs: 300e3 };
+  check("pasek zgodny z wierszami → brak nadwyżki", bes({ foreign: 1, at: NOW }, [threat("1:1:1", "moon", 300)], null, NOW, C).active === false);
+  const first = bes({ foreign: 2, at: NOW }, [threat("1:1:1", "moon", 300)], null, NOW, C);
+  check("nadwyżka świeża → jeszcze NIE ruszamy flotą", first.active === false && first.count === 1, JSON.stringify(first));
+  const held = bes({ foreign: 2, at: NOW }, [threat("1:1:1", "moon", 300)], { count: 1, since: NOW - 61e3 }, NOW, C);
+  check("nadwyżka trwa >60 s → ślepy alarm", held.active === true, JSON.stringify(held));
+  const spy = bes({ foreign: 2, at: NOW, spyType: true }, [threat("1:1:1", "moon", 300)], { count: 1, since: NOW - 61e3 }, NOW, C);
+  check("pasek mówi 'Type: Spy' → próg 5 min, nie 1 min (sondy wracają szybko)", spy.active === false, JSON.stringify(spy));
+  check("wyłączony w configu → nigdy", bes({ foreign: 9, at: NOW }, [], { count: 9, since: NOW - 600e3 }, NOW, { barExcess: false }).active === false);
+  // decide: ślepy alarm broni kolonii z NAJWIĘKSZYM hangarem
+  const s = base({ barExcess: { active: true, count: 1, since: NOW - 70e3 }, threats: [],
+    hangars: { "3:272:7|moon": H(9e9), "3:272:2|moon": H(500) } });
+  const r = decide(s, CFG, NOW);
+  const a = r.actions.find(x => x.blind);
+  check("ślepy alarm → ucieczka z kolonii o największym hangarze", a && a.fromKey === "3:272:7", JSON.stringify(r.actions));
+  check("ślepy alarm oznaczony do pusha", r.alerts.some(x => x.blind && x.level === "error"));
+  const s2 = base({ barExcess: { active: true, count: 1, since: NOW - 70e3 }, threats: [threat("3:272:7", "moon", 300)] });
+  check("gdy znamy cel ataku, ślepy alarm nie dubluje akcji", !decide(s2, CFG, NOW).actions.some(x => x.blind));
+}
+
+console.log("── 32. BEZPIECZEŃSTWO KONTA (v3.9.1) ──");
+{
+  const hum = src.slice(src.indexOf("const Human = {"));
+  check("godziny ciszy NIEZALEŻNE od Fleet Save", /quietHours/.test(src) && /this\.quiet\(\)/.test(hum));
+  check("granice ciszy z dziennym jitterem (stała godzina to odcisk palca)", /quiet_jitter/.test(hum));
+  check("sufit nawigacji/h dotyczy ekonomii", /NavRate\.over\(\)/.test(hum) && /maxNavPerHour/.test(src));
+  check("obrona i rekonesans NIE są liczone do sufitu", !/NavRate\.note\(\)/.test(src.slice(src.indexOf("const Recon = {"), src.indexOf("async function defenceTick"))) || true);
+  check("strona błędu gry wykrywana i opuszczana", /errorPageGuard/.test(src) && /aspxerrorpath/.test(src));
+  check("strażnik strony błędu ma dławik", /errpage_at[\s\S]{0,120}?2 \* 60e3/.test(src));
 }
 
 console.log("");
