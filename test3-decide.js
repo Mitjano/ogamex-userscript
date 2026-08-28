@@ -397,6 +397,15 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("nadzorca ma własny dławik (nie pętla przeładowań)", /watchdog_at[\s\S]{0,120}?10 \* 60e3\) return;/.test(src));
 }
 
+console.log("── 29. RĘCZNE DŹWIGNIE OPERATORA (v3.8.0) ──");
+{
+  check("przycisk RATUJ FLOTĘ TERAZ istnieje", /RATUJ FLOTĘ TERAZ/.test(src));
+  check("ręczny ratunek używa TEJ SAMEJ decyzji co automat (wirtualne zagrożenie)", /virt\.threats = \[\{ id: "manual"[\s\S]{0,300}?decide\(virt, CFG/.test(src));
+  check("ręczny ratunek nie czeka na potwierdzenie (seenAt: 0)", /seenAt: 0, source: "operator"/.test(src));
+  check("przycisk WRÓĆ NA BAZĘ zawraca lot albo ściąga flotę z planety na księżyc", /ogx3-home[\s\S]{0,900}?Fly\.recall\(f\)[\s\S]{0,700}?toBody: "moon"/.test(src));
+  check("gdy nie ma czego ratować — mówi wprost, nie udaje sukcesu", /Nie widzę floty na/.test(src) && /Nie mam dokąd uciec/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

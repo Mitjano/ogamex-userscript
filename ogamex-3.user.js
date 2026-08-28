@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.7.3
+// @version      3.8.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.7.3";
+  const VERSION = "3.8.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1104,6 +1104,10 @@
           <button id="ogx3-report" class="ogx3-btn">Kopiuj raport startowy</button>
           <button id="ogx3-abort" class="ogx3-btn">Przerwij lot</button>
         </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
+          <button id="ogx3-save" class="ogx3-btn" style="background:#7a1e1e;font-weight:bold">RATUJ FLOTĘ TERAZ</button>
+          <button id="ogx3-home" class="ogx3-btn">WRÓĆ NA BAZĘ</button>
+        </div>
         <div style="margin-top:6px;opacity:.7;font-size:11px">ntfy: <span id="ogx3-topic"></span></div>
         <div style="margin-top:6px;display:flex;justify-content:space-between"><b>Log</b><span><button id="ogx3-copy" class="ogx3-btn">Copy</button> <button id="ogx3-clear" class="ogx3-btn">Clear</button></span></div>
         <div id="ogx3-log" style="max-height:38vh;overflow:auto;font:11px/1.3 ui-monospace,monospace;margin-top:4px"></div>
@@ -1132,6 +1136,36 @@
       $("ogx3-report").onclick = () => { Calib.collect(); const r = Calib.report(); navigator.clipboard?.writeText(r).then(() => log("[KALIBRACJA] raport skopiowany do schowka — wklej go Claude'owi.", "success"), () => log(r, "info")); };
       $("ogx3-pushtest").onclick = () => Notifier.push("Test OGameX 3", "Powiadomienia działają. Temat: " + Notifier.topic(), "default", "white_check_mark");
       $("ogx3-abort").onclick = () => Fly.abort("operator");
+      // Ręczna dźwignia na wypadek, gdy bot NIE WIDZI ataku (ślepy pasek, nieznany
+      // markup) albo operator zwyczajnie wie lepiej. Używa tej samej decyzji co
+      // automat — podstawiamy wirtualne zagrożenie w ciało, gdzie stoi flota.
+      $("ogx3-save").onclick = async () => {
+        const s0 = Situation.load(); const a0 = s0.active;
+        if (!a0) return alert("Nie widzę aktywnej planety — otwórz przegląd i spróbuj ponownie.");
+        const f = Situation.fleetAt(s0, a0.key, Date.now());
+        if (!f) return alert(`Nie widzę floty na [${a0.key}] — wejdź raz na zakładkę Fleet, żeby bot odczytał hangar.`);
+        const virt = JSON.parse(JSON.stringify(s0));
+        virt.threats = [{ id: "manual", dst: a0.key, dstBody: f.body, arriveAt: Date.now() + 5 * 60e3, attack: true, spy: false, seenAt: 0, source: "operator", type: "ATTACK" }];
+        const { actions } = decide(virt, CFG, Date.now());
+        const act = actions.find(x => x.kind === "fly");
+        if (!act) return alert("Nie mam dokąd uciec (jedyna kolonia albo wszystko atakowane). Zobacz log.");
+        log(`[OPERATOR] ręczny ratunek: ${act.why}`, "warn");
+        if (Fly.start({ ...act, why: "RĘCZNY ratunek operatora" })) { await Fly.tick(); }
+      };
+      $("ogx3-home").onclick = async () => {
+        const s0 = Situation.load();
+        const f = (s0.flights || []).find(x => x.phase === "launched" || x.phase === "recall_failed");
+        if (f) { log(`[OPERATOR] ręczny zawrót lotu [${f.fromKey}]→[${f.toKey}]`, "warn"); await Fly.recall(f); return; }
+        const a0 = s0.active;
+        const home = a0 && (s0.pairs || {})[a0.key];
+        const fleet = a0 ? Situation.fleetAt(s0, a0.key, Date.now()) : null;
+        if (home && home.hasMoon && fleet && fleet.body === "planet") {
+          log("[OPERATOR] ręczny powrót planeta → księżyc", "warn");
+          if (Fly.start({ kind: "home", fromKey: a0.key, fromBody: "planet", toKey: a0.key, toBody: "moon", why: "RĘCZNY powrót na księżyc", speed: 100, home: true })) await Fly.tick();
+          return;
+        }
+        alert("Nie widzę lotu do zawrócenia ani floty na planecie pary z księżycem. Sprawdź panel — pole „Loty”.");
+      };
       $("ogx3-copy").onclick = () => { const t = logEntries.map(e => `[${e.time}] [${e.type.toUpperCase()}] ${e.msg}`).join("\n"); navigator.clipboard?.writeText(t); };
       $("ogx3-clear").onclick = () => { logEntries = []; Store.set("log", []); this.renderLog(); };
       this.renderStatus(); this.renderLog();
