@@ -192,7 +192,7 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
   check("rekonesans stoi przy zagrożeniu", /threats[\s\S]{0,80}?arriveAt > now\)\) return false/.test(recon));
   check("rekonesans stoi, gdy lot jest w powietrzu", /phase === "launched"\)\) return false/.test(recon));
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
-  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{ if \(!\(await Recon\.tick\(s\)\)\) await Expo\.tick\(s\); \}/.test(src));
+  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{ if \(!\(await Recon\.tick\(s\)\)/.test(src));
   check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
 }
 
@@ -257,8 +257,8 @@ console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
 
 console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
 {
-  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition"\) \{[\s\S]{0,400}?s\.flights\.push/.test(src), "brak wyłączenia expedition z flights");
-  check("ekonomia woła się po obronie i rekonesansie", /if \(!\(await Recon\.tick\(s\)\)\) await Expo\.tick\(s\)/.test(src));
+  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid"\) \{[\s\S]{0,400}?s\.flights\.push/.test(src), "brak wyłączenia expedition z flights");
+  check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\)\) await Aster\.tick\(s\)/.test(src));
   check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
 }
 
@@ -304,6 +304,27 @@ console.log("── 22. HUMANIZER: przerwy tylko dla ekonomii (lekcja A8 z 2.x) 
   check("ekspedycje pytają o przerwę i noc", /Human\.economyAllowed\(s\)/.test(src));
   const hum = src.slice(src.indexOf("const Human = {"));
   check("noc wyłącza ekonomię (flota i tak na FS)", /economyAtNight[\s\S]{0,120}?night[\s\S]{0,60}?active/.test(hum));
+}
+
+console.log("── 23. MINING ASTEROID (v3.5.0) ──");
+{
+  const parse = new Function("html", bodyOf("parseRanges(html) {"));
+  const r = parse("<div>[3:31:1] [3:51:9] [3:105:1] [3:125:9] [4:10:1] [9:20:2]</div>");
+  check("zakresy parsowane parami, tylko w tej samej galaktyce", r.length === 2 && r[0].galaxy === 3 && r[0].startSystem === 31 && r[0].endSystem === 51, JSON.stringify(r));
+  const st = { ranges: [{ galaxy: 3, startSystem: 10, endSystem: 12 }, { galaxy: 4, startSystem: 5, endSystem: 5 }], idx: 0, sys: null };
+  const next = new Function("st", bodyOf("nextSystem(st) {"));
+  const adv = new Function("st", bodyOf("advance(st) {"));
+  check("skan startuje od początku zakresu", next(st).system === 10);
+  let cur = { ...st, sys: 12 };
+  check("po końcu zakresu przechodzimy do następnego", adv(cur).idx === 1 && adv(cur).sys === null);
+  check("w środku zakresu idziemy o jeden system dalej", adv({ ...st, sys: 10 }).sys === 11);
+  const asterMod = src.slice(src.indexOf("const Aster = {"));
+  check("mining stoi przy alarmie", /threats \|\| \[\]\)\.some\(t => t\.arriveAt > Date\.now\(\)\)\) return false/.test(asterMod));
+  check("mining pyta humanizera", /Human\.economyAllowed\(s\)/.test(asterMod));
+  check("bez minerów w hangarze nie skanujemy (zero jałowej nawigacji)", /brak minerów w hangarze/.test(asterMod));
+  check("asteroida znikająca za chwilę pomijana (minTtlSec)", /hit\.ttl < min/.test(asterMod));
+  check("lot minerów nie trafia do flights (nie blokuje obrony)", /m\.kind !== "expedition" && m\.kind !== "asteroid"/.test(src));
+  check("misja ASTEROID_MINING wybierana jawnie na kroku 3", /"ASTEROID_MINING", "ASTEROID"/.test(src));
 }
 
 console.log("");

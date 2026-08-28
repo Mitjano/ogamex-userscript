@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.4.0
+// @version      3.5.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.4.0";
+  const VERSION = "3.5.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -111,6 +111,7 @@
     // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
     fs: { enabled: false, startHour: 23, endHour: 7, speedPct: 10, target: null },
     // ── EKONOMIA (etap 2) ──
+    aster: { enabled: false, scanGapSec: 6, minTtlSec: 300, launchFrom: null },
     expo: {
       enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
       waves: 1,             // podział floty na fale (start uni: 1; przy dużej flocie 8-14)
@@ -503,16 +504,120 @@
     },
   };
 
+  // ═══ MINING ASTEROID (specyfika tego forka: pozycja 17) ═════════════════
+  // Zakresy poszukiwań przychodzą z /galaxy/Partial_AsteroidLocation (modal
+  // „Find asteroids"), a sama asteroida żyje krótko (data-asteroid-disappear),
+  // więc liczy się cykl: skanuj → znajdź → wyślij minery, zanim zniknie.
+  // Parsery przeniesione z 2.x bez zmian logiki.
+  const Aster = {
+    RANGES_URL: "/galaxy/Partial_AsteroidLocation",
+    st() { return Store.get("aster", { ranges: [], rangesAt: 0, idx: 0, sys: null, lastScanAt: 0, sentAt: 0, sentTo: null }) || {}; },
+    save(v) { Store.set("aster", v); },
+    parseRanges(html) {
+      const coords = []; const re = /\[(\d+):(\d+):(\d+)\]/g; let m;
+      while ((m = re.exec(html)) !== null) coords.push({ galaxy: +m[1], system: +m[2] });
+      const out = [];
+      for (let i = 0; i + 1 < coords.length; i += 2) {
+        const a = coords[i], b = coords[i + 1];
+        if (a.galaxy === b.galaxy) out.push({ galaxy: a.galaxy, startSystem: Math.min(a.system, b.system), endSystem: Math.max(a.system, b.system) });
+      }
+      return out.sort((x, y) => x.galaxy - y.galaxy || x.startSystem - y.startSystem);
+    },
+    async fetchRanges() {
+      try {
+        const r = await fetchT(this.RANGES_URL, { headers: { "X-Requested-With": "XMLHttpRequest", Accept: "*/*" }, credentials: "same-origin" });
+        if (!r.ok) { log(`[ASTER] zakresy: HTTP ${r.status}`, "warn"); return null; }
+        const html = await r.text();
+        if (looksLoggedOut(r, html)) { Session.lost(); return null; }
+        if (!/galaxy-asteroid-modal|asteroid-modal-desc|playerAste/i.test(html)) { log("[ASTER] odpowiedź to nie modal asteroid — pomijam.", "warn"); return null; }
+        const ranges = this.parseRanges(html);
+        log(ranges.length ? `[ASTER] zakresy: ${ranges.map(x => `[${x.galaxy}:${x.startSystem}-${x.endSystem}]`).join(", ")}` : "[ASTER] brak zakresów (zbadaj technologię / brak wyników).", "info");
+        return ranges;
+      } catch (e) { log(`[ASTER] zakresy: ${e.message}`, "warn"); return null; }
+    },
+    // Wiersz 17 aktualnej strony galaktyki → { fleetUrl, ttl } albo null.
+    readRow17() {
+      for (const item of document.querySelectorAll(".galaxy-item")) {
+        const idx = item.querySelector(".planet-index");
+        if (!idx || idx.textContent.trim() !== "17") continue;
+        const ttlEl = item.querySelector("[data-asteroid-disappear]");
+        const ttl = ttlEl ? (parseInt(ttlEl.getAttribute("data-asteroid-disappear") || "0", 10) || 0) : 0;
+        const link = item.querySelector("a.btn-asteroid, a[href*='mission=12']");
+        if (link) return { fleetUrl: link.getAttribute("href") || "", ttl };
+        if (ttl > 0) { const um = location.href.match(/[?&]x=(\d+)[\s\S]*?[?&]y=(\d+)/); return um ? { fleetUrl: `/fleet?x=${um[1]}&y=${um[2]}&z=17&mission=12`, ttl } : null; }
+        return null;   // wiersz jest, asteroidy nie ma („Find asteroids")
+      }
+      return null;
+    },
+    nextSystem(st) {
+      const rs = st.ranges || []; if (!rs.length) return null;
+      const r = rs[(st.idx || 0) % rs.length];
+      const sys = (st.sys && st.sys >= r.startSystem && st.sys <= r.endSystem) ? st.sys : r.startSystem;
+      return { galaxy: r.galaxy, system: sys, range: r };
+    },
+    advance(st) {
+      const rs = st.ranges || []; if (!rs.length) return st;
+      const r = rs[(st.idx || 0) % rs.length];
+      const nx = (st.sys || r.startSystem) + 1;
+      if (nx > r.endSystem) return { ...st, idx: ((st.idx || 0) + 1) % rs.length, sys: null };
+      return { ...st, sys: nx };
+    },
+    async tick(s) {
+      if (!CFG.aster.enabled || Fly.mission()) return false;
+      const why = Human.economyAllowed(s);
+      if (why) { if (!Once.said("aster|" + why.slice(0, 12), 10 * 60e3)) log(`[ASTER] wstrzymane: ${why}`, "info"); return false; }
+      if ((s.threats || []).some(t => t.arriveAt > Date.now())) return false;
+      let st = this.st();
+      const now = Date.now();
+      if (st.sentAt && now - st.sentAt < 5 * 60e3) return false;                 // po wysyłce daj lot rozpocząć
+      if (now - (st.lastScanAt || 0) < (CFG.aster.scanGapSec || 6) * 1000) return false;
+      // minery muszą być w hangarze bazy
+      const homeKey = CFG.aster.launchFrom ? key(CFG.aster.launchFrom) : (s.active && s.active.key);
+      const hm = homeKey ? (s.hangars[`${homeKey}|moon`] || s.hangars[`${homeKey}|planet`]) : null;
+      const miners = hm ? (hm.ships || []).find(x => String(x.type).toUpperCase() === "ASTEROID_MINER") : null;
+      if (!miners || miners.qty <= 0) { if (!Once.said("aster|nominers", 15 * 60e3)) log("[ASTER] brak minerów w hangarze bazy (albo są w locie) — nie skanuję.", "info"); return false; }
+      if (!(st.ranges || []).length || now - (st.rangesAt || 0) > 30 * 60e3) {
+        const r = await this.fetchRanges();
+        if (!r) return false;
+        st = { ...st, ranges: r, rangesAt: now, idx: 0, sys: null };
+        this.save(st);
+        if (!r.length) return false;
+      }
+      // jesteśmy na stronie galaktyki skanowanego układu? sprawdź wiersz 17
+      const target = this.nextSystem(st);
+      if (!target) return false;
+      const onThat = page() === "galaxy" && new RegExp(`[?&]x=${target.galaxy}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${target.system}(?:&|$)`).test(location.search);
+      if (onThat) {
+        const hit = this.readRow17();
+        st = { ...this.advance(st), lastScanAt: now };
+        if (hit && hit.fleetUrl) {
+          const min = Math.max(60, CFG.aster.minTtlSec || 300);
+          if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${target.galaxy}:${target.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return false; }
+          log(`[ASTER] ZNALEZIONA asteroida [${target.galaxy}:${target.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${miners.qty.toLocaleString("pl-PL")} minerów.`, "success");
+          this.save({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` });
+          return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
+            toKey: `${target.galaxy}:${target.system}:17`, toBody: "planet", why: `mining asteroidy [${target.galaxy}:${target.system}:17]`,
+            speed: 100, plan: [{ type: "ASTEROID_MINER", qty: miners.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl });
+        }
+        this.save(st);
+        return false;
+      }
+      this.save({ ...st, lastScanAt: now });
+      location.replace(`/galaxy?x=${target.galaxy}&y=${target.system}`);
+      return true;
+    },
+  };
+
   // ═══ Fly — jeden wykonawca lotu ════════════════════════════════════════
   // Misja w Store "mission": { kind:"fly", fromKey, fromBody, toKey, toBody, speed, step, startedAt, air, recallAt, why }
   const Fly = {
     MISSIONS: ["DEPLOY", "DEPLOYMENT", "STATION", "STATIONING"],
     mission() { return Store.get("mission", null); },
-    url(m) { const [g, sy, po] = m.toKey.split(":"); return `/fleet?x=${g}&y=${sy}&z=${po}${m.missionId ? "&mission=" + m.missionId : ""}`; },
+    url(m) { if (m.directUrl) return m.directUrl; const [g, sy, po] = m.toKey.split(":"); return `/fleet?x=${g}&y=${sy}&z=${po}${m.missionId ? "&mission=" + m.missionId : ""}`; },
     start(a) {
       if (this.mission()) return false;
       Store.set("mission", { ...a, step: "switch", startedAt: Date.now() });
-      if (a.kind !== "expedition") Journal.add("RATUNEK", `Start lotu: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody} (${a.why})`);
+      if (a.kind !== "expedition" && a.kind !== "asteroid") Journal.add("RATUNEK", `Start lotu: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody} (${a.why})`);
       log(`[LOT] ${a.why}: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody}, ${a.speed}%`, "warn");
       return true;
     },
@@ -599,7 +704,7 @@
       const t1 = Date.now(); while (Date.now() - t1 < 8000 && !this.findButton("Send fleet")) await sleep(400);
       const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
       const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
-      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : this.MISSIONS;
+      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : m.missionType === "ASTEROID" ? ["ASTEROID_MINING", "ASTEROID"] : this.MISSIONS;
       let picked = null; for (const w of wanted) { picked = missions.find(x => nameOf(x).includes(w)); if (picked) break; }
       if (!picked) { log(`[LOT DOM] brak misji ${wanted[0]}. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error"); return this.abort(`brak misji ${wanted[0]}`); }
       picked.click(); await sleep(jitter(400, 800));
@@ -638,13 +743,14 @@
       // v3.2.0: TYLKO loty obronne trafiają do `flights`. Ekspedycja tam wpisana
       // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek
       // — dokładnie ten rodzaj sprzężenia, przez który 2.x gubił flotę.
-      if (m.kind !== "expedition") {
+      if (m.kind !== "expedition" && m.kind !== "asteroid") {
         s.flights = (s.flights || []).filter(f => f.fromKey !== m.fromKey);
         s.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0 });
       }
       Situation.save(s);
       Store.del("mission");
       if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${loaded.join(", ")} → [${m.toKey}]`, "success");
+      else if (m.kind === "asteroid") log(`[ASTER] minery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${loaded.length} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
       if (okUrl) location.replace("/");
     },
@@ -823,7 +929,7 @@
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") { if (Fly.start(a)) { await Fly.tick(); } break; }
       }
-      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) { if (!(await Recon.tick(s))) await Expo.tick(s); }
+      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) { if (!(await Recon.tick(s)) && !(await Expo.tick(s))) await Aster.tick(s); }
     } catch (e) { log(`[OBRONA] błąd pętli: ${e.message}`, "error"); }
     finally { running = false; try { UI.renderStatus(); } catch {} }
   }
@@ -855,6 +961,9 @@
           <b>Fleet Save nocny</b> <button id="ogx3-fs" class="ogx3-btn"></button> od <input id="ogx3-fs-a" style="width:26px" />:00 do <input id="ogx3-fs-b" style="width:26px" />:00 · <span id="ogx3-fs-st" style="opacity:.75"></span>
         </div>
         <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
+          <b>Mining asteroid</b> <button id="ogx3-aster" class="ogx3-btn"></button> <span id="ogx3-aster-st" style="opacity:.75"></span>
+        </div>
+        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
           <b>Ekspedycje</b> <button id="ogx3-expo" class="ogx3-btn"></button> <button id="ogx3-disc" class="ogx3-btn"></button><br>
           fale <input id="ogx3-waves" style="width:34px" /> · rezerwa slotów <input id="ogx3-slotres" style="width:30px" /> · <span id="ogx3-expo-st" style="opacity:.75"></span>
         </div>
@@ -877,6 +986,7 @@
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
       $("ogx3-recon").onclick = () => { CFG.recon = !CFG.recon; saveCfg(); log(`Rekonesans hangarów ${CFG.recon ? "ON" : "OFF — bot nie będzie wiedział, gdzie stoi flota"}`, CFG.recon ? "info" : "warn"); this.renderStatus(); };
+      $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
       $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
@@ -900,6 +1010,8 @@
       if (!this.el) return; const $ = (id) => document.getElementById(id);
       $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#1e6b3a" : "#6b1e1e";
       $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (auto-ratunek OFF)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
+      $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "#1c2a44";
+      { const a0 = Store.get("aster", {}) || {}; $("ogx3-aster-st").textContent = CFG.aster.enabled ? `zakresy: ${(a0.ranges || []).length}${a0.sentTo ? ` · ostatnio: [${a0.sentTo}]` : ""}` : ""; }
       $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "#1c2a44";
       { const n = nightWindow(CFG.fs, new Date()); $("ogx3-fs-st").textContent = CFG.fs.enabled ? (n.active ? `NOC — flota powinna być w powietrzu, zawrót ${new Date(n.endsAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : `dzień (${n.nowHM})`) : "wyłączony"; }
       $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "#1c2a44";
