@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.14.0
+// @version      3.15.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.14.0";
+  const VERSION = "3.15.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -139,7 +139,22 @@
     // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
     fs: { enabled: false, startHour: 23, endHour: 7, speedPct: 10, target: null },
     // ── EKONOMIA (etap 2) ──
-    aster: { enabled: false, scanGapSec: 6, minTtlSec: 300, launchFrom: null },
+    // v3.15.0: system minerów przeniesiony z Atheny. 3.0 wysyłał WSZYSTKIE minery
+    // na jedną asteroidę i czekał na powrót — a gra ogranicza urobek pojemnością
+    // ładowni floty, więc nadmiar minerów leci pusty, zamiast obrabiać kolejne
+    // asteroidy (fork wystawia ich 3–6/h). Stąd: dobór wielkości floty pod
+    // spodziewany urobek + loty równoległe resztą minerów.
+    aster: { enabled: false, scanGapSec: 6, minTtlSec: 300, launchFrom: null,
+      cargoPerMiner: 0,      // 0 = ucz się z formularza floty („Cargo space")
+      expectedRes: 0,        // 0 = ucz się z dziennika asteroid; brak danych = leci całość
+      buffer: 1.15,          // zapas na asteroidy większe od typowej
+      percentile: 85,        // rozmiar liczony z percentyla próbek, nie ze średniej
+      sampleSize: 20,
+      minMiners: 1,
+      parallel: true,        // resztą minerów obrabiaj kolejne asteroidy, nie czekaj na powrót
+      partialRatio: 0.5,     // lot mniejszy niż połowa docelowego = czekamy na powroty
+      slotReserve: 1,        // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
+      gapSec: 20 },          // odstęp między kolejnymi wysyłkami minerów
     // v3.13.0: bonus online (zielony przycisk w menu gry) = antymateria + PUNKTY AKADEMII.
     // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
     // potwierdził 28.08, że na Genesis działa tak samo). Nie rusza flotą, więc domyślnie ON.
@@ -634,7 +649,7 @@
   // ekonomii; obrona i rekonesans nie są liczone ani ograniczane.
   const NavRate = {
     note() { const a = (Store.get("nav_log", []) || []).filter(t => Date.now() - t < 3600e3); a.push(Date.now()); Store.set("nav_log", a); },
-    over() { const a = (Store.get("nav_log", []) || []).filter(t => Date.now() - t < 3600e3); return a.length >= (CFG.maxNavPerHour || 240); },
+    over() { const a = (Store.get("nav_log", []) || []).filter(t => Date.now() - t < 3600e3); return a.length >= (CFG.maxNavPerHour ?? 240); },
   };
 
   // ═══ HUMANIZER (tylko ekonomia) ═════════════════════════════════════════
@@ -1037,6 +1052,82 @@
       }
       return null;
     },
+    // Dziennik asteroid (2.x: /home/Partial_AsteroidJournal). Uczymy się, ILE
+    // asteroida daje — rozmiar floty liczymy z percentyla próbek, nie ze średniej,
+    // żeby te większe nie zostawały niedowiezione. Nieznany markup = zrzut, nie zgadywanie.
+    JOURNAL_URL: "/home/Partial_AsteroidJournal",
+    async learnYield(st, now) {
+      if (CFG.aster.expectedRes) return st;                       // ustawione ręcznie
+      if (now - (st.yieldsAt || 0) < 30 * 60e3) return st;
+      try {
+        const r = await fetchT(this.JOURNAL_URL, { headers: { "X-Requested-With": "XMLHttpRequest", Accept: "*/*" }, credentials: "same-origin" });
+        if (!r.ok) return { ...st, yieldsAt: now };
+        const html = await r.text();
+        if (looksLoggedOut(r, html)) { Session.lost(); return st; }
+        const rows = html.split(/<\/tr>|<\/li>|<\/div>\s*<div/i);
+        const out = [];
+        for (const row of rows) {
+          const nums = (row.replace(/<[^>]+>/g, " ").match(/\d{1,3}(?:[ .,]\d{3})+|\d{4,}/g) || [])
+            .map(x => parseInt(x.replace(/[^\d]/g, ""), 10)).filter(n => n >= 1000);
+          if (nums.length) out.push(nums.reduce((a, b) => a + b, 0));
+        }
+        if (!out.length) {
+          if (!Once.said("aster_journal_dom", 24 * 3600e3)) log(`[ASTER DOM] nie rozpoznaję dziennika asteroid — nie umiem oszacować urobku, więc lecą wszystkie minery. Markup: ${html.replace(/\s+/g, " ").slice(0, 1200)}`, "warn");
+          return { ...st, yieldsAt: now };
+        }
+        const ys = out.slice(0, CFG.aster.sampleSize || 20);
+        log(`[ASTER] dziennik: ${ys.length} raportów, mediana ${Math.round(ys.slice().sort((a, b) => a - b)[Math.floor(ys.length / 2)]).toLocaleString("pl-PL")} surowców.`, "info");
+        return { ...st, yields: ys, yieldsAt: now };
+      } catch (e) { return { ...st, yieldsAt: now }; }
+    },
+    expected(st) {
+      if (CFG.aster.expectedRes) return CFG.aster.expectedRes;
+      const ys = (st.yields || []).slice().sort((a, b) => a - b);
+      if (!ys.length) return 0;
+      const i = Math.min(ys.length - 1, Math.floor((ys.length - 1) * (CFG.aster.percentile || 85) / 100));
+      return ys[i];
+    },
+    // Ile minerów wysłać: tyle, ile uniesie spodziewany urobek (+ zapas).
+    // Brak danych (pojemność albo urobek) = zachowanie sprzed 3.15: leci całość.
+    size(st, available) {
+      const cargo = CFG.aster.cargoPerMiner || st.cargo || 0;
+      const exp = this.expected(st);
+      if (!cargo || !exp) return { qty: available, why: "brak danych o ładowni/urobku — lecą wszystkie" };
+      const need = Math.ceil(exp * (CFG.aster.buffer || 1.15) / cargo);
+      const qty = Math.max(CFG.aster.minMiners || 1, Math.min(available, need));
+      return { qty, need, why: `urobek ~${exp.toLocaleString("pl-PL")} × zapas ${CFG.aster.buffer} ÷ ${cargo.toLocaleString("pl-PL")}/miner = ${need}` };
+    },
+    // Ile slotów floty wolno jeszcze zająć (0 = żadnego).
+    freeSlots(s) {
+      const f = s.slots && s.slots.fleet;
+      if (!f || !f.total) return 1;                                // brak wiedzy: pozwól na jeden
+      return Math.max(0, f.total - f.used - (CFG.aster.slotReserve || 0));
+    },
+    // Pojemność ładowni JEDNEGO minera — bez niej nie da się dobrać wielkości floty
+    // pod urobek. Formularz pokazuje „Cargo space X / Y" tylko na jednym ze swoich
+    // kroków, więc wołamy to na każdym: czego nie złapie krok 1, złapie krok 2 lub 3.
+    learnCargo(m) {
+      if (CFG.aster.cargoPerMiner) return;
+      const st0 = Store.get("aster", {}) || {};
+      if (st0.cargo) return;
+      try {
+        const t = (document.querySelector("#content, .content, form") || document.body).textContent || "";
+        // „Cargo space 0 / 1.000.000" — pojemność jest po UKOŚNIKU; pierwsza liczba to
+        // ile już załadowano (zwykle 0), więc czytanie jej dawało cap=0 i cichy powrót.
+        const cm = t.match(/cargo\s*space[^\d]{0,20}[\d .,]*\/\s*([\d .,]+)/i)
+          || t.match(/ładown[^\d]{0,20}[\d .,]*\/\s*([\d .,]+)/i)
+          || t.match(/cargo\s*space[^\d]{0,20}([\d .,]+)/i)
+          || t.match(/ładown[^\d]{0,20}([\d .,]+)/i);
+        const qty = (m.plan || []).reduce((a, x) => a + (x.qty || 0), 0);
+        if (!cm) { if (!Once.said("aster_cargo_dom", 24 * 3600e3)) log("[ASTER DOM] nie widzę pojemności ładowni na formularzu — bez tego lecą wszystkie minery. Tekst: " + t.replace(/\s+/g, " ").slice(-400), "warn"); return; }
+        const cap = parseInt(String(cm[1]).replace(/[^\d]/g, ""), 10);
+        if (!Number.isFinite(cap) || cap <= 0 || qty <= 0) return;
+        const per = Math.floor(cap / qty);
+        if (per <= 0) return;
+        st0.cargo = per; Store.set("aster", st0);
+        log("[ASTER] nauczone: 1 miner uniesie " + per.toLocaleString("pl-PL") + " surowców (" + cap.toLocaleString("pl-PL") + " na " + qty + " szt.).", "success");
+      } catch {}
+    },
     nextSystem(st) {
       const rs = st.ranges || []; if (!rs.length) return null;
       const r = rs[(st.idx || 0) % rs.length];
@@ -1057,13 +1148,25 @@
       if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
       let st = this.st();
       const now = Date.now();
-      if (st.sentAt && now - st.sentAt < 5 * 60e3) return false;                 // po wysyłce daj lot rozpocząć
-      if (now - (st.lastScanAt || 0) < (CFG.aster.scanGapSec || 6) * 1000) return false;
+      // v3.15.0: było sztywne 5 minut przerwy po każdej wysyłce — czyli jeden lot
+      // minerów na 5 min, gdy gra wystawia 3–6 asteroid na godzinę. Teraz liczy się
+      // to, co naprawdę ogranicza: wolne sloty floty i krótki odstęp między startami.
+      if (st.sentAt && now - st.sentAt < (CFG.aster.parallel ? (CFG.aster.gapSec ?? 20) : 300) * 1000) return false;
+      if (now - (st.lastScanAt || 0) < (CFG.aster.scanGapSec ?? 6) * 1000) return false;   // ?? nie ||: 0 znaczy „bez odstępu"
       // minery muszą być w hangarze bazy
       const homeKey = CFG.aster.launchFrom ? key(CFG.aster.launchFrom) : (s.active && s.active.key);
       const hm = homeKey ? (s.hangars[`${homeKey}|moon`] || s.hangars[`${homeKey}|planet`]) : null;
       const miners = hm ? (hm.ships || []).find(x => String(x.type).toUpperCase() === "ASTEROID_MINER") : null;
       if (!miners || miners.qty <= 0) { if (!Once.said("aster|nominers", 15 * 60e3)) log("[ASTER] brak minerów w hangarze bazy (albo są w locie) — nie skanuję.", "info"); return false; }
+      if (this.freeSlots(s) <= 0) { if (!Once.said("aster|slots", 10 * 60e3)) log(`[ASTER] wszystkie sloty floty zajęte (rezerwa ${CFG.aster.slotReserve}) — czekam na powroty.`, "info"); return false; }
+      st = await this.learnYield(st, now);
+      const plan = this.size(st, miners.qty);
+      // Lot mniejszy niż połowa docelowego niewiele zbierze (urobek limituje ładownia
+      // CAŁEJ floty), więc resztka czeka na powroty zamiast lecieć na pół gwizdka.
+      if (plan.need && CFG.aster.partialRatio && miners.qty < plan.need * CFG.aster.partialRatio) {
+        if (!Once.said("aster|partial", 10 * 60e3)) log(`[ASTER] w hangarze ${miners.qty} minerów, a sensowny lot to ${plan.need} — czekam na powroty (próg ${Math.round(CFG.aster.partialRatio * 100)}%).`, "info");
+        return false;
+      }
       if (!(st.ranges || []).length || now - (st.rangesAt || 0) > 30 * 60e3) {
         const r = await this.fetchRanges();
         if (!r) return false;
@@ -1081,13 +1184,13 @@
         if (hit && hit.fleetUrl) {
           const min = Math.max(60, CFG.aster.minTtlSec || 300);
           if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${target.galaxy}:${target.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return false; }
-          log(`[ASTER] ZNALEZIONA asteroida [${target.galaxy}:${target.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${miners.qty.toLocaleString("pl-PL")} minerów.`, "success");
+          log(`[ASTER] ZNALEZIONA asteroida [${target.galaxy}:${target.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${plan.qty.toLocaleString("pl-PL")} z ${miners.qty.toLocaleString("pl-PL")} minerów (${plan.why}).`, "success");
           this.save({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` });
           const astKey = `${target.galaxy}:${target.system}:17`;
           if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
           return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
             toKey: `${target.galaxy}:${target.system}:17`, toBody: "planet", why: `mining asteroidy [${target.galaxy}:${target.system}:17]`,
-            speed: 100, plan: [{ type: "ASTEROID_MINER", qty: miners.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
+            speed: 100, plan: [{ type: "ASTEROID_MINER", qty: plan.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
             ttl: hit.ttl || 0, ttlAt: now });
         }
         this.save(st);
@@ -1280,6 +1383,7 @@
       if (!loaded.length) { log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error"); return this.abort("brak pól statków"); }
       log(`[LOT] załadowano: ${loaded.join(", ")}`, "info");
       await sleep(jitter(400, 800));
+      if (m.missionType === "ASTEROID") Aster.learnCargo(m);
       if (!(await this.clickWhenEnabled("Next"))) return this.abort("Next (krok 1) martwy");
       // krok 2: cel (koordy, ciało), prędkość
       const t0 = Date.now(); while (Date.now() - t0 < 8000 && !document.getElementById("fleet2_target_x")) await sleep(400);
@@ -1324,6 +1428,7 @@
           Store.set("mission", m);
         }
       }
+      if (m.missionType === "ASTEROID") Aster.learnCargo(m);
       if (!(await this.clickWhenEnabled("Next"))) return this.abort("Next (krok 2) martwy");
       // krok 3: misja Deploy, surowce − rezerwa
       const t1 = Date.now(); while (Date.now() - t1 < 8000 && !this.findButton("Send fleet")) await sleep(400);
@@ -1374,6 +1479,7 @@
         Situation.save(sPre);
       }
       Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey });
+      if (m.missionType === "ASTEROID") Aster.learnCargo(m);
       send.click(); log("[LOT] Send fleet kliknięty.", "success");
       // potwierdzenie: URL fleetSendSuccessfully albo hangar pusty
       await sleep(jitter(3000, 4500));

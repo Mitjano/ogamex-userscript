@@ -34,7 +34,7 @@ Szerokość **232 px**, więc kończy się przed menu gry (Overview, Resources�
 | **Rekonesans** | sam chodzi na `/fleet`, żeby wiedzieć, gdzie stoi flota | nigdy przy alarmie, misji ani locie |
 | **FS nocny** | w oknie (domyślnie 23–7) wyprowadza flotę na najdalszą nieatakowaną kolonię, zawrót o świcie | atak w nocy → normalny ratunek wygrywa z FS |
 | **Ekspedycje** | fale na poz. 16, 40 min (Odkrywca) | rozmiar fali zamrożony na serię · ostatnia fala domyka hangar · limity slotów · odstęp fal |
-| **Mining** | zakresy asteroid → skan systemów → minery na poz. 17 | nie skanuje bez minerów · pomija asteroidy znikające za < 5 min |
+| **Mining** | zakresy asteroid → skan systemów → minery na poz. 17, **flota dobierana pod urobek**, resztą minerów kolejne asteroidy (loty równoległe) | nie skanuje bez minerów · pomija asteroidy znikające przed dolotem · zostawia wolne sloty (rezerwa) · lot poniżej połowy sensownej fali czeka na powroty |
 | **Złom** | recyklery na poz. 16 i pozycję bazy | recyklery nie latają na ekspedycje, więc zawsze jest czym zbierać |
 | **Bonus online** | odbiera zielony „Online bonus" z menu = antymateria + **punkty Akademii** (przeniesione z 2.x, domyślnie ON) | nie rusza flotą · nigdy przy alarmie ani w trakcie misji · odliczanie/wyszarzony przycisk = nie klika · odbiór potwierdzany po przeładowaniu |
 | **Księżyce** | stawia księżyc przy planecie bez księżyca (`/home/moonformation`) — **domyślnie OFF, bo WYDAJE metal bezpowrotnie** | sufit udziału metalu (domyślnie 25%) · średnica dobierana w dół · 3 próby na planetę na dobę · nieznany markup = zrzut do logu |

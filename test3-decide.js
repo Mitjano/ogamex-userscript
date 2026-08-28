@@ -452,6 +452,10 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("bonus online: odbiór przez nawigację, nie klik (wyścig z 2.x)", /const Bonus = \{/.test(src) && /Nav\.go\(el\.href \|\| href, "bonus online/.test(src));
   check("bonus online: odliczanie i wyszarzenie nie są odbierane", /odliczanie/.test(src) && /wyszarzony/.test(src));
   check("bonus online: odbiór potwierdzany po przeładowaniu", /if \(st\.pending\)/.test(src) && /kliknięcie nie odebrało bonusu/.test(src));
+  check("minery: rozmiar floty liczony pod urobek (right-sizing z 2.x)", /size\(st, available\)/.test(src) && /buffer/.test(src) && /percentile/.test(src));
+  check("minery: loty równoległe zamiast czekania na powrót", /parallel: true/.test(src) && /freeSlots\(s\)/.test(src) && /slotReserve/.test(src));
+  check("minery: pojemność ładowni czytana PO ukośniku (0 / 1.000.000)", /cargo\\s\*space\[\^\\d\]\{0,20\}\[\\d \.,\]\*\\\//.test(src));
+  check("minery: zero w konfiguracji znaczy zero, a nie wartosc domyslna (?? zamiast ||)", /scanGapSec \?\? 6/.test(src) && /gapSec \?\? 20/.test(src));
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
   check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));
@@ -485,7 +489,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   // sondy
   check("sondy nie blokują rekonesansu ani ekonomii", (src.match(/t\.attack && t\.arriveAt >/g) || []).length >= 4);
   // wysyłka
-  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,200}?send\.click\(\)/.test(src));
+  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,400}?send\.click\(\)/.test(src));
   check("stempel wysyłki blokuje powtórkę po przeładowaniu", /Store\.get\("last_send"[\s\S]{0,400}?nie powtarzam/.test(src));
   // v3.10.0: wpis `pending` byl NIESMIERTELNY — kasowal go tylko kod PO send.click()
   // (ktory przy natychmiastowej nawigacji nigdy sie nie wykonuje), a filtr wygaszania

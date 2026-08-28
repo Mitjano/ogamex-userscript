@@ -50,6 +50,8 @@ class Game {
     this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
     this.debris = false;      // czy przy bazie lezy zlom
     this.loggedOut = false;   // gra oddaje strone logowania
+    this.cargoPerMiner = 25_000;     // ile uniesie JEDEN miner (bot ma się tego nauczyć)
+    this.asteroidYield = 500_000;    // typowy urobek asteroidy w dzienniku
     this.metal = 3_800_000_000;      // pasek surowców (moduł księżyców liczy z niego budżet)
     this.moonKmCost = 300_000;       // koszt metalu za 1 km średnicy (atrapa cennika forka)
     this.bonus = false;       // zielony „Online bonus" w menu (antymateria + punkty Akademii)
@@ -121,6 +123,7 @@ class Game {
         <a data-planet-type="1" class="planet-icon">Planet</a><a data-planet-type="2" class="moon-icon">Moon</a><a data-planet-type="3">Debris</a>
       </div>
       ${this.noSpeeds ? "" : '<div class="speeds"><a>10</a><a>50</a><a>100</a></div>'}
+      <div>Cargo space: 0 / ${(Object.entries(this.formShips).reduce((a, [ty, q]) => a + (ty === "ASTEROID_MINER" ? q * this.cargoPerMiner : q * 5000), 0)).toLocaleString("de-DE")}</div>
       <div>Duration of flight (one way): ${((sec) => sec >= 3600
         ? `${String(Math.floor(sec / 3600)).padStart(2, "0")}:${String(Math.floor(sec % 3600 / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`
         : `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`)(Math.round(this.flightSec * 100 / (this.formSpeed || 100)))}</div>
@@ -184,6 +187,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   w.fetch = async (u) => ({ ok: true, redirected: !!game.loggedOut, url: game.loggedOut ? "/auth/login" : u, status: 200,
     text: async () => game.loggedOut ? game.loginHtml()
       : u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}${game.ownRowsHtml(true)}</tbody></table>`
+      : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
       : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
   const nav = (to) => {
@@ -392,6 +396,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
   return { logs: [...new Set(logs)] };
 }
 
+function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/aster|situation|mission/.test(k)) o[k.split("ogx3_")[1]] = String(v).slice(0, 300); return JSON.stringify(o, null, 1); }
 (async () => {
   console.log("\n════ E2E: PRAWDZIWY BOT NA SZTUCZNEJ GRZE ════");
 
@@ -894,6 +899,35 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     });
     await run(g3, { cfg: { ...cfg, moon: { enabled: false } }, loads: 10, ticksPerLoad: 2 });
     check("wyłączony moduł nie wydaje ani jednego metalu", !g3.moonBuilt && g3.metal === 3_800_000_000, JSON.stringify(g3.moonBuilt));
+  }
+
+  console.log("\n── 29. MINERY JAK NA ATHENIE: rozmiar floty pod urobek + loty równoległe ──");
+  {
+    // 3.0 wysyłało WSZYSTKIE minery na jedną asteroidę i czekało na powrót. Gra
+    // ogranicza urobek pojemnością ładowni floty, więc nadmiar leciał pusty zamiast
+    // obrabiać kolejne asteroidy. Tu: urobek 500 tys., miner unosi 25 tys. →
+    // sensowna fala to ceil(500k × 1,15 / 25k) = 23 minery, reszta leci dalej.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1, bonus: { enabled: false },
+      aster: { enabled: true, scanGapSec: 0, minTtlSec: 60, parallel: true, buffer: 1.15, percentile: 85, sampleSize: 20, minMiners: 1, slotReserve: 1, partialRatio: 0.5, gapSec: 0 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 100 } } });
+    g.asteroid = true; g.asteroidTtl = 3600; g.flightSec = 120;
+    // pojemność minera bot poznaje przy pierwszym locie — tu zaczynamy od stanu „już wie",
+    // żeby sprawdzić sam dobór wielkości floty (naukę sprawdza osobny warunek niżej)
+    g.store.set("genesis.ogamex.net:ogx3_aster", JSON.stringify({ cargo: 25000 }));
+    g.slots = { fleet: { used: 0, total: 8 }, expo: { used: 0, total: 6 } };
+    const { logs } = await run(g, { cfg, loads: 40, ticksPerLoad: 2 });
+    const mining = g.sent.filter(x => /17$/.test(String(x.to || "")));
+    check("wysłał FLOTĘ POD UROBEK, nie wszystkie minery", !!mining.length && mining[0].ships.ASTEROID_MINER === 23, JSON.stringify(mining.map(x => x.ships)));
+    check("resztą minerów obrobił kolejną asteroidę (lot równoległy)", mining.length >= 2, "lotów minerów: " + mining.length);
+    check("i nie przekroczył wolnych slotów floty", mining.length <= 7, "lotów: " + mining.length + " przy 8 slotach i rezerwie 1");
+
+    // nauka pojemności: bez zasianego cargo bot ma się jej nauczyć z formularza
+    const g5 = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 40 } } });
+    g5.asteroid = true; g5.asteroidTtl = 3600; g5.flightSec = 120;
+    const r5 = await run(g5, { cfg, loads: 30, ticksPerLoad: 2 });
+    check("uczy się pojemności ładowni minera z formularza floty", r5.logs.some(m => m.includes("1 miner uniesie") && m.replace(/\D/g, "").includes("25000")), r5.logs.filter(m => /ASTER/.test(m)).slice(0, 8).join(" | "));
+    if (process.env.DIAG29) { console.log("   STAN ASTER:", game_store_dump(g)); console.log("   WSZYSTKIE LOGI:"); logs.slice(0, 25).forEach(m => console.log("     ", m.slice(0, 160))); console.log("   NAWIGACJE:", g.navigations.slice(0, 10)); }
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
