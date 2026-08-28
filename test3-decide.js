@@ -380,7 +380,7 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("cel typu ZŁOM to data-planet-type=3", /m\.toBody === "debris" \? "3"/.test(src));
   check("misja COLLECT/HARVEST wybierana jawnie", /"COLLECT", "HARVEST", "RECYCL"/.test(src));
   check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
-  check("kolejność ekonomii: rekonesans → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  check("kolejność ekonomii: rekonesans → bonus → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
 }
 
 console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznanej kolonii ──");
@@ -444,6 +444,9 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("nadzorca milczy, gdy bot jest WYŁĄCZONY ręcznie", /function watchdog\(\) \{\s*\n\s*if \(!CFG\.enabled\) return;/.test(src));
   check("[TEMPO] liczy przeładowania BOTA, nie kliknięcia operatora", /const byBot = loads\.filter/.test(src) && /byBot >= 4/.test(src));
   check("rekonesans nie wyrywa strony grającemu (ale nie dłużej niż 5 min)", /manual_at/.test(src) && /now - manual < 45e3 && now - \(st\.at \|\| 0\) < 5 \* 60e3/.test(src));
+  check("bonus online: odbiór przez nawigację, nie klik (wyścig z 2.x)", /const Bonus = \{/.test(src) && /Nav\.go\(el\.href \|\| href, "bonus online/.test(src));
+  check("bonus online: odliczanie i wyszarzenie nie są odbierane", /odliczanie/.test(src) && /wyszarzony/.test(src));
+  check("bonus online: odbiór potwierdzany po przeładowaniu", /if \(st\.pending\)/.test(src) && /kliknięcie nie odebrało bonusu/.test(src));
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
   check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));

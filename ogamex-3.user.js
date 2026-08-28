@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.12.1
+// @version      3.13.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.12.1";
+  const VERSION = "3.13.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -140,6 +140,10 @@
     fs: { enabled: false, startHour: 23, endHour: 7, speedPct: 10, target: null },
     // ── EKONOMIA (etap 2) ──
     aster: { enabled: false, scanGapSec: 6, minTtlSec: 300, launchFrom: null },
+    // v3.13.0: bonus online (zielony przycisk w menu gry) = antymateria + PUNKTY AKADEMII.
+    // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
+    // potwierdził 28.08, że na Genesis działa tak samo). Nie rusza flotą, więc domyślnie ON.
+    bonus: { enabled: true, gapMin: 2, retryMin: 15 },
     debris: { enabled: false, everyMin: 20 },   // recyklery po złom (poz. 16 i pozycja bazy)
     expo: {
       enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
@@ -671,6 +675,73 @@
       const norm = (m) => ((m % 1440) + 1440) % 1440;
       const a = norm(q.startHour * 60 + j.a), b = norm(q.endHour * 60 + j.b);
       return a < b ? (nowMin >= a && nowMin < b) : (nowMin >= a || nowMin < b);
+    },
+  };
+
+  // ═══ BONUS ONLINE (antymateria + punkty Akademii) ═══════════════════════
+  // Fork stawia w menu link <a href="/home/onlinebonus" id="btn-online-bonus">.
+  // Odbiór = zwykła NAWIGACJA pod ten adres (2.x v2.17.1: klik przegrywał wyścig
+  // z innymi modułami, nawigacja jest atomowa). Trzy pułapki z Atheny, których
+  // pilnujemy: napis z odliczaniem („Online bonus 04:12") to NIE jest bonus do
+  // odbioru, wyszarzony wpis też nie, a klik trzeba potwierdzić na następnej
+  // stronie — inaczej bot „odbiera" w kółko ten sam, nieklikalny przycisk.
+  const Bonus = {
+    st() { const d = { claims: [], nextTry: 0, pending: 0, fails: 0 }; return { ...d, ...(Store.get("bonus", d) || d) }; },
+    save(v) { Store.set("bonus", v); },
+    today(st) { const t0 = new Date(); t0.setHours(0, 0, 0, 0); return (st.claims || []).filter(t => t >= t0.getTime()).length; },
+    find() {
+      const own = (e) => e.closest("#ogx3-panel");
+      const byId = document.getElementById("btn-online-bonus");
+      if (byId && !own(byId)) return byId;
+      const byHref = [...document.querySelectorAll("a[href*='onlinebonus'], a[href*='online-bonus']")].find(e => !own(e));
+      if (byHref) return byHref;
+      return [...document.querySelectorAll("a, button")].find(e => !own(e) && e.offsetParent !== null && /^(online bonus|bonus online)\b/i.test((e.textContent || "").replace(/\s+/g, " ").trim())) || null;
+    },
+    claimable(el) {
+      if (!el) return { ok: false, why: "brak przycisku" };
+      const label = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (/\d{1,2}:\d{2}/.test(label)) return { ok: false, why: `odliczanie („${label}")`, wait: 5 * 60e3 };
+      if (el.classList.contains("disabled") || el.getAttribute("aria-disabled") === "true" || el.disabled) return { ok: false, why: "wyszarzony", wait: 10 * 60e3 };
+      return { ok: true, label };
+    },
+    async tick(s) {
+      if (!CFG.bonus.enabled || Fly.mission()) return false;
+      const now = Date.now();
+      const st = this.st();
+      // ── potwierdzenie poprzedniego odbioru (stempel przeżył nawigację) ──
+      if (st.pending) {
+        const gone = this.claimable(this.find());
+        if (!gone.ok) {   // przycisk zniknął albo pokazuje odliczanie = bonus wzięty
+          st.claims = [...(st.claims || []).filter(t => now - t < 48 * 3600e3), now];
+          st.pending = 0; st.fails = 0; st.nextTry = now + Math.max(1, CFG.bonus.gapMin) * 60e3;
+          this.save(st);
+          log(`[BONUS] odebrany — antymateria + punkty Akademii. Dziś: ${this.today(st)}.`, "success");
+          return false;
+        }
+        st.pending = 0; st.fails = (st.fails || 0) + 1;
+        st.nextTry = now + Math.max(1, CFG.bonus.retryMin) * 60e3;
+        this.save(st);
+        log(`[BONUS] kliknięcie nie odebrało bonusu (przycisk dalej aktywny, próba ${st.fails}) — wracam za ${CFG.bonus.retryMin} min.`, "warn");
+        return false;
+      }
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;   // alarm ma pierwszeństwo
+      if (now < (st.nextTry || 0)) return false;
+      const why = Human.economyAllowed(s);
+      if (why) return false;                       // przerwy i cisza nocna: konto ma spać
+      const el = this.find();
+      const c = this.claimable(el);
+      if (!c.ok) {
+        st.nextTry = now + (c.wait || 10 * 60e3); this.save(st);
+        if (!Once.said("bonus|" + c.why, 6 * 3600e3)) log(`[BONUS] nie odbieram: ${c.why}.`, "info");
+        return false;
+      }
+      if (!Once.said("bonus_markup", 24 * 3600e3)) log(`[BONUS DOM] ${el.outerHTML.replace(/\s+/g, " ").slice(0, 300)}`, "info");
+      st.pending = now; this.save(st);
+      const href = el.tagName === "A" ? (el.getAttribute("href") || "") : "";
+      log(`[BONUS] odbieram bonus online („${c.label}").`, "success");
+      if (href && href !== "#" && !/^javascript:/i.test(href)) { Nav.go(el.href || href, "bonus online (antymateria + punkty Akademii)"); return true; }
+      Nav.click(el, "bonus online (antymateria + punkty Akademii)");
+      return true;
     },
   };
 
@@ -1486,7 +1557,7 @@
       // v3.7.3 (audyt): ekonomia w WŁASNYM try — błąd w ekspedycjach/miningu/złomie
       // nie może przerwać przebiegu obrony ani wywalić pętli.
       if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) {
-        try { if (!(await Recon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
+        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
         catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
       }
       Store.set("tick_fails", 0);
@@ -1648,7 +1719,8 @@
             <div class="note" id="ogx3-fs-st"></div>
           </div></div>
           <div class="sec" data-sec="eco"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekonomia</span><span class="tail" id="ogx3-t-eco"></span></div><div class="sec-b">
-            <div class="line"><button id="ogx3-aster" class="ogx3-btn"></button><button id="ogx3-deb" class="ogx3-btn"></button></div>
+            <div class="line"><button id="ogx3-aster" class="ogx3-btn"></button><button id="ogx3-deb" class="ogx3-btn"></button><button id="ogx3-bonus" class="ogx3-btn"></button></div>
+            <div class="note" id="ogx3-bonus-st"></div>
             <div class="note" id="ogx3-aster-st"></div>
           </div></div>
           <div class="sec" data-sec="jr"><div class="sec-t"><span><span class="arr">▸</span> Dziennik obrony</span><span class="tail" id="ogx3-t-jr"></span></div><div class="sec-b"><div id="ogx3-journal"></div></div></div>
@@ -1700,6 +1772,7 @@
       $("ogx3-recon").onclick = () => { CFG.recon = !CFG.recon; saveCfg(); log(`Rekonesans hangarów ${CFG.recon ? "ON" : "OFF — bot nie będzie wiedział, gdzie stoi flota"}`, CFG.recon ? "info" : "warn"); this.renderStatus(); };
       $("ogx3-deb").onclick = () => { CFG.debris.enabled = !CFG.debris.enabled; saveCfg(); log(`Zbieranie złomu ${CFG.debris.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-bonus").onclick = () => { CFG.bonus.enabled = !CFG.bonus.enabled; saveCfg(); log(`Bonus online ${CFG.bonus.enabled ? "ON — bot odbiera antymaterię i punkty Akademii" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
       $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
@@ -1784,6 +1857,8 @@
       $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`;
       $("ogx3-deb").textContent = `Złom ${CFG.debris.enabled ? "ON" : "OFF"}`; $("ogx3-deb").style.background = CFG.debris.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-bonus").textContent = `Bonus ${CFG.bonus.enabled ? "ON" : "OFF"}`; $("ogx3-bonus").style.background = CFG.bonus.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      { const b0 = Bonus.st(); $("ogx3-bonus-st").textContent = CFG.bonus.enabled ? `bonus online: dziś ${Bonus.today(b0)}${b0.claims && b0.claims.length ? ` · ostatni ${new Date(b0.claims[b0.claims.length - 1]).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""; }
       $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;

@@ -50,6 +50,8 @@ class Game {
     this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
     this.debris = false;      // czy przy bazie lezy zlom
     this.loggedOut = false;   // gra oddaje strone logowania
+    this.bonus = false;       // zielony „Online bonus" w menu (antymateria + punkty Akademii)
+    this.bonusClaims = 0;
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
     this.errorPage = false;   // gra oddaje strone bledu
   }
@@ -132,10 +134,11 @@ class Game {
       <a class="btn-continue" id="btn-submit-fleet">Send fleet</a>
     </div>`;
   }
+  bonusHtml() { return this.bonus ? `<nav id="menu"><a href="/home/onlinebonus" id="btn-online-bonus">Online bonus</a></nav>` : ""; }
   bodyHtml() {
     if (this.loggedOut) return this.loginHtml();
     if (this.errorPage) return `<div class="error-page"><h1>Error occurred</h1><p>Runtime Error — Internal Server Error</p><a href="/">Back to game</a></div>`;
-    const events = `<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}${this.ownRowsHtml(false)}</tbody></table>`;
+    const events = `${this.bonusHtml()}<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}${this.ownRowsHtml(false)}</tbody></table>`;
     let main = "";
     if (this.page === "fleet") main = this.formStep === 0 ? this.fleetPageHtml() : this.formStep === 1 ? this.step2Html() : this.step3Html();
     else if (this.page === "galaxy") {
@@ -175,6 +178,9 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   // nawigacja
   const nav = (to) => {
     game.navigations.push(to);
+    // odbiór bonusu online = zwykła nawigacja pod /home/onlinebonus; gra zabiera
+    // wtedy przycisk z menu (tak działa fork: bonus znika do następnego cyklu)
+    if (/\/home\/onlinebonus/.test(String(to))) { game.bonusClaims++; game.bonus = false; game.page = "home"; game.query = ""; if (w.__fakeLoc) { w.__fakeLoc.href = "https://genesis.ogamex.net/home"; w.__fakeLoc.pathname = "/home"; w.__fakeLoc.search = ""; } return; }
     const [pth, q] = String(to).split("?");
     game.page = pth.replace(/^\//, "") || "home";
     game.query = q ? "?" + q : "";
@@ -774,6 +780,28 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     check("bot PRZERWAŁ pętlę zamiast kręcić stroną 5 minut", logs.some(m => /pętla przełączania ciał|nie jest stroną floty|formularz nie otwiera/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 8).join(" | "));
     check("i zrobił to w kilkunastu nawigacjach, nie w trzydziestu", g.navigations.length <= 20, "nawigacji: " + g.navigations.length);
     check("powód nawigacji przeżył przeładowanie (log nie jest już niemy)", logs.some(m => /przełączam na|formularz \[/.test(m)), logs.filter(m => /LOT/.test(m)).slice(0, 6).join(" | "));
+  }
+
+  console.log("\n── 26. BONUS ONLINE: antymateria + punkty Akademii ──");
+  {
+    // Moduł przeniesiony z 2.x (OnlineBonus). Trzy pułapki z Atheny: odbiór przez
+    // NAWIGACJĘ (klik przegrywał wyścig z innymi modułami), napis z odliczaniem to
+    // nie jest bonus, a odbiór trzeba potwierdzić na następnej stronie.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g.bonus = true;
+    const { logs } = await run(g, { cfg, loads: 12, ticksPerLoad: 2 });
+    check("bot odebrał bonus (nawigacja pod /home/onlinebonus)", g.bonusClaims === 1, "odbiorów: " + g.bonusClaims + " | " + logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+    check("i potwierdził odbiór po przeładowaniu", logs.some(m => /\[BONUS\] odebrany/.test(m)), logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+    check("nie klika w kółko, gdy bonusu nie ma", g.bonusClaims === 1, "odbiorów: " + g.bonusClaims);
+
+    // odliczanie „Online bonus 04:12" = jeszcze nie ma czego odbierać
+    const g2 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g2.bonus = true;
+    g2.bonusHtml = () => `<nav id="menu"><a href="/home/onlinebonus" id="btn-online-bonus">Online bonus 04:12</a></nav>`;
+    const r2 = await run(g2, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("odliczanie NIE jest odbierane", g2.bonusClaims === 0, "odbiorów: " + g2.bonusClaims);
+    check("i bot mówi dlaczego", r2.logs.some(m => /odliczanie/.test(m)), r2.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
