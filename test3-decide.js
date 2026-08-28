@@ -192,7 +192,7 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
   check("rekonesans stoi przy zagrożeniu", /threats[\s\S]{0,80}?arriveAt > now\)\) return false/.test(recon));
   check("rekonesans stoi, gdy lot jest w powietrzu", /phase === "launched"\)\) return false/.test(recon));
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
-  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{ if \(!\(await Recon\.tick\(s\)\)/.test(src));
+  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
   check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
 }
 
@@ -385,6 +385,16 @@ console.log("── 27. SPÓJNOŚĆ STANU między kartami (v3.7.2) ──");
   check("świeższy odczyt hangaru wygrywa", /\(hv\.at \|\| 0\) > \(mine\.at \|\| 0\)/.test(ref));
   check("lot obronny dopisany w międzyczasie nie ginie", /flights \|\| \[\]\)\) if \(!\(s\.flights \|\| \[\]\)\.some/.test(ref));
   check("pętla obrony pod blokadą karty", /if \(!TabLock\.acquire\(\)\) return;/.test(src));
+}
+
+console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
+{
+  check("ekonomia w osobnym try — jej błąd nie wywala obrony", /catch \(e\) \{ log\(`\[EKONOMIA\] błąd modułu/.test(src));
+  check("3 błędy rdzenia z rzędu → push na telefon", /if \(n === 3\) Journal\.add\("BŁĄD"/.test(src));
+  check("licznik błędów zerowany po udanym przebiegu", /Store\.set\("tick_fails", 0\);/.test(src));
+  check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,600}?location\.replace\("\/"\)/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
+  check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));
+  check("nadzorca ma własny dławik (nie pętla przeładowań)", /watchdog_at[\s\S]{0,120}?10 \* 60e3\) return;/.test(src));
 }
 
 console.log("");

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.7.2
+// @version      3.7.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.7.2";
+  const VERSION = "3.7.3";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1027,8 +1027,21 @@
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") { if (Fly.start(a)) { await Fly.tick(); } break; }
       }
-      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) { if (!(await Recon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
-    } catch (e) { log(`[OBRONA] błąd pętli: ${e.message}`, "error"); }
+      // v3.7.3 (audyt): ekonomia w WŁASNYM try — błąd w ekspedycjach/miningu/złomie
+      // nie może przerwać przebiegu obrony ani wywalić pętli.
+      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) {
+        try { if (!(await Recon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
+        catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
+      }
+      Store.set("tick_fails", 0);
+    } catch (e) {
+      // v3.7.3: powtarzający się błąd rdzenia obrony = ŚLEPY BOT. Po 3 z rzędu
+      // krzyczymy na telefon, zamiast logować w nieskończoność do pustego pokoju.
+      const n = (Store.get("tick_fails", 0) || 0) + 1;
+      Store.set("tick_fails", n);
+      log(`[OBRONA] błąd pętli (${n}): ${e.message}`, "error");
+      if (n === 3) Journal.add("BŁĄD", `Obrona nie kończy przebiegu 3× z rzędu (${e.message}) — bot może być ŚLEPY. Sprawdź grę.`);
+    }
     finally { running = false; try { UI.renderStatus(); } catch {} }
   }
   const Once = { said(k, ms) { const m = Store.get("once", {}) || {}; if (Date.now() - (m[k] || 0) < ms) return true; m[k] = Date.now(); for (const x of Object.keys(m)) if (Date.now() - m[x] > 3600e3) delete m[x]; Store.set("once", m); return false; } };
@@ -1036,6 +1049,21 @@
     ID: Math.random().toString(36).slice(2),
     acquire() { try { const raw = localStorage.getItem("ogx3_lock"); const l = raw ? JSON.parse(raw) : null; if (l && l.id !== this.ID && Date.now() - l.at < 90e3) return false; localStorage.setItem("ogx3_lock", JSON.stringify({ id: this.ID, at: Date.now() })); return true; } catch { return true; } },
   };
+  // v3.7.3: NADZORCA. Jeśli pętla obrony nie odbiła się przez 3 min (zdławiona
+  // karta, zawieszony await, wyjątek poza łańcuchem), strona idzie w reload —
+  // martwy bot, który wygląda na żywego, to najgorszy stan (lekcja 2.x).
+  function watchdog() {
+    const last = Store.get("last_tick", 0) || 0;
+    if (!last || Date.now() - last < 3 * 60e3) return;
+    if (Fly.mission()) return;
+    const at = Store.get("watchdog_at", 0) || 0;
+    if (Date.now() - at < 10 * 60e3) return;
+    Store.set("watchdog_at", Date.now());
+    log(`[NADZORCA] pętla obrony milczy od ${Math.round((Date.now() - last) / 60000)} min — przeładowuję stronę.`, "error");
+    Journal.add("BŁĄD", "Pętla obrony milczała 3 min — przeładowanie strony (nadzorca).");
+    setTimeout(() => location.replace("/"), 1500);
+  }
+
   function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); location.replace("/"); } }
 
   // ═══ PANEL ══════════════════════════════════════════════════════════════
@@ -1145,6 +1173,7 @@
   defenceTick();
   setInterval(defenceTick, CFG.tickMs);
   setInterval(keepalive, 60e3);
+  setInterval(watchdog, 60e3);
   // aktualizacja z repo
   setInterval(() => { try { GM_xmlhttpRequest({ method: "GET", url: "https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-3.user.js?t=" + Date.now(), onload: (r) => { const v = (String(r.responseText || "").match(/@version\s+([\d.]+)/) || [])[1]; if (v && v !== VERSION && !Once.said("update|" + v, 3600e3)) log(`[UPDATE] repo ma v${v}, tu chodzi v${VERSION} — Tampermonkey → Sprawdź aktualizacje.`, "error"); } }); } catch {} }, 15 * 60e3);
 })();
