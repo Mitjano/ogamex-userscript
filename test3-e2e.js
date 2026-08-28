@@ -50,6 +50,8 @@ class Game {
     this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
     this.debris = false;      // czy przy bazie lezy zlom
     this.loggedOut = false;   // gra oddaje strone logowania
+    this.metal = 3_800_000_000;      // pasek surowców (moduł księżyców liczy z niego budżet)
+    this.moonKmCost = 300_000;       // koszt metalu za 1 km średnicy (atrapa cennika forka)
     this.bonus = false;       // zielony „Online bonus" w menu (antymateria + punkty Akademii)
     this.bonusClaims = 0;
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
@@ -134,6 +136,13 @@ class Game {
       <a class="btn-continue" id="btn-submit-fleet">Send fleet</a>
     </div>`;
   }
+  metalHtml() { return `<div class="resource-item-metal">${this.metal.toLocaleString("de-DE")}</div>`; }
+  moonFormHtml() {
+    const km = this.formKm || 8944;
+    return `<div id="content"><input id="diameter" type="text" value="${km}" />
+      <div>Requirements: ${(km * this.moonKmCost).toLocaleString("de-DE")} Metal</div>
+      <a id="btn-form-moon" href="#">Form a moon</a></div>`;
+  }
   bonusHtml() { return this.bonus ? `<nav id="menu"><a href="/home/onlinebonus" id="btn-online-bonus">Online bonus</a></nav>` : ""; }
   bodyHtml() {
     if (this.loggedOut) return this.loginHtml();
@@ -153,8 +162,9 @@ class Game {
           ${this.asteroid ? `<span data-asteroid-disappear="${this.asteroidTtl}"></span><a class="btn-asteroid" href="/fleet?x=${gx}&y=${sy}&z=17&mission=12">Asteroid</a>` : "<span>Find asteroids</span>"}
         </div>`;
     }
+    else if (/moonformation/.test(this.page)) main = this.moonFormHtml();
     else main = `<div id="overview">Overview</div>`;
-    return `${this.planetBarHtml()}${this.missionBarHtml()}${events}${main}`;
+    return `${this.metalHtml()}${this.planetBarHtml()}${this.missionBarHtml()}${events}${main}`;
   }
 }
 
@@ -222,6 +232,13 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   w.AudioContext = function () { return { state: "running", resume: async () => {}, createOscillator: () => ({ frequency: {}, connect() {}, start() {}, stop() {} }), createGain: () => ({ gain: {}, connect() {} }), destination: {} }; };
   w.alert = () => {};
   // ── zachowanie gry: kliknięcia w formularzu i pasku planet ──
+  w.document.addEventListener("input", (ev) => {
+    if (ev.target && ev.target.id === "diameter") {
+      game.formKm = parseInt(String(ev.target.value || "").replace(/[^\d]/g, ""), 10) || 0;
+      const box = w.document.querySelector("#content div");
+      if (box) box.textContent = `Requirements: ${(game.formKm * game.moonKmCost).toLocaleString("de-DE")} Metal`;
+    }
+  }, true);
   w.document.addEventListener("click", (ev) => {
     const el = ev.target;
     if (process.env.DIAG3) console.log("      KLIK:", el.id || el.className || el.tagName, "| krok:", game.formStep);
@@ -240,6 +257,20 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       if (dur) dur.textContent = `Duration of flight (one way): ${secs >= 3600
         ? `${String(Math.floor(secs / 3600)).padStart(2, "0")}:${String(Math.floor(secs % 3600 / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`
         : `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`}`;
+      return;
+    }
+    if (id === "diameter" || (el.id === "diameter")) { return; }
+    if (id === "btn-form-moon") {
+      const inp = w.document.getElementById("diameter");
+      const km = parseInt((inp && inp.value || "0").replace(/[^\d]/g, ""), 10) || 0;
+      const cost = km * game.moonKmCost;
+      if (cost > game.metal) { game.moonRefused = (game.moonRefused || 0) + 1; return; }   // gra odmawia: za mało metalu
+      game.metal -= cost;
+      const p = game.pairs.find(x => x.key === game.active.key);
+      if (p) p.moon = true;
+      game.moonBuilt = { key: game.active.key, km, cost };
+      nav("/home");
+      w.document.body.innerHTML = game.bodyHtml();
       return;
     }
     if (id === "btn-next-fleet2") {
@@ -762,7 +793,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     check("i powiedzial dlaczego (czas lotu kontra TTL)", logs.some(m => /znika za .*a lot trwa/.test(m)), logs.filter(m => /ASTER/.test(m)).slice(0, 6).join(" | "));
   }
 
-  console.log("\n── 25. PĘTLA NAWIGACJI: adres formularza przestawia aktywną planetę ──");
+  console.log("\n── 26. PĘTLA NAWIGACJI: adres formularza przestawia aktywną planetę ──");
   {
     // Incydent Genesis 28.08 22:17–22:22: ekspedycja z KOLONII, adres formularza
     // niesie koordy celu (poz. 16), a fork siada wtedy na planecie głównej. Bot
@@ -782,7 +813,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     check("powód nawigacji przeżył przeładowanie (log nie jest już niemy)", logs.some(m => /przełączam na|formularz \[/.test(m)), logs.filter(m => /LOT/.test(m)).slice(0, 6).join(" | "));
   }
 
-  console.log("\n── 26. BONUS ONLINE: antymateria + punkty Akademii ──");
+  console.log("\n── 27. BONUS ONLINE: antymateria + punkty Akademii ──");
   {
     // Moduł przeniesiony z 2.x (OnlineBonus). Trzy pułapki z Atheny: odbiór przez
     // NAWIGACJĘ (klik przegrywał wyścig z innymi modułami), napis z odliczaniem to
@@ -801,7 +832,68 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     g2.bonusHtml = () => `<nav id="menu"><a href="/home/onlinebonus" id="btn-online-bonus">Online bonus 04:12</a></nav>`;
     const r2 = await run(g2, { cfg, loads: 8, ticksPerLoad: 2 });
     check("odliczanie NIE jest odbierane", g2.bonusClaims === 0, "odbiorów: " + g2.bonusClaims);
+
+    // Zgłoszenie 28.08 23:26: „nie zbiera bonusu jak na Athenie". Powód: cisza nocna
+    // ekonomii (23:00–05:00). Cisza ma udawać śpiące konto — ale gdy operator KLIKA
+    // po grze, konto jest jawnie online i jeden klik w menu niczego nie zdradza.
+    const h = new Date().getHours();
+    const quiet = { enabled: true, startHour: h, endHour: (h + 2) % 24 };
+    const cfgQ = { ...cfg, quietHours: quiet, human: { breaks: false, economyAtNight: false } };
+
+    const g3 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g3.bonus = true;
+    g3.store.set("genesis.ogamex.net:ogx3_manual_at", JSON.stringify(Date.now()));   // operator właśnie klikał
+    await run(g3, { cfg: cfgQ, loads: 10, ticksPerLoad: 2 });
+    check("w ciszy nocnej, ale gdy GRASZ — bonus jest odbierany", g3.bonusClaims === 1, "odbiorów: " + g3.bonusClaims);
+
+    // Ustępstwo dotyczy WYŁĄCZNIE ciszy nocnej. Inne bramki (tu: sufit nawigacji/h)
+    // nadal wstrzymują odbiór — i od teraz mówią o tym w logu, zamiast milczeć.
+    // (Symulator nie potrafi udać „konto śpi": każde przeładowanie bez powodu bota
+    //  JEST kliknięciem operatora, więc śpiące konto testujemy inną bramką.)
+    const g4 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g4.bonus = true;
+    g4.store.set("genesis.ogamex.net:ogx3_nav_log", JSON.stringify(Array.from({ length: 300 }, () => Date.now())));
+    const r4 = await run(g4, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("inna bramka niż cisza (sufit nawigacji) wstrzymuje odbiór", g4.bonusClaims === 0, "odbiorów: " + g4.bonusClaims);
+    check("i bot pisze, dlaczego nie odbiera (koniec cichego nicnierobienia)", r4.logs.some(m => /\[BONUS\] nie odbieram teraz/.test(m)), r4.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
     check("i bot mówi dlaczego", r2.logs.some(m => /odliczanie/.test(m)), r2.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+  }
+
+  console.log("\n── 28. KSIĘŻYCE: stawianie za metal (moduł WYDAJE surowce) ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false }, moon: { enabled: true, maxMetalShare: 0.25, minKm: 2000, maxTries24h: 3 }, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 10 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.metal = 3_800_000_000;     // budżet 25% = 950 mln → mieści się 3000 km (900 mln), nie 4000 (1,2 mld)
+    const { logs } = await run(g, { cfg, loads: 20, ticksPerLoad: 2 });
+    check("bot postawił księżyc przy planecie bez księżyca", !!g.moonBuilt && g.moonBuilt.key === "1:100:9", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+    check("zmieścił się w suficie 25% metalu", !!g.moonBuilt && g.moonBuilt.cost <= 950_000_000, JSON.stringify(g.moonBuilt));
+    check("wybrał NAJWIĘKSZĄ średnicę, która się mieści", !!g.moonBuilt && g.moonBuilt.km === 3000, JSON.stringify(g.moonBuilt));
+    check("gra nigdy nie odmówiła (bot nie klikał ponad stan)", !g.moonRefused, "odmów: " + (g.moonRefused || 0));
+    check("i zameldował sukces", logs.some(m => /\[KSIĘŻYC\] ✅/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+
+    // za mało metalu = ani jednego kliknięcia
+    const g2 = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 10 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g2.metal = 1_000_000;        // budżet 250 tys. — nawet 2000 km (600 mln) nie wchodzi
+    const r2 = await run(g2, { cfg, loads: 15, ticksPerLoad: 2 });
+    check("przy pustej kasie NIE stawia księżyca", !g2.moonBuilt, JSON.stringify(g2.moonBuilt));
+    check("i mówi wprost, że za drogo", r2.logs.some(m => /za drogo/.test(m)), r2.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+
+    // moduł WYŁĄCZONY (domyślnie) = zero ruchu
+    const g3 = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 10 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    await run(g3, { cfg: { ...cfg, moon: { enabled: false } }, loads: 10, ticksPerLoad: 2 });
+    check("wyłączony moduł nie wydaje ani jednego metalu", !g3.moonBuilt && g3.metal === 3_800_000_000, JSON.stringify(g3.moonBuilt));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

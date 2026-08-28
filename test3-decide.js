@@ -380,7 +380,12 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("cel typu ZŁOM to data-planet-type=3", /m\.toBody === "debris" \? "3"/.test(src));
   check("misja COLLECT/HARVEST wybierana jawnie", /"COLLECT", "HARVEST", "RECYCL"/.test(src));
   check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
-  check("kolejność ekonomii: rekonesans → bonus → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  check("kolejność ekonomii: rekonesans → bonus → księżyce → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Moon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  check("księżyce: domyślnie WYŁĄCZONE (moduł wydaje surowce bezpowrotnie)", /moon: \{ enabled: false/.test(src));
+  check("księżyce: sufit udziału metalu i średnica dobierana w dół", /maxMetalShare/.test(src) && /KM: \[8944/.test(src) && /c <= budget/.test(src));
+  check("księżyce: limit prób na dobę i limit nawigacji na próbę", /maxTries24h/.test(src) && /navs \|\| 0\) >= 4/.test(src));
+  check("księżyce: nieznany markup = zrzut do logu, nie zgadywanie", /\[KSIĘŻYC DOM\]/.test(src));
+  check("ekspedycje: pole „startuj z” przypina ciało startowe", /ogx3-expo-from/.test(src) && /CFG\.expo\.launchFrom = \{ galaxy/.test(src));
 }
 
 console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznanej kolonii ──");

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.13.0
+// @version      3.14.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.13.0";
+  const VERSION = "3.14.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -144,6 +144,10 @@
     // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
     // potwierdził 28.08, że na Genesis działa tak samo). Nie rusza flotą, więc domyślnie ON.
     bonus: { enabled: true, gapMin: 2, retryMin: 15 },
+    // v3.14.0: stawianie księżyców (/home/moonformation). Domyślnie WYŁĄCZONE —
+    // to jedyny moduł, który BEZPOWROTNIE wydaje surowce (na Athenie 6000 km
+    // kosztowało 1,8 bln metalu), więc włącza go wyłącznie operator.
+    moon: { enabled: false, maxMetalShare: 0.25, minKm: 2000, maxTries24h: 3 },
     debris: { enabled: false, everyMin: 20 },   // recyklery po złom (poz. 16 i pozycja bazy)
     expo: {
       enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
@@ -678,6 +682,131 @@
     },
   };
 
+  // ═══ KSIĘŻYCE (/home/moonformation) ══════════════════════════════════════
+  // Fork MA własne „Form a moon" za metal (potwierdzone na Athenie 26.08:
+  // [2:21:4] 6000 km za 1,8 bln). Dla 3.0 to nie kaprys: reguła „dom = księżyc",
+  // Fleet Save i ucieczka na sąsiedni księżyc są tyle warte, ile masz księżyców.
+  // Trzy bezpieczniki, bo moduł WYDAJE surowce bezpowrotnie:
+  //   • domyślnie OFF — włącza operator,
+  //   • sufit udziału metalu (domyślnie 25%) i średnica dobierana W DÓŁ,
+  //   • 3 próby na planetę na dobę i twardy limit nawigacji na próbę.
+  const Moon = {
+    KM: [8944, 8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000],
+    st() { const d = { tries: {}, m: null }; return { ...d, ...(Store.get("moon", d) || d) }; },
+    save(v) { Store.set("moon", v); },
+    canTry(st, k) {
+      const e = (st.tries || {})[k];
+      if (!e) return true;
+      if (Date.now() - e.at > 24 * 3600e3) return true;
+      return e.n < (CFG.moon.maxTries24h || 3) && Date.now() - e.at > 10 * 60e3;
+    },
+    noteTry(st, k) {
+      const t = st.tries || (st.tries = {});
+      const e = t[k] && Date.now() - t[k].at < 24 * 3600e3 ? t[k] : { n: 0, at: 0 };
+      e.n += 1; e.at = Date.now(); t[k] = e; this.save(st); return e.n;
+    },
+    metal() {
+      const el = document.querySelector(".resource-item-metal, #resources_metal, [class*='metal']");
+      const m = el && (el.textContent || "").match(/\d[\d .,']*/);
+      const n = m ? parseInt(m[0].replace(/[^\d]/g, ""), 10) : NaN;
+      return Number.isFinite(n) ? n : null;
+    },
+    // Strona formowania: pole średnicy + przycisk „Form a moon" + koszt przy „Requirements".
+    formEls() {
+      const own = (e) => e.closest("#ogx3-panel");
+      const inputs = [...document.querySelectorAll("input")].filter(i => !own(i) && i.offsetParent !== null && /number|text/i.test(i.type || "text"));
+      const input = inputs.find(i => /diam|śred|sred/i.test(`${i.id} ${i.name} ${i.className}`)) || inputs.find(i => /^\s*[\d.,]+\s*$/.test(i.value || "")) || inputs[0] || null;
+      const btn = [...document.querySelectorAll("a, button, input[type='submit']")].find(e => !own(e) && e.offsetParent !== null && /form\s*a\s*moon|utw[oó]rz\s*ksi/i.test(e.value || e.textContent || "")) || null;
+      return { input, btn };
+    },
+    cost() {
+      const t = document.body.textContent || "";
+      const i = t.search(/Requirements|Wymagania|Cost|Koszt/i);
+      if (i < 0) return null;
+      const m = t.slice(i, i + 400).match(/\d{1,3}(?:[ .,]\d{3})+|\d{4,}/);
+      return m ? parseInt(m[0].replace(/[^\d]/g, ""), 10) : null;
+    },
+    async setKm(input, km) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      input.focus();
+      if (setter) setter.call(input, String(km)); else input.value = String(km);
+      for (const ev of ["input", "change", "keyup"]) input.dispatchEvent(new Event(ev, { bubbles: true }));
+      input.blur();
+      await sleep(jitter(500, 900));
+    },
+    target(s) {
+      for (const [k, p] of Object.entries(s.pairs || {})) if (!p.hasMoon) return k;
+      return null;
+    },
+    async tick(s) {
+      if (!CFG.moon.enabled || Fly.mission()) return false;
+      const now = Date.now();
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
+      const st = this.st();
+      const m = st.m;
+      // ── weryfikacja poprzedniej próby: para ma już księżyc? ──
+      if (m && now - m.at < 10 * 60e3) {
+        if ((s.pairs || {})[m.key]?.hasMoon) {
+          st.m = null; this.save(st);
+          log(`[KSIĘŻYC] ✅ [${m.key}] ma księżyc (${m.km} km za ${(m.cost || 0).toLocaleString("pl-PL")} metalu).`, "success");
+          Journal.add("POWRÓT", `Postawiony księżyc przy [${m.key}] — ${m.km} km.`);
+          return false;
+        }
+        if ((m.navs || 0) >= 4) { st.m = null; this.save(st); log(`[KSIĘŻYC] 4 nawigacje bez efektu przy [${m.key}] — odpuszczam do następnej próby.`, "warn"); return false; }
+      } else if (m) { st.m = null; this.save(st); }
+      if (Human.economyAllowed(s)) return false;
+      const cur = this.st();
+      const key0 = cur.m ? cur.m.key : this.target(s);
+      if (!key0) { if (!Once.said("moon_none", 6 * 3600e3)) log("[KSIĘŻYC] każda planeta ma już księżyc — nie ma co stawiać.", "info"); return false; }
+      if (!cur.m && !this.canTry(cur, key0)) return false;
+      const act = s.active;
+      // krok 1: stanąć na planecie, przy której stawiamy księżyc
+      if (!act || act.key !== key0 || act.body !== "planet") {
+        const el = PlanetBar.anchor(key0, "planet");
+        if (!el) { if (!Once.said("moon_anchor|" + key0, 3600e3)) log(`[KSIĘŻYC] nie widzę [${key0}] na pasku planet — pomijam.`, "warn"); return false; }
+        cur.m = { key: key0, at: now, navs: ((cur.m || {}).navs || 0) + 1 }; this.save(cur);
+        log(`[KSIĘŻYC] stawiam księżyc przy [${key0}] — przełączam się na tę planetę.`, "warn");
+        Nav.click(el, `księżyc: przełączenie na [${key0}]`);
+        return true;
+      }
+      // krok 2: strona formowania
+      if (!/moonformation/i.test(location.pathname)) {
+        cur.m = { key: key0, at: now, navs: ((cur.m || {}).navs || 0) + 1 }; this.save(cur);
+        Nav.go("/home/moonformation", `księżyc: formularz dla [${key0}]`);
+        return true;
+      }
+      const { input, btn } = this.formEls();
+      if (!input || !btn) {
+        this.noteTry(cur, key0);
+        log(`[KSIĘŻYC DOM] nie rozpoznaję strony formowania (input:${!!input}, przycisk:${!!btn}). Markup: ${(document.querySelector("#content, .content, main") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error");
+        cur.m = null; this.save(cur);
+        return false;
+      }
+      const metal = this.metal();
+      const budget = metal ? Math.floor(metal * Math.min(1, Math.max(0.01, CFG.moon.maxMetalShare || 0.25))) : null;
+      let picked = null;
+      for (const km of this.KM) {
+        if (km < (CFG.moon.minKm || 1000)) break;
+        await this.setKm(input, km);
+        const c = this.cost();
+        if (c == null) continue;
+        if (budget == null || c <= budget) { picked = { km, cost: c }; break; }
+      }
+      if (!picked) {
+        const n = this.noteTry(cur, key0);
+        log(`[KSIĘŻYC] za drogo: metal ${metal == null ? "?" : metal.toLocaleString("pl-PL")}, budżet ${budget == null ? "?" : budget.toLocaleString("pl-PL")} (${Math.round((CFG.moon.maxMetalShare || .25) * 100)}%) — żadna średnica ≥ ${CFG.moon.minKm} km się nie mieści (próba ${n}).`, "warn");
+        cur.m = null; this.save(cur);
+        return false;
+      }
+      const n = this.noteTry(cur, key0);
+      cur.m = { key: key0, at: Date.now(), navs: (cur.m || {}).navs || 0, km: picked.km, cost: picked.cost }; this.save(cur);
+      log(`[KSIĘŻYC] [${key0}]: ${picked.km} km za ${picked.cost.toLocaleString("pl-PL")} metalu (mam ${metal == null ? "?" : metal.toLocaleString("pl-PL")}, sufit ${Math.round((CFG.moon.maxMetalShare || .25) * 100)}%) — próba ${n}. Klikam „Form a moon".`, "success");
+      Journal.add("RATUNEK", `Stawiam księżyc przy [${key0}]: ${picked.km} km za ${picked.cost.toLocaleString("pl-PL")} metalu.`);
+      Nav.click(btn, `księżyc: formowanie ${picked.km} km przy [${key0}]`);
+      return true;
+    },
+  };
+
   // ═══ BONUS ONLINE (antymateria + punkty Akademii) ═══════════════════════
   // Fork stawia w menu link <a href="/home/onlinebonus" id="btn-online-bonus">.
   // Odbiór = zwykła NAWIGACJA pod ten adres (2.x v2.17.1: klik przegrywał wyścig
@@ -726,8 +855,18 @@
       }
       if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;   // alarm ma pierwszeństwo
       if (now < (st.nextTry || 0)) return false;
+      // v3.14.0 (zgłoszenie 28.08 23:26: „nie zbiera bonusu jak na Athenie"):
+      // bonus wpadał pod ciszę nocną ekonomii (23:00–05:00) i milczał. Ale cisza ma
+      // sprawiać, że konto WYGLĄDA na śpiące — a gdy operator sam klika po grze,
+      // konto jest jawnie online. Wtedy jeden klik w menu gry niczego nie zdradza.
       const why = Human.economyAllowed(s);
-      if (why) return false;                       // przerwy i cisza nocna: konto ma spać
+      if (why) {
+        const playing = Date.now() - (Store.get("manual_at", 0) || 0) < 10 * 60e3;
+        if (!(playing && /godziny ciszy|okno nocne/.test(why))) {
+          if (!Once.said("bonus_wait|" + why.slice(0, 14), 60 * 60e3)) log(`[BONUS] nie odbieram teraz: ${why}.`, "info");
+          return false;
+        }
+      }
       const el = this.find();
       const c = this.claimable(el);
       if (!c.ok) {
@@ -1557,7 +1696,7 @@
       // v3.7.3 (audyt): ekonomia w WŁASNYM try — błąd w ekspedycjach/miningu/złomie
       // nie może przerwać przebiegu obrony ani wywalić pętli.
       if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) {
-        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
+        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Moon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
         catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
       }
       Store.set("tick_fails", 0);
@@ -1712,6 +1851,7 @@
           <div class="sec" data-sec="expo"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekspedycje</span><span class="tail" id="ogx3-t-expo"></span></div><div class="sec-b">
             <div class="line"><button id="ogx3-expo" class="ogx3-btn"></button><button id="ogx3-disc" class="ogx3-btn"></button></div>
             <div class="line">fale <input id="ogx3-waves" style="width:30px" /> · rezerwa slotów <input id="ogx3-slotres" style="width:26px" /></div>
+            <div class="line">startuj z <input id="ogx3-expo-from" style="width:70px" placeholder="g:s:p" /></div>
             <div class="note" id="ogx3-expo-st"></div>
           </div></div>
           <div class="sec" data-sec="fs"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Fleet Save</span><span class="tail" id="ogx3-t-fs"></span></div><div class="sec-b">
@@ -1721,6 +1861,8 @@
           <div class="sec" data-sec="eco"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekonomia</span><span class="tail" id="ogx3-t-eco"></span></div><div class="sec-b">
             <div class="line"><button id="ogx3-aster" class="ogx3-btn"></button><button id="ogx3-deb" class="ogx3-btn"></button><button id="ogx3-bonus" class="ogx3-btn"></button></div>
             <div class="note" id="ogx3-bonus-st"></div>
+            <div class="line"><button id="ogx3-moon" class="ogx3-btn"></button> ≤ <input id="ogx3-moon-share" style="width:26px" />% metalu</div>
+            <div class="note" id="ogx3-moon-st"></div>
             <div class="note" id="ogx3-aster-st"></div>
           </div></div>
           <div class="sec" data-sec="jr"><div class="sec-t"><span><span class="arr">▸</span> Dziennik obrony</span><span class="tail" id="ogx3-t-jr"></span></div><div class="sec-b"><div id="ogx3-journal"></div></div></div>
@@ -1773,6 +1915,20 @@
       $("ogx3-deb").onclick = () => { CFG.debris.enabled = !CFG.debris.enabled; saveCfg(); log(`Zbieranie złomu ${CFG.debris.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-bonus").onclick = () => { CFG.bonus.enabled = !CFG.bonus.enabled; saveCfg(); log(`Bonus online ${CFG.bonus.enabled ? "ON — bot odbiera antymaterię i punkty Akademii" : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-moon").onclick = () => { CFG.moon.enabled = !CFG.moon.enabled; saveCfg(); log(`Stawianie księżyców ${CFG.moon.enabled ? `ON — bot WYDA do ${Math.round(CFG.moon.maxMetalShare * 100)}% metalu na księżyc` : "OFF"}`, CFG.moon.enabled ? "warn" : "info"); this.renderStatus(); };
+      $("ogx3-moon-share").value = String(Math.round((CFG.moon.maxMetalShare || .25) * 100));
+      $("ogx3-moon-share").onchange = (e) => { CFG.moon.maxMetalShare = Math.max(0.01, Math.min(1, (parseInt(e.target.value) || 25) / 100)); saveCfg(); this.renderStatus(); };
+      // v3.14.0: ekspedycje domyślnie startują z AKTYWNEJ planety — a to znaczy
+      // „z tej, na której akurat klikasz". Pole przypina jedno ciało na stałe.
+      { const lf = CFG.expo.launchFrom; $("ogx3-expo-from").value = lf ? `${lf.galaxy}:${lf.system}:${lf.position}` : ""; }
+      $("ogx3-expo-from").onchange = (e) => {
+        const v = String(e.target.value || "").trim();
+        if (!v) { CFG.expo.launchFrom = null; saveCfg(); log("[EXPO] ekspedycje startują z aktywnej planety (pole puste).", "info"); return; }
+        const m = v.match(/^(\d+)\s*[:.]\s*(\d+)\s*[:.]\s*(\d+)$/);
+        if (!m) { alert("Wpisz koordynaty w formacie g:s:p, np. 1:217:6"); e.target.value = ""; return; }
+        CFG.expo.launchFrom = { galaxy: +m[1], system: +m[2], position: +m[3] }; saveCfg();
+        log(`[EXPO] ekspedycje startują odtąd z [${m[1]}:${m[2]}:${m[3]}] — niezależnie od tego, gdzie klikasz.`, "info");
+      };
       $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
       $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
@@ -1859,6 +2015,9 @@
       $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-bonus").textContent = `Bonus ${CFG.bonus.enabled ? "ON" : "OFF"}`; $("ogx3-bonus").style.background = CFG.bonus.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       { const b0 = Bonus.st(); $("ogx3-bonus-st").textContent = CFG.bonus.enabled ? `bonus online: dziś ${Bonus.today(b0)}${b0.claims && b0.claims.length ? ` · ostatni ${new Date(b0.claims[b0.claims.length - 1]).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""; }
+      $("ogx3-moon").textContent = `Księżyce ${CFG.moon.enabled ? "ON" : "OFF"}`; $("ogx3-moon").style.background = CFG.moon.enabled ? "#5a4a1e" : "rgba(255,255,255,.1)";
+      { const s1 = Situation.load(); const bez = Object.entries(s1.pairs || {}).filter(([, p]) => !p.hasMoon).length;
+        $("ogx3-moon-st").textContent = CFG.moon.enabled ? `planet bez księżyca: ${bez} · WYDAJE METAL` : `planet bez księżyca: ${bez} (moduł wyłączony)`; }
       $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;

@@ -37,6 +37,7 @@ Szerokość **232 px**, więc kończy się przed menu gry (Overview, Resources�
 | **Mining** | zakresy asteroid → skan systemów → minery na poz. 17 | nie skanuje bez minerów · pomija asteroidy znikające za < 5 min |
 | **Złom** | recyklery na poz. 16 i pozycję bazy | recyklery nie latają na ekspedycje, więc zawsze jest czym zbierać |
 | **Bonus online** | odbiera zielony „Online bonus" z menu = antymateria + **punkty Akademii** (przeniesione z 2.x, domyślnie ON) | nie rusza flotą · nigdy przy alarmie ani w trakcie misji · odliczanie/wyszarzony przycisk = nie klika · odbiór potwierdzany po przeładowaniu |
+| **Księżyce** | stawia księżyc przy planecie bez księżyca (`/home/moonformation`) — **domyślnie OFF, bo WYDAJE metal bezpowrotnie** | sufit udziału metalu (domyślnie 25%) · średnica dobierana w dół · 3 próby na planetę na dobę · nieznany markup = zrzut do logu |
 | **Humanizer** | przerwy 5–15 min co 35–65 min, noc bez ekonomii | **dotyczy wyłącznie ekonomii** — obrona, rekonesans i keepalive chodzą zawsze |
 | **Karta przy życiu** | Wake Lock + cichy dźwięk | bez tego pętla w tle chodzi ~1/min zamiast co 20 s |
 
@@ -79,7 +80,7 @@ Nadzorca (przeładowanie po 3 min ciszy pętli) **nie działa przy bocie OFF** �
 Incydent źródłowy: 28.08 22:17–22:22 — ~30 przeładowań w 5 minut, w logu SAME linie startowe, koniec dopiero na limicie czasu misji (push „BŁĄD"). Powody ginęły, bo log zapisywał się do GM storage z opóźnieniem 800 ms, a każda nawigacja następuje natychmiast po wpisie.
 
 ## Czego świadomie nie ma
-Farmienia nieaktywnych, bramy skokowej, odbudowy księżyca (MoonRebuild z 2.x), kolejki budynków/badań, kolonizacji, czytania raportów przez Gemini, czarnej listy farmy. Wejdą, gdy będą potrzebne — brama i księżyce dopiero, gdy je postawisz.
+Farmienia nieaktywnych, bramy skokowej, kolejki budynków/badań, kolonizacji, czytania raportów przez Gemini, czarnej listy farmy. Wejdą, gdy będą potrzebne — brama i księżyce dopiero, gdy je postawisz.
 
 ## Prędkość uniwersum (Genesis x3, Athena miała x4)
 Genesis jest **wolniejszy od Atheny** — te same trasy trwają ok. 1/3 dłużej. Dla bota to w większości przezroczyste: **czas lotu jest zawsze czytany z formularza** („Duration of flight"), nigdy liczony ze wzoru, więc zawrót, „lądowanie zamiast wiszenia" i FS nocny same się dostrajają do mnożnika.
