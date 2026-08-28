@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.9.1
+// @version      3.9.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.9.1";
+  const VERSION = "3.9.3";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -487,7 +487,18 @@
         // v3.9.0 (audyt): "nie wiem, gdzie flota" + "nie sprawdzę, bo alarm" = zero
         // akcji przez cały dolot. Gdy jest czas (>90 s), prosimy o rekonesans TEJ pary.
         alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru)` });
-        if (secs > 90) actions.push({ kind: "recon", key: k, why: "atak, a hangar nieznany — muszę sprawdzić, gdzie flota" });
+        // v3.9.2 (E2E): sprawdzamy ciało, w które leci atak (a gdy nieznane — najpierw
+        // księżyc, bo tam zwykle mieszka flota). Wcześniej recon zawsze celował
+        // w planetę: przy flocie na księżycu bot odczytywał pusty hangar i zostawał
+        // z alarmem bez ratunku.
+        // Kolejność: najpierw ciało pod atakiem, potem drugie ciało pary. Bez tego
+        // drugiego kroku bot po odczytaniu pustej planety zostawał w stanie „nie wiem,
+        // gdzie flota" zamiast stwierdzić „flota na księżycu = bezpieczna strona".
+        const fresh = (b) => { const h = (s.hangars || {})[`${k}|${b}`]; return h && now - (h.at || 0) < 15 * 60e3; };
+        const order = [...new Set([...attackedBodies(k), (pairs[k] && pairs[k].hasMoon) ? "moon" : "planet", "planet"])]
+          .filter(b => (b === "moon" ? (pairs[k] && pairs[k].hasMoon) : b === "planet"));
+        const want = order.find(b => !fresh(b)) || order[0] || "planet";
+        if (secs > 90) actions.push({ kind: "recon", key: k, body: want, why: `atak, a hangar nieznany — sprawdzam ${want === "moon" ? "księżyc" : "planetę"} [${k}]` });
         continue;
       }
       const bodies = attackedBodies(k);
@@ -671,8 +682,16 @@
       if (p.skip) { if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info"); return false; }
       const link = ExpoLink.get();
       if (!link || !link.mission) {
-        if (!Once.said("expo|link", 15 * 60e3)) log("[EXPO] nie znam id misji ekspedycji — wejdź RAZ na dowolną stronę Galaxy, bot odczyta ją z wiersza 16.", "warn");
-        return false;
+        // v3.9.2 (E2E): bot czekał, aż operator sam wejdzie na galaktykę. Teraz idzie
+        // tam RAZ (z dławikiem 10 min), odczytuje id misji z wiersza 16 i wraca do gry.
+        if (page() === "galaxy") { ExpoLink.learn(); return false; }
+        if (Once.said("expo|golearn", 10 * 60e3)) return false;
+        const [g, sy] = String(p.fromKey || "").split(":");
+        if (!g || !sy) return false;
+        log("[EXPO] nie znam jeszcze id misji ekspedycji — zaglądam raz na galaktykę bazy.", "info");
+        NavRate.note();
+        location.replace(`/galaxy?x=${g}&y=${sy}`);
+        return true;
       }
       const sizes = {}; for (const x of p.ships) sizes[x.type] = x.qty;
       const sent = (b && b.waves === p.waves && !p.last) ? (b.sent || 0) + 1 : (p.last ? 0 : 1);
@@ -1226,11 +1245,12 @@
         if (a.kind === "recon") {
           // v3.9.0: WYJĄTEK od zasady "przy alarmie nie nawigujemy" — skoro nie wiemy,
           // gdzie stoi flota, to bez tego jednego wejścia na /fleet i tak nic nie zrobimy.
-          const el = PlanetBar.anchor(a.key, "planet");
+          const body = a.body || "planet";
           const act = Situation.load().active;
-          if (act && act.key === a.key && page() === "fleet") { Hangar.scan(); continue; }
-          log(`[OBRONA] ${a.why} — wchodzę na Fleet [${a.key}].`, "warn");
-          if (act && act.key === a.key) { const [g, sy, po] = a.key.split(":"); location.replace(`/fleet?x=${g}&y=${sy}&z=${po}`); return; }
+          if (act && act.key === a.key && act.body === body && page() === "fleet") { Hangar.scan(); continue; }
+          log(`[OBRONA] ${a.why} — wchodzę na Fleet.`, "warn");
+          if (act && act.key === a.key && act.body === body) { const [g, sy, po] = a.key.split(":"); location.replace(`/fleet?x=${g}&y=${sy}&z=${po}`); return; }
+          const el = PlanetBar.anchor(a.key, body) || PlanetBar.anchor(a.key, "planet");
           if (el) { el.click(); return; }
           continue;
         }
@@ -1448,7 +1468,8 @@
   // ═══ START ══════════════════════════════════════════════════════════════
   // Eksport do testów (node): globalThis.OGX3 gdy brak DOM.
   if (typeof document === "undefined" || typeof window === "undefined") { globalThis.OGX3 = { decide, Situation, Bar, Rows, DEFAULTS }; return; }
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG }; } catch {}
+  // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar }; } catch {}
   Store.set("last_load", Date.now());
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.

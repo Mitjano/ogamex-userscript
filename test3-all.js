@@ -4,7 +4,10 @@
 // v2.108.0 poszła na produkcję z czerwonym testem, bo `| tail -1` zjadł status).
 const { execFileSync } = require("child_process");
 
-const SUITES = [["decyzje obrony (macierz incydentów)", "test3-decide.js"]];
+const SUITES = [
+  ["decyzje obrony (macierz incydentów)", "test3-decide.js"],
+  ["E2E: prawdziwy bot na sztucznej grze (jsdom)", "test3-e2e.js"],
+];
 let failed = [];
 for (const [name, file] of SUITES) {
   process.stdout.write(`\n──── ${name} (${file})\n`);
