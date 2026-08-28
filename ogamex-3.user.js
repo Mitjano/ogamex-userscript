@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.1.0
+// @version      3.2.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.1.0";
+  const VERSION = "3.2.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -101,6 +101,17 @@
     tickMs: 20000,
     recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
     reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru, zanim pójdziemy sprawdzić
+    // ── EKONOMIA (etap 2) ──
+    expo: {
+      enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
+      waves: 1,             // podział floty na fale (start uni: 1; przy dużej flocie 8-14)
+      discoverer40: true,   // KLASA ODKRYWCA: ekspedycje 40 min zamiast 1 h (+ obroty, + łup)
+      holdingHours: 1,      // gdy opcji „40 min" nie ma (inna klasa)
+      gapMinSec: 60, gapMaxSec: 90,
+      slotReserve: 1,       // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"],
+      launchFrom: null,     // {galaxy,system,position} — null = aktywna para
+    },
   };
   const CFG = Object.assign({}, DEFAULTS, Store.get("cfg", {}) || {});
   const saveCfg = () => Store.set("cfg", CFG);
@@ -224,6 +235,8 @@
       const total = ships.reduce((x, s) => x + s.qty, 0);
       const txt = document.body.textContent;
       const fm = txt.match(/Fleets:\s*(\d+)\s*\/\s*(\d+)/);
+      const em = txt.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
+      if (fm || em) { const s0 = Situation.load(); s0.slots = { fleet: fm ? { used: +fm[1], total: +fm[2] } : (s0.slots?.fleet || null), expo: em ? { used: +em[1], total: +em[2] } : (s0.slots?.expo || null), at: Date.now() }; Situation.save(s0); }
       const snap = { key: a.key, body: a.body, total, ships, at: Date.now(), slots: fm ? { used: +fm[1], total: +fm[2] } : null };
       Situation.noteHangar(snap);
       return snap;
@@ -342,15 +355,97 @@
     return { actions, alerts };
   }
 
+  // ═══ EKSPEDYCJE (Odkrywca) ══════════════════════════════════════════════
+  // Cel: pozycja 16 układu bazy. Id misji uczymy się RAZ z wiersza 16 dowolnej
+  // strony galaktyki (fork ma własną numerację — nie zgadujemy).
+  const ExpoLink = {
+    get() { return Store.get("expo_link", null); },
+    learn() {
+      if (page() !== "galaxy" || this.get()) return;
+      for (const item of document.querySelectorAll(".galaxy-item")) {
+        const idx = item.querySelector(".planet-index");
+        if (!idx || idx.textContent.trim() !== "16") continue;
+        const a = item.querySelector("a[href*='/fleet']");
+        if (!a) { log(`[EXPO] wiersz 16 bez linku /fleet — markup: ${item.innerHTML.replace(/\s+/g, " ").slice(0, 600)}`, "warn"); return; }
+        const href = a.getAttribute("href");
+        const mission = (href.match(/[?&]mission=(\d+)/) || [])[1] || null;
+        Store.set("expo_link", { href, mission: mission ? parseInt(mission) : null, at: Date.now() });
+        log(`[EXPO] link ekspedycji wyuczony: ${href} (mission=${mission ?? "?"})`, "success");
+        return;
+      }
+    },
+  };
+
+  // CZYSTA funkcja: czy i czym wysłać falę. Wejście = sytuacja + config + czas
+  // + stan serii. Wyjście: null albo { toKey, ships:[{type,qty}], duration, last }.
+  // Reguły z 2.x (kupione incydentami): rozmiar fali ZAMROŻONY na serię (inaczej
+  // każda kolejna dzieli resztę i seria wygasa), a fala domykająca serię lub
+  // ostatni wolny slot zabiera CAŁY hangar (inaczej reszta z zaokrągleń stoi w domu).
+  function expoPlan(s, cfg, now, burst) {
+    const e = cfg.expo || {};
+    if (!e.enabled) return { skip: "wyłączone" };
+    if ((s.threats || []).some(t => t.arriveAt > now)) return { skip: "alarm — obrona ma pierwszeństwo" };
+    if ((s.flights || []).some(f => f.phase === "launched")) return { skip: "ratunek w powietrzu" };
+    const homeKey = e.launchFrom ? key(e.launchFrom) : (s.active && s.active.key);
+    if (!homeKey) return { skip: "nie wiem, skąd startować" };
+    const pair = (s.pairs || {})[homeKey];
+    if (!pair) return { skip: `[${homeKey}] nie ma na pasku planet` };
+    const body = (s.hangars[`${homeKey}|moon`]?.total > 0 && pair.hasMoon) ? "moon" : "planet";
+    const h = s.hangars[`${homeKey}|${body}`];
+    if (!h || now - h.at > 15 * 60e3) return { skip: `hangar [${homeKey}] ${body} nieznany/stary — najpierw rekonesans` };
+    const expo = s.slots?.expo, fleet = s.slots?.fleet;
+    const cap = Math.max(1, Math.min(e.waves || 1, expo?.total || e.waves || 1));
+    if (expo && expo.used >= cap) return { skip: `ekspedycje ${expo.used}/${expo.total} (limit fal ${cap}) — czekam na powroty` };
+    if (fleet && fleet.total && fleet.total - fleet.used <= (e.slotReserve || 0)) return { skip: `wolne sloty floty ≤ rezerwa (${e.slotReserve})` };
+    if (burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000)) return { skip: "odstęp między falami" };
+    const excl = (e.excludeTypes || []).map(t => String(t).toUpperCase());
+    const avail = (h.ships || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
+    if (!avail.length) return { skip: "brak statków do wysłania (poza wykluczeniami)" };
+    const waves = Math.max(1, e.waves || 1);
+    const frozen = burst && burst.waves === waves && burst.sizes && (burst.sent || 0) < waves ? burst.sizes : null;
+    const lastOfBurst = waves === 1 || (frozen && (burst.sent || 0) >= waves - 1) || (expo && expo.total && expo.used >= cap - 1);
+    const share = (qty) => { const raw = Math.floor(qty / waves); if (raw <= 0) return qty >= waves ? raw : (waves === 1 ? qty : 0); return raw; };
+    const ships = avail.map(x => ({ type: x.type, qty: lastOfBurst ? x.qty : (frozen?.[x.type] !== undefined ? Math.min(frozen[x.type], x.qty) : share(x.qty)) })).filter(x => x.qty > 0);
+    if (!ships.length) return { skip: `flota za mała na ${waves} fal — zmniejsz liczbę fal` };
+    const [g, sy] = homeKey.split(":");
+    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves,
+      duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
+  }
+
+  const Expo = {
+    burst() { return Store.get("burst", null); },
+    async tick(s) {
+      ExpoLink.learn();
+      if (Fly.mission() || !CFG.expo.enabled) return false;
+      const now = Date.now();
+      const b = this.burst();
+      const p = expoPlan(s, CFG, now, b);
+      if (p.skip) { if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info"); return false; }
+      const link = ExpoLink.get();
+      if (!link || !link.mission) {
+        if (!Once.said("expo|link", 15 * 60e3)) log("[EXPO] nie znam id misji ekspedycji — wejdź RAZ na dowolną stronę Galaxy, bot odczyta ją z wiersza 16.", "warn");
+        return false;
+      }
+      const sizes = {}; for (const x of p.ships) sizes[x.type] = x.qty;
+      const sent = (b && b.waves === p.waves && !p.last) ? (b.sent || 0) + 1 : (p.last ? 0 : 1);
+      Store.set("burst", p.last ? { waves: p.waves, sizes: null, sent: 0, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000 }
+                                : { waves: p.waves, sizes: (b && b.sizes && b.waves === p.waves) ? b.sizes : sizes, sent, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000 });
+      return Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
+        why: `ekspedycja ${p.last ? "(domyka serię — cały hangar)" : `(1/${p.waves} floty)`}`, speed: 100, plan: p.ships,
+        missionType: "EXPEDITION", takeResources: false, duration: p.duration, missionId: link.mission });
+    },
+  };
+
   // ═══ Fly — jeden wykonawca lotu ════════════════════════════════════════
   // Misja w Store "mission": { kind:"fly", fromKey, fromBody, toKey, toBody, speed, step, startedAt, air, recallAt, why }
   const Fly = {
     MISSIONS: ["DEPLOY", "DEPLOYMENT", "STATION", "STATIONING"],
     mission() { return Store.get("mission", null); },
+    url(m) { const [g, sy, po] = m.toKey.split(":"); return `/fleet?x=${g}&y=${sy}&z=${po}${m.missionId ? "&mission=" + m.missionId : ""}`; },
     start(a) {
       if (this.mission()) return false;
       Store.set("mission", { ...a, step: "switch", startedAt: Date.now() });
-      Journal.add("RATUNEK", `Start lotu: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody} (${a.why})`);
+      if (a.kind !== "expedition") Journal.add("RATUNEK", `Start lotu: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody} (${a.why})`);
       log(`[LOT] ${a.why}: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody}, ${a.speed}%`, "warn");
       return true;
     },
@@ -361,14 +456,14 @@
       try {
         if (m.step === "switch") {
           const a = PlanetBar.active();
-          if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(`/fleet?x=${m.toKey.split(":")[0]}&y=${m.toKey.split(":")[1]}&z=${m.toKey.split(":")[2]}`); return; }
+          if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(this.url(m)); return; }
           const el = PlanetBar.anchor(m.fromKey, m.fromBody);
           if (!el) return this.abort(`brak [${m.fromKey}] ${m.fromBody} na pasku planet`);
           log(`[LOT] przełączam na ${m.fromBody} [${m.fromKey}]`, "info"); m.step = "switch_wait"; Store.set("mission", m); el.click(); return;
         }
-        if (m.step === "switch_wait") { const a = PlanetBar.active(); if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(`/fleet?x=${m.toKey.split(":")[0]}&y=${m.toKey.split(":")[1]}&z=${m.toKey.split(":")[2]}`); } return; }
+        if (m.step === "switch_wait") { const a = PlanetBar.active(); if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(this.url(m)); } return; }
         if (m.step === "form") {
-          if (page() !== "fleet") { location.replace(`/fleet?x=${m.toKey.split(":")[0]}&y=${m.toKey.split(":")[1]}&z=${m.toKey.split(":")[2]}`); return; }
+          if (page() !== "fleet") { location.replace(this.url(m)); return; }
           if (this._busy) return; this._busy = true;
           try { await this.form(m); } finally { this._busy = false; }
         }
@@ -390,16 +485,21 @@
       const a = PlanetBar.active();
       if (!a || a.key !== m.fromKey || a.body !== m.fromBody) { m.step = "switch"; Store.set("mission", m); return; }
       await sleep(jitter(1200, 2200));
-      // krok 1: wszystkie statki
+      // krok 1: statki — wszystko (ratunek) albo plan (ekspedycja)
       const els = [...document.querySelectorAll("[data-ship-type]")];
       const snap = Hangar.scan();
       if (!snap || snap.total === 0) { log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
       const loaded = [];
+      const want = m.plan ? new Map(m.plan.map(p => [String(p.type).toUpperCase(), p.qty])) : null;
       for (const el of els) {
-        const qty = parseInt(el.dataset.shipQuantity || "0") || 0; if (!qty) continue;
+        const type = String(el.dataset.shipType || "").toUpperCase();
+        const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
+        const qty = want ? Math.min(want.get(type) || 0, have) : have;
+        if (qty <= 0) continue;
         const item = el.closest(".ship-item") || el.parentElement;
         const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
         if (!input) continue; setInput(input, qty); loaded.push(`${el.dataset.shipType}×${qty.toLocaleString("pl-PL")}`);
+        if (want) await sleep(jitter(120, 380));   // człowiek wypełnia pola po kolei, nie w jednej milisekundzie
       }
       if (!loaded.length) { log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error"); return this.abort("brak pól statków"); }
       log(`[LOT] załadowano: ${loaded.join(", ")}`, "info");
@@ -432,13 +532,31 @@
       const t1 = Date.now(); while (Date.now() - t1 < 8000 && !this.findButton("Send fleet")) await sleep(400);
       const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
       const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
-      let picked = null; for (const w of this.MISSIONS) { picked = missions.find(x => nameOf(x).includes(w)); if (picked) break; }
-      if (!picked) { log(`[LOT DOM] brak misji Deploy/Station. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error"); return this.abort("brak misji stacjonowania"); }
+      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : this.MISSIONS;
+      let picked = null; for (const w of wanted) { picked = missions.find(x => nameOf(x).includes(w)); if (picked) break; }
+      if (!picked) { log(`[LOT DOM] brak misji ${wanted[0]}. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error"); return this.abort(`brak misji ${wanted[0]}`); }
       picked.click(); await sleep(jitter(400, 800));
-      const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
-      if (allRes) allRes.click(); else [...document.querySelectorAll("a.btn-res-full, .btn-res-full")].forEach(b => b.click());
-      await sleep(jitter(400, 700));
-      await this.applyReserve();
+      // czas trwania ekspedycji: Odkrywca = „40 min"; gdy tej opcji nie ma — godziny
+      if (m.duration) {
+        const sel = [...document.querySelectorAll("select")].find(x => [...x.options].some(o => /min|hour|godz|\bh\b/i.test(o.textContent || "")));
+        const opts = sel ? [...sel.options] : [...document.querySelectorAll("[class*='duration'] a, [class*='duration'] li, [id*='duration'] option")];
+        const txt = (o) => (o.textContent || "").replace(/\s+/g, " ").trim();
+        let hit = null, minutesHit = false;
+        if (m.duration.minutes > 0) {
+          hit = opts.find(o => { const t = txt(o); const mm = t.match(/^(\d+)\s*min/i); if (mm && +mm[1] === m.duration.minutes) return true; const hh = t.match(/^(\d+[.,]\d+)\s*(h|hour|godz)/i); if (hh && hh[1].replace(",", ".").startsWith(String((m.duration.minutes / 60).toFixed(2)).slice(0, 3))) return true; return String(o.value ?? "") === String(m.duration.minutes) && /min/i.test(t); }) || null;
+          minutesHit = !!hit;
+        }
+        if (!hit) hit = opts.find(o => { const t = txt(o); return !/min/i.test(t) && (t.match(/^(\d+)\b/) || [])[1] === String(m.duration.hours); }) || null;
+        if (m.duration.minutes > 0 && !minutesHit && !Once.said("disc40", 15 * 60e3)) log(`[ODKRYWCA] brak opcji „${m.duration.minutes} min" (dostępne: ${opts.map(txt).join(", ") || "brak"}) — klasa to nie Odkrywca? Wysyłam na ${m.duration.hours} h.`, "warn");
+        if (hit) { if (sel) { sel.value = hit.value; sel.dispatchEvent(new Event("change", { bubbles: true })); } else hit.click(); log(`[EXPO] czas trwania: ${txt(hit)}`, "info"); await sleep(jitter(400, 700)); }
+        else if (!Once.said("dur_dom", 15 * 60e3)) log(`[EXPO DOM] nie znalazłem wyboru czasu trwania: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
+      }
+      if (m.takeResources !== false) {
+        const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
+        if (allRes) allRes.click(); else [...document.querySelectorAll("a.btn-res-full, .btn-res-full")].forEach(b => b.click());
+        await sleep(jitter(400, 700));
+        await this.applyReserve();
+      }
       const send = this.findButton("Send fleet") || [...document.querySelectorAll("a, button, input[type='submit']")].find(el => /send fleet/i.test(el.value || el.textContent || "") && el.offsetParent !== null);
       if (!send) return this.abort("brak przycisku Send fleet");
       const shipsBefore = snap.total;
@@ -450,11 +568,17 @@
       const ok = okUrl || (after && after.total < shipsBefore * 0.05);
       if (!ok) { const err = document.querySelector(".error, .alert, .modal.show, [class*='error']"); log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"})`, "error"); return this.abort("brak potwierdzenia wysyłki"); }
       const s = Situation.load();
-      s.flights = (s.flights || []).filter(f => f.fromKey !== m.fromKey);
-      s.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0 });
+      // v3.2.0: TYLKO loty obronne trafiają do `flights`. Ekspedycja tam wpisana
+      // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek
+      // — dokładnie ten rodzaj sprzężenia, przez który 2.x gubił flotę.
+      if (m.kind !== "expedition") {
+        s.flights = (s.flights || []).filter(f => f.fromKey !== m.fromKey);
+        s.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0 });
+      }
       Situation.save(s);
       Store.del("mission");
-      Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${loaded.length} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
+      if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${loaded.join(", ")} → [${m.toKey}]`, "success");
+      else Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${loaded.length} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
       if (okUrl) location.replace("/");
     },
     async applyReserve() {
@@ -632,7 +756,7 @@
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") { if (Fly.start(a)) { await Fly.tick(); } break; }
       }
-      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) await Recon.tick(s);
+      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) { if (!(await Recon.tick(s))) await Expo.tick(s); }
     } catch (e) { log(`[OBRONA] błąd pętli: ${e.message}`, "error"); }
     finally { running = false; try { UI.renderStatus(); } catch {} }
   }
@@ -660,6 +784,10 @@
           <button id="ogx3-recon" class="ogx3-btn"></button>
         </div>
         <div style="margin:6px 0">Rezerwa deuteru <input id="ogx3-res" style="width:120px" /> · prędkość ucieczki <input id="ogx3-spd" style="width:36px" />%</div>
+        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
+          <b>Ekspedycje</b> <button id="ogx3-expo" class="ogx3-btn"></button> <button id="ogx3-disc" class="ogx3-btn"></button><br>
+          fale <input id="ogx3-waves" style="width:34px" /> · rezerwa slotów <input id="ogx3-slotres" style="width:30px" /> · <span id="ogx3-expo-st" style="opacity:.75"></span>
+        </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button id="ogx3-sim-moon" class="ogx3-btn">TEST: atak na księżyc</button>
           <button id="ogx3-sim-planet" class="ogx3-btn">TEST: atak na planetę</button>
@@ -679,6 +807,10 @@
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
       $("ogx3-recon").onclick = () => { CFG.recon = !CFG.recon; saveCfg(); log(`Rekonesans hangarów ${CFG.recon ? "ON" : "OFF — bot nie będzie wiedział, gdzie stoi flota"}`, CFG.recon ? "info" : "warn"); this.renderStatus(); };
+      $("ogx3-expo").onclick = () => { CFG.expo.enabled = !CFG.expo.enabled; saveCfg(); log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-disc").onclick = () => { CFG.expo.discoverer40 = !CFG.expo.discoverer40; saveCfg(); log(`Odkrywca (40 min) ${CFG.expo.discoverer40 ? "ON" : "OFF — ekspedycje na " + CFG.expo.holdingHours + " h"}`, "info"); this.renderStatus(); };
+      $("ogx3-waves").value = String(CFG.expo.waves); $("ogx3-waves").onchange = (e) => { CFG.expo.waves = Math.max(1, parseInt(e.target.value) || 1); saveCfg(); Store.del("burst"); log(`Fale ekspedycji: ${CFG.expo.waves} (seria liczona od nowa)`, "info"); };
+      $("ogx3-slotres").value = String(CFG.expo.slotReserve); $("ogx3-slotres").onchange = (e) => { CFG.expo.slotReserve = Math.max(0, parseInt(e.target.value) || 0); saveCfg(); };
       $("ogx3-res").value = String(CFG.deutReserve || 0); $("ogx3-res").onchange = (e) => { CFG.deutReserve = parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0; saveCfg(); log(`Rezerwa deuteru: ${CFG.deutReserve.toLocaleString("pl-PL")}`, "info"); };
       $("ogx3-spd").value = String(CFG.airSpeedPct); $("ogx3-spd").onchange = (e) => { CFG.airSpeedPct = Math.max(1, Math.min(100, parseInt(e.target.value) || 10)); saveCfg(); };
       const sim = (body) => { const a = PlanetBar.active(); if (!a) return alert("Nie widzę aktywnej planety."); Store.set("sim", { key: a.key, body, arriveAt: Date.now() + 150e3, until: Date.now() + 180e3 }); log(`[TEST] symulacja: atak na ${body === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${a.key}], dolot 150 s. Auto-ratunek: ${CFG.autoRescue ? "ON (flota poleci!)" : "OFF (tylko decyzja w logu)"}`, "error"); defenceTick(); };
@@ -695,6 +827,10 @@
       if (!this.el) return; const $ = (id) => document.getElementById(id);
       $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#1e6b3a" : "#6b1e1e";
       $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (auto-ratunek OFF)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
+      $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "#1c2a44";
+      $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;
+      { const s0 = Situation.load(); const b = Store.get("burst", null); const e = s0.slots?.expo, f = s0.slots?.fleet;
+        $("ogx3-expo-st").textContent = `sloty: expo ${e ? e.used + "/" + e.total : "?"}, floty ${f ? f.used + "/" + f.total : "?"}${b && b.sent ? ` · seria ${b.sent}/${b.waves}` : ""}`; }
       $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`; $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`; $("ogx3-recon").textContent = `Rekonesans ${CFG.recon ? "ON" : "OFF"}`; $("ogx3-recon").style.background = CFG.recon ? "#1c2a44" : "#6b1e1e"; $("ogx3-topic").textContent = Notifier.topic();
       const s = Situation.load(); const now = Date.now();
       const th = (s.threats || []).filter(t => t.arriveAt > now);

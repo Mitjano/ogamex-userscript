@@ -185,14 +185,83 @@ console.log("\n── 12. decide() jest CZYSTA (bez DOM/GM/Date.now) ──");
 
 console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ──");
 {
-  const recon = bodyOf("async tick(s) {");
+  // UWAGA: Expo i Recon mają tę samą sygnaturę `async tick(s)` — szukamy w obrębie modułu Recon.
+  const reconMod = src.slice(src.indexOf("const Recon = {"));
+  const recon = reconMod.slice(reconMod.indexOf("async tick(s) {"), reconMod.indexOf("const defenceTick") >= 0 ? reconMod.indexOf("const defenceTick") : reconMod.length);
   check("rekonesans stoi przy trwającej misji", /Fly\.mission\(\)\) return false/.test(recon), recon.slice(0, 200));
   check("rekonesans stoi przy zagrożeniu", /threats[\s\S]{0,80}?arriveAt > now\)\) return false/.test(recon));
   check("rekonesans stoi, gdy lot jest w powietrzu", /phase === "launched"\)\) return false/.test(recon));
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
-  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) await Recon\.tick\(s\)/.test(src));
+  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{ if \(!\(await Recon\.tick\(s\)\)\) await Expo\.tick\(s\); \}/.test(src));
   check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
 }
 
-console.log(fails ? `\n${fails} FAIL — NIE WYPYCHAJ` : "\nDECYZJE 3.0: wszystko OK");
+
+// ═════════════════════════════════════════════════════════════════════════
+//  EKSPEDYCJE (v3.2.0) — czysta funkcja expoPlan(); klasa ODKRYWCA
+// ═════════════════════════════════════════════════════════════════════════
+const expoBody = bodyOf("function expoPlan(s, cfg, now, burst) {");
+const expoPlan = new Function("key", `return function expoPlan(s, cfg, now, burst) {${expoBody}}`)((c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null));
+const ECFG = { expo: { enabled: true, waves: 4, discoverer40: true, holdingHours: 1, gapMinSec: 60, gapMaxSec: 90, slotReserve: 1, excludeTypes: ["ASTEROID_MINER", "RECYCLER"], launchFrom: null } };
+function ebase(over = {}) {
+  return Object.assign({
+    pairs: { "1:100:5": { hasMoon: false, galaxy: 1, system: 100, position: 5 } },
+    hangars: { "1:100:5|planet": { total: 1000, at: NOW - 60000, ships: [{ type: "LIGHT_FIGHTER", qty: 800 }, { type: "SMALL_CARGO", qty: 200 }, { type: "ASTEROID_MINER", qty: 50 }] } },
+    threats: [], flights: [], slots: { fleet: { used: 0, total: 10 }, expo: { used: 0, total: 6 }, at: NOW }, active: { key: "1:100:5", body: "planet" },
+  }, over);
+}
+
+console.log("\n── 14. EKSPEDYCJE: podstawy ──");
+{
+  const p = expoPlan(ebase(), ECFG, NOW, null);
+  check("cel = pozycja 16 układu bazy", p.toKey === "1:100:16", JSON.stringify(p));
+  check("wykluczone typy nie lecą (minery, recyklery)", !p.ships.some(x => /MINER|RECYCL/.test(x.type)), JSON.stringify(p.ships));
+  check("podział 1/4 floty", p.ships.find(x => x.type === "LIGHT_FIGHTER").qty === 200 && p.ships.find(x => x.type === "SMALL_CARGO").qty === 50, JSON.stringify(p.ships));
+  check("Odkrywca: 40 min", p.duration.minutes === 40);
+  check("bez surowców na ekspedycji (decyduje Fly)", p.skip === undefined);
+}
+
+console.log("\n── 15. EKSPEDYCJE: obrona ma pierwszeństwo ──");
+{
+  check("alarm → żadnej fali", !!expoPlan(ebase({ threats: [threat("1:100:5", "planet", 300)] }), ECFG, NOW, null).skip);
+  check("ratunek w powietrzu → żadnej fali", !!expoPlan(ebase({ flights: [{ fromKey: "1:100:5", phase: "launched" }] }), ECFG, NOW, null).skip);
+  check("wyłączone w configu → nic", expoPlan(ebase(), { expo: { ...ECFG.expo, enabled: false } }, NOW, null).skip === "wyłączone");
+}
+
+console.log("\n── 16. EKSPEDYCJE: limity slotów i odstęp fal ──");
+{
+  check("sloty ekspedycji pełne → czekamy", /czekam na powroty/.test(expoPlan(ebase({ slots: { fleet: { used: 0, total: 10 }, expo: { used: 4, total: 6 }, at: NOW } }), ECFG, NOW, null).skip || ""));
+  check("wolne sloty floty ≤ rezerwa → czekamy", /rezerwa/.test(expoPlan(ebase({ slots: { fleet: { used: 9, total: 10 }, expo: { used: 0, total: 6 }, at: NOW } }), ECFG, NOW, null).skip || ""));
+  check("odstęp między falami respektowany", /odstęp/.test(expoPlan(ebase(), ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 1, lastSendAt: NOW - 10000, gapMs: 60000 }).skip || ""));
+  check("stary odczyt hangaru → najpierw rekonesans", /rekonesans/.test(expoPlan(ebase({ hangars: { "1:100:5|planet": { total: 1000, at: NOW - 20 * 60000, ships: [{ type: "LIGHT_FIGHTER", qty: 800 }] } } }), ECFG, NOW, null).skip || ""));
+}
+
+console.log("\n── 17. EKSPEDYCJE: seria (rozmiar zamrożony, ostatnia fala domyka hangar) ──");
+{
+  // hangar stopniał po 1. fali, ale rozmiar fali jest ZAMROŻONY z serii
+  const s = ebase({ hangars: { "1:100:5|planet": { total: 600, at: NOW - 60000, ships: [{ type: "LIGHT_FIGHTER", qty: 600 }] } } });
+  const p = expoPlan(s, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 1, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("2. fala serii = zamrożone 200, nie 150 (600/4)", p.ships[0].qty === 200, JSON.stringify(p.ships));
+  const last = expoPlan(s, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 3, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("ostatnia fala serii zabiera CAŁY hangar (zero resztek)", last.ships[0].qty === 600 && last.last === true, JSON.stringify(last.ships));
+  const fill = expoPlan(ebase({ slots: { fleet: { used: 0, total: 10 }, expo: { used: 3, total: 6 }, at: NOW } }), ECFG, NOW, null);
+  check("fala zapełniająca ostatni wolny slot też domyka hangar", fill.last === true && fill.ships[0].qty === 800, JSON.stringify(fill.ships));
+}
+
+console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
+{
+  const s = ebase({ hangars: { "1:100:5|planet": { total: 2, at: NOW - 60000, ships: [{ type: "SMALL_CARGO", qty: 2 }] } } });
+  check("2 statki na 4 fale → nie dzielimy do zera, mówimy wprost", /za mała/.test(expoPlan(s, ECFG, NOW, null).skip || ""), JSON.stringify(expoPlan(s, ECFG, NOW, null)));
+  check("waves=1 → leci wszystko", expoPlan(s, { expo: { ...ECFG.expo, waves: 1 } }, NOW, null).ships[0].qty === 2);
+}
+
+console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
+{
+  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition"\) \{[\s\S]{0,400}?s\.flights\.push/.test(src), "brak wyłączenia expedition z flights");
+  check("ekonomia woła się po obronie i rekonesansie", /if \(!\(await Recon\.tick\(s\)\)\) await Expo\.tick\(s\)/.test(src));
+  check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
+}
+
+console.log("");
+console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
