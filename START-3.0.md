@@ -44,8 +44,9 @@ Profil gracza: **ODKRYWCA** (ekspedycje 40 min ustawione domyślnie).
 
 ## Testy
 ```
-node test3-all.js        # 89 asercji + składnia; sprawdzaj `echo $?` BEZ pipe'a
+node test3-all.js        # 145 asercji + 22 sprawdzenia E2E + składnia; sprawdzaj `echo $?` BEZ pipe'a
 ```
+`test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — przechodzi pełną ścieżkę od wykrycia ataku do kliknięcia „Send fleet", z przeładowaniami strony po drodze.
 Macierz `test3-decide.js` obejmuje: obronę (24 scenariusze, w tym wszystkie incydenty 27.08), FS nocny, okno nocne, ekspedycje z serią, mining, złom, humanizera i strażników „ekonomia nie blokuje obrony".
 
 ## Czego świadomie nie ma

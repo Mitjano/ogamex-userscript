@@ -83,6 +83,24 @@ Osobno, jako **braki wobec 2.x** (naprawione w `v3.9.1`):
 - **Brak detektora strony błędu forka** (2.x stał na niej godzinami). Teraz wykrycie + powrót do gry.
 - **Sesja:** pominięcie odczytu przy „sesja padła" sprawiało, że nic nie mogło stwierdzić jej powrotu — sztywne 15 min ślepoty. Teraz ponawianie i samonaprawa nawigacją po 2 min.
 
+## 5b. TEST E2E — bot uruchomiony na sztucznej grze (`v3.9.3`)
+Pytanie „czy obrona **działa**" nie da się zamknąć testem wzorców w źródle. Dlatego powstał `test3-e2e.js`: **cały plik `ogamex-3.user.js` uruchamiany w jsdom na atrapie forka** (pasek planet, pasek misji, panel Events, lista ruchów po AJAX, trzykrokowy formularz floty), gdzie nawigacja = ponowne wykonanie skryptu, tak jak w przeglądarce.
+
+Co przechodzi (22 sprawdzenia):
+- **pełna ścieżka ewakuacji**: wykrycie ataku → decyzja → przełączenie ciała → wypełnienie hangaru → 3 kroki formularza → „Send fleet"; flota wylatuje z atakowanego księżyca **na sąsiedni księżyc**, zabiera cały hangar, misja to Deploy, hangar źródła pustoszeje;
+- **lot zapisany w stanie z zaplanowanym zawrotem** (bez tego flota zostaje na refugium na zawsze);
+- atak na planetę przy flocie na księżycu → **zero ruchu** i komunikat o bezpiecznej stronie;
+- tryb Obserwatora: alarm bez ruchu floty;
+- dwie karty: druga ustępuje, brak podwójnej wysyłki;
+- **wielokrotne przeładowania strony nie gubią misji** i nie powodują drugiej wysyłki;
+- atak na **nieaktywną** kolonię (której lista ruchów nie pokazuje) → bot ją zauważa i wyprowadza flotę;
+- ekspedycja leci i **nie zapisuje się jako lot obronny**.
+
+Symulator wykrył trzy defekty niewidoczne dla testów wzorcowych — wszystkie naprawione:
+1. rekonesans przy ataku szedł zawsze na **planetę**, więc przy flocie na księżycu bot zostawał w stanie „nie wiem, gdzie flota";
+2. rekonesans nie sprawdzał **drugiego ciała pary**, więc nie potrafił stwierdzić „bezpiecznej strony";
+3. **`ReferenceError: homeKey`** w module ekspedycji — błąd wywalał całą ekonomię (łapany, ale ekspedycje nigdy by nie poleciały).
+
 ## 6. Ocena planu
 Plan („dusiciel": parsery 1:1 z 2.x, stan i decyzje od nowa) **broni się** — wszystkie sześć znalezisk tego audytu to defekty w NOWYM kodzie stanu/decyzji, żaden w przeniesionych parserach. To potwierdza tezę audytu z rana: parsery były sprawdzone bojowo, a gubił się stan.
 Zakres na start (obrona + rekonesans + FS nocny + ekspedycje Odkrywcy + mining + złom + humanizer) odpowiada temu, co 2.x realnie robił, minus rzeczy bezprzedmiotowe w nowym uniwersum (brama, odbudowa księżyca, farmienie nieaktywnych).
