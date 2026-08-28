@@ -441,8 +441,11 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("pętla wchodzenia na formularz przerywa misję, nie kręci stroną", /function navGuard\(m, fly\)/.test(src) && /tries >= 3[\s\S]{0,200}?fly\.abort/.test(src));
   check("misja ma sufit nawigacji (ping-pong przełączania ciał)", /m\.navs/.test(src) && /navMax|NAV_MAX/.test(src));
   check("wejście na Fleet przy alarmie ma limit prób (nie przeładowuje gry w kółko)", /alarm_scan/.test(src) && /r2\.n >= 3[\s\S]{0,400}?Journal\.add\("BŁĄD"/.test(src));
+  check("nadzorca milczy, gdy bot jest WYŁĄCZONY ręcznie", /function watchdog\(\) \{\s*\n\s*if \(!CFG\.enabled\) return;/.test(src));
+  check("[TEMPO] liczy przeładowania BOTA, nie kliknięcia operatora", /const byBot = loads\.filter/.test(src) && /byBot >= 4/.test(src));
+  check("rekonesans nie wyrywa strony grającemu (ale nie dłużej niż 5 min)", /manual_at/.test(src) && /now - manual < 45e3 && now - \(st\.at \|\| 0\) < 5 \* 60e3/.test(src));
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
-  check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,600}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
+  check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));
   check("nadzorca ma własny dławik (nie pętla przeładowań)", /watchdog_at[\s\S]{0,120}?10 \* 60e3\) return;/.test(src));
 }

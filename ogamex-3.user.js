@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.12.0
+// @version      3.12.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.12.0";
+  const VERSION = "3.12.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1371,6 +1371,11 @@
       if (flightsBlocking(s, Date.now())) return false;    // lot w powietrzu: nie kręcimy stroną
       const st = this.st();
       if (now - (st.at || 0) < 90e3) return false;                              // najwyżej raz na 90 s
+      const manual = Store.get("manual_at", 0) || 0;
+      if (now - manual < 45e3 && now - (st.at || 0) < 5 * 60e3) {
+        if (!Once.said("recon_manual", 5 * 60e3)) log("[REKONESANS] grasz — nie przełączam Ci planety. Wrócę, gdy przestaniesz klikać (najdalej za 5 min).", "info");
+        return false;
+      }
       const stale = (k, b) => { const h = s.hangars[`${k}|${b}`]; return !h || now - h.at > CFG.reconMs; };
       const a = s.active;
       if (a && stale(a.key, a.body)) {
@@ -1523,6 +1528,7 @@
   // karta, zawieszony await, wyjątek poza łańcuchem), strona idzie w reload —
   // martwy bot, który wygląda na żywego, to najgorszy stan (lekcja 2.x).
   function watchdog() {
+    if (!CFG.enabled) return;                       // bot wyłączony ręcznie = cisza jest w porządku
     const last = Store.get("last_tick", 0) || 0;
     if (!last || Date.now() - last < 3 * 60e3) return;
     if (Fly.mission()) return;
@@ -1687,7 +1693,7 @@
         document.addEventListener("mousemove", (e) => { if (!drag) return; d.style.left = (sl + e.clientX - sx) + "px"; d.style.top = (st + e.clientY - sy) + "px"; d.style.right = "auto"; });
         document.addEventListener("mouseup", () => { if (!drag) return; drag = false; const r = d.getBoundingClientRect(); Store.set("ui_pos", { left: Math.round(r.left), top: Math.round(r.top) }); }); }
 
-      $("ogx3-on").onclick = () => { CFG.enabled = !CFG.enabled; saveCfg(); log(`Bot ${CFG.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-on").onclick = () => { CFG.enabled = !CFG.enabled; saveCfg(); if (CFG.enabled) Store.set("last_tick", Date.now()); log(`Bot ${CFG.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-auto").onclick = () => { CFG.autoRescue = !CFG.autoRescue; saveCfg(); log(`Auto-ratunek ${CFG.autoRescue ? "ON — bot RUSZA flotą" : "OFF — obserwator"}`, "warn"); this.renderStatus(); };
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
@@ -1857,11 +1863,13 @@
     const nl = Store.get("nav_last", null);
     const fresh = nl && Date.now() - nl.at < 20e3;
     log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${location.pathname}${location.search || ""}${fresh ? ` ← bot: ${nl.why}` : " ← otwarte ręcznie"}`, "info");
-    const loads = (Store.get("loads", []) || []).filter(t => Date.now() - t < 60e3);
-    loads.push(Date.now()); Store.set("loads", loads.slice(-20));
-    if (loads.length >= 5 && !Once.said("tempo", 60e3)) {
-      log(`[TEMPO] ${loads.length} startów skryptu w ostatniej minucie. Ostatnia nawigacja bota: ${nl ? `${nl.why} → ${nl.to} (${Math.round((Date.now() - nl.at) / 1000)}s temu)` : "brak"}. Jeśli to nie Ty klikasz — pokaż tę linię Claude'owi.`, "warn");
+    const loads = (Store.get("loads", []) || []).filter(x => Date.now() - (x.t || x) < 60e3).map(x => (typeof x === "number" ? { t: x, bot: false } : x));
+    loads.push({ t: Date.now(), bot: !!fresh }); Store.set("loads", loads.slice(-20));
+    const byBot = loads.filter(x => x.bot).length;
+    if (byBot >= 4 && !Once.said("tempo", 60e3)) {
+      log(`[TEMPO] ${byBot} z ${loads.length} przeładowań w ostatniej minucie zrobił BOT (ostatnie: ${nl ? `${nl.why} → ${nl.to}` : "?"}). To wygląda na pętlę — pokaż tę linię Claude'owi.`, "warn");
     }
+    if (!fresh) Store.set("manual_at", Date.now());   // operator sam klika po grze
   }
   try { if (page() === "fleet") Hangar.scan(); } catch (e) { log(`[START] odczyt hangaru: ${e.message}`, "warn"); }
   try { Wake.ensure(); Calib.collect(); } catch (e) { log(`[START] wake/kalibracja: ${e.message}`, "warn"); }

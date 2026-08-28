@@ -72,6 +72,9 @@ Macierz `test3-decide.js` obejmuje: obronę (27 scenariuszy, w tym wszystkie inc
 
 ## Gdy bot przeładowuje grę w kółko (v3.12.0)
 Log mówi to teraz wprost: linia startowa kończy się adresem strony i „← bot: <powód>" albo „← otwarte ręcznie", a przy ≥5 startach na minutę pojawia się wiersz **[TEMPO]** z ostatnią nawigacją bota. Twarde bezpieczniki: misja przerywa się po **6 nawigacjach** bez otwarcia formularza, wejście na Fleet przy alarmie po **3 próbach** (potem push „nie mogę odczytać hangaru"), a ekonomia respektuje 3-minutową karencję po nieudanym locie, więc nie startuje od nowa w tę samą pętlę.
+Czego [TEMPO] **nie** robi: nie krzyczy na Twoje klikanie. Każde kliknięcie w tym forku to pełne przeładowanie strony, więc przy rozbudowie budynków bywa i 18 startów na minutę — alarm liczy wyłącznie przeładowania z powodem „← bot:". Rekonesans też ustępuje: gdy klikasz po grze, nie przełącza Ci planety (najdalej przez 5 min).
+Nadzorca (przeładowanie po 3 min ciszy pętli) **nie działa przy bocie OFF** — wyłączony bot ma prawo milczeć; wcześniej co 10 min przeładowywał grę i słał push „BŁĄD".
+
 Incydent źródłowy: 28.08 22:17–22:22 — ~30 przeładowań w 5 minut, w logu SAME linie startowe, koniec dopiero na limicie czasu misji (push „BŁĄD"). Powody ginęły, bo log zapisywał się do GM storage z opóźnieniem 800 ms, a każda nawigacja następuje natychmiast po wpisie.
 
 ## Czego świadomie nie ma
