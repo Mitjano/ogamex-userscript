@@ -159,11 +159,11 @@ console.log("\n── 10. Hangar nieznany / pusty ──");
 {
   const s = base({ hangars: {}, threats: [threat("3:272:7", "moon", 300)] });
   const r = decide(s, CFG, NOW);
-  check("brak wiedzy o hangarze → alarm, nie ruszamy floty", r.actions.length === 0 && r.alerts.length === 1, JSON.stringify(r));
+  check("brak wiedzy o hangarze → alarm + prośba o rekonesans, ZERO lotów", !r.actions.some(a => a.kind === "fly") && r.actions.some(a => a.kind === "recon") && r.alerts.length === 1, JSON.stringify(r));
   const s2 = base({ hangars: { "3:272:7|moon": { total: 0, at: NOW - 30000, ships: [] } }, threats: [threat("3:272:7", "moon", 300)] });
-  check("hangar pusty → alarm, zero lotów", decide(s2, CFG, NOW).actions.length === 0);
+  check("hangar pusty → alarm, zero lotów", !decide(s2, CFG, NOW).actions.some(a => a.kind === "fly"));
   const s3 = base({ hangars: { "3:272:7|moon": H(1e12, "moon", 50 * 3600e3) }, threats: [threat("3:272:7", "moon", 300)] });
-  check("odczyt hangaru starszy niż 48 h → nie ufamy, tylko alarm", decide(s3, CFG, NOW).actions.length === 0);
+  check("odczyt hangaru starszy niż 48 h → nie ufamy, żadnego lotu", !decide(s3, CFG, NOW).actions.some(a => a.kind === "fly"));
 }
 
 console.log("\n── 11. Sąsiad pod atakiem nie jest refugium ──");
@@ -189,7 +189,7 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
   const reconMod = src.slice(src.indexOf("const Recon = {"));
   const recon = reconMod.slice(reconMod.indexOf("async tick(s) {"), reconMod.indexOf("const defenceTick") >= 0 ? reconMod.indexOf("const defenceTick") : reconMod.length);
   check("rekonesans stoi przy trwającej misji", /Fly\.mission\(\)\) return false/.test(recon), recon.slice(0, 200));
-  check("rekonesans stoi przy zagrożeniu", /threats[\s\S]{0,80}?arriveAt > now\)\) return false/.test(recon));
+  check("rekonesans stoi przy ATAKU, ale sonda go nie blokuje", /threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > now\)\) return false/.test(recon));
   check("rekonesans stoi, gdy lot jest w powietrzu", /phase === "launched"\)\) return false/.test(recon));
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
   check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
@@ -257,7 +257,7 @@ console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
 
 console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
 {
-  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"\) \{[\s\S]{0,400}?s\.flights\.push/.test(src), "brak wyłączenia expedition z flights");
+  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"\) \{[\s\S]{0,500}?flights/.test(src), "brak wyłączenia expedition z flights");
   check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
   check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
 }
@@ -319,7 +319,7 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   check("po końcu zakresu przechodzimy do następnego", adv(cur).idx === 1 && adv(cur).sys === null);
   check("w środku zakresu idziemy o jeden system dalej", adv({ ...st, sys: 10 }).sys === 11);
   const asterMod = src.slice(src.indexOf("const Aster = {"));
-  check("mining stoi przy alarmie", /threats \|\| \[\]\)\.some\(t => t\.arriveAt > Date\.now\(\)\)\) return false/.test(asterMod));
+  check("mining stoi przy ATAKU (ale nie przy samej sondzie)", /threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > Date\.now\(\)\)\) return false/.test(asterMod));
   check("mining pyta humanizera", /Human\.economyAllowed\(s\)/.test(asterMod));
   check("bez minerów w hangarze nie skanujemy (zero jałowej nawigacji)", /brak minerów w hangarze/.test(asterMod));
   check("asteroida znikająca za chwilę pomijana (minTtlSec)", /hit\.ttl < min/.test(asterMod));
@@ -330,7 +330,7 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
 console.log("── 24. ZŁOM (v3.6.0) ──");
 {
   const dm = src.slice(src.indexOf("const Debris = {"));
-  check("złom stoi przy alarmie i przerwie", /arriveAt > Date\.now\(\)\)\) return false/.test(dm) && /if \(Human\.economyAllowed\(s\)\) return false/.test(dm));
+  check("złom stoi przy ataku i przerwie", /t\.attack && t\.arriveAt > Date\.now\(\)\)\) return false/.test(dm) && /if \(Human\.economyAllowed\(s\)\) return false/.test(dm));
   check("bez recyklerów nic nie robi", /RECYCLER/.test(dm));
   check("sprawdza poz. 16 (ekspedycje) i pozycję bazy (po bitwie)", /wanted = \[16, pos\]/.test(dm));
   check("cel typu ZŁOM to data-planet-type=3", /m\.toBody === "debris" \? "3"/.test(src));
@@ -404,6 +404,43 @@ console.log("── 29. RĘCZNE DŹWIGNIE OPERATORA (v3.8.0) ──");
   check("ręczny ratunek nie czeka na potwierdzenie (seenAt: 0)", /seenAt: 0, source: "operator"/.test(src));
   check("przycisk WRÓĆ NA BAZĘ zawraca lot albo ściąga flotę z planety na księżyc", /ogx3-home[\s\S]{0,900}?Fly\.recall\(f\)[\s\S]{0,700}?toBody: "moon"/.test(src));
   check("gdy nie ma czego ratować — mówi wprost, nie udaje sukcesu", /Nie widzę floty na/.test(src) && /Nie mam dokąd uciec/.test(src));
+}
+
+console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
+{
+  // TabLock — id musi przetrwać nawigację TEJ karty
+  const tl = src.slice(src.indexOf("const TabLock = {"));
+  check("id karty w sessionStorage (przeżywa nawigacje) — bot nie blokuje sam siebie", /sessionStorage\.getItem\("ogx3_tab"\)/.test(tl) && !/ID: Math\.random/.test(tl));
+  check("karta widoczna przejmuje od zdławionej w tle", /visible && !l\.visible\) \? 45e3 : 90e3/.test(tl));
+  // domykanie lotów
+  const ref = src.slice(src.indexOf("async refresh()"));
+  check("lot BEZ zawrotu domyka hangar CELU (inaczej 'dom = księżyc' blokował obronę 12 h)", /f\.recallAt \? `\$\{f\.fromKey\}\|\$\{f\.fromBody\}` : `\$\{f\.toKey\}\|\$\{f\.toBody\}`/.test(ref));
+  check("lot bez zawrotu ma twardy limit 30 min", /!f\.recallAt && now - f\.sentAt > 30 \* 60e3/.test(ref));
+  // zawrót
+  const rc = src.slice(src.indexOf("async recall(f0)"));
+  check("zawrót pracuje na obiekcie z ZAPISYWANEGO stanu (mutacje się utrwalają)", /const f = \(s\.flights \|\| \[\]\)\.find/.test(rc));
+  // sondy
+  check("sondy nie blokują rekonesansu ani ekonomii", (src.match(/t\.attack && t\.arriveAt >/g) || []).length >= 4);
+  // wysyłka
+  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,200}?send\.click\(\)/.test(src));
+  check("stempel wysyłki blokuje powtórkę po przeładowaniu", /Store\.get\("last_send"[\s\S]{0,400}?nie powtarzam/.test(src));
+  check("nieudana wysyłka zdejmuje wpis pending", /if \(!ok\) \{ s\.flights = \(s\.flights \|\| \[\]\)\.filter\(f => !\(f\.fromKey === m\.fromKey && f\.pending\)\)/.test(src));
+  // pola statków
+  check("pola statków weryfikowane po wpisaniu (2 rundy)", /formularz zgubił \$\{fixed\} pól statków/.test(src));
+  // prędkość
+  check("nieustawiona prędkość = błąd + push, nie cicha zgoda", /NIE USTAWIONA[\s\S]{0,300}?Journal\.add\("BŁĄD"/.test(src));
+  // sesja
+  check("sesja: ponawiamy odczyt i wykrywamy powrót", /retryDue\(\)/.test(src) && /odzyskana — obrona znów widzi/.test(src));
+  check("sesja: samonaprawa nawigacją po 2 min", /maybeRecover\(\)[\s\S]{0,600}?location\.replace\("\/"\)/.test(src));
+  // pusty/nieznany markup
+  check("brak paska planet na /fleet → zrzut DOM + push, nie cichy null", /nie rozpoznaję paska planet/.test(src));
+  check("wrogi wiersz bez rozpoznanego celu → zrzut, nie cisza", /wrogi wiersz, którego CELU nie rozpoznałem/.test(src));
+  // karencja po nieudanym locie
+  check("nieudany lot = karencja trasy (koniec pętli co 5 min)", /fly_block/.test(src) && /Fly\.blocked\(a\)/.test(src));
+  // config
+  check("config scalany GŁĘBOKO (po aktualizacji nie brakuje pól)", /Object\.assign\(\{\}, v, saved\[k\] \|\| \{\}\)/.test(src));
+  // start
+  check("kod startowy w try — wyjątek nie zabija rejestracji pętli", /try \{ UI\.build\(\); \} catch/.test(src));
 }
 
 console.log("");

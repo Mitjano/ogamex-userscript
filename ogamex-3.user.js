@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.8.0
+// @version      3.9.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.8.0";
+  const VERSION = "3.9.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -124,7 +124,17 @@
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
     },
   };
-  const CFG = Object.assign({}, DEFAULTS, Store.get("cfg", {}) || {});
+  // v3.9.0 (audyt): płytki Object.assign nadpisywał CAŁE podobiekty (fs/expo/aster/
+  // human/debris) zapisem z przeglądarki — po aktualizacji brakowało nowych pól
+  // domyślnych (np. human.breakEveryMinMin → jitter(undefined) = NaN).
+  const CFG = (() => {
+    const saved = Store.get("cfg", {}) || {};
+    const out = {};
+    for (const [k, v] of Object.entries(DEFAULTS)) {
+      out[k] = (v && typeof v === "object" && !Array.isArray(v)) ? Object.assign({}, v, saved[k] || {}) : (saved[k] !== undefined ? saved[k] : v);
+    }
+    return out;
+  })();
   const saveCfg = () => Store.set("cfg", CFG);
 
   // ─── Pomocnicze ──────────────────────────────────────────────────────────
@@ -224,6 +234,7 @@
         const res = await fetchT(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
         if (!res.ok) return { ok: false, rows: [] };
         const html = await res.text();
+        Session.tried();
         if (looksLoggedOut(res, html)) { Session.lost(); return { ok: false, rows: [], loggedOut: true }; }
         Session.ok();
         const doc = new DOMParser().parseFromString(html, "text/html");
@@ -241,7 +252,16 @@
   const Hangar = {
     scan() {
       if (page() !== "fleet") return null;
-      const a = PlanetBar.active(); if (!a) return null;
+      const a = PlanetBar.active();
+      if (!a) {
+        // v3.9.0 (audyt): cichy null = bot trwale ślepy na położenie floty i NIKT
+        // się o tym nie dowie. Nieznany markup paska planet musi zostawić zrzut.
+        if (!Once.said("nosidebar", 30 * 60e3)) {
+          log(`[LOT DOM] jestem na /fleet, ale nie rozpoznaję paska planet (a.planet-select/.moon-select). Markup: ${(document.querySelector("#planetList, .planet-list, aside, nav") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 2000)}`, "error");
+          Journal.add("BŁĄD", "Nie rozpoznaję paska planet na stronie Fleet — bot nie wie, gdzie stoi flota. Wyślij log.");
+        }
+        return null;
+      }
       const ships = [...document.querySelectorAll("[data-ship-type]")].map(el => ({ type: el.dataset.shipType, qty: parseInt(el.dataset.shipQuantity || "0") || 0 })).filter(s => s.type);
       const total = ships.reduce((x, s) => x + s.qty, 0);
       const txt = document.body.textContent;
@@ -256,8 +276,24 @@
 
   const Session = {
     lost() { const s = Store.get("session", {}) || {}; if (!s.lostAt) { s.lostAt = Date.now(); Store.set("session", s); log("[SESJA] gra odpowiada stroną logowania — obrona ŚLEPA. Zaloguj się.", "error"); Journal.add("BŁĄD", "SESJA WYGASŁA — zaloguj się w grze."); } },
-    ok() { const s = Store.get("session", {}) || {}; if (s.lostAt) Store.set("session", {}); },
+    ok() { const st = Store.get("session", {}) || {}; if (st.lostAt) { Store.set("session", {}); log("[SESJA] odzyskana — obrona znów widzi.", "success"); } },
     lostRecently() { const s = Store.get("session", {}) || {}; return !!s.lostAt && Date.now() - s.lostAt < 15 * 60e3; },
+    // v3.9.0 (audyt): pomijanie fetchu przy "sesja padła" sprawiało, że NIC nie mogło
+    // stwierdzić powrotu sesji — bot czekał sztywne 15 min. Próbujemy dalej, rzadziej.
+    retryDue() { const st = Store.get("session", {}) || {}; return Date.now() - (st.triedAt || 0) > 60e3; },
+    tried() { const st = Store.get("session", {}) || {}; Store.set("session", { ...st, triedAt: Date.now() }); },
+    // 2 min po wykryciu: JEDNA nawigacja na "/" — fork bywa zalogowany po ciasteczku,
+    // a tylko AJAX dostał stronę logowania.
+    maybeRecover() {
+      const st = Store.get("session", {}) || {};
+      if (!st.lostAt || Date.now() - st.lostAt < 2 * 60e3) return false;
+      if (Date.now() - (st.navAt || 0) < 15 * 60e3) return false;
+      if (Fly.mission()) return false;
+      Store.set("session", { ...st, navAt: Date.now() });
+      log("[SESJA] 2 min od wykrycia wylogowania — próbuję wejść na stronę główną.", "warn");
+      setTimeout(() => location.replace("/"), 800);
+      return true;
+    },
   };
 
   // ═══ SITUATION — jedno źródło prawdy ════════════════════════════════════
@@ -278,7 +314,8 @@
       const bar = Bar.read(); if (bar) s.bar = { ...bar, at: now };
       s.night = nightWindow(CFG.fs, new Date(now));
       const evRows = Rows.readEvents(own);
-      const list = Session.lostRecently() ? { ok: false, rows: [] } : await Rows.fetchList(own);
+      const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
+      Session.maybeRecover();
       const rows = [...evRows.map(r => ({ ...r, source: "events" })), ...list.rows.map(r => ({ ...r, source: "list" }))];
       // symulacja (panel): syntetyczny wrogi wiersz
       const sim = Store.get("sim", null);
@@ -288,8 +325,17 @@
       const seen = new Map();
       for (const t of s.threats) if ((t.arriveAt || 0) + 60e3 > now) seen.set(t.id || `${t.dst}|${t.attack ? "A" : "S"}|${Math.round((t.arriveAt || 0) / 20000)}`, t);
       for (const r of rows) {
-        if (r.mine || r.friendly || !r.dst || (!r.attack && !r.spy) || r.isReturn) continue;
-        if (!own.has(r.dst)) continue;
+        if (r.mine || r.friendly || r.isReturn) continue;
+        // v3.9.0 (audyt): wrogi wiersz, którego celu nie umiemy odczytać, znikał BEZ
+        // ŚLADU — dokładnie tam, gdzie boli najbardziej. Zrzut zamiast ciszy.
+        if ((r.attack || r.spy) && (!r.dst || !own.has(r.dst))) {
+          if (r.attack && !Once.said(`badrow|${r.id || r.html.slice(0, 40)}`, 10 * 60e3)) {
+            log(`[ATAK DOM] wrogi wiersz, którego CELU nie rozpoznałem (dst=${r.dst || "brak"}): ${r.html}`, "error");
+            Journal.add("BŁĄD", `Wrogi wiersz bez rozpoznanego celu (${r.type}) — sprawdź grę i wyślij log.`);
+          }
+          continue;
+        }
+        if (!r.attack && !r.spy) continue;
         const arriveAt = now + (r.eta || 0) * 1000;
         const k = r.id || `${r.dst}|${r.attack ? "A" : "S"}|${Math.round(arriveAt / 20000)}`;
         const prev = seen.get(k);
@@ -314,9 +360,18 @@
         for (const f of (cur.flights || [])) if (!(s.flights || []).some(x => x.fromKey === f.fromKey && x.sentAt === f.sentAt)) (s.flights = s.flights || []).push(f);
       }
       // loty wysłane przez nas: zamknij te, których hangar-cel/źródło już pełny (hangar > zegar)
+      // v3.9.0 (audyt): lot domykał się WYŁĄCZNIE po zapełnieniu hangaru ŹRÓDŁA.
+      // Dla lotu planeta→księżyc ("dom = księżyc") źródło zostaje puste na zawsze,
+      // więc wpis wisiał 12 h i przez cały ten czas decide() uznawał parę za
+      // "w locie" — czyli po pierwszej rutynowej akcji bot przestawał bronić tej pary.
+      // Teraz: lot z zawrotem domyka hangar ŹRÓDŁA (flota wróciła), lot bez zawrotu
+      // (dom/swap) domyka hangar CELU (flota doleciała).
       s.flights = (s.flights || []).filter(f => {
-        const homeH = s.hangars[`${f.fromKey}|${f.fromBody}`];
-        if (homeH && homeH.total > 0 && homeH.at > f.sentAt + 60e3) { log(`[LOT] domknięty — hangar [${f.fromKey}] ${f.fromBody} pełny (${homeH.total.toLocaleString("pl-PL")}).`, "success"); return false; }
+        if (f.pending) return true;
+        const watchKey = f.recallAt ? `${f.fromKey}|${f.fromBody}` : `${f.toKey}|${f.toBody}`;
+        const h = s.hangars[watchKey];
+        if (h && h.total > 0 && h.at > f.sentAt + 60e3) { log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${h.total.toLocaleString("pl-PL")}).`, "success"); return false; }
+        if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis, para znów pod pełną obroną.`, "warn"); return false; }
         if (now - f.sentAt > 12 * 3600e3) return false;
         return true;
       });
@@ -399,7 +454,13 @@
       const soonest = Math.min(...th.map(t => t.arriveAt));
       const secs = Math.round((soonest - now) / 1000);
       const firstSeen = Math.min(...th.map(t => t.seenAt));
-      if (!fleet) { alerts.push({ key: k, level: "info", msg: `atak na [${k}] za ${secs}s — hangar nieznany/pusty wg mapy` }); continue; }
+      if (!fleet) {
+        // v3.9.0 (audyt): "nie wiem, gdzie flota" + "nie sprawdzę, bo alarm" = zero
+        // akcji przez cały dolot. Gdy jest czas (>90 s), prosimy o rekonesans TEJ pary.
+        alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru)` });
+        if (secs > 90) actions.push({ kind: "recon", key: k, why: "atak, a hangar nieznany — muszę sprawdzić, gdzie flota" });
+        continue;
+      }
       const bodies = attackedBodies(k);
       const f = inFlightFrom(k);
       if (f) { if (f.kind === "air" && f.phase === "launched") { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); } continue; }
@@ -487,7 +548,7 @@
   function expoPlan(s, cfg, now, burst) {
     const e = cfg.expo || {};
     if (!e.enabled) return { skip: "wyłączone" };
-    if ((s.threats || []).some(t => t.arriveAt > now)) return { skip: "alarm — obrona ma pierwszeństwo" };
+    if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return { skip: "alarm — obrona ma pierwszeństwo" };
     if ((s.flights || []).some(f => f.phase === "launched")) return { skip: "ratunek w powietrzu" };
     const homeKey = e.launchFrom ? key(e.launchFrom) : (s.active && s.active.key);
     if (!homeKey) return { skip: "nie wiem, skąd startować" };
@@ -610,7 +671,7 @@
       if (!CFG.aster.enabled || Fly.mission()) return false;
       const why = Human.economyAllowed(s);
       if (why) { if (!Once.said("aster|" + why.slice(0, 12), 10 * 60e3)) log(`[ASTER] wstrzymane: ${why}`, "info"); return false; }
-      if ((s.threats || []).some(t => t.arriveAt > Date.now())) return false;
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
       let st = this.st();
       const now = Date.now();
       if (st.sentAt && now - st.sentAt < 5 * 60e3) return false;                 // po wysyłce daj lot rozpocząć
@@ -679,7 +740,7 @@
     async tick(s) {
       if (!CFG.debris.enabled || Fly.mission()) return false;
       if (Human.economyAllowed(s)) return false;
-      if ((s.threats || []).some(t => t.arriveAt > Date.now())) return false;
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
       const now = Date.now();
       const last = Store.get("debris_at", 0) || 0;
       if (now - last < (CFG.debris.everyMin || 20) * 60e3) return false;
@@ -713,7 +774,18 @@
       log(`[LOT] ${a.why}: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody}, ${a.speed}%`, "warn");
       return true;
     },
-    abort(why) { const m = this.mission(); Store.del("mission"); if (m) { log(`[LOT] przerwany: ${why}`, "error"); Journal.add("BŁĄD", `Lot [${m.fromKey}]→[${m.toKey}] przerwany: ${why}`); } },
+    abort(why) {
+      const m = this.mission(); Store.del("mission");
+      if (!m) return;
+      log(`[LOT] przerwany: ${why}`, "error");
+      Journal.add("BŁĄD", `Lot [${m.fromKey}]→[${m.toKey}] przerwany: ${why}`);
+      // v3.9.0 (audyt): bez karencji decide() wystawiał tę samą akcję w następnym
+      // ticku i całość leciała w kółko co 5 min. Ta trasa odpoczywa 3 min.
+      const bl = Store.get("fly_block", {}) || {};
+      bl[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3;
+      Store.set("fly_block", bl);
+    },
+    blocked(a) { const bl = Store.get("fly_block", {}) || {}; return (bl[`${a.fromKey}>${a.toKey}`] || 0) > Date.now(); },
     async tick() {
       const m = this.mission(); if (!m) return;
       if (Date.now() - m.startedAt > 5 * 60e3) return this.abort("5 min bez potwierdzenia wysyłki");
@@ -727,6 +799,13 @@
         }
         if (m.step === "switch_wait") { const a = PlanetBar.active(); if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(this.url(m)); } return; }
         if (m.step === "form") {
+          // v3.9.0 (audyt): jeśli klik "Send fleet" przeładował stronę, misja zostaje
+          // w Store — bez tej bramki bot wysłałby DRUGĄ identyczną falę.
+          const ls = Store.get("last_send", null);
+          if (ls && Date.now() - ls.at < 3 * 60e3 && ls.toKey === m.toKey && ls.from === m.fromKey) {
+            log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");
+            Store.del("mission"); return;
+          }
           if (page() !== "fleet") { location.replace(this.url(m)); return; }
           if (this._busy) return; this._busy = true;
           try { await this.form(m); } finally { this._busy = false; }
@@ -765,6 +844,28 @@
         if (!input) continue; setInput(input, qty); loaded.push(`${el.dataset.shipType}×${qty.toLocaleString("pl-PL")}`);
         if (want) await sleep(jitter(120, 380));   // człowiek wypełnia pola po kolei, nie w jednej milisekundzie
       }
+      // v3.9.0 (audyt, incydent 2.x 05.08 23:22): formularz przelicza się po każdym
+      // input/change i potrafi WYZEROWAĆ pole wpisane chwilę wcześniej — log mówił
+      // "załadowane 1,38 mld", a statki zostały w domu. Czytamy pola z powrotem.
+      if (loaded.length) {
+        for (let round = 0; round < 2; round++) {
+          let fixed = 0;
+          for (const el of els) {
+            const type = String(el.dataset.shipType || "").toUpperCase();
+            const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
+            const qty = want ? Math.min(want.get(type) || 0, have) : have;
+            if (qty <= 0) continue;
+            const item = el.closest(".ship-item") || el.parentElement;
+            const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
+            if (!input) continue;
+            const cur = parseInt(String(input.value || "0").replace(/[^0-9]/g, "")) || 0;
+            if (cur !== qty) { setInput(input, qty); fixed++; }
+          }
+          if (!fixed) break;
+          log(`[LOT] formularz zgubił ${fixed} pól statków — wpisuję ponownie (runda ${round + 1}/2).`, "warn");
+          await sleep(jitter(300, 600));
+        }
+      }
       if (!loaded.length) { log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error"); return this.abort("brak pól statków"); }
       log(`[LOT] załadowano: ${loaded.join(", ")}`, "info");
       await sleep(jitter(400, 800));
@@ -786,7 +887,10 @@
           if (!(texts.includes("10") && texts.includes("50"))) continue;
           const t = kids.find(k => txt(k) === String(m.speed)); if (t) { t.click(); ok = true; } break;
         }
-        log(`[LOT] prędkość ${m.speed}%: ${ok ? "ustawiona" : "NIE ustawiona (lecę z domyślną)"}`, ok ? "info" : "warn");
+        // v3.9.0 (audyt): powolny lot to CAŁY sens ucieczki i FS — przy 100% flota
+        // dolatuje i ląduje zamiast wisieć. Nieustawiona prędkość to nie drobiazg.
+        log(`[LOT] prędkość ${m.speed}%: ${ok ? "ustawiona" : "NIE USTAWIONA — lecę z domyślną, lot będzie krótki"}`, ok ? "info" : "error");
+        if (!ok && !Once.said("speed_fail", 30 * 60e3)) { Journal.add("BŁĄD", `Nie znalazłem suwaka prędkości — lot [${m.fromKey}]→[${m.toKey}] leci z domyślną prędkością (krótko). Sprawdź zrzut w logu.`); log(`[LOT DOM] okolica suwaka prędkości: ${(document.querySelector("#target_planet_type_container")?.closest("form") || document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 2000)}`, "error"); }
         await sleep(jitter(700, 1100));
       }
       const ft = document.body.textContent.match(/Duration\s*of\s*flight[^0-9]{0,40}?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
@@ -824,7 +928,18 @@
       const send = this.findButton("Send fleet") || [...document.querySelectorAll("a, button, input[type='submit']")].find(el => /send fleet/i.test(el.value || el.textContent || "") && el.offsetParent !== null);
       if (!send) return this.abort("brak przycisku Send fleet");
       const shipsBefore = snap.total;
-      send.click(); log(`[LOT] Send fleet kliknięty.`, "success");
+      // v3.9.0 (audyt): "Send fleet" potrafi nawigować NATYCHMIAST — kod po kliku
+      // może nigdy się nie wykonać. Lot obronny zapisujemy PRZED klikiem (inaczej
+      // flota ucieka bez zaplanowanego zawrotu i zostaje na refugium na stałe),
+      // a stempel wysyłki blokuje powtórzenie tej samej fali po przeładowaniu.
+      if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
+        const sPre = Situation.load();
+        sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0, pending: true });
+        Situation.save(sPre);
+      }
+      Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey });
+      send.click(); log("[LOT] Send fleet kliknięty.", "success");
       // potwierdzenie: URL fleetSendSuccessfully albo hangar pusty
       await sleep(jitter(3000, 4500));
       const okUrl = location.href.includes("fleetSendSuccessfully");
@@ -832,12 +947,14 @@
       const ok = okUrl || (after && after.total < shipsBefore * 0.05);
       if (!ok) { const err = document.querySelector(".error, .alert, .modal.show, [class*='error']"); log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"})`, "error"); return this.abort("brak potwierdzenia wysyłki"); }
       const s = Situation.load();
+      if (!ok) { s.flights = (s.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending)); Situation.save(s); }
       // v3.2.0: TYLKO loty obronne trafiają do `flights`. Ekspedycja tam wpisana
       // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek
       // — dokładnie ten rodzaj sprzężenia, przez który 2.x gubił flotę.
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
-        s.flights = (s.flights || []).filter(f => f.fromKey !== m.fromKey);
-        s.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0 });
+        const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && f.pending);
+        if (f0) { delete f0.pending; if (m.flightMs) f0.flightMs = m.flightMs; }
+        else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0 }];
       }
       Situation.save(s);
       Store.del("mission");
@@ -861,8 +978,13 @@
       } catch (e) { log(`[LOT] rezerwa: ${e.message}`, "warn"); }
     },
     // Zawrót: przycisk a.x_btn_fleet_return w liście ruchów (aktywna para = źródło lotu).
-    async recall(f) {
+    async recall(f0) {
+      // v3.9.0 (audyt): `f` przychodziło z decide() (referencja do obiektu z INNEGO
+      // odczytu), a zapisywaliśmy świeżo załadowany stan — mutacje phase/tries nigdy
+      // nie trafiały na dysk. Efekt: zawrót klikany w kółko, lot nigdy nie domknięty.
+      // Pracujemy na obiekcie z ZAPISYWANEGO stanu.
       const s = Situation.load();
+      const f = (s.flights || []).find(x => x.fromKey === f0.fromKey && x.toKey === f0.toKey && (x.sentAt === f0.sentAt || !f0.sentAt)) || f0;
       const a = PlanetBar.active();
       if (!a || a.key !== f.fromKey) { const el = PlanetBar.anchor(f.fromKey, f.fromBody); if (el) { log(`[ZAWRÓT] przełączam na [${f.fromKey}] ${f.fromBody}`, "info"); el.click(); } return; }
       let html = ""; try { const r = await fetchT(Rows.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } }); if (r.ok) html = await r.text(); } catch {}
@@ -972,7 +1094,10 @@
     async tick(s) {
       if (!CFG.recon || Fly.mission()) return false;
       const now = Date.now();
-      if ((s.threats || []).some(t => t.arriveAt > now)) return false;          // alarm = zero nawigacji
+      // v3.9.0 (audyt): sondy szpiegowskie lecą non stop, a wpadały do tej samej
+      // bramki co ataki — rekonesans stawał na zawsze, hangary się starzały i bot
+      // przestawał wiedzieć, gdzie stoi flota. Blokuje tylko ATAK.
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
       if ((s.flights || []).some(f => f.phase === "launched")) return false;    // lot w powietrzu: nie kręcimy stroną
       const st = this.st();
       if (now - (st.at || 0) < 90e3) return false;                              // najwyżej raz na 90 s
@@ -1021,11 +1146,25 @@
       await Fly.tick();
       if (Fly.mission()) return;
       for (const a of actions) {
+        if (a.kind === "recon") {
+          // v3.9.0: WYJĄTEK od zasady "przy alarmie nie nawigujemy" — skoro nie wiemy,
+          // gdzie stoi flota, to bez tego jednego wejścia na /fleet i tak nic nie zrobimy.
+          const el = PlanetBar.anchor(a.key, "planet");
+          const act = Situation.load().active;
+          if (act && act.key === a.key && page() === "fleet") { Hangar.scan(); continue; }
+          log(`[OBRONA] ${a.why} — wchodzę na Fleet [${a.key}].`, "warn");
+          if (act && act.key === a.key) { const [g, sy, po] = a.key.split(":"); location.replace(`/fleet?x=${g}&y=${sy}&z=${po}`); return; }
+          if (el) { el.click(); return; }
+          continue;
+        }
         if (a.kind === "hold") { if (!Once.said(`hold|${a.key}`, 120e3)) log(`[OBRONA] [${a.key}]: ${a.why} — nie ruszam floty.`, "info"); continue; }
         if (a.kind === "extend") { const s2 = Situation.load(); const f = (s2.flights || []).find(x => x.fromKey === a.flight.fromKey && x.phase === "launched"); if (f && f.recallAt < a.recallAt) { f.recallAt = a.recallAt; Situation.save(s2); log(`[LOT] ${a.why} — zawrót przesunięty na ${new Date(a.recallAt).toLocaleTimeString("pl-PL")}`, "warn"); } continue; }
         if (!CFG.autoRescue) { if (!Once.said(`obs|${a.kind}|${a.fromKey || a.flight?.fromKey}`, 60e3)) log(`[OBSERWATOR] zrobiłbym: ${a.kind} ${a.why || ""} — auto-ratunek OFF.`, "warn"); continue; }
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
-        if (a.kind === "fly") { if (Fly.start(a)) { await Fly.tick(); } break; }
+        if (a.kind === "fly") {
+          if (Fly.blocked(a)) { if (!Once.said(`blk|${a.fromKey}${a.toKey}`, 60e3)) log(`[LOT] trasa [${a.fromKey}]→[${a.toKey}] w karencji po nieudanej próbie — czekam.`, "warn"); continue; }
+          if (Fly.start(a)) { await Fly.tick(); } break;
+        }
       }
       // v3.7.3 (audyt): ekonomia w WŁASNYM try — błąd w ekspedycjach/miningu/złomie
       // nie może przerwać przebiegu obrony ani wywalić pętli.
@@ -1045,9 +1184,28 @@
     finally { running = false; try { UI.renderStatus(); } catch {} }
   }
   const Once = { said(k, ms) { const m = Store.get("once", {}) || {}; if (Date.now() - (m[k] || 0) < ms) return true; m[k] = Date.now(); for (const x of Object.keys(m)) if (Date.now() - m[x] > 3600e3) delete m[x]; Store.set("once", m); return false; } };
+  // v3.9.0 (audyt 28.08, defekt KRYTYCZNY): id karty losowane przy KAŻDYM ładowaniu
+  // strony, a bot nawiguje na każdym kroku ratunku — więc po pierwszej nawigacji
+  // nowa instancja widziała "cudzy" świeży lock i milczała 90 s. Bot blokował sam
+  // siebie. Id żyje w sessionStorage: przetrwa nawigacje TEJ karty, inne dla innej.
   const TabLock = {
-    ID: Math.random().toString(36).slice(2),
-    acquire() { try { const raw = localStorage.getItem("ogx3_lock"); const l = raw ? JSON.parse(raw) : null; if (l && l.id !== this.ID && Date.now() - l.at < 90e3) return false; localStorage.setItem("ogx3_lock", JSON.stringify({ id: this.ID, at: Date.now() })); return true; } catch { return true; } },
+    KEY: "ogx3_lock",
+    id() { try { let v = sessionStorage.getItem("ogx3_tab"); if (!v) { v = Math.random().toString(36).slice(2); sessionStorage.setItem("ogx3_tab", v); } return v; } catch { return "single"; } },
+    acquire() {
+      try {
+        const me = this.id();
+        const raw = localStorage.getItem(this.KEY);
+        const l = raw ? JSON.parse(raw) : null;
+        const age = l ? Date.now() - (l.at || 0) : Infinity;
+        const visible = document.visibilityState === "visible";
+        if (l && l.id !== me && age < ((visible && !l.visible) ? 45e3 : 90e3)) {
+          if (!Once.said("lock", 5 * 60e3)) log("[KARTA] inna karta prowadzi bota — ta jest pasywna (przejmie, gdy tamta zamilknie).", "info");
+          return false;
+        }
+        localStorage.setItem(this.KEY, JSON.stringify({ id: me, at: Date.now(), visible }));
+        return true;
+      } catch { return true; }
+    },
   };
   // v3.7.3: NADZORCA. Jeśli pętla obrony nie odbiła się przez 3 min (zdławiona
   // karta, zawieszony await, wyjątek poza łańcuchem), strona idzie w reload —
@@ -1199,10 +1357,12 @@
   if (typeof document === "undefined" || typeof window === "undefined") { globalThis.OGX3 = { decide, Situation, Bar, Rows, DEFAULTS }; return; }
   try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG }; } catch {}
   Store.set("last_load", Date.now());
-  UI.build();
+  // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
+  // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
+  try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }
   log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${HOST}`, "info");
-  if (page() === "fleet") Hangar.scan();
-  Wake.ensure(); Calib.collect();
+  try { if (page() === "fleet") Hangar.scan(); } catch (e) { log(`[START] odczyt hangaru: ${e.message}`, "warn"); }
+  try { Wake.ensure(); Calib.collect(); } catch (e) { log(`[START] wake/kalibracja: ${e.message}`, "warn"); }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") Wake.ensure(); });
   defenceTick();
   setInterval(defenceTick, CFG.tickMs);
