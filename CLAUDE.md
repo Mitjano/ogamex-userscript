@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.6.0, ~1100 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.10.0, ~1590 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Serwer: fork **.NET**, nie Laravel `lanedirt/OGameX`. Nie budować na endpointach niepotwierdzonych na żywo; nowy markup najpierw zrzuć do logu (`[... DOM]`), potem parser.
@@ -19,10 +19,13 @@ Kolejność czytania: `START-3.0.md` → `AUDYT-3.0-2026-08-28.md` → kod.
 4. **`Fly`** — JEDEN wykonawca wszystkich lotów (ratunek, FS, ekspedycja, mining, złom) sterowany polami misji: `plan` (statki), `missionType` (DEPLOY/EXPEDITION/ASTEROID/COLLECT), `takeResources`, `duration`, `toBody` (planet/moon/debris).
 5. **Ekonomia** (`Expo`, `Aster`, `Debris`) — wołana TYLKO gdy obrona nie ma nic do roboty; jej loty **nie trafiają** do `situation.flights`, bo to stan obrony. Pyta `Human.economyAllowed()`; obrona nigdy nie pyta.
 
+6. **Żaden wpis stanu nie może być wieczny.** Każde pole (`pending`, `flights`, `fly_block`, `bar`, `slots`) ma termin ważności — wpis bez terminu zamienia się w ciche wyłączenie obrony (defekt P0, 28.08). Jedna definicja „ten lot już nic nie znaczy" = `flightStale()`; używają jej obrona, ekonomia i rekonesans.
+7. **Ekonomia nigdy nie stoi na drodze ratunku** — trwająca ekspedycja/mining/złom jest przerywana przy alarmie, a jej loty nie trafiają do `situation.flights`.
+
 Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane ciało · jedna ucieczka na parę · **stan lotu zamyka hangar, nie zegar** · nieznany markup → zrzut, nie zgadywanie.
 
 ## Testy
-- 3.x: `node test3-all.js` (89 asercji: obrona, FS, ekspedycje, mining, złom, humanizer + składnia). **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
+- 3.x: `node test3-all.js` (157 asercji decyzyjnych + 45 sprawdzeń E2E na sztucznej grze w jsdom + składnia). **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst

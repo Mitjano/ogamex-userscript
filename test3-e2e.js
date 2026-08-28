@@ -39,7 +39,31 @@ class Game {
     this.formTarget = null;
     this.formBody = "planet";
     this.formMission = null;
+    this.ghosts = 0;          // obce floty widoczne TYLKO na pasku (test slepego alarmu)
+    this.loggedOut = false;   // gra oddaje strone logowania
+    this.errorPage = false;   // gra oddaje strone bledu
   }
+  // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
+  ownRowsHtml(onlyActive) {
+    return this.sent.map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.inFlight && (!onlyActive || s.from === this.active.key || s.to === this.active.key))
+      .map(({ s, i }) => `<tr class="row-mission-type-DEPLOY${s.returning ? " row-fleet-return" : ""}" data-fleet-id="own${i}">
+         <td data-remaining-seconds="${s.eta || 600}">10:00</td>
+         <td><span class="fleet-source-coords">[${s.from}]</span> Ja</td>
+         <td><a href="#">[${s.to}]</a> ${s.toBody === "moon" ? '<img src="/img/moon-icon.png">Moon' : "Planet"}</td>
+         <td><a class="x_btn_fleet_return" data-fleet-id="own${i}" href="#">R</a></td>
+       </tr>`).join("");
+  }
+  // flota wraca do hangaru zrodla (przylot po zawrocie)
+  land(i) {
+    const f = this.sent[i]; if (!f) return;
+    f.inFlight = false; f.landed = true;
+    const key = `${f.from}|${f.fromBody}`;
+    const h = this.hangars[key] || (this.hangars[key] = {});
+    for (const [t, q] of Object.entries(f.ships)) h[t] = (h[t] || 0) + q;
+    this.slots.fleet.used = Math.max(0, this.slots.fleet.used - 1);
+  }
+  loginHtml() { return `<form id="login" action="/auth/login"><input type="password" name="password"><button>Login</button></form>`; }
   hangarOf() { return this.hangars[`${this.active.key}|${this.active.body}`] || {}; }
   // ── HTML poszczególnych stron (kształt wzorowany na forku) ──
   planetBarHtml() {
@@ -52,7 +76,7 @@ class Game {
     }).join("") + `</ul>`;
   }
   missionBarHtml() {
-    const hostile = this.threats.length;
+    const hostile = this.threats.length + this.ghosts;
     const own = this.sent.filter(s => s.inFlight).length;
     if (!hostile && !own) return `<div id="bar">No fleet movement</div>`;
     return `<div id="bar">${hostile + own} Missions: ${own} Own ${hostile} Hostile Next: 05:00 Type: ${hostile ? "Attack" : "Deploy"}</div>`;
@@ -95,7 +119,9 @@ class Game {
     </div>`;
   }
   bodyHtml() {
-    const events = `<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}</tbody></table>`;
+    if (this.loggedOut) return this.loginHtml();
+    if (this.errorPage) return `<div class="error-page"><h1>500 — Internal Server Error</h1></div>`;
+    const events = `<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}${this.ownRowsHtml(false)}</tbody></table>`;
     let main = "";
     if (this.page === "fleet") main = this.formStep === 0 ? this.fleetPageHtml() : this.formStep === 1 ? this.step2Html() : this.step3Html();
     else if (this.page === "galaxy") main = `<div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=1&y=100&z=16&mission=15">Expedition</a></div>`;
@@ -117,8 +143,10 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   Object.defineProperty(w, "sessionStorage", { value: mkStorage(game.session), configurable: true });
   Object.defineProperty(w, "localStorage", { value: mkStorage(game.local), configurable: true });
   // fetch: lista ruchów widzi TYLKO aktywną parę (tak jak fork)
-  w.fetch = async (u) => ({ ok: true, redirected: false, url: u, status: 200,
-    text: async () => u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}</tbody></table>` : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
+  w.fetch = async (u) => ({ ok: true, redirected: !!game.loggedOut, url: game.loggedOut ? "/auth/login" : u, status: 200,
+    text: async () => game.loggedOut ? game.loginHtml()
+      : u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}${game.ownRowsHtml(true)}</tbody></table>`
+      : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
   const nav = (to) => { game.navigations.push(to); const [pth, q] = String(to).split("?"); game.page = pth.replace(/^\//, "") || "home"; game.query = q ? "?" + q : ""; if (game.page === "fleet") game.formStep = 0; };
   // jsdom nie pozwala podmienić window.location — podstawiamy ją przez parametr
@@ -160,6 +188,12 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
     }
     if (el.getAttribute && el.getAttribute("data-planet-type")) { game.formBody = { 1: "planet", 2: "moon", 3: "debris" }[el.getAttribute("data-planet-type")]; return; }
     if (cls.includes("mission-item")) { game.formMission = (el.textContent || "").trim(); return; }
+    if (cls.includes("x_btn_fleet_return")) {
+      const i = parseInt(String(el.getAttribute("data-fleet-id") || "").replace("own", ""));
+      if (game.sent[i]) game.sent[i].returning = true;
+      w.document.body.innerHTML = game.bodyHtml();
+      return;
+    }
     if (id === "btn-submit-fleet") {
       // wysyłka: hangar źródła pustoszeje, gra przekierowuje (jak fork)
       const src = `${game.active.key}|${game.active.body}`;
@@ -179,6 +213,32 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   if (!api) { console.log("DIAG: __OGX3 brak; panel:", !!w.document.getElementById("ogx3-panel"), "| klucze store:", [...game.store.keys()].slice(0,5)); }
   if (api && Object.keys(cfg).length) { for (const [k, v] of Object.entries(cfg)) { if (v && typeof v === "object" && !Array.isArray(v)) Object.assign(api.CFG[k], v); else api.CFG[k] = v; } api.Store.set("cfg", api.CFG); }
   return { w, api, dom, async tick(n = ticks) { for (let i = 0; i < n; i++) await api.defenceTick(); } };
+}
+
+// Przewiniecie zegara: bot trzyma czasy bezwzglednie w GM storage, wiec „uplyw
+// czasu" symulujemy cofajac znaczniki (sentAt/recallAt/seenAt/since/at) o `ms`.
+// Zamiast wylaczac zabezpieczenia czasowe — pozwalamy im minac.
+function advance(game, ms) {
+  const K = "genesis.ogamex.net:ogx3_situation";
+  try {
+    const st = JSON.parse(game.store.get(K) || "null");
+    if (st) {
+      for (const t of st.threats || []) { t.seenAt -= ms; t.arriveAt -= ms; if (t.lastSeenAt) t.lastSeenAt -= ms; }
+      for (const f of st.flights || []) { f.sentAt -= ms; if (f.recallAt) f.recallAt -= ms; }
+      if (st.barExcess && st.barExcess.since) st.barExcess.since -= ms;
+      game.store.set(K, JSON.stringify(st));
+    }
+  } catch {}
+  for (const k of [...game.store.keys()]) {
+    if (!/ogx3_(mission|last_send|bar_excess|once|nav|human|session)/.test(k)) continue;
+    try {
+      const v = JSON.parse(game.store.get(k));
+      if (v && typeof v === "object") {
+        for (const f of ["at", "since", "startedAt", "until", "lostAt", "triedAt"]) if (typeof v[f] === "number") v[f] -= ms;
+        game.store.set(k, JSON.stringify(v));
+      }
+    } catch {}
+  }
 }
 
 // „przeglądarka": ładuje stronę, robi ticki, i tak dopóki bot nawiguje
@@ -207,9 +267,17 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
       lg.slice(0, 3).forEach(e => console.log("      ", e.msg.slice(0, 120)));
     }
     try { for (const e of JSON.parse(game.store.get("genesis.ogamex.net:ogx3_log") || "[]")) logs.push(e.msg); } catch {}
-    // koniec dopiero, gdy bot nie nawigował ANI nie ma rozpoczętej misji lotu
+    // Koniec dopiero, gdy bot nie nawigowal, nie ma rozpoczetej misji ANI nie czeka
+    // na potwierdzenie zagrozenia. Bez tego ostatniego warunku petla konczyla sie
+    // w trakcie 20-sekundowego potwierdzania ataku i test mierzyl wlasna niecierpliwosc.
     const busy = (game.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
-    if (game.navigations.length === before && !busy) break;
+    let waiting = false;
+    try {
+      const st = JSON.parse(game.store.get("genesis.ogamex.net:ogx3_situation") || "null");
+      waiting = !!(st && (st.threats || []).some(t => t.attack && t.arriveAt > Date.now()));
+      waiting = waiting || !!(st && st.barExcess && st.barExcess.count > 0);
+    } catch {}
+    if (game.navigations.length === before && !busy && !waiting) break;
   }
   return { logs: [...new Set(logs)] };
 }
@@ -302,6 +370,114 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("ekspedycja poleciała", !!expo, JSON.stringify(g.sent.map(s => s.mission)));
     check("i NIE zapisała się jako lot obronny (nie zablokuje ratunku)", (st.flights || []).length === 0, JSON.stringify(st.flights));
+  }
+
+  console.log("\n── 9. ZAWRÓT: atak minął → bot klika zawracanie → lot domknięty po powrocie floty ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }] });
+    await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("(warunek wstępny) ewakuacja poszła", g.sent.length === 1, JSON.stringify(g.sent));
+    g.threats = [];                     // atak przeszedł
+    advance(g, 15 * 60e3);              // minęło 15 min — czas na zawrót
+    const r2 = await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("bot KLIKNĄŁ zawracanie lotu", !!(g.sent[0] && g.sent[0].returning), JSON.stringify(g.sent[0]));
+    const st2 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const f2 = (st2.flights || [])[0];
+    check("stan lotu przeszedł w zawrót (nie klika w kółko)", !f2 || ["recall_clicked", "recalled"].includes(f2.phase), JSON.stringify(st2.flights));
+    check("dziennik mówi o zawrocie", r2.logs.some(m => /ZAWRÓT/.test(m)), r2.logs.slice(0, 6).join(" | "));
+    g.land(0);                          // flota wraca na księżyc
+    advance(g, 10 * 60e3);
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    const st3 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("po powrocie floty wpis lotu ZDJĘTY (para znowu broniona)", (st3.flights || []).length === 0, JSON.stringify(st3.flights));
+    check("bot nie wysłał floty drugi raz bez powodu", g.sent.length === 1, JSON.stringify(g.sent.map(x => x.to)));
+  }
+
+  console.log("\n── 10. ŚLEPY ALARM: pasek widzi obcych, których nie ma na liście ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    g.ghosts = 3;                                   // 3 obce floty widoczne TYLKO na pasku
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("przez pierwszą minutę NIE ucieka (nadwyżka musi być trwała)", g.sent.length === 0, JSON.stringify(g.sent));
+    advance(g, 3 * 60e3);                           // nadwyżka utrzymuje się 3 min
+    const { logs } = await run(g, { cfg, loads: 12, ticksPerLoad: 3 });
+    check("po progu trwałości bot RATUJE flotę w ciemno", g.sent.length === 1, JSON.stringify(g.sent));
+    check("i mówi wprost, że to ślepy alarm", logs.some(m => /ŚLEPY ALARM/.test(m)), logs.slice(0, 6).join(" | "));
+    check("ratunek wyszedł z ciała z największą flotą", !!g.sent[0] && g.sent[0].from === "1:100:5" && g.sent[0].fromBody === "moon", JSON.stringify(g.sent[0]));
+  }
+
+  console.log("\n── 11. UTRATA SESJI: gra oddaje stronę logowania ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game();                                  // spokój: bot poznaje układ i hangar
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    const sentBefore = g.sent.length;
+    g.loggedOut = true;                                    // sesja pada, a chwilę potem leci atak
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 600 }];
+    const { logs } = await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("bot WYKRYWA wylogowanie i krzyczy", logs.some(m => /SESJA/.test(m)), logs.slice(0, 8).join(" | "));
+    check("nie udaje, że wysłał flotę ze strony logowania", g.sent.length === sentBefore, JSON.stringify(g.sent));
+    g.loggedOut = false;                                  // operator się zalogował
+    advance(g, 5 * 60e3);
+    await run(g, { cfg, loads: 14, ticksPerLoad: 3 });
+    check("po powrocie sesji obrona znowu działa", g.sent.length > sentBefore, `wysłek: ${g.sent.length}`);
+  }
+
+  console.log("\n── 12. DWA ATAKI NARAZ: ucieczka nie może prowadzić na drugie atakowane ciało ──");
+  {
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },
+        { key: "1:100:9", name: "Druga", moon: true },
+        { key: "1:100:12", name: "Schron", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 400 }, "1:100:9|moon": { CRUISER: 200 } },
+      threats: [
+        { src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 500, id: "t1" },
+        { src: "9:9:8", dst: "1:100:9", dstBody: "moon", eta: 520, id: "t2" },
+      ],
+    });
+    await run(g, { cfg: { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 }, loads: 40, ticksPerLoad: 3 });
+    const a = g.sent.find(x => x.from === "1:100:5"), b = g.sent.find(x => x.from === "1:100:9");
+    check("uratował flotę z pierwszej atakowanej pary", !!a, JSON.stringify(g.sent));
+    check("uratował też z drugiej atakowanej pary", !!b, JSON.stringify(g.sent));
+    check("żadna ucieczka NIE poleciała na atakowane ciało", g.sent.every(x => !(x.to === "1:100:5" && x.toBody === "moon") && !(x.to === "1:100:9" && x.toBody === "moon")), JSON.stringify(g.sent.map(x => x.to + "|" + x.toBody)));
+    check("obie poleciały do nieatakowanego schronu", g.sent.length >= 2 && g.sent.every(x => x.to === "1:100:12"), JSON.stringify(g.sent.map(x => x.to)));
+  }
+
+  console.log("\n── 13. ATAK W TRAKCIE MISJI EKONOMICZNEJ: obrona przerywa ekonomię ──");
+  {
+    // Klucz: misja ekonomiczna trzyma `mission` w Store, a defenceTick kończył przebieg
+    // przy KAŻDEJ trwającej misji. Wstrzykujemy taką misję wprost i sprawdzamy, czy atak
+    // ją przerwie — bez zgadywania, czy test trafi w milisekundowe okno.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { LIGHT_FIGHTER: 500, SMALL_CARGO: 50 } } });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });                       // bot poznaje hangar
+    check("(warunek wstępny) w spokoju nic nie wysyła", g.sent.length === 0, JSON.stringify(g.sent));
+    g.store.set("genesis.ogamex.net:ogx3_mission", JSON.stringify({
+      kind: "expedition", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:16", toBody: "planet",
+      speed: 100, why: "ekspedycja", step: "switch", startedAt: Date.now(),
+    }));
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }];
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const rescue = g.sent.find(x => /Deploy/i.test(x.mission || ""));
+    check("bot PRZERWAŁ misję ekonomiczną przy alarmie", logs.some(m => /obrona ma pierwszeństwo/i.test(m)), logs.slice(0, 8).join(" | "));
+    check("i wykonał RATUNEK mimo trwającej ekonomii", !!rescue, JSON.stringify(g.sent.map(x => (x.mission || "?") + "→" + x.to)));
+    check("ratunek nie poleciał na atakowane ciało", !rescue || !(rescue.to === "1:100:5" && rescue.toBody === "moon"), JSON.stringify(rescue));
+  }
+
+  console.log("\n── 14. NIEZNANY HANGAR: cisza jest zakazana ──");
+  {
+    const g = new Game({
+      hangars: { "1:100:5|moon": { LIGHT_FIGHTER: 10 } },
+      active: { key: "1:100:5", body: "moon" },
+      threats: [{ src: "9:9:9", dst: "1:100:9", dstBody: "moon", eta: 600 }],
+    });
+    const { logs } = await run(g, { cfg: { autoRescue: true, expo: { enabled: false }, recon: false }, loads: 8, ticksPerLoad: 2 });
+    check("bot NIE milczy — melduje, że nie wie, gdzie stoi flota", logs.some(m => /nie wiem, gdzie stoi flota|hangar nieznany|nieznan/i.test(m)), logs.slice(0, 8).join(" | "));
+    check("i nie zmyśla wysyłki z pary, której nie zna", !g.sent.some(x => x.from === "1:100:9"), JSON.stringify(g.sent));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

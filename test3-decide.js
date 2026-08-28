@@ -29,7 +29,11 @@ function bodyOf(sig) {
 const fleetAtBody = bodyOf("fleetAt(s, k, now = Date.now()) {");
 const Situation = { fleetAt: new Function("s", "k", "now", fleetAtBody) };
 const decideBody = bodyOf("function decide(s, cfg, now) {");
-const decide = new Function("Situation", `return function decide(s, cfg, now) {${decideBody}}`)(Situation);
+// v3.10.0: decide() korzysta z modulowego flightStale() ("ten wpis lotu nic juz nie
+// znaczy") — wycinamy go razem, inaczej macierz testuje inna funkcje niz produkcja.
+const flightStale = new Function("f", "now", bodyOf("function flightStale(f, now) {"));
+const flightsBlocking = (st, now) => (st.flights || []).some(f => f.phase !== "done" && !flightStale(f, now));
+const decide = new Function("Situation", "flightStale", "flightsBlocking", `return function decide(s, cfg, now) {${decideBody}}`)(Situation, flightStale, flightsBlocking);
 
 const CFG = { confirmMs: 20000, tooLateSec: 40, airSpeedPct: 10, recallBufferSec: 90 };
 const NOW = 1_700_000_000_000;
@@ -190,18 +194,58 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
   const recon = reconMod.slice(reconMod.indexOf("async tick(s) {"), reconMod.indexOf("const defenceTick") >= 0 ? reconMod.indexOf("const defenceTick") : reconMod.length);
   check("rekonesans stoi przy trwającej misji", /Fly\.mission\(\)\) return false/.test(recon), recon.slice(0, 200));
   check("rekonesans stoi przy ATAKU, ale sonda go nie blokuje", /threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > now\)\) return false/.test(recon));
-  check("rekonesans stoi, gdy lot jest w powietrzu", /phase === "launched"\)\) return false/.test(recon));
+  check("rekonesans stoi, gdy lot jest w powietrzu", /flightsBlocking\(s, Date\.now\(\)\)\) return false/.test(recon), recon.slice(0, 300));
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
   check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
   check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
 }
 
 
+// ── 33. OSIEROCONY WPIS LOTU NIE MOZE ZASLEPIC PARY (regresja P0) ──────────
+{
+  const s = base({
+    hangars: { "3:272:7|moon": H(900) },
+    threats: [{ dst: "3:272:7", dstBody: "moon", attack: true, arriveAt: NOW + 300e3, seenAt: NOW - 60e3 }],
+    // wpis sprzed doby, ktory nigdy nie doczekal sie potwierdzenia wysylki
+    flights: [{ kind: "swap", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:7", toBody: "planet", sentAt: NOW - 24 * 3600e3, recallAt: 0, phase: "launched", pending: true }],
+  });
+  const r = decide(s, CFG, NOW);
+  check("osierocony wpis 'pending' NIE zaslepia obrony pary", r.actions.some(a => a.kind === "fly"), JSON.stringify(r));
+}
+
+// ── 34. LOT PO NIEUDANYM ZAWROCIE TEZ NIE ZASLEPIA (regresja P0/P3) ────────
+{
+  const s = base({
+    hangars: { "3:272:7|moon": H(900) },
+    threats: [{ dst: "3:272:7", dstBody: "moon", attack: true, arriveAt: NOW + 300e3, seenAt: NOW - 60e3 }],
+    flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 3 * 3600e3, recallAt: NOW - 2 * 3600e3, phase: "recall_failed" }],
+  });
+  const r = decide(s, CFG, NOW);
+  check("lot z nieudanym zawrotem nie blokuje kolejnego ratunku", r.actions.some(a => a.kind === "fly"), JSON.stringify(r.actions));
+  check("i operator dostaje o nim alarm", r.alerts.some(a => /NIE ZOSTA/.test(a.msg)), JSON.stringify(r.alerts));
+}
+
+// ── 35. DWIE PARY: pilna z flota, druga bez hangaru (regresja P1) ──────────
+{
+  const s = base({
+    hangars: { "3:272:2|moon": H(900) },                       // hangar znany TYLKO dla drugiej pary
+    threats: [
+      { dst: "3:272:7", dstBody: "moon", attack: true, arriveAt: NOW + 400e3, seenAt: NOW - 60e3 },
+      { dst: "3:272:2", dstBody: "moon", attack: true, arriveAt: NOW + 70e3, seenAt: NOW - 60e3 },
+    ],
+  });
+  const r = decide(s, CFG, NOW);
+  const fly = r.actions.find(a => a.kind === "fly"), recon = r.actions.find(a => a.kind === "recon");
+  check("para z ZNANA flota dostaje ratunek", !!fly && fly.fromKey === "3:272:2", JSON.stringify(r.actions));
+  check("para bez hangaru dostaje rekonesans", !!recon && recon.key === "3:272:7", JSON.stringify(r.actions));
+  check("ratunek jest oznaczony rescue (skrocona karencja)", !!fly && fly.rescue === true, JSON.stringify(fly));
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 //  EKSPEDYCJE (v3.2.0) — czysta funkcja expoPlan(); klasa ODKRYWCA
 // ═════════════════════════════════════════════════════════════════════════
 const expoBody = bodyOf("function expoPlan(s, cfg, now, burst) {");
-const expoPlan = new Function("key", `return function expoPlan(s, cfg, now, burst) {${expoBody}}`)((c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null));
+const expoPlan = new Function("key", "flightsBlocking", `return function expoPlan(s, cfg, now, burst) {${expoBody}}`)((c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null), flightsBlocking);
 const ECFG = { expo: { enabled: true, waves: 4, discoverer40: true, holdingHours: 1, gapMinSec: 60, gapMaxSec: 90, slotReserve: 1, excludeTypes: ["ASTEROID_MINER", "RECYCLER"], launchFrom: null } };
 function ebase(over = {}) {
   return Object.assign({
@@ -418,13 +462,26 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("lot bez zawrotu ma twardy limit 30 min", /!f\.recallAt && now - f\.sentAt > 30 \* 60e3/.test(ref));
   // zawrót
   const rc = src.slice(src.indexOf("async recall(f0)"));
-  check("zawrót pracuje na obiekcie z ZAPISYWANEGO stanu (mutacje się utrwalają)", /const f = \(s\.flights \|\| \[\]\)\.find/.test(rc));
+  // v3.10.0: fallback `|| f0` (obiekt spoza `s`) usuniety — brakujacy lot jest DOPISYWANY
+  // do stanu, wiec kazda mutacja phase/tries ma co utrwalic.
+  check("zawrót pracuje na obiekcie z ZAPISYWANEGO stanu (mutacje się utrwalają)", /let f = \(s\.flights \|\| \[\]\)\.find/.test(rc) && /if \(!f\) \{ f = \{ \.\.\.f0 \}; s\.flights = \[\.\.\.\(s\.flights \|\| \[\]\), f\]; \}/.test(rc), rc.slice(0, 300));
   // sondy
   check("sondy nie blokują rekonesansu ani ekonomii", (src.match(/t\.attack && t\.arriveAt >/g) || []).length >= 4);
   // wysyłka
   check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,200}?send\.click\(\)/.test(src));
   check("stempel wysyłki blokuje powtórkę po przeładowaniu", /Store\.get\("last_send"[\s\S]{0,400}?nie powtarzam/.test(src));
-  check("nieudana wysyłka zdejmuje wpis pending", /if \(!ok\) \{ s\.flights = \(s\.flights \|\| \[\]\)\.filter\(f => !\(f\.fromKey === m\.fromKey && f\.pending\)\)/.test(src));
+  // v3.10.0: wpis `pending` byl NIESMIERTELNY — kasowal go tylko kod PO send.click()
+  // (ktory przy natychmiastowej nawigacji nigdy sie nie wykonuje), a filtr wygaszania
+  // przepuszczal go przed kazda regula. Efekt: bot milczal przy kazdym kolejnym ataku
+  // na te pare. Pilnujemy WSZYSTKICH trzech drog sprzatania.
+  check("nieudana wysyłka zdejmuje wpis pending PRZED abortem", /sBad\.flights = \(sBad\.flights \|\| \[\]\)\.filter\(f => !\(f\.fromKey === m\.fromKey && f\.pending\)\)[\s\S]{0,200}?return this\.abort/.test(src));
+  check("przerwana misja sprząta swój wpis pending", /abort\(why, opts = \{\}\)[\s\S]{0,400}?f\.pending\)\)/.test(src));
+  check("osierocony pending wygasa po 10 min (nie blokuje pary na zawsze)", /f\.pending && now - f\.sentAt < 10 \* 60e3\) return true/.test(src));
+  check("jedna definicja 'wpis lotu nic nie znaczy' (decide + ekonomia + rekonesans)", /function flightStale\(f, now\)/.test(src) && /flightsBlocking\(s, now\)\) return \{ skip/.test(src));
+  check("ratunek ma skróconą karencję po potknięciu (nie 3 min)", /a\.air \|\| a\.rescue\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
+  check("ratunek na drugie ciało też jest oznaczony jako ratunek", /drugie ciało`, speed: 100, recall: false, rescue: true/.test(src));
+  check("akcje sortowane: ratunek przed rekonesansem", /const RANK = \{ fly: 0, recall: 1/.test(src) && /actions\.sort\(/.test(src));
+  check("rekonesans ustępuje, gdy w tym przebiegu jest ratunek", /if \(hasRescue && CFG\.autoRescue\) \{ continue; \}/.test(src));
   // pola statków
   check("pola statków weryfikowane po wpisaniu (2 rundy)", /formularz zgubił \$\{fixed\} pól statków/.test(src));
   // prędkość

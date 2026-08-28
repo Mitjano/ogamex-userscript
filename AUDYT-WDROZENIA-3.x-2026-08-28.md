@@ -104,3 +104,50 @@ Symulator wykrył trzy defekty niewidoczne dla testów wzorcowych — wszystkie 
 ## 6. Ocena planu
 Plan („dusiciel": parsery 1:1 z 2.x, stan i decyzje od nowa) **broni się** — wszystkie sześć znalezisk tego audytu to defekty w NOWYM kodzie stanu/decyzji, żaden w przeniesionych parserach. To potwierdza tezę audytu z rana: parsery były sprawdzone bojowo, a gubił się stan.
 Zakres na start (obrona + rekonesans + FS nocny + ekspedycje Odkrywcy + mining + złom + humanizer) odpowiada temu, co 2.x realnie robił, minus rzeczy bezprzedmiotowe w nowym uniwersum (brama, odbudowa księżyca, farmienie nieaktywnych).
+
+---
+
+# 7. TRZECIA FALA — audyt regresji + 6 nowych scenariuszy E2E (v3.10.0, 28.08 wieczór)
+
+Powód: po 21 poprawkach z fal 1–2 kod zmienił się na tyle, że poprzednie przeglądy dotyczyły już innego pliku. Trzecia fala celowała **nie w projekt, tylko w skutki poprawek** — plus w te zachowania, których symulator nigdy nie wykonał (druga połowa cyklu ratunkowego: zawrót, powrót, samonaprawa).
+
+## 7.1 Defekty znalezione i naprawione (10)
+
+| # | Defekt | Jak by się objawił w grze |
+|---|---|---|
+| **P0** | Wpis lotu `pending` był **nieśmiertelny**: `if (f.pending) return true` stało przed wszystkimi regułami wygaszania, a kasował go wyłącznie kod **po** `send.click()` — który przy natychmiastowej nawigacji nie wykonuje się wcale. Kod sprzątający przy nieudanej wysyłce był **nieosiągalny** (stał za `return this.abort(...)`). | Po jednej udanej ewakuacji wpis zostaje na dysku na stałe → `inFlightFrom` uznaje parę za „w locie" → **bot milczy przy każdym kolejnym ataku na tę parę**. Panel pokazuje zagrożenie, log nic nie mówi. Dla lotów `home`/`swap` (bez zawrotu) blokada byłaby wieczna, a „powrót na księżyc" to najczęstsza rutynowa akcja bota. |
+| **P1** | Akcja `recon` kończy przebieg nawigacją (`return`), a `decide()` iteruje pary w kolejności paska planet. | Para atakowana **za 70 s** czekała, bo inna para (atak za 400 s) potrzebowała rekonesansu. Przy progu „za późno na formularz" = 40 s to realna utrata floty. |
+| **P2** | Skrócona karencja po potknięciu formularza obejmowała tylko loty `air`; ratunek „na drugie ciało pary" jej nie miał. | Jedno potknięcie = 3 minuty bezczynności na trasie, przy dolotach ~5 min. |
+| **P3** | `flightStale` odblokowywał obronę, ale ekonomia i rekonesans dalej patrzyły na surowe `phase === "launched"`. | Bot „odzyskiwał" obronę pary, ale przestawał odświeżać hangary — czyli i tak nie wiedział, gdzie stoi flota. |
+| **P4** | Ręczna dźwignia „WRÓĆ NA BAZĘ" nie znała nowego stanu `recall_clicked`. | Awaryjny przycisk nie działał dokładnie w sytuacji, dla której powstał. |
+| **P5** | Nieudana próba zawrotu nie odświeżała zegara ponowień. | 5 zbędnych żądań listy ruchów pod rząd — widoczne z drugiej strony. |
+| **P6** | Alarm o „ślepym" locie wystawiany co minutę, do 12 h. | Do 720 wpisów przewijających cały dziennik obrony (limit 400) — dowody ataku wypadały z logu. |
+| **P7** | Martwa zmienna po poprawce v3.7.0 + nieosiągalna gałąź sprzątania. | Ślad po niedokończonej poprawce; usunięte. |
+| **P8** | Czyszczenie `Once` kasowało wpisy starsze niż godzina, więc **każdy dławik dłuższy niż 1 h działał jak 1 h**. | Szum w logu (keepalive, zrzuty DOM). |
+| **P9** | `barMaxAgeMs` był martwym kluczem (CFG budowane wyłącznie z `DEFAULTS`); stare odczyty slotów blokowały ekspedycje bezterminowo. | Konfiguracja bez efektu; ekonomia zablokowana po zamrożonym rekonesansie. |
+
+Dodatkowo z fali 2 (znalezione tym samym przeglądem, naprawione w tej samej wersji): **lot ekonomiczny blokował całą obronę** do 5 min (`if (Fly.mission()) return`), **ślepy alarm mógł ruszyć flotę na podstawie paska sprzed godziny** (strona bez paska zostawiała stary odczyt), **`phase="recalled"` ustawiane po samym kliknięciu** (nieskuteczny klik nie doczekał się drugiej próby), **lot po nieudanym zawrocie zaślepiał parę na 12 h**.
+
+## 7.2 Nowe scenariusze symulatora (14 zamiast 8, 45 sprawdzeń zamiast 22)
+
+Atrapa gry dostała: własne loty w Events i na liście ruchów, **przycisk zawracania** `a.x_btn_fleet_return`, stronę logowania, stronę błędu, „duchy" na pasku misji (obce floty bez wiersza) oraz sterowanie upływem czasu.
+
+| # | Scenariusz | Co potwierdza |
+|---|---|---|
+| 9 | **Zawrót**: atak minął → bot klika zawracanie → flota wraca → wpis lotu zdjęty | domknięcie drugiej połowy cyklu ratunkowego, której kod nigdy wcześniej nie wykonał poza żywą grą |
+| 10 | **Ślepy alarm**: pasek widzi 3 obce floty, lista pusta | przez pierwszą minutę bot NIE ucieka (nadwyżka musi być trwała), po progu ratuje największy hangar |
+| 11 | **Utrata sesji**: gra oddaje stronę logowania, potem operator się loguje | bot krzyczy „SESJA", nie udaje wysyłki ze strony logowania, po powrocie sesji broni normalnie |
+| 12 | **Dwa ataki naraz** na dwie pary z flotą | obie floty uratowane, **żadna nie poleciała na atakowane ciało**, obie do nieatakowanego schronu |
+| 13 | **Atak w trakcie misji ekonomicznej** | ekonomia przerwana, ratunek wykonany (dawniej: obrona martwa do 5 min) |
+| 14 | **Nieznany hangar przy ataku, rekonesans wyłączony** | bot melduje „nie wiem, gdzie stoi flota" — cisza przy ataku jest zakazana |
+
+## 7.3 Stan po trzeciej fali
+- `node test3-all.js` → **157 asercji decyzyjnych + 45 sprawdzeń E2E + składnia, wszystko zielone** (kod wyjścia sprawdzany bez pipe'a).
+- Łącznie w trzech falach: **31 defektów znalezionych i naprawionych**. Wszystkie — tak jak poprzednio — w nowym kodzie stanu i decyzji; **ani jeden w parserach przeniesionych z 2.x**.
+- Trzy nowe przypadki w macierzy pilnują, żeby P0 i P1 nie wróciły (osierocony `pending` sprzed doby, lot po nieudanym zawrocie, dwie pary o różnej pilności).
+
+## 7.4 Co zostaje otwarte (świadomie)
+1. **Markup Genesis niezweryfikowany** — zero kontaktu z żywym serwerem. Wszystkie parsery pochodzą z Atheny; przy nieznanym markupie bot zrzuca DOM do logu zamiast zgadywać. To rozstrzygnie raport startowy 4/4 z pierwszego dnia.
+2. **Wracające floty wroga na pasku** — jeśli fork liczy je jako „Hostile", po każdym odpartym ataku powstanie nadwyżka „pasek minus lista" i może odpalić ślepy alarm. Z kodu nie da się tego rozstrzygnąć; **do sprawdzenia na żywo** (objaw: ewakuacja tuż po tym, jak atak przeleciał). Zabezpieczenie częściowe już jest: nadwyżka musi się utrzymać 60 s (5 min przy sondach).
+3. **Dolot poniżej 40 s** — na formularz floty fizycznie nie ma czasu; bot alarmuje i nic nie udaje.
+4. **Mining i złom w pełnym przebiegu DOM→wysyłka** nie mają jeszcze scenariusza E2E (mają testy czystych funkcji). Powód: wymagają dołożenia do atrapy wiersza 17 galaktyki i pola złomu. Obrona ich nie dotyczy — do zrobienia, gdy moduły ruszą w grze.

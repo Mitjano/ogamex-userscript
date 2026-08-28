@@ -42,12 +42,23 @@ Profil gracza: **ODKRYWCA** (ekspedycje 40 min ustawione domyślnie).
 | Config z przeglądarki nadpisał kod | jeden `CFG`, wartości krytyczne w kodzie |
 | Wiersz ACS („Players: 1/2") gubił cel | jedna współrzędna bez źródła = **cel** |
 
+## Co zmieniła trzecia fala audytu (v3.10.0, 28.08)
+| Defekt | Skutek w grze, gdyby został | Reguła teraz |
+|---|---|---|
+| Wpis lotu `pending` był nieśmiertelny | klik „Send fleet" nawiguje natychmiast, kod potwierdzający nie wykonuje się → wpis zostaje **na zawsze**, a bot **milczy przy każdym kolejnym ataku na tę parę** | `pending` wygasa po 10 min; sprząta go też abort i nieudana wysyłka |
+| Rekonesans wywłaszczał ratunek | para atakowana za 70 s czekała, bo inna para (za 400 s) potrzebowała rekonesansu | akcje sortowane: **ratunek zawsze pierwszy**, rekonesans ustępuje |
+| Karencja 3 min po potknięciu formularza | jedno potknięcie = bezczynność dłuższa niż dolot | ratunek ponawiany po 45 s (rutyna nadal 3 min) |
+| Lot ekonomiczny blokował obronę | ekspedycja/mining trzymały „misję" do 5 min = tyle, ile dolot | alarm **przerywa ekonomię** natychmiast |
+| Ślepy alarm ze starego paska | strona bez paska (formularz, błąd, logowanie) zostawiała stary odczyt → ewakuacja na danych sprzed godziny | pasek starszy niż 3 min nie jest dowodem |
+| Zawrót „kliknięty" = „zawrócony" | nieskuteczny klik nie doczekał się drugiej próby | stan `recall_clicked`, ponowienie po 2 min, potwierdzenie dopiero wierszem powrotnym |
+| Lot po nieudanym zawrocie zaślepiał parę na 12 h | cisza przy ataku | `flightStale` — jedna definicja dla obrony, ekonomii i rekonesansu + alarm do operatora |
+
 ## Testy
 ```
-node test3-all.js        # 145 asercji + 22 sprawdzenia E2E + składnia; sprawdzaj `echo $?` BEZ pipe'a
+node test3-all.js        # 157 asercji + 45 sprawdzeń E2E + składnia; sprawdzaj `echo $?` BEZ pipe'a
 ```
-`test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — przechodzi pełną ścieżkę od wykrycia ataku do kliknięcia „Send fleet", z przeładowaniami strony po drodze.
-Macierz `test3-decide.js` obejmuje: obronę (24 scenariusze, w tym wszystkie incydenty 27.08), FS nocny, okno nocne, ekspedycje z serią, mining, złom, humanizera i strażników „ekonomia nie blokuje obrony".
+`test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — 14 scenariuszy, m.in. pełna ewakuacja od wykrycia ataku do „Send fleet", **zawrót floty i domknięcie lotu po jej powrocie**, ślepy alarm z paska, utrata sesji i powrót, dwa ataki naraz, atak przerywający ekonomię, dwie karty, przeładowania strony w środku misji.
+Macierz `test3-decide.js` obejmuje: obronę (27 scenariuszy, w tym wszystkie incydenty 27.08 i regresje z audytu 28.08), FS nocny, okno nocne, ekspedycje z serią, mining, złom, humanizera i strażników „ekonomia nie blokuje obrony".
 
 ## Czego świadomie nie ma
 Farmienia nieaktywnych, bramy skokowej, odbudowy księżyca, kolejki budynków/badań, kolonizacji. Wejdą, gdy będą potrzebne — brama i księżyce dopiero, gdy je postawisz.
