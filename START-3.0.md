@@ -50,3 +50,8 @@ node test3-all.js        # decyzje + składnia; sprawdzaj `echo $?` BEZ pipe'a
 
 ## Uwagi o forku
 Genesis to ten sam fork .NET co Athena, ale **nie zakładamy tego**: przy nieznanym markupie 3.0 zrzuca DOM do logu (`[LOT DOM]`, `[DOM]`) i **nie zgaduje**. Jeśli któryś selektor nie zadziała, w logu będzie surowy HTML do wklejenia.
+
+## v3.1.0 — start bez klikania (gdy Genesis ruszy)
+- **Raport startowy**: bot sam zbiera dowody markupu przy pierwszym kontakcie z każdą stroną (pasek planet, pasek misji, panel Events, strona Fleet — 4/4). Panel pokazuje postęp „KALIBRACJA: n/4”. Gdy komplet: klik **Kopiuj raport startowy** → wklej Claude'owi. Nie trzeba pamiętać o „Zrzut DOM”.
+- **Karta przy życiu**: Screen Wake Lock (laptop nie zasypia przy widocznej karcie) + cichy dźwięk (przeglądarka nie dławi timerów w tle). Bez tego pętla obrony w karcie w tle chodzi ~1/min zamiast co 20 s.
+- Kolejność pierwszego dnia bez zmian: Obserwator → raport → (po mojej weryfikacji) Auto-ratunek.

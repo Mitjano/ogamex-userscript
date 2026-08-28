@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.0.1
+// @version      3.1.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.0.1";
+  const VERSION = "3.1.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -494,6 +494,77 @@
     },
   };
 
+  // ═══ KARTA PRZY ŻYCIU ═══════════════════════════════════════════════════
+  // Przeglądarka dławi timery w kartach w tle (~1/min), a laptop zasypia —
+  // obrona chodząca co 20 s przestaje wtedy istnieć dokładnie wtedy, gdy jest
+  // potrzebna. Dwa niezależne środki z 2.x: Screen Wake Lock (nie usypia
+  // ekranu/systemu, gdy karta widoczna) i CICHY dźwięk (karta odtwarzająca
+  // audio nie jest dławiona w tle). Bez uprawnień, bez plików.
+  const Wake = {
+    _lock: null, _ctx: null,
+    async ensure() {
+      try {
+        if ("wakeLock" in navigator && document.visibilityState === "visible" && (!this._lock || this._lock.released)) {
+          this._lock = await navigator.wakeLock.request("screen");
+          this._lock.addEventListener?.("release", () => log("[WAKE] blokada uśpienia zwolniona.", "warn"));
+          if (!Once.said("wake_on", 6 * 3600e3)) log("[WAKE] blokada uśpienia aktywna — komputer nie zaśnie, póki karta z grą jest widoczna.", "info");
+        }
+      } catch (e) { if (!Once.said("wake_err", 3600e3)) log(`[WAKE] nie udało się zablokować uśpienia: ${e.message}`, "warn"); }
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!this._ctx) {
+          this._ctx = new Ctx();
+          const o = this._ctx.createOscillator(), g = this._ctx.createGain();
+          g.gain.value = 0.0001; o.frequency.value = 20; o.connect(g); g.connect(this._ctx.destination); o.start();
+          if (!Once.said("wake_audio", 6 * 3600e3)) log("[WAKE] karta trzymana przy życiu cichym dźwiękiem — w tle nie zostanie zdławiona.", "info");
+        }
+        if (this._ctx.state === "suspended") await this._ctx.resume();
+      } catch {}
+    },
+  };
+
+  // ═══ RAPORT STARTOWY (kalibracja na nowym uni) ══════════════════════════
+  // Na Genesis nie wiemy, czy fork ma ten sam markup co Athena. Zamiast prosić
+  // operatora o klikanie zrzutów w środku startu serwera: bot sam, przy
+  // pierwszym kontakcie z każdą stroną, zbiera komplet dowodów do jednego
+  // raportu, a operator kopiuje go JEDNYM przyciskiem.
+  const Calib = {
+    need() { return Store.get("calib_done", false) !== true; },
+    get() { return Store.get("calib", {}) || {}; },
+    put(part, data) { const c = this.get(); if (c[part]) return; c[part] = { at: Date.now(), data: String(data).slice(0, 4000) }; Store.set("calib", c); log(`[KALIBRACJA] zebrano: ${part} (${Object.keys(c).length}/4). Gdy będzie komplet — klik „Kopiuj raport startowy".`, "info"); this.check(); },
+    check() {
+      const c = this.get();
+      if (["planetBar", "bar", "events", "fleetPage"].every(k => c[k])) {
+        Store.set("calib_done", true);
+        log("[KALIBRACJA] KOMPLET — kliknij przycisk kopiowania raportu startowego i wyślij go do Claude'a. Do tego czasu zostaw tryb Obserwator.", "success");
+        Journal.add("BŁĄD", "Raport startowy Genesis gotowy — skopiuj z panelu i wyślij (potwierdzenie parserów).");
+      }
+    },
+    collect() {
+      if (!this.need()) return;
+      try {
+        const bar = document.querySelector("a.planet-select, .planet-select");
+        if (bar) this.put("planetBar", (bar.closest("ul, div, nav, aside") || bar.parentElement).outerHTML.replace(/\s+/g, " "));
+        const b = Bar.read();
+        if (b) this.put("bar", `parse=${JSON.stringify(b)} | tekst=${document.body.textContent.replace(/\s+/g, " ").match(/.{0,80}Missions?.{0,220}/i)?.[0] || "(brak segmentu Missions)"}`);
+        const ev = document.querySelector("#fleet-movement-content, #layoutFleetMovements");
+        if (ev && (ev.textContent || "").trim().length > 20) this.put("events", ev.outerHTML.replace(/\s+/g, " "));
+        if (page() === "fleet") {
+          const ships = [...document.querySelectorAll("[data-ship-type]")];
+          const one = ships[0] ? (ships[0].closest(".ship-item") || ships[0].parentElement).outerHTML.replace(/\s+/g, " ") : "(brak [data-ship-type])";
+          this.put("fleetPage", `statki=${ships.length} (${ships.map(e => e.dataset.shipType).join(",")}) | pierwszy wiersz=${one} | pola celu=${["fleet2_target_x", "fleet2_target_y", "fleet2_target_z"].map(id => id + ":" + (document.getElementById(id) ? "jest" : "BRAK")).join(", ")} | data-planet-type=${document.querySelectorAll("[data-planet-type]").length} | mission-item=${[...document.querySelectorAll(".mission-item, [class*='mission-item']")].map(m => (m.textContent || "").trim().slice(0, 14) + "[" + m.className + "]").join(", ") || "BRAK"} | btn-all-res=${document.querySelector("a.btn-all-res, .btn-all-res") ? "jest" : "BRAK"}`);
+        }
+      } catch (e) { log(`[KALIBRACJA] błąd zbierania: ${e.message}`, "warn"); }
+    },
+    report() {
+      const c = this.get();
+      const head = `RAPORT STARTOWY OGameX 3 v${VERSION} · ${HOST} · ${new Date().toLocaleString("pl-PL")}\nPary: ${JSON.stringify(PlanetBar.pairs())}\nAktywne: ${JSON.stringify(PlanetBar.active())}\nPasek: ${JSON.stringify(Bar.read())}\n`;
+      const parts = ["planetBar", "bar", "events", "fleetPage"].map(k => `\n──── ${k} ${c[k] ? "" : "(BRAK — odwiedź odpowiednią stronę)"}\n${c[k]?.data || ""}`).join("");
+      return head + parts;
+    },
+  };
+
   // ═══ REKONESANS HANGARÓW ════════════════════════════════════════════════
   // Bez tego cała obrona jest ślepa: decide() zna położenie floty WYŁĄCZNIE
   // z odczytów hangaru (strona /fleet), a 3.0 — inaczej niż 2.x z ekspedycjami
@@ -544,6 +615,8 @@
     try {
       if (!TabLock.acquire()) return;
       Store.set("last_tick", Date.now());
+      Wake.ensure();
+      Calib.collect();
       if (page() === "fleet") Hangar.scan();
       const s = await Situation.refresh();
       const { actions, alerts } = decide(s, CFG, Date.now());
@@ -592,6 +665,7 @@
           <button id="ogx3-sim-planet" class="ogx3-btn">TEST: atak na planetę</button>
           <button id="ogx3-dump" class="ogx3-btn">Zrzut DOM</button>
           <button id="ogx3-pushtest" class="ogx3-btn">Test push</button>
+          <button id="ogx3-report" class="ogx3-btn">Kopiuj raport startowy</button>
           <button id="ogx3-abort" class="ogx3-btn">Przerwij lot</button>
         </div>
         <div style="margin-top:6px;opacity:.7;font-size:11px">ntfy: <span id="ogx3-topic"></span></div>
@@ -610,6 +684,7 @@
       const sim = (body) => { const a = PlanetBar.active(); if (!a) return alert("Nie widzę aktywnej planety."); Store.set("sim", { key: a.key, body, arriveAt: Date.now() + 150e3, until: Date.now() + 180e3 }); log(`[TEST] symulacja: atak na ${body === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${a.key}], dolot 150 s. Auto-ratunek: ${CFG.autoRescue ? "ON (flota poleci!)" : "OFF (tylko decyzja w logu)"}`, "error"); defenceTick(); };
       $("ogx3-sim-moon").onclick = () => sim("moon"); $("ogx3-sim-planet").onclick = () => sim("planet");
       $("ogx3-dump").onclick = () => { const ev = document.querySelector("#fleet-movement-content, #layoutFleetMovements"); log(`[DOM] pasek planet: ${JSON.stringify(PlanetBar.pairs().slice(0, 6))} … aktywne: ${JSON.stringify(PlanetBar.active())}`, "info"); log(`[DOM] pasek misji: ${JSON.stringify(Bar.read())}`, "info"); log(`[DOM] Events (${ev ? "jest" : "BRAK"}): ${(ev?.outerHTML || "").replace(/\s+/g, " ").slice(0, 2500)}`, "info"); if (page() === "fleet") log(`[DOM] hangar: ${JSON.stringify(Hangar.scan())}`, "info"); };
+      $("ogx3-report").onclick = () => { Calib.collect(); const r = Calib.report(); navigator.clipboard?.writeText(r).then(() => log("[KALIBRACJA] raport skopiowany do schowka — wklej go Claude'owi.", "success"), () => log(r, "info")); };
       $("ogx3-pushtest").onclick = () => Notifier.push("Test OGameX 3", "Powiadomienia działają. Temat: " + Notifier.topic(), "default", "white_check_mark");
       $("ogx3-abort").onclick = () => Fly.abort("operator");
       $("ogx3-copy").onclick = () => { const t = logEntries.map(e => `[${e.time}] [${e.type.toUpperCase()}] ${e.msg}`).join("\n"); navigator.clipboard?.writeText(t); };
@@ -639,6 +714,8 @@
   UI.build();
   log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${HOST}`, "info");
   if (page() === "fleet") Hangar.scan();
+  Wake.ensure(); Calib.collect();
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") Wake.ensure(); });
   defenceTick();
   setInterval(defenceTick, CFG.tickMs);
   setInterval(keepalive, 60e3);
