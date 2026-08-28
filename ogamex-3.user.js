@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.3.0
+// @version      3.4.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.3.0";
+  const VERSION = "3.4.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -101,6 +101,11 @@
     tickMs: 20000,
     recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
     reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru, zanim pójdziemy sprawdzić
+    // ── HUMANIZER ──
+    // Przerwy dotyczą WYŁĄCZNIE ekonomii. W 2.x przerwa kawowa usypiała cały
+    // scheduler razem z keepalive (audyt A8: droga do wylogowania i 15 min
+    // ślepoty). Tu obrona, rekonesans i keepalive chodzą zawsze.
+    human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: false },
     // ── NOCNY FLEET SAVE ──
     // Klasyczna obrona: gdy śpisz, flota nie stoi w hangarze. Używa TEJ SAMEJ
     // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
@@ -389,6 +394,32 @@
     return { actions, alerts };
   }
 
+  // ═══ HUMANIZER (tylko ekonomia) ═════════════════════════════════════════
+  const Human = {
+    onBreak() { return Date.now() < (Store.get("break_until", 0) || 0); },
+    breakLeftMin() { return Math.max(0, Math.ceil(((Store.get("break_until", 0) || 0) - Date.now()) / 60000)); },
+    maybeStart() {
+      const h = CFG.human || {};
+      if (!h.breaks) return false;
+      const now = Date.now();
+      let next = Store.get("break_next", 0) || 0;
+      if (!next) { Store.set("break_next", now + jitter(h.breakEveryMinMin, h.breakEveryMaxMin) * 60e3); return false; }
+      if (now < next) return false;
+      const len = jitter(h.breakLenMinMin, h.breakLenMaxMin) * 60e3;
+      Store.set("break_until", now + len);
+      Store.set("break_next", now + len + jitter(h.breakEveryMinMin, h.breakEveryMaxMin) * 60e3);
+      log(`[PRZERWA] ekonomia pauzuje na ~${Math.round(len / 60000)} min (rytm człowieka). Obrona działa normalnie.`, "info");
+      return true;
+    },
+    // Jedyne pytanie, jakie zadaje ekonomia. Obrona NIGDY tego nie pyta.
+    economyAllowed(s) {
+      if (this.onBreak()) return `przerwa (~${this.breakLeftMin()} min)`;
+      if (this.maybeStart()) return "przerwa właśnie się zaczęła";
+      if (!CFG.human.economyAtNight && s && s.night && s.night.active) return "okno nocne — ekonomia śpi, flota jest na FS";
+      return null;
+    },
+  };
+
   // ═══ EKSPEDYCJE (Odkrywca) ══════════════════════════════════════════════
   // Cel: pozycja 16 układu bazy. Id misji uczymy się RAZ z wiersza 16 dowolnej
   // strony galaktyki (fork ma własną numerację — nie zgadujemy).
@@ -451,6 +482,8 @@
     async tick(s) {
       ExpoLink.learn();
       if (Fly.mission() || !CFG.expo.enabled) return false;
+      const why = Human.economyAllowed(s);
+      if (why) { if (!Once.said("human|" + why.slice(0, 12), 10 * 60e3)) log(`[EXPO] wstrzymane: ${why}`, "info"); return false; }
       const now = Date.now();
       const b = this.burst();
       const p = expoPlan(s, CFG, now, b);

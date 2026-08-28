@@ -296,6 +296,16 @@ console.log("── 21. OKNO NOCNE (czysta funkcja nightWindow) ──");
   check("FS wyłączony → okno nieaktywne", nw({ enabled: false, startHour: 23, endHour: 7 }, at(2)).active === false);
 }
 
+console.log("── 22. HUMANIZER: przerwy tylko dla ekonomii (lekcja A8 z 2.x) ──");
+{
+  check("obrona nie pyta humanizera", !/Human\.economyAllowed/.test(decideBody));
+  const loop = src.slice(src.indexOf("async function defenceTick"));
+  check("keepalive/rekonesans/obrona poza przerwą", !/Human\.onBreak\(\)/.test(loop.slice(0, loop.indexOf("Expo.tick"))));
+  check("ekspedycje pytają o przerwę i noc", /Human\.economyAllowed\(s\)/.test(src));
+  const hum = src.slice(src.indexOf("const Human = {"));
+  check("noc wyłącza ekonomię (flota i tak na FS)", /economyAtNight[\s\S]{0,120}?night[\s\S]{0,60}?active/.test(hum));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
