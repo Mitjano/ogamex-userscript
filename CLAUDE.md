@@ -1,10 +1,31 @@
 # OGameX Assistant — instrukcje dla Claude Code
 
-Jeden plik: `ogamex-bot.user.js` (Tampermonkey, ~16k linii). **Push na `main` = auto-deploy** (Tampermonkey aktualizuje z repo; bot krzyczy `[UPDATE]`, gdy wersja w repo jest nowsza). Bump `// @version` przy KAŻDEJ zmianie.
+**Dwa skrypty, dwa uniwersa. Push na `main` = auto-deploy; bump `// @version` przy KAŻDEJ zmianie.**
 
-- Serwer: athena.ogamex.net — fork **.NET**, nie Laravel `lanedirt/OGameX`. Nie budować na endpointach niepotwierdzonych na żywo; nowy markup najpierw zrzuć do logu (`[... DOM]`), potem parser.
-- Testy offline: `node test-all.js` (wycinają funkcje z bota po DOKŁADNEJ sygnaturze — zmiana sygnatury = poprawka testu). Zielone przed pushem. Pipe zjada kod wyjścia — sprawdzaj `tail -1`.
-- Język: polski (logi, commity, dokumenty). Użytkownik = obrońca; obrona floty ma bezwzględny priorytet nad ekonomią.
-- Gdzie jesteśmy: `STAN-I-PLAN.md` (ostatnia sekcja AKTUALIZACJA) → audyty `AUDYT-HUBY-2026-08-27.md`, `AUDYT-HUBY-2-OBRONA-2026-08-27.md`, `MOON-STRATEGY-2026-08-26.md`.
-- Konwencje w kodzie: komentarz `// vX.Y.Z: incydent (data, godzina) — przyczyna — rozwiązanie`; stan w `GM_setValue` z prefiksem `ogamex_`, klucze per para z sufiksem `g:s:p`; misje wielostronicowe przez `pending_mission` (typ + step) obsługiwane w `handlePendingMission()`.
+| plik | uni | stan | uwaga |
+|---|---|---|---|
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.0.x, ~600 linii) | tu idzie cała nowa praca |
+| `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
+
+- Serwer: fork **.NET**, nie Laravel `lanedirt/OGameX`. Nie budować na endpointach niepotwierdzonych na żywo; nowy markup najpierw zrzuć do logu (`[... DOM]`), potem parser.
+- Język: polski (logi, commity, dokumenty). Użytkownik = obrońca; **obrona floty ma bezwzględny priorytet nad ekonomią**.
 - Przy fałszywym alarmie prosić o ZRZUT EKRANU paska misji, nie o log.
+
+## 3.0 (Genesis) — architektura, której trzeba się trzymać
+Kolejność czytania: `START-3.0.md` → `AUDYT-3.0-2026-08-28.md` → kod.
+1. **Parsery** (`PlanetBar`, `Bar`, `Rows`, `Hangar`) — przeniesione z 2.x, sprawdzone bojowo. Zmieniać tylko z dowodem z żywej gry.
+2. **`Situation`** — JEDNO źródło prawdy (pary, hangary, zagrożenia, własne loty, loty bota) w jednym kluczu. Nie dokładać rozproszonych kluczy stanu — to był grzech 2.x (193 klucze).
+3. **`decide(situation, cfg, now)`** — CZYSTA funkcja: bez DOM, bez GM, bez `Date.now()`. Każda zmiana zachowania obrony = zmiana tutaj + nowy przypadek w `test3-decide.js`.
+4. **`Fly`** — jeden wykonawca (lot Deploy + zawrót), misja w jednym kluczu z krokiem.
+
+Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane ciało · jedna ucieczka na parę · **stan lotu zamyka hangar, nie zegar** · nieznany markup → zrzut, nie zgadywanie.
+
+## Testy
+- 3.0: `node test3-all.js` (decyzje + składnia). **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
+- 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
+
+## Historia i kontekst
+- `STAN-I-PLAN.md` — dziennik 2.x (ostatnie sekcje = 27.08: brama, ucieczka na sąsiedni księżyc, pamięć ataku, 7 błędów stanu).
+- `AUDYT-3.0-2026-08-28.md` — dlaczego 3.0 i co przenosimy.
+- Audyty 2.x: `AUDYT-HUBY-2026-08-27.md`, `AUDYT-HUBY-2-OBRONA-2026-08-27.md`, `MOON-STRATEGY-2026-08-26.md`.
+- Fakty o forku (potwierdzone zrzutami): panel **Events i pasek misji są GLOBALNE** (wszystkie kolonie), lista `/home/fleetmovementlist` pokazuje tylko aktywną parę · wiersz ACS ma „Players: 1/2" zamiast źródła, więc jedyna współrzędna to CEL · przełącznik ciała celu to `data-planet-type` (1=planeta, 2=księżyc) · misja „stacjonuj" to `.mission-item.DEPLOY` · zawrót to `a.x_btn_fleet_return` · czas lotu: „Duration of flight … MM:SS".
