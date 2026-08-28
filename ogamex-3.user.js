@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.2.0
+// @version      3.3.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.2.0";
+  const VERSION = "3.3.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -101,6 +101,10 @@
     tickMs: 20000,
     recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
     reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru, zanim pójdziemy sprawdzić
+    // ── NOCNY FLEET SAVE ──
+    // Klasyczna obrona: gdy śpisz, flota nie stoi w hangarze. Używa TEJ SAMEJ
+    // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
+    fs: { enabled: false, startHour: 23, endHour: 7, speedPct: 10, target: null },
     // ── EKONOMIA (etap 2) ──
     expo: {
       enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
@@ -265,6 +269,7 @@
       const active = PlanetBar.active(); if (active) s.active = active;
       const own = PlanetBar.ownKeys();
       const bar = Bar.read(); if (bar) s.bar = { ...bar, at: now };
+      s.night = nightWindow(CFG.fs, new Date(now));
       const evRows = Rows.readEvents(own);
       const list = Session.lostRecently() ? { ok: false, rows: [] } : await Rows.fetchList(own);
       const rows = [...evRows.map(r => ({ ...r, source: "events" })), ...list.rows.map(r => ({ ...r, source: "list" }))];
@@ -308,6 +313,18 @@
     },
   };
 
+  // Okno nocne z godzin lokalnych. Liczone POZA decide(), żeby decyzja
+  // pozostała czysta i testowalna niezależnie od strefy czasowej maszyny.
+  function nightWindow(fs, d) {
+    if (!fs || !fs.enabled) return { active: false, endsAt: 0 };
+    const h = d.getHours(), m = d.getMinutes();
+    const start = fs.startHour, end = fs.endHour;
+    const inWin = start === end ? false : (start < end ? (h >= start && h < end) : (h >= start || h < end));
+    const endD = new Date(d); endD.setMinutes(0, 0, 0); endD.setHours(end);
+    if (endD.getTime() <= d.getTime()) endD.setDate(endD.getDate() + 1);
+    return { active: inWin, endsAt: endD.getTime(), startHour: start, endHour: end, nowHM: `${h}:${String(m).padStart(2, "0")}` };
+  }
+
   // ═══ decide — CZYSTA FUNKCJA ════════════════════════════════════════════
   // Wejście: situation (jak wyżej), cfg, now. Wyjście: { actions:[], alerts:[] }.
   // action: { kind:"fly", fromKey, fromBody, toKey, toBody, why, recall:bool, speed }
@@ -329,7 +346,24 @@
         // cisza: lot ucieczki z tej pary → zawrót po recallAt; brak zagrożeń i flota na planecie z księżycem → wróć na księżyc
         const f = inFlightFrom(k);
         if (f && f.kind === "air" && f.phase === "launched" && now >= f.recallAt) actions.push({ kind: "recall", flight: f, why: "ataki minęły — zawrót ucieczki" });
-        if (!f && fleet && fleet.body === "planet" && pairs[k].hasMoon && now - fleet.at < 30 * 60e3) actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true });
+        if (!f && fleet && fleet.body === "planet" && pairs[k].hasMoon && now - fleet.at < 30 * 60e3) { actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true }); continue; }
+        // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
+        // co ucieczka (powolny Deploy + zawrót), tylko wyzwalany zegarem, nie atakiem.
+        if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0) {
+          const want = cfg.fs.target && cfg.fs.target !== k ? cfg.fs.target : null;
+          let dest = null;
+          if (want && pairs[want] && attackedBodies(want).size === 0) dest = { key: want, body: pairs[want].hasMoon ? "moon" : "planet" };
+          else {
+            const home = pairs[k]; let best = -1;
+            for (const [ok, o] of Object.entries(pairs)) {
+              if (ok === k || attackedBodies(ok).size) continue;
+              const d = Math.abs(o.galaxy - home.galaxy) * 1000 + Math.abs(o.system - home.system);   // najdalsza = najdłuższy lot
+              if (d > best) { best = d; dest = { key: ok, body: o.hasMoon ? "moon" : "planet" }; }
+            }
+          }
+          if (dest) actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE nocny (${cfg.fs.startHour}:00–${cfg.fs.endHour}:00) → [${dest.key}]`, speed: cfg.fs.speedPct || 10, recall: true, air: true, fs: true, recallAt: s.night.endsAt });
+          else alerts.push({ key: k, level: "warn", msg: `FS nocny: brak celu (jedyna kolonia albo wszystkie atakowane)` });
+        }
         continue;
       }
       const soonest = Math.min(...th.map(t => t.arriveAt));
@@ -785,6 +819,9 @@
         </div>
         <div style="margin:6px 0">Rezerwa deuteru <input id="ogx3-res" style="width:120px" /> · prędkość ucieczki <input id="ogx3-spd" style="width:36px" />%</div>
         <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
+          <b>Fleet Save nocny</b> <button id="ogx3-fs" class="ogx3-btn"></button> od <input id="ogx3-fs-a" style="width:26px" />:00 do <input id="ogx3-fs-b" style="width:26px" />:00 · <span id="ogx3-fs-st" style="opacity:.75"></span>
+        </div>
+        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
           <b>Ekspedycje</b> <button id="ogx3-expo" class="ogx3-btn"></button> <button id="ogx3-disc" class="ogx3-btn"></button><br>
           fale <input id="ogx3-waves" style="width:34px" /> · rezerwa slotów <input id="ogx3-slotres" style="width:30px" /> · <span id="ogx3-expo-st" style="opacity:.75"></span>
         </div>
@@ -807,6 +844,9 @@
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
       $("ogx3-recon").onclick = () => { CFG.recon = !CFG.recon; saveCfg(); log(`Rekonesans hangarów ${CFG.recon ? "ON" : "OFF — bot nie będzie wiedział, gdzie stoi flota"}`, CFG.recon ? "info" : "warn"); this.renderStatus(); };
+      $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
+      $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
       $("ogx3-expo").onclick = () => { CFG.expo.enabled = !CFG.expo.enabled; saveCfg(); log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-disc").onclick = () => { CFG.expo.discoverer40 = !CFG.expo.discoverer40; saveCfg(); log(`Odkrywca (40 min) ${CFG.expo.discoverer40 ? "ON" : "OFF — ekspedycje na " + CFG.expo.holdingHours + " h"}`, "info"); this.renderStatus(); };
       $("ogx3-waves").value = String(CFG.expo.waves); $("ogx3-waves").onchange = (e) => { CFG.expo.waves = Math.max(1, parseInt(e.target.value) || 1); saveCfg(); Store.del("burst"); log(`Fale ekspedycji: ${CFG.expo.waves} (seria liczona od nowa)`, "info"); };
@@ -827,6 +867,8 @@
       if (!this.el) return; const $ = (id) => document.getElementById(id);
       $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#1e6b3a" : "#6b1e1e";
       $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (auto-ratunek OFF)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
+      $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "#1c2a44";
+      { const n = nightWindow(CFG.fs, new Date()); $("ogx3-fs-st").textContent = CFG.fs.enabled ? (n.active ? `NOC — flota powinna być w powietrzu, zawrót ${new Date(n.endsAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : `dzień (${n.nowHM})`) : "wyłączony"; }
       $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "#1c2a44";
       $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;
       { const s0 = Situation.load(); const b = Store.get("burst", null); const e = s0.slots?.expo, f = s0.slots?.fleet;

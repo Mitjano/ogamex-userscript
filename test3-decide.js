@@ -262,6 +262,40 @@ console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
   check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
 }
 
+
+console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");
+{
+  const FSCFG = Object.assign({}, CFG, { fs: { enabled: true, startHour: 23, endHour: 7, speedPct: 10, target: null } });
+  const night = { active: true, endsAt: NOW + 6 * 3600e3, startHour: 23, endHour: 7 };
+  const s = base({ night, hangars: { "3:272:7|moon": H(1e6) } });
+  const a = decide(s, FSCFG, NOW).actions.find(x => x.fs);
+  check("w oknie nocnym flota wychodzi z hangaru", !!a, JSON.stringify(decide(s, FSCFG, NOW).actions));
+  check("FS leci poza parę, powoli, z zawrotem o świcie", a && a.toKey !== "3:272:7" && a.speed === 10 && a.recall === true && a.recallAt === night.endsAt, JSON.stringify(a));
+  check("FS wybiera NAJDALSZĄ nieatakowaną kolonię (najdłuższy lot)", a && a.toKey === "5:100:4", JSON.stringify(a));
+  const s2 = base({ night, hangars: { "3:272:7|moon": H(1e6) }, threats: [threat("5:100:4", "planet", 600)] });
+  const a2 = decide(s2, FSCFG, NOW).actions.find(x => x.fs);
+  check("atakowana kolonia nie jest celem FS", a2 && a2.toKey === "3:272:2", JSON.stringify(a2));
+  check("poza oknem nocnym FS nie rusza", !decide(base({ night: { active: false, endsAt: 0 } , hangars: { "3:272:7|moon": H(1e6) } }), FSCFG, NOW).actions.some(x => x.fs));
+  check("FS wyłączony w configu → nic", !decide(s, CFG, NOW).actions.some(x => x.fs));
+  const s3 = base({ night, hangars: { "3:272:7|moon": H(1e6) }, flights: [{ kind: "air", fromKey: "3:272:7", phase: "launched", recallAt: NOW + 3600e3 }] });
+  check("FS nie dubluje lotu, gdy flota już w powietrzu", !decide(s3, FSCFG, NOW).actions.some(x => x.fs));
+  const s4 = base({ night, threats: [threat("3:272:7", "moon", 300)], hangars: { "3:272:7|moon": H(1e6) } });
+  const a4 = decide(s4, FSCFG, NOW).actions[0];
+  check("atak w nocy → normalny ratunek, nie FS", a4 && a4.kind === "fly" && !a4.fs, JSON.stringify(a4));
+}
+
+console.log("── 21. OKNO NOCNE (czysta funkcja nightWindow) ──");
+{
+  const nw = new Function("fs", "d", bodyOf("function nightWindow(fs, d) {"));
+  const at = (h) => { const d = new Date(NOW); d.setHours(h, 30, 0, 0); return d; };
+  const FS = { enabled: true, startHour: 23, endHour: 7 };
+  check("23:30 → noc", nw(FS, at(23)).active === true);
+  check("03:30 → noc (okno przez północ)", nw(FS, at(3)).active === true);
+  check("12:30 → dzień", nw(FS, at(12)).active === false);
+  check("koniec okna zawsze w przyszłości", nw(FS, at(23)).endsAt > at(23).getTime());
+  check("FS wyłączony → okno nieaktywne", nw({ enabled: false, startHour: 23, endHour: 7 }, at(2)).active === false);
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
