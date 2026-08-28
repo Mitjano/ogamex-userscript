@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.7.1
+// @version      3.7.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.7.1";
+  const VERSION = "3.7.2";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -299,6 +299,20 @@
       s.threats = [...seen.values()];
       // własne loty (z Events — globalne; z listy — aktywna para)
       s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
+      // v3.7.2 (audyt): refresh() czeka na AJAX listy ruchów, więc obiekt załadowany
+      // przed awaitem jest już nieaktualny — inna karta (albo Hangar.scan po
+      // przeładowaniu) mogła w tym czasie dopisać świeży odczyt hangaru albo slotów.
+      // Zapisujemy SCALAJĄC: nasze wyliczenia + wszystko, co przyszło w międzyczasie.
+      {
+        const cur = this.load();
+        for (const [hk, hv] of Object.entries(cur.hangars || {})) {
+          const mine = s.hangars[hk];
+          if (!mine || (hv.at || 0) > (mine.at || 0)) s.hangars[hk] = hv;
+        }
+        if (cur.slots && (!s.slots || (cur.slots.at || 0) > (s.slots.at || 0))) s.slots = cur.slots;
+        // loty obronne dopisane w międzyczasie (np. przez Fly po udanej wysyłce) nie mogą zniknąć
+        for (const f of (cur.flights || [])) if (!(s.flights || []).some(x => x.fromKey === f.fromKey && x.sentAt === f.sentAt)) (s.flights = s.flights || []).push(f);
+      }
       // loty wysłane przez nas: zamknij te, których hangar-cel/źródło już pełny (hangar > zegar)
       s.flights = (s.flights || []).filter(f => {
         const homeH = s.hangars[`${f.fromKey}|${f.fromBody}`];

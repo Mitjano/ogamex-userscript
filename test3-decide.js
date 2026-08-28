@@ -378,6 +378,15 @@ console.log("── 26. START UNI: 1 slot floty a rezerwa (v3.7.1) ──");
   check("8 slotów → fala częściowa leci normalnie", !expoPlan(many, C2, NOW, null).skip, JSON.stringify(expoPlan(many, C2, NOW, null)));
 }
 
+console.log("── 27. SPÓJNOŚĆ STANU między kartami (v3.7.2) ──");
+{
+  const ref = src.slice(src.indexOf("async refresh()"));
+  check("refresh() scala stan po awaicie (nie nadpisuje świeższych odczytów)", /const cur = this\.load\(\);[\s\S]{0,600}?hangars/.test(ref));
+  check("świeższy odczyt hangaru wygrywa", /\(hv\.at \|\| 0\) > \(mine\.at \|\| 0\)/.test(ref));
+  check("lot obronny dopisany w międzyczasie nie ginie", /flights \|\| \[\]\)\) if \(!\(s\.flights \|\| \[\]\)\.some/.test(ref));
+  check("pętla obrony pod blokadą karty", /if \(!TabLock\.acquire\(\)\) return;/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
