@@ -257,8 +257,8 @@ console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
 
 console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
 {
-  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid"\) \{[\s\S]{0,400}?s\.flights\.push/.test(src), "brak wyłączenia expedition z flights");
-  check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\)\) await Aster\.tick\(s\)/.test(src));
+  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"\) \{[\s\S]{0,400}?s\.flights\.push/.test(src), "brak wyłączenia expedition z flights");
+  check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
   check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
 }
 
@@ -325,6 +325,18 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   check("asteroida znikająca za chwilę pomijana (minTtlSec)", /hit\.ttl < min/.test(asterMod));
   check("lot minerów nie trafia do flights (nie blokuje obrony)", /m\.kind !== "expedition" && m\.kind !== "asteroid"/.test(src));
   check("misja ASTEROID_MINING wybierana jawnie na kroku 3", /"ASTEROID_MINING", "ASTEROID"/.test(src));
+}
+
+console.log("── 24. ZŁOM (v3.6.0) ──");
+{
+  const dm = src.slice(src.indexOf("const Debris = {"));
+  check("złom stoi przy alarmie i przerwie", /arriveAt > Date\.now\(\)\)\) return false/.test(dm) && /if \(Human\.economyAllowed\(s\)\) return false/.test(dm));
+  check("bez recyklerów nic nie robi", /RECYCLER/.test(dm));
+  check("sprawdza poz. 16 (ekspedycje) i pozycję bazy (po bitwie)", /wanted = \[16, pos\]/.test(dm));
+  check("cel typu ZŁOM to data-planet-type=3", /m\.toBody === "debris" \? "3"/.test(src));
+  check("misja COLLECT/HARVEST wybierana jawnie", /"COLLECT", "HARVEST", "RECYCL"/.test(src));
+  check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
+  check("kolejność ekonomii: rekonesans → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
 }
 
 console.log("");
