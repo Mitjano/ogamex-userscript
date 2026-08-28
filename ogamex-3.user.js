@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.11.0
+// @version      3.12.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.11.0";
+  const VERSION = "3.12.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -53,6 +53,22 @@
     if (!logTimer) logTimer = setTimeout(() => { logTimer = null; Store.set("log", logEntries); }, 800);
     try { UI.renderLog(); } catch {}
   }
+  // v3.12.0 (incydent 28.08 22:17): log zapisywał się do GM storage z opóźnieniem
+  // 800 ms, a KAŻDA nawigacja bota następuje natychmiast po wpisie („[REKONESANS]
+  // sprawdzam hangar…" → location.replace w tej samej linijce). Efekt: po
+  // przeładowaniu strony wszystkie powody nawigacji GINĘŁY — w logu zostawały same
+  // linie startowe i bot wyglądał, jakby przeładowywał stronę bez powodu. Diagnostyka
+  // pętli nawigacji była wtedy niemożliwa. Test E2E tego nie łapał, bo skraca
+  // setTimeout 150× (800 ms → 5 ms), więc debounce zawsze zdążył.
+  function flushLog() { try { if (logTimer) { clearTimeout(logTimer); logTimer = null; } Store.set("log", logEntries); } catch {} }
+  try { window.addEventListener("pagehide", flushLog); window.addEventListener("beforeunload", flushLog); } catch {}
+  // Każda nawigacja bota zostawia ślad: PO CO poszedł. Następne uruchomienie skryptu
+  // mówi to wprost — bez tego nie da się odróżnić „bot kręci stroną w pętli" od
+  // „operator sam klika po grze".
+  const Nav = {
+    go(url, why) { try { Store.set("nav_last", { at: Date.now(), to: String(url), why }); } catch {} flushLog(); location.replace(url); },
+    click(el, why) { try { Store.set("nav_last", { at: Date.now(), to: "klik: " + why, why }); } catch {} flushLog(); el.click(); },
+  };
   const Journal = {
     add(kind, msg) {
       const j = Store.get("journal", []) || [];
@@ -312,7 +328,7 @@
       if (Fly.mission()) return false;
       Store.set("session", { ...st, navAt: Date.now() });
       log("[SESJA] 2 min od wykrycia wylogowania — próbuję wejść na stronę główną.", "warn");
-      setTimeout(() => location.replace("/"), 800);
+      setTimeout(() => Nav.go("/", "odzyskiwanie sesji"), 800);
       return true;
     },
   };
@@ -745,8 +761,12 @@
         if (!g || !sy) return false;
         log("[EXPO] nie znam jeszcze id misji ekspedycji — zaglądam raz na galaktykę bazy.", "info");
         NavRate.note();
-        location.replace(`/galaxy?x=${g}&y=${sy}`);
+        Nav.go(`/galaxy?x=${g}&y=${sy}`, "ekspedycje: nauka id misji z galaktyki");
         return true;
+      }
+      if (Fly.blocked({ fromKey: p.fromKey, toKey: p.toKey })) {
+        if (!Once.said(`expoblk|${p.fromKey}`, 5 * 60e3)) log(`[EXPO] trasa [${p.fromKey}]→[${p.toKey}] w karencji po nieudanym locie — czekam.`, "warn");
+        return false;
       }
       const sizes = {}; for (const x of p.ships) sizes[x.type] = x.qty;
       const sent = (b && b.waves === p.waves && !p.last) ? (b.sent || 0) + 1 : (p.last ? 0 : 1);
@@ -853,6 +873,8 @@
           if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${target.galaxy}:${target.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return false; }
           log(`[ASTER] ZNALEZIONA asteroida [${target.galaxy}:${target.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${miners.qty.toLocaleString("pl-PL")} minerów.`, "success");
           this.save({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` });
+          const astKey = `${target.galaxy}:${target.system}:17`;
+          if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
           return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
             toKey: `${target.galaxy}:${target.system}:17`, toBody: "planet", why: `mining asteroidy [${target.galaxy}:${target.system}:17]`,
             speed: 100, plan: [{ type: "ASTEROID_MINER", qty: miners.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
@@ -863,7 +885,7 @@
       }
       this.save({ ...st, lastScanAt: now });
       NavRate.note();
-      location.replace(`/galaxy?x=${target.galaxy}&y=${target.system}`);
+      Nav.go(`/galaxy?x=${target.galaxy}&y=${target.system}`, `mining: skan układu [${target.galaxy}:${target.system}]`);
       return true;
     },
   };
@@ -905,10 +927,11 @@
       if (!rec || rec.qty <= 0) return false;
       const [g, sy] = homeKey.split(":");
       const onGal = page() === "galaxy" && new RegExp(`[?&]x=${g}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${sy}(?:&|$)`).test(location.search);
-      if (!onGal) { Store.set("debris_at", now - (CFG.debris.everyMin || 20) * 60e3 + 60e3); NavRate.note(); location.replace(`/galaxy?x=${g}&y=${sy}`); return true; }
+      if (!onGal) { Store.set("debris_at", now - (CFG.debris.everyMin || 20) * 60e3 + 60e3); NavRate.note(); Nav.go(`/galaxy?x=${g}&y=${sy}`, "złom: sprawdzam pole szczątków"); return true; }
       Store.set("debris_at", now);
       const hit = this.findLink(homeKey);
       if (!hit) return false;
+      if (Fly.blocked({ fromKey: homeKey, toKey: `${g}:${sy}:${hit.pos}` })) { if (!Once.said(`debblk|${hit.pos}`, 5 * 60e3)) log(`[ZŁOM] trasa [${homeKey}]→[${g}:${sy}:${hit.pos}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
       log(`[ZŁOM] pole złomu na poz. ${hit.pos} — wysyłam ${rec.qty.toLocaleString("pl-PL")} recyklerów.`, "success");
       return Fly.start({ kind: "debris", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
         toKey: `${g}:${sy}:${hit.pos}`, toBody: "debris", why: `zbieranie złomu [${g}:${sy}:${hit.pos}]`, speed: 100,
@@ -954,18 +977,26 @@
       if (a.air || a.rescue) return until - 2 * 60e3 - 15e3 > Date.now();
       return until > Date.now();
     },
+    // v3.12.0 (incydent 28.08 22:17–22:22): misja krążyła „przełącz ciało → otwórz
+    // formularz → znowu nie ta planeta" przez pełne 5 minut, robiąc ~30 przeładowań
+    // strony, po czym umarła na limicie czasu. Limit czasu jest ZA PÓŹNY: liczy się
+    // liczba nawigacji, bo każda z nich to przeładowanie gry. Sufit przerywa pętlę
+    // po 6 krokach — normalny lot potrzebuje 2–3.
+    NAV_MAX: 6,
+    bumpNav(m) { m.navs = (m.navs || 0) + 1; Store.set("mission", m); },
     async tick() {
       const m = this.mission(); if (!m) return;
       if (Date.now() - m.startedAt > 5 * 60e3) return this.abort("5 min bez potwierdzenia wysyłki");
+      if ((m.navs || 0) >= this.NAV_MAX) return this.abort(`${this.NAV_MAX} nawigacji bez otwarcia formularza — pętla przełączania ciał (krok „${m.step}", cel ${this.url(m)})`);
       try {
         if (m.step === "switch") {
           const a = PlanetBar.active();
-          if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(this.url(m)); return; }
+          if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; this.bumpNav(m); Nav.go(this.url(m), `lot: formularz [${m.fromKey}]→[${m.toKey}]`); return; }
           const el = PlanetBar.anchor(m.fromKey, m.fromBody);
           if (!el) return this.abort(`brak [${m.fromKey}] ${m.fromBody} na pasku planet`);
-          log(`[LOT] przełączam na ${m.fromBody} [${m.fromKey}]`, "info"); m.step = "switch_wait"; Store.set("mission", m); el.click(); return;
+          log(`[LOT] przełączam na ${m.fromBody} [${m.fromKey}]`, "info"); m.step = "switch_wait"; this.bumpNav(m); Nav.click(el, `lot: przełączenie na ${m.fromBody} [${m.fromKey}]`); return;
         }
-        if (m.step === "switch_wait") { const a = PlanetBar.active(); if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; Store.set("mission", m); location.replace(this.url(m)); } return; }
+        if (m.step === "switch_wait") { const a = PlanetBar.active(); if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; this.bumpNav(m); Nav.go(this.url(m), `lot: formularz [${m.fromKey}]→[${m.toKey}]`); } return; }
         if (m.step === "form") {
           // v3.9.0 (audyt): jeśli klik "Send fleet" przeładował stronę, misja zostaje
           // w Store — bez tej bramki bot wysłałby DRUGĄ identyczną falę.
@@ -974,7 +1005,8 @@
             log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");
             Store.del("mission"); return;
           }
-          if (page() !== "fleet") { location.replace(this.url(m)); return; }
+          if (page() !== "fleet") { navGuard(m, this); return; }
+          Store.set("form_nav", null);
           if (this._busy) return; this._busy = true;
           try { await this.form(m); } finally { this._busy = false; }
         }
@@ -995,6 +1027,7 @@
     async form(m) {
       const a = PlanetBar.active();
       if (!a || a.key !== m.fromKey || a.body !== m.fromBody) { m.step = "switch"; Store.set("mission", m); return; }
+      if (m.navs) { m.navs = 0; Store.set("mission", m); }   // formularz stoi na WŁAŚCIWEJ planecie = realny postęp
       await sleep(jitter(1200, 2200));
       // krok 1: statki — wszystko (ratunek) albo plan (ekspedycja)
       const els = [...document.querySelectorAll("[data-ship-type]")];
@@ -1164,7 +1197,7 @@
       else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else if (m.kind === "asteroid") log(`[ASTER] minery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${loaded.length} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
-      if (okUrl) location.replace("/");
+      if (okUrl) Nav.go("/", "po wysyłce floty — powrót na stronę główną");
     },
     async applyReserve() {
       const reserve = Number(CFG.deutReserve) || 0; if (!reserve) return;
@@ -1214,7 +1247,7 @@
       const id = row.getAttribute("data-fleet-id") || "";
       let live = id ? document.querySelector(`a.x_btn_fleet_return[data-fleet-id="${id}"]`) : document.querySelector("a.x_btn_fleet_return");
       if (!live) { for (const t of [...document.querySelectorAll("a, button, div, span")].filter(e => e.offsetParent !== null && !e.closest("#ogx3-panel") && /fleet\s*movements|^events$|\d+\s*Missions?/i.test((e.textContent || "").trim()))) { t.click(); for (let i = 0; i < 8 && !live; i++) { await sleep(500); live = id ? document.querySelector(`a.x_btn_fleet_return[data-fleet-id="${id}"]`) : document.querySelector("a.x_btn_fleet_return"); } if (live) break; } }
-      if (!live) { if (page() !== "fleet") { location.replace("/fleet"); return; } f.tries = (f.tries || 0) + 1; Situation.save(s); log(`[ZAWRÓT] brak przycisku zawracania (${f.tries}/5)`, "warn"); return; }
+      if (!live) { if (page() !== "fleet") { Nav.go("/fleet", `zawrót lotu [${f.fromKey}]→[${f.toKey}]`); return; } f.tries = (f.tries || 0) + 1; Situation.save(s); log(`[ZAWRÓT] brak przycisku zawracania (${f.tries}/5)`, "warn"); return; }
       const w = (typeof unsafeWindow !== "undefined" && unsafeWindow) || window; const orig = w.confirm;
       try { w.confirm = () => true; live.click(); await sleep(800); } finally { try { w.confirm = orig; } catch {} }
       // v3.10.2 (audyt E2E): stan "recalled" ustawiany od razu po kliknięciu był
@@ -1298,6 +1331,22 @@
     },
   };
 
+  // v3.12.0: krok „form" nawigował na adres formularza BEZ ŚLADU w logu. Gdy fork
+  // oddawał pod tym adresem stronę, której page() nie uznaje za „fleet" (przekierowanie,
+  // strona błędu, brak celu), bot krążył: wejście → nie fleet → wejście… przez całe
+  // 5 minut do abortu, w logu tylko linie startowe. Teraz druga taka próba pod rząd
+  // jest głośna, trzecia przerywa misję zamiast kręcić stroną.
+  function navGuard(m, fly) {
+    const k = `${m.fromKey}>${m.toKey}`;
+    const g = Store.get("form_nav", null) || {};
+    const tries = (g.key === k && Date.now() - (g.at || 0) < 3 * 60e3) ? (g.tries || 0) + 1 : 1;
+    Store.set("form_nav", { key: k, at: Date.now(), tries });
+    if (tries >= 3) { Store.set("form_nav", null); return fly.abort(`formularz nie otwiera się pod ${fly.url(m)} (3 próby) — fork oddaje inną stronę`); }
+    if (tries === 2) log(`[LOT] drugi raz wchodzę na ${fly.url(m)}, a to nie jest strona floty — jeśli powtórzy się raz jeszcze, przerywam lot.`, "warn");
+    fly.bumpNav(m);
+    Nav.go(fly.url(m), `lot: formularz [${m.fromKey}]→[${m.toKey}] (próba ${tries})`);
+  }
+
   // ═══ REKONESANS HANGARÓW ════════════════════════════════════════════════
   // Bez tego cała obrona jest ślepa: decide() zna położenie floty WYŁĄCZNIE
   // z odczytów hangaru (strona /fleet), a 3.0 — inaczej niż 2.x z ekspedycjami
@@ -1329,7 +1378,7 @@
         Store.set("recon", { ...st, at: now });
         log(`[REKONESANS] sprawdzam hangar ${a.body} [${a.key}] — bez tego nie wiem, gdzie stoi flota.`, "info");
         const [g, sy, po] = a.key.split(":");
-        location.replace(`/fleet?x=${g}&y=${sy}&z=${po}`);
+        Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `rekonesans hangaru ${a.body} [${a.key}]`);
         return true;
       }
       const list = this.bodiesOf(s).filter(([k, b]) => stale(k, b));
@@ -1392,11 +1441,32 @@
           // gdzie stoi flota, to bez tego jednego wejścia na /fleet i tak nic nie zrobimy.
           const body = a.body || "planet";
           const act = Situation.load().active;
-          if (act && act.key === a.key && act.body === body && page() === "fleet") { Hangar.scan(); continue; }
+          if (act && act.key === a.key && act.body === body && page() === "fleet") {
+            Hangar.scan();
+            const g2 = Store.get("alarm_scan", {}) || {}; if (g2[`${a.key}|${body}`]) { delete g2[`${a.key}|${body}`]; Store.set("alarm_scan", g2); }   // odczyt się udał
+            continue;
+          }
+          // v3.12.0: to wejście na Fleet było JEDYNĄ nawigacją obrony bez żadnego
+          // limitu — przy ataku i hangarze, którego nie da się odczytać (fork oddaje
+          // inną stronę), bot przeładowywał grę w kółko dokładnie wtedy, gdy miał
+          // ratować flotę. Trzy próby, potem alarm do operatora zamiast kręcenia stroną.
+          {
+            const kk = `${a.key}|${body}`;
+            const g2 = Store.get("alarm_scan", {}) || {};
+            const r2 = g2[kk] && Date.now() - g2[kk].at < 10 * 60e3 ? g2[kk] : { n: 0, at: 0 };
+            if (r2.n >= 3) {
+              if (!Once.said(`alarmscan|${kk}`, 10 * 60e3)) {
+                log(`[OBRONA] trzeci raz wszedłem na Fleet po hangar [${a.key}] ${body} i nadal go nie widzę — przestaję przeładowywać grę. Sprawdź ręcznie, gdzie stoi flota.`, "error");
+                Journal.add("BŁĄD", `Nie mogę odczytać hangaru [${a.key}] ${body} mimo 3 prób przy ALARMIE — sprawdź grę.`);
+              }
+              continue;
+            }
+            g2[kk] = { n: r2.n + 1, at: Date.now() }; Store.set("alarm_scan", g2);
+          }
           log(`[OBRONA] ${a.why} — wchodzę na Fleet.`, "warn");
-          if (act && act.key === a.key && act.body === body) { const [g, sy, po] = a.key.split(":"); location.replace(`/fleet?x=${g}&y=${sy}&z=${po}`); return; }
+          if (act && act.key === a.key && act.body === body) { const [g, sy, po] = a.key.split(":"); Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `odczyt hangaru [${a.key}] po alarmie`); return; }
           const el = PlanetBar.anchor(a.key, body) || PlanetBar.anchor(a.key, "planet");
-          if (el) { el.click(); return; }
+          if (el) { Nav.click(el, `odczyt hangaru [${a.key}] ${body} po alarmie`); return; }
           continue;
         }
         if (a.kind === "hold") { if (!Once.said(`hold|${a.key}`, 120e3)) log(`[OBRONA] [${a.key}]: ${a.why} — nie ruszam floty.`, "info"); continue; }
@@ -1461,7 +1531,7 @@
     Store.set("watchdog_at", Date.now());
     log(`[NADZORCA] pętla obrony milczy od ${Math.round((Date.now() - last) / 60000)} min — przeładowuję stronę.`, "error");
     Journal.add("BŁĄD", "Pętla obrony milczała 3 min — przeładowanie strony (nadzorca).");
-    setTimeout(() => location.replace("/"), 1500);
+    setTimeout(() => Nav.go("/", "nadzorca: pętla obrony milczała"), 1500);
   }
 
   // v3.9.1 (audyt): fork serwuje własną stronę błędu bez UI gry. 2.x stał na niej
@@ -1476,11 +1546,11 @@
     Store.set("errpage_at", Date.now());
     log("[BŁĄD STRONY] jestem na stronie błędu gry — wracam na stronę główną.", "error");
     const back = [...document.querySelectorAll("a, button")].find(e => /back to game|wróć|powrót/i.test(e.textContent || ""));
-    setTimeout(() => { if (back) back.click(); else location.replace("/"); }, 1200);
+    setTimeout(() => { if (back) back.click(); else Nav.go("/", "powrót ze strony błędu gry"); }, 1200);
     return true;
   }
 
-  function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); location.replace("/"); } }
+  function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); Nav.go("/", "keepalive: 10 min bez nawigacji"); } }
 
   // ═══ PANEL ══════════════════════════════════════════════════════════════
   // v3.11.0 (UX): powrót do wyglądu panelu z Ateny (2.x) — właściciel: „stary był
@@ -1781,7 +1851,18 @@
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }
-  log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${HOST}`, "info");
+  // v3.12.0: linia startowa bez adresu była bezużyteczna przy pętli przeładowań
+  // (28.08 22:17: dziesięć identycznych linii i zero wiedzy, co je wywołało).
+  {
+    const nl = Store.get("nav_last", null);
+    const fresh = nl && Date.now() - nl.at < 20e3;
+    log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${location.pathname}${location.search || ""}${fresh ? ` ← bot: ${nl.why}` : " ← otwarte ręcznie"}`, "info");
+    const loads = (Store.get("loads", []) || []).filter(t => Date.now() - t < 60e3);
+    loads.push(Date.now()); Store.set("loads", loads.slice(-20));
+    if (loads.length >= 5 && !Once.said("tempo", 60e3)) {
+      log(`[TEMPO] ${loads.length} startów skryptu w ostatniej minucie. Ostatnia nawigacja bota: ${nl ? `${nl.why} → ${nl.to} (${Math.round((Date.now() - nl.at) / 1000)}s temu)` : "brak"}. Jeśli to nie Ty klikasz — pokaż tę linię Claude'owi.`, "warn");
+    }
+  }
   try { if (page() === "fleet") Hangar.scan(); } catch (e) { log(`[START] odczyt hangaru: ${e.message}`, "warn"); }
   try { Wake.ensure(); Calib.collect(); } catch (e) { log(`[START] wake/kalibracja: ${e.message}`, "warn"); }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") Wake.ensure(); });

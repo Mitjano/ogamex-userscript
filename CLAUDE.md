@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.11.0, ~1780 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.12.0, ~1830 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
@@ -20,13 +20,14 @@ Kolejność czytania: `START-3.0.md` → `AUDYT-3.0-2026-08-28.md` → kod.
 4. **`Fly`** — JEDEN wykonawca wszystkich lotów (ratunek, FS, ekspedycja, mining, złom) sterowany polami misji: `plan` (statki), `missionType` (DEPLOY/EXPEDITION/ASTEROID/COLLECT), `takeResources`, `duration`, `toBody` (planet/moon/debris).
 5. **Ekonomia** (`Expo`, `Aster`, `Debris`) — wołana TYLKO gdy obrona nie ma nic do roboty; jej loty **nie trafiają** do `situation.flights`, bo to stan obrony. Pyta `Human.economyAllowed()`; obrona nigdy nie pyta.
 
-6. **Żaden wpis stanu nie może być wieczny.** Każde pole (`pending`, `flights`, `fly_block`, `bar`, `slots`) ma termin ważności — wpis bez terminu zamienia się w ciche wyłączenie obrony (defekt P0, 28.08). Jedna definicja „ten lot już nic nie znaczy" = `flightStale()`; używają jej obrona, ekonomia i rekonesans.
-7. **Ekonomia nigdy nie stoi na drodze ratunku** — trwająca ekspedycja/mining/złom jest przerywana przy alarmie, a jej loty nie trafiają do `situation.flights`.
+6. **Żadna nawigacja bota nie może być cicha ani nieograniczona** (incydent 28.08 22:17): każde `location.replace` idzie przez `Nav.go(url, why)`, który zapisuje POWÓD i **wymusza zapis logu** (debounce 800 ms kasował powody przy przeładowaniu — w logu zostawały same linie startowe). Każda pętla nawigacji ma sufit: misja 6 nawigacji bez otwarcia formularza, wejście na Fleet przy alarmie 3 próby, ekonomia respektuje karencję `fly_block` po abortcie. Linia startowa mówi, na jakiej stronie jesteś i kto Cię tam przywiódł; ≥5 startów/min = `[TEMPO]` w logu.
+7. **Żaden wpis stanu nie może być wieczny.** Każde pole (`pending`, `flights`, `fly_block`, `bar`, `slots`) ma termin ważności — wpis bez terminu zamienia się w ciche wyłączenie obrony (defekt P0, 28.08). Jedna definicja „ten lot już nic nie znaczy" = `flightStale()`; używają jej obrona, ekonomia i rekonesans.
+8. **Ekonomia nigdy nie stoi na drodze ratunku** — trwająca ekspedycja/mining/złom jest przerywana przy alarmie, a jej loty nie trafiają do `situation.flights`.
 
 Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane ciało · jedna ucieczka na parę · **stan lotu zamyka hangar, nie zegar** · nieznany markup → zrzut, nie zgadywanie.
 
 ## Testy
-- 3.x: `node test3-all.js` (164 asercje decyzyjne + 77 sprawdzeń E2E / 24 scenariusze na sztucznej grze w jsdom + 19 sprawdzeń panelu + składnia). Wymaga `npm install jsdom` w katalogu repo (node_modules nie jest commitowane). **Nowe zachowanie obrony = nowy scenariusz w `test3-e2e.js`**, nie tylko regex w `test3-decide.js` — regexy pilnują, żeby poprawka nie zniknęła, ale niczego nie wykonują. **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
+- 3.x: `node test3-all.js` (164 asercje decyzyjne + 77 sprawdzeń E2E / 24 scenariusze na sztucznej grze w jsdom + 19 sprawdzeń panelu + składnia; scenariusz 25 = pętla nawigacji). Wymaga `npm install jsdom` w katalogu repo (node_modules nie jest commitowane). **Nowe zachowanie obrony = nowy scenariusz w `test3-e2e.js`**, nie tylko regex w `test3-decide.js` — regexy pilnują, żeby poprawka nie zniknęła, ale niczego nie wykonują. **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst

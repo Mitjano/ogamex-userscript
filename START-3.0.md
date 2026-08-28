@@ -70,6 +70,10 @@ node test3-all.js        # 164 asercje + 77 sprawdzeń E2E + 19 sprawdzeń panel
 `test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — **24 scenariusze**: pełna ewakuacja od wykrycia ataku do „Send fleet", zawrót floty i domknięcie lotu po powrocie, FS nocny (wyjście wieczorem + zawrót o świcie), ślepy alarm z paska i pasek nieświeży, utrata sesji, strona błędu gry, dwa ataki naraz, atak przerywający ekonomię, potknięcie formularza, przejęcie planety przez operatora w trakcie misji, nieaktualny hangar, formularz bez suwaka prędkości, mining, złom, dwie karty, przeładowania strony w środku misji.
 Macierz `test3-decide.js` obejmuje: obronę (27 scenariuszy, w tym wszystkie incydenty 27.08 i regresje z audytu 28.08), FS nocny, okno nocne, ekspedycje z serią, mining, złom, humanizera i strażników „ekonomia nie blokuje obrony".
 
+## Gdy bot przeładowuje grę w kółko (v3.12.0)
+Log mówi to teraz wprost: linia startowa kończy się adresem strony i „← bot: <powód>" albo „← otwarte ręcznie", a przy ≥5 startach na minutę pojawia się wiersz **[TEMPO]** z ostatnią nawigacją bota. Twarde bezpieczniki: misja przerywa się po **6 nawigacjach** bez otwarcia formularza, wejście na Fleet przy alarmie po **3 próbach** (potem push „nie mogę odczytać hangaru"), a ekonomia respektuje 3-minutową karencję po nieudanym locie, więc nie startuje od nowa w tę samą pętlę.
+Incydent źródłowy: 28.08 22:17–22:22 — ~30 przeładowań w 5 minut, w logu SAME linie startowe, koniec dopiero na limicie czasu misji (push „BŁĄD"). Powody ginęły, bo log zapisywał się do GM storage z opóźnieniem 800 ms, a każda nawigacja następuje natychmiast po wpisie.
+
 ## Czego świadomie nie ma
 Farmienia nieaktywnych, bramy skokowej, odbudowy księżyca, kolejki budynków/badań, kolonizacji. Wejdą, gdy będą potrzebne — brama i księżyce dopiero, gdy je postawisz.
 

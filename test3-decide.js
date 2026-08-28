@@ -436,7 +436,13 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("ekonomia w osobnym try — jej błąd nie wywala obrony", /catch \(e\) \{ log\(`\[EKONOMIA\] błąd modułu/.test(src));
   check("3 błędy rdzenia z rzędu → push na telefon", /if \(n === 3\) Journal\.add\("BŁĄD"/.test(src));
   check("licznik błędów zerowany po udanym przebiegu", /Store\.set\("tick_fails", 0\);/.test(src));
-  check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,600}?location\.replace\("\/"\)/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
+  check("log zapisuje się przed nawigacją (inaczej powody nawigacji giną)", /function flushLog\(\)/.test(src) && /addEventListener\("pagehide", flushLog\)/.test(src) && /go\(url, why\) \{[\s\S]{0,200}?flushLog\(\); location\.replace\(url\)/.test(src));
+  check("każda nawigacja bota zostawia powód (nav_last)", /Store\.set\("nav_last"/.test(src) && !/(?<!__)\blocation\.replace\(/.test(src.replace(/go\(url, why\)[^\n]*\n/, "")));
+  check("pętla wchodzenia na formularz przerywa misję, nie kręci stroną", /function navGuard\(m, fly\)/.test(src) && /tries >= 3[\s\S]{0,200}?fly\.abort/.test(src));
+  check("misja ma sufit nawigacji (ping-pong przełączania ciał)", /m\.navs/.test(src) && /navMax|NAV_MAX/.test(src));
+  check("wejście na Fleet przy alarmie ma limit prób (nie przeładowuje gry w kółko)", /alarm_scan/.test(src) && /r2\.n >= 3[\s\S]{0,400}?Journal\.add\("BŁĄD"/.test(src));
+  check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
+  check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,600}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));
   check("nadzorca ma własny dławik (nie pętla przeładowań)", /watchdog_at[\s\S]{0,120}?10 \* 60e3\) return;/.test(src));
 }
@@ -496,7 +502,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("nieustawiona prędkość = błąd + push, nie cicha zgoda", /NIE USTAWIONA[\s\S]{0,300}?Journal\.add\("BŁĄD"/.test(src));
   // sesja
   check("sesja: ponawiamy odczyt i wykrywamy powrót", /retryDue\(\)/.test(src) && /odzyskana — obrona znów widzi/.test(src));
-  check("sesja: samonaprawa nawigacją po 2 min", /maybeRecover\(\)[\s\S]{0,600}?location\.replace\("\/"\)/.test(src));
+  check("sesja: samonaprawa nawigacją po 2 min", /maybeRecover\(\)[\s\S]{0,600}?Nav\.go\("\/"/.test(src));
   // pusty/nieznany markup
   check("brak paska planet na /fleet → zrzut DOM + push, nie cichy null", /nie rozpoznaję paska planet/.test(src));
   check("wrogi wiersz bez rozpoznanego celu → zrzut, nie cisza", /wrogi wiersz, którego CELU nie rozpoznałem/.test(src));

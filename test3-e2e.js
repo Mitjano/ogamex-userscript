@@ -50,6 +50,7 @@ class Game {
     this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
     this.debris = false;      // czy przy bazie lezy zlom
     this.loggedOut = false;   // gra oddaje strone logowania
+    this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
     this.errorPage = false;   // gra oddaje strone bledu
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
@@ -178,6 +179,20 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
     game.page = pth.replace(/^\//, "") || "home";
     game.query = q ? "?" + q : "";
     if (game.page === "fleet") game.formStep = 0;
+    // Incydent 28.08 22:17: adres formularza niesie koordy CELU, a fork ustawia po
+    // nich aktywna planete. Bot widzial wtedy „to nie moja planeta", wracal do kroku
+    // „switch" i kręcił stroną w kółko az do limitu 5 minut (~30 przeladowan).
+    if (game.fleetUrlHijack && game.page === "fleet") {
+      const q2 = new URLSearchParams((game.query || "").replace(/^\?/, ""));
+      const x = q2.get("x"), y = q2.get("y"), z = q2.get("z");
+      if (x && y && z) {
+        const k = `${x}:${y}:${z}`;
+        const mine = game.pairs.find(p => p.key === k);
+        // koordy własnej planety = zwykłe przełączenie; obca pozycja (16 = ekspedycja,
+        // 17 = asteroida) = fork siada na planecie głównej, NIE na planecie startu
+        game.active = mine ? { key: k, body: "planet" } : { key: game.pairs[0].key, body: "planet" };
+      }
+    }
     // Adres MUSI isc za nawigacja: bot potwierdza wysylke m.in. po `fleetSendSuccessfully`
     // w URL. Bez tego potwierdzenie opieralo sie na przypadkowym odczycie hangaru.
     if (w.__fakeLoc) {
@@ -739,6 +754,26 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     }
     check("bot NIE wyslal minerow na znikajaca asteroide", g.sent.length === 0, JSON.stringify(g.sent.map(x => (x.mission || "?") + " -> " + x.to)));
     check("i powiedzial dlaczego (czas lotu kontra TTL)", logs.some(m => /znika za .*a lot trwa/.test(m)), logs.filter(m => /ASTER/.test(m)).slice(0, 6).join(" | "));
+  }
+
+  console.log("\n── 25. PĘTLA NAWIGACJI: adres formularza przestawia aktywną planetę ──");
+  {
+    // Incydent Genesis 28.08 22:17–22:22: ekspedycja z KOLONII, adres formularza
+    // niesie koordy celu (poz. 16), a fork siada wtedy na planecie głównej. Bot
+    // widział „to nie moja planeta", wracał do kroku „switch", klikał kolonię,
+    // znowu wchodził na formularz… ~30 przeładowań gry, w logu SAME linie startowe
+    // (powody ginęły w 800-ms debounce zapisu logu), koniec dopiero na limicie 5 min.
+    const cfg = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:9|planet": { LARGE_CARGO: 40 } },
+      active: { key: "1:100:9", body: "planet" },     // ekspedycja startuje z KOLONII, dom to [1:100:5]
+    });
+    g.fleetUrlHijack = true;
+    const { logs } = await run(g, { cfg, loads: 40, ticksPerLoad: 2 });
+    check("bot PRZERWAŁ pętlę zamiast kręcić stroną 5 minut", logs.some(m => /pętla przełączania ciał|nie jest stroną floty|formularz nie otwiera/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 8).join(" | "));
+    check("i zrobił to w kilkunastu nawigacjach, nie w trzydziestu", g.navigations.length <= 20, "nawigacji: " + g.navigations.length);
+    check("powód nawigacji przeżył przeładowanie (log nie jest już niemy)", logs.some(m => /przełączam na|formularz \[/.test(m)), logs.filter(m => /LOT/.test(m)).slice(0, 6).join(" | "));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
