@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.10.3
+// @version      3.10.4
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.10.3";
+  const VERSION = "3.10.4";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -855,7 +855,8 @@
           this.save({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` });
           return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
             toKey: `${target.galaxy}:${target.system}:17`, toBody: "planet", why: `mining asteroidy [${target.galaxy}:${target.system}:17]`,
-            speed: 100, plan: [{ type: "ASTEROID_MINER", qty: miners.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl });
+            speed: 100, plan: [{ type: "ASTEROID_MINER", qty: miners.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
+            ttl: hit.ttl || 0, ttlAt: now });
         }
         this.save(st);
         return false;
@@ -1067,6 +1068,13 @@
         // v3.10.2: zawrót ma sens tylko wtedy, gdy flota JESZCZE LECI. Lot krótszy niż
         // termin zawrotu wyląduje na kolonii docelowej — wtedy nie udajemy, że wisi
         // w powietrzu: kasujemy zawrót, a wpis domknie hangar CELU (flota widziana).
+        if (m.kind === "asteroid" && m.ttl) {
+          const left = (m.ttl * 1000) - (Date.now() - (m.ttlAt || Date.now()));
+          if (left < m.flightMs * 1.1) {
+            log(`[ASTER] asteroida znika za ${Math.round(left / 1000)} s, a lot trwa ${Math.round(m.flightMs / 1000)} s — NIE wysyłam minerów, skanuję dalej.`, "warn");
+            return this.abort("asteroida zniknie przed dolotem", { quiet: true });
+          }
+        }
         if (m.recallAt && Date.now() + m.flightMs < m.recallAt) {
           log(`[LOT] lot trwa ${Math.round(m.flightMs / 1000)} s i doleci przed terminem zawrotu — flota WYLĄDUJE na [${m.toKey}] ${m.toBody}; zawrotu nie planuję.`, "warn");
           m.landing = true; m.recallAt = 0;

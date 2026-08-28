@@ -63,5 +63,13 @@ Macierz `test3-decide.js` obejmuje: obronę (27 scenariuszy, w tym wszystkie inc
 ## Czego świadomie nie ma
 Farmienia nieaktywnych, bramy skokowej, odbudowy księżyca, kolejki budynków/badań, kolonizacji. Wejdą, gdy będą potrzebne — brama i księżyce dopiero, gdy je postawisz.
 
+## Prędkość uniwersum (Genesis x3, Athena miała x4)
+Genesis jest **wolniejszy od Atheny** — te same trasy trwają ok. 1/3 dłużej. Dla bota to w większości przezroczyste: **czas lotu jest zawsze czytany z formularza** („Duration of flight"), nigdy liczony ze wzoru, więc zawrót, „lądowanie zamiast wiszenia" i FS nocny same się dostrajają do mnożnika.
+Co z tego wynika w praktyce:
+- ataki lecą dłużej → **więcej czasu na reakcję** (progi 20 s na potwierdzenie i 40 s „za późno na formularz" zależą od bota, nie od uniwersum);
+- ucieczka na 10% wisi w powietrzu dłużej → zawrót prawie zawsze ma sens, rzadziej dochodzi do lądowania na kolonii docelowej;
+- **mining wymagał poprawki**: minery lecą dłużej, więc filtr „asteroida musi żyć ≥5 min" bywał za krótki. Od v3.10.4 bot porównuje TTL asteroidy z **rzeczywistym czasem lotu** (+10% zapasu) i przerywa wysyłkę, jeśli asteroida zniknie przed dolotem;
+- ekspedycje: dolot na poz. 16 dłuższy, ale czas trzymania (40 min u Odkrywcy) ustawiany osobno — cykl fali po prostu trwa dłużej.
+
 ## Uwagi o forku
 Genesis to prawdopodobnie ten sam fork .NET co Athena, ale **nie zakładamy tego**. Przy nieznanym markupie 3.x zrzuca DOM do logu (`[LOT DOM]`, `[EXPO DOM]`, `[ZŁOM]`, `[KALIBRACJA]`) i **nie zgaduje** — dostaniesz surowy HTML do wklejenia zamiast cichego błędu.

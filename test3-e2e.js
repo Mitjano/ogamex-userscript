@@ -720,6 +720,27 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     check("i zabrał flotę bojową", !!rescue && rescue.ships.BATTLESHIP === 400, JSON.stringify(rescue && rescue.ships));
   }
 
+  console.log("");
+  console.log("── 25. ASTEROIDA ZNIKA PRZED DOLOTEM (Genesis x3 = loty dluzsze niz na Athenie x4) ──");
+  {
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      aster: { enabled: true, minTtlSec: 300, scanGapSec: 6 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20 } } });
+    g.asteroid = true;
+    g.asteroidTtl = 420;        // przechodzi filtr wstepny (>5 min)...
+    g.flightSec = 900;          // ...ale lot trwa 15 min: minery nie zdaza
+    let logs = (await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    for (let i = 0; i < 4 && !g.sent.length; i++) {
+      advance(g, 60e3);
+      logs = logs.concat((await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs);
+    }
+    check("bot NIE wyslal minerow na znikajaca asteroide", g.sent.length === 0, JSON.stringify(g.sent.map(x => (x.mission || "?") + " -> " + x.to)));
+    check("i powiedzial dlaczego (czas lotu kontra TTL)", logs.some(m => /znika za .*a lot trwa/.test(m)), logs.filter(m => /ASTER/.test(m)).slice(0, 6).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
