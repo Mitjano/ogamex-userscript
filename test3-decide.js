@@ -339,6 +339,29 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("kolejność ekonomii: rekonesans → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
 }
 
+console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznanej kolonii ──");
+{
+  const two = {
+    pairs: { "1:200:8": { hasMoon: true, galaxy: 1, system: 200, position: 8 }, "1:205:4": { hasMoon: true, galaxy: 1, system: 205, position: 4 } },
+    hangars: { "1:200:8|moon": { total: 50, at: NOW - 30000, ships: [] }, "1:200:8|planet": { total: 200000, at: NOW - 30000, ships: [] } },
+    threats: [threat("1:200:8", "planet", 300)], flights: [], active: { key: "1:200:8", body: "planet" },
+  };
+  const a = decide(two, CFG, NOW).actions[0];
+  check("flota na obu ciałach, atak w planetę → RATUJEMY planetę (nie 'bezpieczna strona')", a && a.kind === "fly" && a.fromBody === "planet", JSON.stringify(decide(two, CFG, NOW)));
+  const two2 = JSON.parse(JSON.stringify(two)); two2.threats = [threat("1:200:8", "moon", 300)];
+  const a2 = decide(two2, CFG, NOW).actions[0];
+  check("ten sam układ, atak w księżyc → ratujemy księżyc", a2 && a2.kind === "fly" && a2.fromBody === "moon", JSON.stringify(a2));
+  const both = JSON.parse(JSON.stringify(two)); both.threats = [threat("1:200:8", "moon", 300), threat("1:200:8", "planet", 320)];
+  const r3 = decide(both, CFG, NOW);
+  check("atak na oba ciała, flota na obu → ratunek z WIĘKSZEGO hangaru + ostrzeżenie o drugim", r3.actions[0] && r3.actions[0].fromBody === "planet" && r3.alerts.some(x => /OBU ciałach/.test(x.msg)), JSON.stringify(r3));
+  const nokey = { pairs: {}, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
+  const r4 = decide(nokey, CFG, NOW);
+  check("atak na kolonię spoza paska planet → GŁOŚNY alarm, nigdy cisza", r4.alerts.some(x => x.unknownPair && x.level === "error"), JSON.stringify(r4));
+  check("alarm o nieznanej kolonii idzie na telefon", /a\.unknownPair && !Once\.said/.test(src));
+  const quiet = { pairs: { "1:200:8": { hasMoon: false, galaxy: 1, system: 200, position: 8 } }, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
+  check("znana kolonia bez wiedzy o hangarze → też alarm (nie cisza)", decide(quiet, CFG, NOW).alerts.length > 0);
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

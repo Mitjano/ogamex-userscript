@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.6.1
+// @version      3.7.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.6.1";
+  const VERSION = "3.7.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -343,11 +343,20 @@
     const threatsFor = (k) => (s.threats || []).filter(t => t.dst === k && t.attack && t.arriveAt > now);
     const attackedBodies = (k) => { const b = new Set(); for (const t of threatsFor(k)) b.add(t.dstBody || "unknown"); return b; };
     const inFlightFrom = (k) => (s.flights || []).find(f => f.fromKey === k && f.phase !== "done");
+    // v3.7.0 (audyt 28.08): flota potrafi stać na OBU ciałach pary naraz. fleetAt()
+    // zwraca jedno miejsce, więc przy flocie na księżycu (50) i planecie (200 000)
+    // oraz ataku w planetę bot mówił „bezpieczna strona" i zostawiał 200 000 pod
+    // uderzeniem. Patrzymy na KAŻDE ciało z flotą osobno.
+    const fleetsAt = (k) => ["moon", "planet"]
+      .map(b => ({ body: b, h: (s.hangars || {})[`${k}|${b}`] }))
+      .filter(x => x.h && (x.h.total || 0) > 0 && now - (x.h.at || 0) < 48 * 3600e3)
+      .map(x => ({ body: x.body, total: x.h.total, at: x.h.at }));
     const neighbourMoon = (k) => { const c = pairs[k]; if (!c) return null; for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && o.hasMoon && o.galaxy === c.galaxy && o.system === c.system && attackedBodies(ok).size === 0) return ok; } return null; };
     const anyRefuge = (k) => { for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && attackedBodies(ok).size === 0) return { key: ok, body: o.hasMoon ? "moon" : "planet" }; } return null; };
 
     for (const k of Object.keys(pairs)) {
       const th = threatsFor(k);
+      const all = fleetsAt(k);
       const fleet = Situation.fleetAt(s, k, now);
       if (!th.length) {
         // cisza: lot ucieczki z tej pary → zawrót po recallAt; brak zagrożeń i flota na planecie z księżycem → wróć na księżyc
@@ -380,8 +389,13 @@
       const bodies = attackedBodies(k);
       const f = inFlightFrom(k);
       if (f) { if (f.kind === "air" && f.phase === "launched") { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); } continue; }
-      const fleetHit = bodies.has(fleet.body) || bodies.has("unknown");
-      if (!fleetHit) { actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${fleet.body} — bezpieczna strona` }); continue; }
+      // ratujemy z ciała, które JEST pod atakiem; przy dwóch takich — z większego
+      const hitBodies = all.filter(x => bodies.has(x.body) || bodies.has("unknown")).sort((a, b) => b.total - a.total);
+      if (!hitBodies.length) { actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona` }); continue; }
+      const src0 = hitBodies[0];
+      if (hitBodies.length > 1) alerts.push({ key: k, level: "warn", msg: `flota na OBU ciałach [${k}] pod atakiem — ratuję najpierw ${src0.body} (${src0.total.toLocaleString("pl-PL")}), drugie ciało w następnym przebiegu` });
+      const fleetHit = true;
+      fleet.body = src0.body; fleet.total = src0.total;
       if (now - firstSeen < cfg.confirmMs && secs > cfg.tooLateSec + cfg.confirmMs / 1000) { alerts.push({ key: k, level: "warn", msg: `atak na [${k}] za ${secs}s — potwierdzam ${Math.round((cfg.confirmMs - (now - firstSeen)) / 1000)}s` }); continue; }
       if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }
       // wybór ucieczki: sąsiedni księżyc w układzie → drugie ciało pary (nieatakowane) → inna kolonia
@@ -392,6 +406,14 @@
       const ref = anyRefuge(k);
       if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]`, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
+    }
+    // v3.7.0 (audyt 28.08): zagrożenie na kolonię, której NIE MA na pasku planet
+    // (strona bez sidebara, świeża kolonia, literówka w koordach) nie może zniknąć
+    // bez śladu — cisza przy ataku to najgorszy możliwy błąd tego bota.
+    const known = new Set(Object.keys(pairs));
+    for (const t of (s.threats || [])) {
+      if (!t.attack || t.arriveAt <= now || known.has(t.dst)) continue;
+      alerts.push({ key: t.dst, level: "error", unknownPair: true, msg: `ATAK na [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - now) / 1000)}s, a tej kolonii NIE MA na pasku planet — reaguj ręcznie` });
     }
     return { actions, alerts };
   }
@@ -967,7 +989,12 @@
       if (page() === "fleet") Hangar.scan();
       const s = await Situation.refresh();
       const { actions, alerts } = decide(s, CFG, Date.now());
-      for (const a of alerts) { const k = `alert|${a.key}|${a.msg.slice(0, 40)}`; if (!Once.said(k, 60e3)) log(`[OBRONA] ${a.msg}`, a.level === "error" ? "error" : "warn"); }
+      for (const a of alerts) {
+        const k = `alert|${a.key}|${a.msg.slice(0, 40)}`;
+        if (Once.said(k, 60e3)) continue;
+        log(`[OBRONA] ${a.msg}`, a.level === "error" ? "error" : "warn");
+        if (a.unknownPair && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
+      }
       const attacks = (s.threats || []).filter(t => t.attack && t.arriveAt > Date.now());
       if (attacks.length) { const k = `atak|${attacks.map(t => t.id || t.dst).join(",")}`; if (!Once.said(k, 10 * 60e3)) Journal.add("ATAK", attacks.map(t => `${t.type} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - Date.now()) / 1000)}s (${t.source})`).join("; ")); }
       await Fly.tick();
