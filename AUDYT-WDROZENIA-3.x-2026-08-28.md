@@ -58,8 +58,30 @@ Wszystkie moduły dzieliły jeden `try`. Dodatkowo nic nie sprawdzało, czy pęt
 | Atak w chwili, gdy flota ląduje z ekspedycji | okno kilkunastu sekund | rekonesans co 8 min, ale to nie zamyka okna |
 | Bot działa tylko przy otwartej karcie | natura userscriptu | Wake Lock, cichy dźwięk, nadzorca, push na telefon |
 
-## 5. Wyniki dwóch niezależnych przeglądów kodu
-*(uzupełnione po zakończeniu przeglądów — patrz commity po `6b3db0e`)*
+## 5. Wyniki dwóch niezależnych przeglądów kodu → **12 defektów, wszystkie naprawione** (`v3.9.0`, `v3.9.1`)
+
+Dwa przeglądy (świeże oko na kod 3.x + porównanie lekcja-po-lekcji z 2.x) znalazły to, czego sam nie zobaczyłem. Najgroźniejsze:
+
+| # | defekt | jak by się objawił w grze | naprawa |
+|---|---|---|---|
+| **K1** | **`TabLock` blokował bota przed samym sobą** — id karty losowane przy KAŻDYM ładowaniu strony, a bot nawiguje na każdym kroku ratunku | po pierwszej nawigacji bot milczy 90 s, potem znowu — **praktycznie by nie działał**, a panel wyglądałby na żywy | id w `sessionStorage` (przeżywa nawigacje tej karty); karta widoczna przejmuje od zdławionej w tle |
+| **K2** | **lot „dom = księżyc" nigdy się nie domykał** — wpis czekał na zapełnienie hangaru ŹRÓDŁA, które przy planeta→księżyc zostaje puste | po pierwszej rutynowej akcji para była uznawana za „w locie" i przez **12 h bot nie bronił jej wcale** | lot bez zawrotu domyka hangar CELU; twardy limit 30 min |
+| **K3** | **zawrót nie utrwalał się** — `recall` mutował obiekt spoza zapisywanego stanu | zawrót klikany w kółko, lot nigdy nie domknięty, para trwale zablokowana, dziennik zaśmiecony | praca na obiekcie z zapisywanego stanu |
+| **K4** | **sondy blokowały rekonesans i ekonomię** — wpadały do tej samej bramki co ataki | przy ciągłym sondowaniu hangary się starzeją → bot przestaje wiedzieć, gdzie stoi flota | bramki reagują tylko na `attack` |
+| **K5** | **deadlock „nie wiem, gdzie flota" + „nie sprawdzę, bo alarm"** | pierwszy atak po instalacji = zero akcji przez cały dolot | nowa akcja `recon`: przy ataku i nieznanym hangarze bot idzie sprawdzić, jeśli ma >90 s |
+| **K6** | **lot zapisywany PO kliknięciu „Send fleet"** (klik potrafi nawigować natychmiast) | flota ucieka **bez zaplanowanego zawrotu** i zostaje na refugium; ekspedycja mogła polecieć dwa razy | zapis + stempel PRZED klikiem, wpis `pending` zdejmowany po potwierdzeniu |
+| **K7** | brak weryfikacji pól statków (2.x: log mówił „załadowane 1,38 mld", statki zostały w domu) | „udana" ewakuacja zostawiająca flotę pod ostrzałem | dwie rundy odczytu pól z powrotem |
+| **K8** | cichy `null`, gdy nie rozpoznano paska planet na `/fleet` | bot trwale ślepy na położenie floty i **nikt się o tym nie dowie** | zrzut DOM + push |
+| **K9** | wrogi wiersz o nieparsowalnym celu znikał bez śladu | atak w nieznanym markupie = zero linii w logu | zrzut wiersza + push |
+| **K10** | brak karencji po nieudanym locie | ta sama akcja co 5 min w nieskończoność | karencja trasy 3 min |
+| **K11** | płytki merge configu | po aktualizacji brak nowych pól → `NaN` w humanizerze | scalanie głębokie |
+| **K12** | kod startowy poza `try` | wyjątek = panel zielony, `setInterval` nigdy zarejestrowany, bot martwy | każdy krok startu w osobnym `try` |
+
+Osobno, jako **braki wobec 2.x** (naprawione w `v3.9.1`):
+- **Pasek misji nie był źródłem decyzji.** Fork nie pokazuje na liście ataków z własnego układu — w 2.x kosztowało to flotę (12.08) i o włos drugą (25.08). 3.x czytał pasek tylko do panelu. Teraz nadwyżka „pasek minus rozpoznane wiersze" utrzymująca się >60 s (przy „Type: Spy" — 5 min) uruchamia **ślepy alarm**: bot nie zgaduje celu, tylko ratuje kolonię, w której naprawdę stoi flota.
+- **Godziny ciszy były podpięte pod Fleet Save**, więc przy FS OFF (domyślnie) ekonomia chodziłaby 24/7 — głośniej niż 2.x. Teraz cisza ma własne okno z dziennym jitterem granic, plus sufit 240 nawigacji/h dla ekonomii (obrona nielimitowana).
+- **Brak detektora strony błędu forka** (2.x stał na niej godzinami). Teraz wykrycie + powrót do gry.
+- **Sesja:** pominięcie odczytu przy „sesja padła" sprawiało, że nic nie mogło stwierdzić jej powrotu — sztywne 15 min ślepoty. Teraz ponawianie i samonaprawa nawigacją po 2 min.
 
 ## 6. Ocena planu
 Plan („dusiciel": parsery 1:1 z 2.x, stan i decyzje od nowa) **broni się** — wszystkie sześć znalezisk tego audytu to defekty w NOWYM kodzie stanu/decyzji, żaden w przeniesionych parserach. To potwierdza tezę audytu z rana: parsery były sprawdzone bojowo, a gubił się stan.
