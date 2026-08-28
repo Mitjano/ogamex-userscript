@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.0.0
+// @version      3.0.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.0.0";
+  const VERSION = "3.0.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -99,6 +99,8 @@
     tooLateSec: 40,         // dolot krótszy = nie zdążymy z formularzem (tylko alarm)
     recallBufferSec: 90,    // zawrót: ostatni dolot + bufor
     tickMs: 20000,
+    recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
+    reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru, zanim pójdziemy sprawdzić
   };
   const CFG = Object.assign({}, DEFAULTS, Store.get("cfg", {}) || {});
   const saveCfg = () => Store.set("cfg", CFG);
@@ -492,6 +494,49 @@
     },
   };
 
+  // ═══ REKONESANS HANGARÓW ════════════════════════════════════════════════
+  // Bez tego cała obrona jest ślepa: decide() zna położenie floty WYŁĄCZNIE
+  // z odczytów hangaru (strona /fleet), a 3.0 — inaczej niż 2.x z ekspedycjami
+  // i miningiem — nie ma innego powodu, żeby tam wchodzić. Więc chodzi sam:
+  // odświeża aktywną parę, a gdy ta jest świeża — przełącza się na kolejne
+  // ciało bez świeżego odczytu (round-robin). Nigdy w trakcie misji ani alarmu:
+  // obrona ma pierwszeństwo przed nawigacją.
+  const Recon = {
+    st() { return Store.get("recon", { at: 0, idx: 0 }) || { at: 0, idx: 0 }; },
+    bodiesOf(s) {
+      const out = [];
+      for (const [k, p] of Object.entries(s.pairs || {})) { out.push([k, "planet"]); if (p.hasMoon) out.push([k, "moon"]); }
+      return out;
+    },
+    async tick(s) {
+      if (!CFG.recon || Fly.mission()) return false;
+      const now = Date.now();
+      if ((s.threats || []).some(t => t.arriveAt > now)) return false;          // alarm = zero nawigacji
+      if ((s.flights || []).some(f => f.phase === "launched")) return false;    // lot w powietrzu: nie kręcimy stroną
+      const st = this.st();
+      if (now - (st.at || 0) < 90e3) return false;                              // najwyżej raz na 90 s
+      const stale = (k, b) => { const h = s.hangars[`${k}|${b}`]; return !h || now - h.at > CFG.reconMs; };
+      const a = s.active;
+      if (a && stale(a.key, a.body)) {
+        if (page() === "fleet") { Hangar.scan(); return false; }                // już jesteśmy — wystarczy odczyt
+        Store.set("recon", { ...st, at: now });
+        log(`[REKONESANS] sprawdzam hangar ${a.body} [${a.key}] — bez tego nie wiem, gdzie stoi flota.`, "info");
+        const [g, sy, po] = a.key.split(":");
+        location.replace(`/fleet?x=${g}&y=${sy}&z=${po}`);
+        return true;
+      }
+      const list = this.bodiesOf(s).filter(([k, b]) => stale(k, b));
+      if (!list.length) return false;
+      const [k, b] = list[(st.idx || 0) % list.length];
+      const el = PlanetBar.anchor(k, b);
+      if (!el) { Store.set("recon", { at: now, idx: (st.idx || 0) + 1 }); return false; }
+      Store.set("recon", { at: now, idx: (st.idx || 0) + 1 });
+      log(`[REKONESANS] przechodzę na ${b} [${k}], żeby odczytać hangar.`, "info");
+      el.click();
+      return true;
+    },
+  };
+
   // ═══ PĘTLA OBRONY ═══════════════════════════════════════════════════════
   let running = false;
   async function defenceTick() {
@@ -514,6 +559,7 @@
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") { if (Fly.start(a)) { await Fly.tick(); } break; }
       }
+      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) await Recon.tick(s);
     } catch (e) { log(`[OBRONA] błąd pętli: ${e.message}`, "error"); }
     finally { running = false; try { UI.renderStatus(); } catch {} }
   }
@@ -538,6 +584,7 @@
           <button id="ogx3-auto" class="ogx3-btn"></button>
           <button id="ogx3-push" class="ogx3-btn"></button>
           <button id="ogx3-voice" class="ogx3-btn"></button>
+          <button id="ogx3-recon" class="ogx3-btn"></button>
         </div>
         <div style="margin:6px 0">Rezerwa deuteru <input id="ogx3-res" style="width:120px" /> · prędkość ucieczki <input id="ogx3-spd" style="width:36px" />%</div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
@@ -557,6 +604,7 @@
       $("ogx3-auto").onclick = () => { CFG.autoRescue = !CFG.autoRescue; saveCfg(); log(`Auto-ratunek ${CFG.autoRescue ? "ON — bot RUSZA flotą" : "OFF — obserwator"}`, "warn"); this.renderStatus(); };
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
+      $("ogx3-recon").onclick = () => { CFG.recon = !CFG.recon; saveCfg(); log(`Rekonesans hangarów ${CFG.recon ? "ON" : "OFF — bot nie będzie wiedział, gdzie stoi flota"}`, CFG.recon ? "info" : "warn"); this.renderStatus(); };
       $("ogx3-res").value = String(CFG.deutReserve || 0); $("ogx3-res").onchange = (e) => { CFG.deutReserve = parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0; saveCfg(); log(`Rezerwa deuteru: ${CFG.deutReserve.toLocaleString("pl-PL")}`, "info"); };
       $("ogx3-spd").value = String(CFG.airSpeedPct); $("ogx3-spd").onchange = (e) => { CFG.airSpeedPct = Math.max(1, Math.min(100, parseInt(e.target.value) || 10)); saveCfg(); };
       const sim = (body) => { const a = PlanetBar.active(); if (!a) return alert("Nie widzę aktywnej planety."); Store.set("sim", { key: a.key, body, arriveAt: Date.now() + 150e3, until: Date.now() + 180e3 }); log(`[TEST] symulacja: atak na ${body === "moon" ? "KSIĘŻYC" : "PLANETĘ"} [${a.key}], dolot 150 s. Auto-ratunek: ${CFG.autoRescue ? "ON (flota poleci!)" : "OFF (tylko decyzja w logu)"}`, "error"); defenceTick(); };
@@ -572,7 +620,7 @@
       if (!this.el) return; const $ = (id) => document.getElementById(id);
       $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#1e6b3a" : "#6b1e1e";
       $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (auto-ratunek OFF)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
-      $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`; $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`; $("ogx3-topic").textContent = Notifier.topic();
+      $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`; $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`; $("ogx3-recon").textContent = `Rekonesans ${CFG.recon ? "ON" : "OFF"}`; $("ogx3-recon").style.background = CFG.recon ? "#1c2a44" : "#6b1e1e"; $("ogx3-topic").textContent = Notifier.topic();
       const s = Situation.load(); const now = Date.now();
       const th = (s.threats || []).filter(t => t.arriveAt > now);
       const fleets = Object.entries(s.hangars || {}).filter(([, h]) => h.total > 0 && now - h.at < 48 * 3600e3).sort((a, b) => b[1].total - a[1].total).slice(0, 4).map(([k, h]) => `${k.replace("|", " ")}: ${h.total.toLocaleString("pl-PL")} (${new Date(h.at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })})`).join("\n  ");

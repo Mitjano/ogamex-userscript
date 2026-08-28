@@ -183,5 +183,16 @@ console.log("\n── 12. decide() jest CZYSTA (bez DOM/GM/Date.now) ──");
   check("decide() nie mutuje sytuacji", JSON.stringify(s) === snapshot);
 }
 
+console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ──");
+{
+  const recon = bodyOf("async tick(s) {");
+  check("rekonesans stoi przy trwającej misji", /Fly\.mission\(\)\) return false/.test(recon), recon.slice(0, 200));
+  check("rekonesans stoi przy zagrożeniu", /threats[\s\S]{0,80}?arriveAt > now\)\) return false/.test(recon));
+  check("rekonesans stoi, gdy lot jest w powietrzu", /phase === "launched"\)\) return false/.test(recon));
+  check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
+  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) await Recon\.tick\(s\)/.test(src));
+  check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
+}
+
 console.log(fails ? `\n${fails} FAIL — NIE WYPYCHAJ` : "\nDECYZJE 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
