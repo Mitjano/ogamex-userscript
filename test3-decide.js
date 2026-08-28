@@ -362,6 +362,22 @@ console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznane
   check("znana kolonia bez wiedzy o hangarze → też alarm (nie cisza)", decide(quiet, CFG, NOW).alerts.length > 0);
 }
 
+console.log("── 26. START UNI: 1 slot floty a rezerwa (v3.7.1) ──");
+{
+  const one = { pairs: { "1:200:8": { hasMoon: false, galaxy: 1, system: 200, position: 8 } },
+    hangars: { "1:200:8|planet": { total: 12, at: NOW - 60000, ships: [{ type: "SMALL_CARGO", qty: 8 }, { type: "LIGHT_FIGHTER", qty: 4 }] } },
+    threats: [], flights: [], slots: { fleet: { used: 0, total: 1 }, expo: { used: 0, total: 1 }, at: NOW }, active: { key: "1:200:8", body: "planet" } };
+  const C1 = { expo: { ...ECFG.expo, waves: 1, slotReserve: 1 } };
+  const p1 = expoPlan(one, C1, NOW, null);
+  check("1 slot + rezerwa 1 + fala bierze CAŁY hangar → wolno lecieć (nie ma czego ratować)", !p1.skip && p1.ships.length === 2, JSON.stringify(p1));
+  const C2 = { expo: { ...ECFG.expo, waves: 4, slotReserve: 1 } };
+  const partial = JSON.parse(JSON.stringify(one)); partial.slots.expo = { used: 0, total: 4 };   // fala CZĘŚCIOWA możliwa
+  const p2 = expoPlan(partial, C2, NOW, null);
+  check("1 slot + rezerwa 1 + fala zostawia flotę w domu → NIE lecimy (ratunek musi mieć slot)", /rezerwa/.test(p2.skip || ""), JSON.stringify(p2));
+  const many = JSON.parse(JSON.stringify(one)); many.slots.fleet = { used: 0, total: 8 };
+  check("8 slotów → fala częściowa leci normalnie", !expoPlan(many, C2, NOW, null).skip, JSON.stringify(expoPlan(many, C2, NOW, null)));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.7.0
+// @version      3.7.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.7.0";
+  const VERSION = "3.7.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -485,7 +485,6 @@
     const expo = s.slots?.expo, fleet = s.slots?.fleet;
     const cap = Math.max(1, Math.min(e.waves || 1, expo?.total || e.waves || 1));
     if (expo && expo.used >= cap) return { skip: `ekspedycje ${expo.used}/${expo.total} (limit fal ${cap}) — czekam na powroty` };
-    if (fleet && fleet.total && fleet.total - fleet.used <= (e.slotReserve || 0)) return { skip: `wolne sloty floty ≤ rezerwa (${e.slotReserve})` };
     if (burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000)) return { skip: "odstęp między falami" };
     const excl = (e.excludeTypes || []).map(t => String(t).toUpperCase());
     const avail = (h.ships || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
@@ -496,6 +495,14 @@
     const share = (qty) => { const raw = Math.floor(qty / waves); if (raw <= 0) return qty >= waves ? raw : (waves === 1 ? qty : 0); return raw; };
     const ships = avail.map(x => ({ type: x.type, qty: lastOfBurst ? x.qty : (frozen?.[x.type] !== undefined ? Math.min(frozen[x.type], x.qty) : share(x.qty)) })).filter(x => x.qty > 0);
     if (!ships.length) return { skip: `flota za mała na ${waves} fal — zmniejsz liczbę fal` };
+    // v3.7.1 (audyt): rezerwa slotów istnieje po to, żeby RATUNEK miał czym lecieć.
+    // Na starcie uniwersum jest 1 slot floty, więc rezerwa 1 blokowałaby ekspedycje
+    // na zawsze. Ale gdy fala zabiera CAŁY hangar, ratować nie ma już czego —
+    // wtedy rezerwa jest bezprzedmiotowa i wolno zająć ostatni slot.
+    const takesAll = avail.every(a => (ships.find(x => x.type === a.type)?.qty || 0) >= a.qty);
+    if (!takesAll && fleet && fleet.total && fleet.total - fleet.used <= (e.slotReserve || 0)) {
+      return { skip: `wolne sloty floty ≤ rezerwa (${e.slotReserve}) — fala zostawiłaby flotę bez slotu na ucieczkę` };
+    }
     const [g, sy] = homeKey.split(":");
     return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
