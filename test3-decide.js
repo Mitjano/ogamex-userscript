@@ -480,6 +480,14 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("jedna definicja 'wpis lotu nic nie znaczy' (decide + ekonomia + rekonesans)", /function flightStale\(f, now\)/.test(src) && /flightsBlocking\(s, now\)\) return \{ skip/.test(src));
   check("ratunek ma skróconą karencję po potknięciu (nie 3 min)", /a\.air \|\| a\.rescue\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
   check("ratunek na drugie ciało też jest oznaczony jako ratunek", /drugie ciało`, speed: 100, recall: false, rescue: true/.test(src));
+  // v3.10.3 (E2E): reguly, ktore wyszly dopiero na symulatorze
+  check("zero statkow to 'pusty hangar' TYLKO na kroku wyboru statkow", /const shipsStep = ships\.length > 0/.test(src) && /if \(!shipsStep\) \{/.test(src));
+  check("lot krotszy niz termin zawrotu = LADOWANIE (zawrot skasowany)", /const recallOf = \(mm\) =>/.test(src) && /recallAt: recallOf\(m\)/.test(src));
+  check("czas lotu poznany pozniej przelicza termin zawrotu", /f0\.flightMs = m\.flightMs; f0\.recallAt = recallOf/.test(src));
+  check("rekonesans ustepuje RATUNKOWI, ale nie rutynowemu FS", /a\.kind === "fly" && \(a\.rescue \|\| a\.blind\)/.test(src));
+  check("FS nocny nie startuje na godzinnym odczycie hangaru", /FS nocny: odczyt hangaru/.test(src));
+  check("przeterminowany lot nadal daje sie ZAWROCIC", /inFlightFrom\(k\) \|\| \(s\.flights \|\| \[\]\)\.find\(x => x\.fromKey === k && x\.kind === "air"/.test(src));
+  check("strona bledu rozpoznaje takze zwykle 50x", /Internal Server Error\|Service Unavailable/.test(src));
   check("akcje sortowane: ratunek przed rekonesansem", /const RANK = \{ fly: 0, recall: 1/.test(src) && /actions\.sort\(/.test(src));
   check("rekonesans ustępuje, gdy w tym przebiegu jest ratunek", /if \(hasRescue && CFG\.autoRescue\) \{ continue; \}/.test(src));
   // pola statków

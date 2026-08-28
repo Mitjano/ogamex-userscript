@@ -55,9 +55,9 @@ Profil gracza: **ODKRYWCA** (ekspedycje 40 min ustawione domyślnie).
 
 ## Testy
 ```
-node test3-all.js        # 157 asercji + 45 sprawdzeń E2E + składnia; sprawdzaj `echo $?` BEZ pipe'a
+node test3-all.js        # 164 asercje + 77 sprawdzeń E2E + składnia; sprawdzaj `echo $?` BEZ pipe'a
 ```
-`test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — 14 scenariuszy, m.in. pełna ewakuacja od wykrycia ataku do „Send fleet", **zawrót floty i domknięcie lotu po jej powrocie**, ślepy alarm z paska, utrata sesji i powrót, dwa ataki naraz, atak przerywający ekonomię, dwie karty, przeładowania strony w środku misji.
+`test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — **24 scenariusze**: pełna ewakuacja od wykrycia ataku do „Send fleet", zawrót floty i domknięcie lotu po powrocie, FS nocny (wyjście wieczorem + zawrót o świcie), ślepy alarm z paska i pasek nieświeży, utrata sesji, strona błędu gry, dwa ataki naraz, atak przerywający ekonomię, potknięcie formularza, przejęcie planety przez operatora w trakcie misji, nieaktualny hangar, formularz bez suwaka prędkości, mining, złom, dwie karty, przeładowania strony w środku misji.
 Macierz `test3-decide.js` obejmuje: obronę (27 scenariuszy, w tym wszystkie incydenty 27.08 i regresje z audytu 28.08), FS nocny, okno nocne, ekspedycje z serią, mining, złom, humanizera i strażników „ekonomia nie blokuje obrony".
 
 ## Czego świadomie nie ma

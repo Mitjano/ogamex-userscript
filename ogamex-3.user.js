@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.10.0
+// @version      3.10.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.9.3";
+  const VERSION = "3.10.3";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -277,6 +277,15 @@
       const ships = [...document.querySelectorAll("[data-ship-type]")].map(el => ({ type: el.dataset.shipType, qty: parseInt(el.dataset.shipQuantity || "0") || 0 })).filter(s => s.type);
       const total = ships.reduce((x, s) => x + s.qty, 0);
       const txt = document.body.textContent;
+      // Czy to NA PEWNO krok wyboru statków? Zero statków zapisujemy tylko wtedy,
+      // gdy gra faktycznie mówi "nie masz tu floty" — nigdy z braku markupu.
+      const shipsStep = ships.length > 0
+        || /no ships|there are no ships|brak statk|keine schiffe/i.test(txt)
+        || !!document.querySelector("#btn-next-fleet2, .ship-item, #shipsChosen");
+      if (!shipsStep) {
+        if (!Once.said("nofleetstep", 30 * 60e3)) log("[LOT] jestem na /fleet, ale to nie krok wyboru statków (formularz w toku?) — NIE zapisuję pustego hangaru.", "info");
+        return null;
+      }
       const fm = txt.match(/Fleets:\s*(\d+)\s*\/\s*(\d+)/);
       const em = txt.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
       if (fm || em) { const s0 = Situation.load(); s0.slots = { fleet: fm ? { used: +fm[1], total: +fm[2] } : (s0.slots?.fleet || null), expo: em ? { used: +em[1], total: +em[2] } : (s0.slots?.expo || null), at: Date.now() }; Situation.save(s0); }
@@ -384,7 +393,7 @@
       // Teraz: lot z zawrotem domyka hangar ŹRÓDŁA (flota wróciła), lot bez zawrotu
       // (dom/swap) domyka hangar CELU (flota doleciała).
       s.flights = (s.flights || []).filter(f => {
-        // v3.10.0 (audyt regresji): `pending` znaczy "klik wykonany, czekam na
+        // v3.10.2 (audyt regresji): `pending` znaczy "klik wykonany, czekam na
         // potwierdzenie" — to stan sekundowy. Bez limitu czasu osierocony wpis
         // (klik nawigowal, kod potwierdzajacy nie wykonal sie) zaslepial pare na
         // zawsze. Po 10 min wpis przechodzi w normalne reguly wygaszania.
@@ -426,7 +435,7 @@
   // CZYSTA funkcja: ile obcych lotów widzi pasek ponad to, co rozpoznaliśmy, i jak
   // długo to trwa. Reguła z 2.x: liczby same nie rozstrzygają — rozstrzyga TRWAŁOŚĆ
   // nadwyżki (sondy wracają w minuty, atak wisi), a „Type: Spy" wydłuża próg.
-  // v3.10.0: JEDNA definicja "ten wpis lotu nic juz nie znaczy" — uzywana przez
+  // v3.10.2: JEDNA definicja "ten wpis lotu nic juz nie znaczy" — uzywana przez
   // decide(), ekspedycje i rekonesans. Wczesniej kazdy modul mial wlasny warunek
   // `phase === "launched"`, wiec lot po nieudanym zawrocie odblokowywal obrone,
   // ale dalej zamrazal odczyty hangarow (czyli obrona i tak nie wiedziala, gdzie flota).
@@ -441,7 +450,7 @@
 
   function barExcessState(bar, threats, prev, now, cfg) {
     if (!cfg.barExcess || !bar) return { active: false, count: 0, since: 0 };
-    // v3.10.0: pasek odczytany dawno temu nie jest dowodem na nic. Strona bez
+    // v3.10.2: pasek odczytany dawno temu nie jest dowodem na nic. Strona bez
     // paska (formularz floty, strona błędu, logowania) zostawia w stanie STARY
     // odczyt — bez tej bramki bot ewakuował flotę na podstawie danych sprzed godziny.
     if (now - (bar.at || 0) > (cfg.barMaxAgeMs || 3 * 60e3)) return { active: false, count: 0, since: 0, stale: true };
@@ -463,7 +472,7 @@
     const pairs = s.pairs || {};
     const threatsFor = (k) => (s.threats || []).filter(t => t.dst === k && t.attack && t.arriveAt > now);
     const attackedBodies = (k) => { const b = new Set(); for (const t of threatsFor(k)) b.add(t.dstBody || "unknown"); return b; };
-    // v3.10.0 (audyt E2E): wpis lotu z zawrotem domyka się TYLKO zapełnieniem
+    // v3.10.2 (audyt E2E): wpis lotu z zawrotem domyka się TYLKO zapełnieniem
     // hangaru źródła, więc lot, który wylądował (nie dało się ustawić prędkości)
     // albo którego zawrót zawiódł, wisiał 12 h — a `inFlightFrom` przez cały ten
     // czas kazał obronie tej pary robić `continue`. Cisza przy ataku = utrata floty.
@@ -488,14 +497,21 @@
       const fleet = Situation.fleetAt(s, k, now);
       if (!th.length) {
         // cisza: lot ucieczki z tej pary → zawrót po recallAt; brak zagrożeń i flota na planecie z księżycem → wróć na księżyc
-        const f = inFlightFrom(k);
-        if (f && f.kind === "air" && f.phase === "launched" && now >= f.recallAt) actions.push({ kind: "recall", flight: f, why: "ataki minęły — zawrót ucieczki" });
-        // v3.10.0: klik zawrotu bez potwierdzenia (brak wiersza powrotnego) ponawiamy
+        // v3.10.2: do ZAWROTU bierzemy lot niezaleznie od `flightStale` — porzucenie
+        // floty w powietrzu jest gorsze niz spozniony zawrot (FS nocny trwa 8 h).
+        const f = inFlightFrom(k) || (s.flights || []).find(x => x.fromKey === k && x.kind === "air" && ["launched", "recall_clicked"].includes(x.phase));
+        if (f && f.kind === "air" && f.phase === "launched" && f.recallAt && now >= f.recallAt) actions.push({ kind: "recall", flight: f, why: "ataki minęły — zawrót ucieczki" });
+        // v3.10.2: klik zawrotu bez potwierdzenia (brak wiersza powrotnego) ponawiamy
         // po 2 min — inaczej jeden nieskuteczny klik zostawiał flotę w powietrzu.
         else if (f && f.kind === "air" && f.phase === "recall_clicked" && now - (f.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: f, why: "zawrót bez potwierdzenia — ponawiam" });
         if (!f && fleet && fleet.body === "planet" && pairs[k].hasMoon && now - fleet.at < 30 * 60e3) { actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true }); continue; }
         // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
         // co ucieczka (powolny Deploy + zawrót), tylko wyzwalany zegarem, nie atakiem.
+        if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0 && now - (fleet.at || 0) > 60 * 60e3) {
+          // v3.10.3: FS na godzinnym odczycie to wysylka floty, ktorej tam moze juz nie byc.
+          actions.push({ kind: "recon", key: k, body: fleet.body, why: `FS nocny: odczyt hangaru [${k}] za stary — sprawdzam, zanim wysle flote` });
+          continue;
+        }
         if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0) {
           const want = cfg.fs.target && cfg.fs.target !== k ? cfg.fs.target : null;
           let dest = null;
@@ -556,6 +572,7 @@
     }
     for (const f of (s.flights || [])) {
       if (!flightBlind(f)) continue;
+      if (f.kind === "air" && ["launched", "recall_clicked"].includes(f.phase)) continue;   // v3.10.2: ten wciąż jest zawracany
       alerts.push({ key: f.fromKey, level: "error", throttleMs: 15 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] ${f.phase === "recall_failed" ? "NIE ZOSTAŁ ZAWRÓCONY" : "dawno po terminie zawrotu"} — sprowadź flotę ręcznie; para znów pod pełną obroną` });
     }
     // ŚLEPY ALARM: pasek widzi obce loty, których nie umiemy przypisać do celu.
@@ -679,7 +696,7 @@
     const body = (s.hangars[`${homeKey}|moon`]?.total > 0 && pair.hasMoon) ? "moon" : "planet";
     const h = s.hangars[`${homeKey}|${body}`];
     if (!h || now - h.at > 15 * 60e3) return { skip: `hangar [${homeKey}] ${body} nieznany/stary — najpierw rekonesans` };
-    // v3.10.0: odczyt slotów starszy niż 30 min to zgadywanie, nie wiedza.
+    // v3.10.2: odczyt slotów starszy niż 30 min to zgadywanie, nie wiedza.
     const slotsFresh = s.slots && now - (s.slots.at || 0) < 30 * 60e3;
     const expo = slotsFresh ? s.slots.expo : null, fleet = slotsFresh ? s.slots.fleet : null;
     const cap = Math.max(1, Math.min(e.waves || 1, expo?.total || e.waves || 1));
@@ -733,7 +750,7 @@
       }
       const sizes = {}; for (const x of p.ships) sizes[x.type] = x.qty;
       const sent = (b && b.waves === p.waves && !p.last) ? (b.sent || 0) + 1 : (p.last ? 0 : 1);
-      // v3.10.0 (audyt regresji): licznik fali zapisywany PRZED Fly.start — odmowa
+      // v3.10.2 (audyt regresji): licznik fali zapisywany PRZED Fly.start — odmowa
       // startu (trwa inna misja) i tak zjadala fale z serii. Najpierw start, potem licznik.
       const started = Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
         why: `ekspedycja ${p.last ? "(domyka serię — cały hangar)" : `(1/${p.waves} floty)`}`, speed: 100, plan: p.ships,
@@ -914,7 +931,7 @@
     abort(why, opts = {}) {
       const m = this.mission(); Store.del("mission");
       if (!m) return;
-      // v3.10.0: przerwana misja nie moze zostawiac wpisu `pending` w stanie obrony.
+      // v3.10.2: przerwana misja nie moze zostawiac wpisu `pending` w stanie obrony.
       try { const sA = Situation.load(); const n0 = (sA.flights || []).length; sA.flights = (sA.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending)); if ((sA.flights || []).length !== n0) Situation.save(sA); } catch {}
       if (opts.quiet) { log(`[LOT] przerwany: ${why}`, "warn"); const blq = Store.get("fly_block", {}) || {}; blq[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3; Store.set("fly_block", blq); return; }
       log(`[LOT] przerwany: ${why}`, "error");
@@ -925,7 +942,7 @@
       bl[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3;
       Store.set("fly_block", bl);
     },
-    // v3.10.0 (audyt E2E): 3-minutowa karencja po nieudanej próbie lotu była dłuższa
+    // v3.10.2 (audyt E2E): 3-minutowa karencja po nieudanej próbie lotu była dłuższa
     // niż typowy dolot ataku, a decide() deterministycznie wystawia tę samą trasę —
     // czyli po jednym potknięciu bot stał bezczynnie do uderzenia. Lot RATUNKOWY
     // ponawiamy po 45 s; karencja 3 min zostaje dla lotów rutynowych i ekonomii.
@@ -1044,7 +1061,18 @@
         await sleep(jitter(700, 1100));
       }
       const ft = document.body.textContent.match(/Duration\s*of\s*flight[^0-9]{0,40}?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
-      if (ft) { m.flightMs = ft[3] !== undefined ? (+ft[1] * 3600 + +ft[2] * 60 + +ft[3]) * 1000 : (+ft[1] * 60 + +ft[2]) * 1000; log(`[LOT] czas lotu ${Math.round(m.flightMs / 1000)} s`, "info"); }
+      if (ft) {
+        m.flightMs = ft[3] !== undefined ? (+ft[1] * 3600 + +ft[2] * 60 + +ft[3]) * 1000 : (+ft[1] * 60 + +ft[2]) * 1000;
+        log(`[LOT] czas lotu ${Math.round(m.flightMs / 1000)} s`, "info");
+        // v3.10.2: zawrót ma sens tylko wtedy, gdy flota JESZCZE LECI. Lot krótszy niż
+        // termin zawrotu wyląduje na kolonii docelowej — wtedy nie udajemy, że wisi
+        // w powietrzu: kasujemy zawrót, a wpis domknie hangar CELU (flota widziana).
+        if (m.recallAt && Date.now() + m.flightMs < m.recallAt) {
+          log(`[LOT] lot trwa ${Math.round(m.flightMs / 1000)} s i doleci przed terminem zawrotu — flota WYLĄDUJE na [${m.toKey}] ${m.toBody}; zawrotu nie planuję.`, "warn");
+          m.landing = true; m.recallAt = 0;
+          Store.set("mission", m);
+        }
+      }
       if (!(await this.clickWhenEnabled("Next"))) return this.abort("Next (krok 2) martwy");
       // krok 3: misja Deploy, surowce − rezerwa
       const t1 = Date.now(); while (Date.now() - t1 < 8000 && !this.findButton("Send fleet")) await sleep(400);
@@ -1082,10 +1110,16 @@
       // może nigdy się nie wykonać. Lot obronny zapisujemy PRZED klikiem (inaczej
       // flota ucieka bez zaplanowanego zawrotu i zostaje na refugium na stałe),
       // a stempel wysyłki blokuje powtórzenie tej samej fali po przeładowaniu.
+      // Zawrot ma sens tylko dla lotu, ktory JESZCZE LECI w terminie zawrotu.
+      const recallOf = (mm) => {
+        const r = mm.recallAt || 0;
+        if (!r || !mm.flightMs) return r;
+        return (Date.now() + mm.flightMs < r) ? 0 : r;     // doleci wczesniej = wyladuje
+      };
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const sPre = Situation.load();
         sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
       Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey });
@@ -1098,7 +1132,7 @@
       if (!ok) {
         const err = document.querySelector(".error, .alert, .modal.show, [class*='error']");
         log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"})`, "error");
-        // v3.10.0: sprzatanie wpisu `pending` bylo NIEOSIAGALNE (stalo za tym returnem).
+        // v3.10.2: sprzatanie wpisu `pending` bylo NIEOSIAGALNE (stalo za tym returnem).
         const sBad = Situation.load();
         sBad.flights = (sBad.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending));
         Situation.save(sBad);
@@ -1110,8 +1144,11 @@
       // — dokładnie ten rodzaj sprzężenia, przez który 2.x gubił flotę.
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && f.pending);
-        if (f0) { delete f0.pending; if (m.flightMs) f0.flightMs = m.flightMs; }
-        else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: m.recallAt || 0, phase: "launched", tries: 0 }];
+        // v3.10.3: czas lotu bywa znany dopiero TERAZ (krok 2 mogl pojsc w innym
+        // przebiegu), wiec razem z nim przeliczamy termin zawrotu — lot krotszy niz
+        // ten termin po prostu wyladuje i zaden zawrot go nie dotyczy.
+        if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = recallOf({ ...m, flightMs: m.flightMs }); } }
+        else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0 }];
       }
       Situation.save(s);
       Store.del("mission");
@@ -1142,7 +1179,7 @@
       // Pracujemy na obiekcie z ZAPISYWANEGO stanu.
       const s = Situation.load();
       let f = (s.flights || []).find(x => x.fromKey === f0.fromKey && x.toKey === f0.toKey && (x.sentAt === f0.sentAt || !f0.sentAt));
-      // v3.10.0: fallback `|| f0` przywracal dokladnie ten blad, ktory naprawialismy —
+      // v3.10.2: fallback `|| f0` przywracal dokladnie ten blad, ktory naprawialismy —
       // mutacje na obiekcie spoza `s`, ktore nigdy nie trafialy na dysk. Jesli lotu nie
       // ma w stanie, DOPISUJEMY go, zeby zapis mial co utrwalic.
       if (!f) { f = { ...f0 }; s.flights = [...(s.flights || []), f]; }
@@ -1150,7 +1187,7 @@
       if (!a || a.key !== f.fromKey) {
         const el = PlanetBar.anchor(f.fromKey, f.fromBody);
         if (el) { log(`[ZAWRÓT] przełączam na [${f.fromKey}] ${f.fromBody}`, "info"); el.click(); return; }
-        // v3.10.0 (audyt E2E): bez kotwicy na pasku funkcja wracała CICHO i bez
+        // v3.10.2 (audyt E2E): bez kotwicy na pasku funkcja wracała CICHO i bez
         // licznika — bot próbował w nieskończoność, operator nie wiedział o niczym.
         f.tries = (f.tries || 0) + 1;
         if (f.tries >= 5) { f.phase = "recall_failed"; Journal.add("BŁĄD", `Nie mogę przełączyć się na [${f.fromKey}] — zawróć flotę ręcznie.`); }
@@ -1172,7 +1209,7 @@
       if (!live) { if (page() !== "fleet") { location.replace("/fleet"); return; } f.tries = (f.tries || 0) + 1; Situation.save(s); log(`[ZAWRÓT] brak przycisku zawracania (${f.tries}/5)`, "warn"); return; }
       const w = (typeof unsafeWindow !== "undefined" && unsafeWindow) || window; const orig = w.confirm;
       try { w.confirm = () => true; live.click(); await sleep(800); } finally { try { w.confirm = orig; } catch {} }
-      // v3.10.0 (audyt E2E): stan "recalled" ustawiany od razu po kliknięciu był
+      // v3.10.2 (audyt E2E): stan "recalled" ustawiany od razu po kliknięciu był
       // WIARĄ, nie wiedzą — a decide() ponawia zawrót tylko dla "launched", więc
       // nieskuteczny klik nie doczekał się drugiej próby. Teraz klik daje stan
       // przejściowy, a potwierdzeniem jest dopiero wiersz powrotny na liście ruchów.
@@ -1320,7 +1357,7 @@
       }
       const attacks = (s.threats || []).filter(t => t.attack && t.arriveAt > Date.now());
       if (attacks.length) { const k = `atak|${attacks.map(t => t.id || t.dst).join(",")}`; if (!Once.said(k, 10 * 60e3)) Journal.add("ATAK", attacks.map(t => `${t.type} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - Date.now()) / 1000)}s (${t.source})`).join("; ")); }
-      // v3.10.0 (audyt E2E): lot EKONOMICZNY w toku blokował cały przebieg obrony
+      // v3.10.2 (audyt E2E): lot EKONOMICZNY w toku blokował cały przebieg obrony
       // (`if (Fly.mission()) return`) aż do timeoutu 5 min — tyle, ile trwa typowy
       // dolot ataku. Ekonomia nigdy nie może stać na drodze ratunku: przy realnym
       // zagrożeniu albo gotowej akcji obronnej przerywamy ją natychmiast.
@@ -1333,12 +1370,12 @@
       }
       await Fly.tick();
       if (Fly.mission()) return;
-      // v3.10.0 (audyt regresji): kolejnosc akcji szla za kolejnoscia par na pasku,
+      // v3.10.2 (audyt regresji): kolejnosc akcji szla za kolejnoscia par na pasku,
       // a `recon` konczy przebieg nawigacja. Para atakowana za 70 s czekala na
       // rekonesans pary atakowanej za 400 s. Ratunek ma bezwzgledne pierwszenstwo.
       const RANK = { fly: 0, recall: 1, extend: 2, hold: 3, recon: 4 };
       actions.sort((x, y) => (RANK[x.kind] ?? 9) - (RANK[y.kind] ?? 9));
-      const hasRescue = actions.some(a => a.kind === "fly" || a.kind === "recall");
+      const hasRescue = actions.some(a => (a.kind === "fly" && (a.rescue || a.blind)) || a.kind === "recall");
       for (const a of actions) {
         if (a.kind === "recon") {
           // rekonesans nawiguje, wiec nigdy nie wolno mu wyprzedzic ratunku
@@ -1424,7 +1461,7 @@
   function errorPageGuard() {
     const url = location.href;
     const txt = (document.body.textContent || "").slice(0, 400);
-    const bad = /aspxerrorpath|\/Error\//i.test(url) || (/Error occurred|Page not found|Wystąpił błąd/i.test(txt) && !document.querySelector("a.planet-select, .planet-select"));
+    const bad = /aspxerrorpath|\/Error\//i.test(url) || (/Error occurred|Page not found|Wystąpił błąd|Internal Server Error|Service Unavailable|\b50[0-3]\b/i.test(txt) && !document.querySelector("a.planet-select, .planet-select"));
     if (!bad) return false;
     const at = Store.get("errpage_at", 0) || 0;
     if (Date.now() - at < 2 * 60e3) return true;

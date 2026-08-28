@@ -151,3 +151,40 @@ Atrapa gry dostała: własne loty w Events i na liście ruchów, **przycisk zawr
 2. **Wracające floty wroga na pasku** — jeśli fork liczy je jako „Hostile", po każdym odpartym ataku powstanie nadwyżka „pasek minus lista" i może odpalić ślepy alarm. Z kodu nie da się tego rozstrzygnąć; **do sprawdzenia na żywo** (objaw: ewakuacja tuż po tym, jak atak przeleciał). Zabezpieczenie częściowe już jest: nadwyżka musi się utrzymać 60 s (5 min przy sondach).
 3. **Dolot poniżej 40 s** — na formularz floty fizycznie nie ma czasu; bot alarmuje i nic nie udaje.
 4. **Mining i złom w pełnym przebiegu DOM→wysyłka** nie mają jeszcze scenariusza E2E (mają testy czystych funkcji). Powód: wymagają dołożenia do atrapy wiersza 17 galaktyki i pola złomu. Obrona ich nie dotyczy — do zrobienia, gdy moduły ruszą w grze.
+
+---
+
+# 8. CZWARTA FALA — 10 nowych scenariuszy E2E (v3.10.1–3.10.3)
+
+Cel: wykonać w symulatorze te ścieżki, których kod nigdy nie przeszedł poza żywą grą. Doszło 10 scenariuszy (14 → 24) i 32 sprawdzenia (45 → 77).
+
+## 8.1 Defekty znalezione przez nowe scenariusze
+
+| # | Defekt | Skutek w grze |
+|---|---|---|
+| **1** | `Hangar.scan()` zapisywał `total: 0` na KAŻDEJ stronie `/fleet` — także na kroku 2 i 3 formularza, gdzie listy statków po prostu nie ma | bot w trakcie wysyłania floty **sam kasował sobie wiedzę o tym, gdzie ona stoi**; po przerwaniu misji meldował „nie wiem, gdzie flota" i nie ratował. Teraz zero zapisujemy tylko wtedy, gdy gra faktycznie mówi „nie masz tu floty" |
+| **2** | Zawrót był wystawiany wyłącznie dla lotów, które nie są „przeterminowane" (`flightStale`) | **FS nocny trwa 8 h** — godzinę po planowanym świcie bot przestawał zawracać i pisał „sprowadź flotę ręcznie". Teraz porzucenie floty w powietrzu jest niemożliwe: zawrót działa niezależnie od wieku wpisu |
+| **3** | Lot krótszy niż termin zawrotu (np. gdy nie udało się ustawić 10 %) i tak dostawał zaplanowany zawrót | flota **lądowała**, zawracać nie było czego, a wpis wisiał godzinami i zaślepiał parę. Teraz taki lot jest oznaczany jako lądowanie (`recallAt: 0`) i domyka go hangar CELU |
+| **4** | Reguła z punktu 3 działała tylko w chwili odczytu czasu lotu | gdy krok 2 został pominięty (formularz już był na kroku 3 po przeładowaniu), wpis zapisywał się ze starym terminem. Teraz termin przeliczany jest przy **każdym** zapisie lotu i w chwili, gdy czas lotu staje się znany |
+| **5** | „Rekonesans ustępuje ratunkowi" (P1 z fali 3) obejmowało **każdy** lot — także nocny FS | bot wysyłał FS na podstawie godzinnego odczytu hangaru zamiast najpierw sprawdzić, czy flota tam jeszcze stoi. Teraz ustępuje tylko realnemu ratunkowi, a FS na starych danych najpierw robi rekonesans |
+| **6** | `errorPageGuard` nie rozpoznawał zwykłego „Internal Server Error" / 50x | przy takiej stronie bot nie wracał do gry sam |
+
+## 8.2 Nowe scenariusze (15–24)
+
+| # | Scenariusz | Co potwierdza |
+|---|---|---|
+| 15 | **FS nocny w pełnym przebiegu** | wyjście na najdalszą kolonię, 10 % prędkości, Deploy, zawrót o świcie wykonany samodzielnie |
+| 16 | **Strona błędu gry** | bot ją rozpoznaje, wraca do gry i po powrocie broni normalnie |
+| 17 | **Operator przełącza planetę w środku formularza** | bot nie wysyła floty z cudzej planety i mimo przerwania dowozi ratunek |
+| 18 | **Potknięcie formularza** (martwy przycisk „Next") | ratunek ponawiany po 45 s — przy karencji 3 min bot stałby dłużej niż trwa dolot |
+| 19 | **Nieaktualny hangar** (flota nie stoi tam, gdzie bot myśli) | nie wysyła z pustego ciała i nie milknie |
+| 20 | **Nieświeży pasek** | nie ewakuuje floty na podstawie odczytu sprzed godziny |
+| 21 | **Formularz bez suwaka prędkości** | ratunek i tak wychodzi, bot głośno melduje brak prędkości i nie planuje zawrotu lotu, który wyląduje |
+| 22 | **Mining** | skan układów z zakresów asteroid → minery na pozycję 17, flota bojowa zostaje w domu |
+| 23 | **Złom** | recyklery na pole szczątków (`data-planet-type=3`), bez floty bojowej |
+| 24 | **Atak przerywa mining** | ratunek wychodzi z pełną flotą bojową mimo włączonej ekonomii |
+
+## 8.3 Stan
+- `node test3-all.js` → **164 asercje decyzyjne + 77 sprawdzeń E2E (24 scenariusze) + składnia, wszystko zielone**.
+- Łącznie w czterech falach: **37 defektów** znalezionych i naprawionych.
+- Symulator dostał też sterowanie czasem dla dławików ekonomii, czas lotu zależny od prędkości i wierne przeładowanie strony po wysyłce — bez tego trzy scenariusze mierzyły własne niedokładności zamiast zachowania bota.

@@ -40,6 +40,15 @@ class Game {
     this.formBody = "planet";
     this.formMission = null;
     this.ghosts = 0;          // obce floty widoczne TYLKO na pasku (test slepego alarmu)
+    this.hideBar = false;     // strona bez paska misji (formularz, blad, logowanie)
+    this.noSpeeds = false;    // formularz bez suwaka predkosci
+    this.deadNext = 0;        // ile razy krok 2 ma byc BEZ przycisku „Next"
+    this.hijackForm = false;  // operator przelacza planete w srodku formularza
+    this.formSpeed = null;    // ostatnio klinieta predkosc
+    this.flightSec = 81;      // czas lotu pokazywany w kroku 2
+    this.asteroid = false;    // czy w skanowanym ukladzie jest asteroida (wiersz 17)
+    this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
+    this.debris = false;      // czy przy bazie lezy zlom
     this.loggedOut = false;   // gra oddaje strone logowania
     this.errorPage = false;   // gra oddaje strone bledu
   }
@@ -76,6 +85,7 @@ class Game {
     }).join("") + `</ul>`;
   }
   missionBarHtml() {
+    if (this.hideBar) return "";
     const hostile = this.threats.length + this.ghosts;
     const own = this.sent.filter(s => s.inFlight).length;
     if (!hostile && !own) return `<div id="bar">No fleet movement</div>`;
@@ -105,14 +115,17 @@ class Game {
         <input id="fleet2_target_x" value=""><input id="fleet2_target_y" value=""><input id="fleet2_target_z" value="">
         <a data-planet-type="1" class="planet-icon">Planet</a><a data-planet-type="2" class="moon-icon">Moon</a><a data-planet-type="3">Debris</a>
       </div>
-      <div class="speeds"><a>10</a><a>50</a><a>100</a></div>
-      <div>Duration of flight (one way): 01:21</div>
-      <a class="btn-continue" id="btn-next-fleet3">Next</a>
+      ${this.noSpeeds ? "" : '<div class="speeds"><a>10</a><a>50</a><a>100</a></div>'}
+      <div>Duration of flight (one way): ${((sec) => sec >= 3600
+        ? `${String(Math.floor(sec / 3600)).padStart(2, "0")}:${String(Math.floor(sec % 3600 / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`
+        : `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`)(Math.round(this.flightSec * 100 / (this.formSpeed || 100)))}</div>
+      ${this.deadNext > 0 ? "" : '<a class="btn-continue" id="btn-next-fleet3">Next</a>'}
     </div>`;
   }
   step3Html() {
     return `<div id="content">
       <a class="mission-item DEPLOY">Deploy</a><a class="mission-item EXPEDITION">Expedition</a><a class="mission-item ATTACK">Attack</a>
+      <a class="mission-item ASTEROID_MINING">Asteroid mining</a><a class="mission-item COLLECT">Collect</a>
       <a class="btn-all-res">Wszystkie surowce</a>
       <a class="btn-res-full">max</a><a class="btn-res-full">max</a><div><a class="btn-res-full">max deuter</a><input name="deuterium" value="500000"></div>
       <a class="btn-continue" id="btn-submit-fleet">Send fleet</a>
@@ -120,11 +133,22 @@ class Game {
   }
   bodyHtml() {
     if (this.loggedOut) return this.loginHtml();
-    if (this.errorPage) return `<div class="error-page"><h1>500 — Internal Server Error</h1></div>`;
+    if (this.errorPage) return `<div class="error-page"><h1>Error occurred</h1><p>Runtime Error — Internal Server Error</p><a href="/">Back to game</a></div>`;
     const events = `<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}${this.ownRowsHtml(false)}</tbody></table>`;
     let main = "";
     if (this.page === "fleet") main = this.formStep === 0 ? this.fleetPageHtml() : this.formStep === 1 ? this.step2Html() : this.step3Html();
-    else if (this.page === "galaxy") main = `<div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=1&y=100&z=16&mission=15">Expedition</a></div>`;
+    else if (this.page === "galaxy") {
+      const q = new URLSearchParams((this.query || "").replace(/^\?/, ""));
+      const gx = q.get("x") || "1", sy = q.get("y") || "100";
+      main = `
+        <div class="galaxy-item"><span class="planet-index">5</span>
+          <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
+        </div>
+        <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a></div>
+        <div class="galaxy-item"><span class="planet-index">17</span>
+          ${this.asteroid ? `<span data-asteroid-disappear="${this.asteroidTtl}"></span><a class="btn-asteroid" href="/fleet?x=${gx}&y=${sy}&z=17&mission=12">Asteroid</a>` : "<span>Find asteroids</span>"}
+        </div>`;
+    }
     else main = `<div id="overview">Overview</div>`;
     return `${this.planetBarHtml()}${this.missionBarHtml()}${events}${main}`;
   }
@@ -148,14 +172,28 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       : u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}${game.ownRowsHtml(true)}</tbody></table>`
       : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
-  const nav = (to) => { game.navigations.push(to); const [pth, q] = String(to).split("?"); game.page = pth.replace(/^\//, "") || "home"; game.query = q ? "?" + q : ""; if (game.page === "fleet") game.formStep = 0; };
+  const nav = (to) => {
+    game.navigations.push(to);
+    const [pth, q] = String(to).split("?");
+    game.page = pth.replace(/^\//, "") || "home";
+    game.query = q ? "?" + q : "";
+    if (game.page === "fleet") game.formStep = 0;
+    // Adres MUSI isc za nawigacja: bot potwierdza wysylke m.in. po `fleetSendSuccessfully`
+    // w URL. Bez tego potwierdzenie opieralo sie na przypadkowym odczycie hangaru.
+    if (w.__fakeLoc) {
+      w.__fakeLoc.href = `https://genesis.ogamex.net/${game.page}${game.query}`;
+      w.__fakeLoc.pathname = "/" + game.page;
+      w.__fakeLoc.search = game.query;
+    }
+  };
   // jsdom nie pozwala podmienić window.location — podstawiamy ją przez parametr
   // funkcji opakowującej (shadowing), więc kod bota widzi naszą atrapę nawigacji.
   w.__fakeLoc = { href: url, host: "genesis.ogamex.net", hostname: "genesis.ogamex.net", origin: "https://genesis.ogamex.net", protocol: "https:", pathname: "/" + game.page, search: game.query, replace: nav, assign: nav, reload: () => nav("/" + game.page) };
   // Bot celowo robi ludzkie przerwy (1-2 s na krok formularza). W teście skracamy
-  // JE SAME, nie logikę: zegar symulatora biegnie 40× szybciej.
+  // JE SAME, nie logikę: zegar symulatora biegnie 150× szybciej (24 scenariusze
+  // musza zmiescic sie w rozsadnym czasie).
   const realST = w.setTimeout.bind(w);
-  w.setTimeout = (fn, ms, ...a) => realST(fn, Math.min(Math.max(0, (ms || 0) / 40), 30), ...a);
+  w.setTimeout = (fn, ms, ...a) => realST(fn, Math.min(Math.max(0, (ms || 0) / 150), 20), ...a);
   // jsdom nie liczy layoutu, więc offsetParent zawsze === null i bot słusznie
   // uznawałby WSZYSTKIE elementy za niewidoczne. Udajemy widoczność.
   Object.defineProperty(w.HTMLElement.prototype, "offsetParent", { get() { return this.ownerDocument && this.ownerDocument.body; }, configurable: true });
@@ -172,7 +210,24 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       nav("/" + game.page);
       return;
     }
+    if (el.parentElement && String(el.parentElement.className || "").includes("speeds")) {
+      game.formSpeed = parseInt((el.textContent || "0").replace(/[^\d]/g, "")) || null;
+      // Gra przelicza SAM czas lotu (AJAX) — przerenderowanie calego formularza
+      // kasowaloby wpisane koordy celu, czego prawdziwa gra nie robi.
+      const secs = Math.round(game.flightSec * 100 / (game.formSpeed || 100));
+      const dur = [...w.document.querySelectorAll("div")].find(d => /Duration of flight/i.test(d.textContent || "") && d.children.length === 0);
+      if (dur) dur.textContent = `Duration of flight (one way): ${secs >= 3600
+        ? `${String(Math.floor(secs / 3600)).padStart(2, "0")}:${String(Math.floor(secs % 3600 / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`
+        : `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`}`;
+      return;
+    }
     if (id === "btn-next-fleet2") {
+      if (game.hijackForm) {                     // operator klika inna planete w srodku misji
+        game.hijackForm = false;
+        game.active = { key: game.pairs[1].key, body: "moon" };
+        nav("/" + game.page);
+        return;
+      }
       game.formShips = {};
       for (const it of w.document.querySelectorAll(".ship-item")) {
         const t = it.querySelector("[data-ship-type]")?.getAttribute("data-ship-type");
@@ -203,6 +258,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       game.sent.push({ from: game.active.key, fromBody: game.active.body, to: game.formTarget, toBody: game.formBody, mission: game.formMission, ships: { ...game.formShips }, inFlight: true });
       game.slots.fleet.used++;
       nav("/home?fleetSendSuccessfully=1");
+      w.document.body.innerHTML = game.bodyHtml();     // gra przeladowala strone: formularza juz nie ma
       return;
     }
   }, true);
@@ -226,15 +282,17 @@ function advance(game, ms) {
       for (const t of st.threats || []) { t.seenAt -= ms; t.arriveAt -= ms; if (t.lastSeenAt) t.lastSeenAt -= ms; }
       for (const f of st.flights || []) { f.sentAt -= ms; if (f.recallAt) f.recallAt -= ms; }
       if (st.barExcess && st.barExcess.since) st.barExcess.since -= ms;
+      if (st.bar && st.bar.at) st.bar.at -= ms;
       game.store.set(K, JSON.stringify(st));
     }
   } catch {}
   for (const k of [...game.store.keys()]) {
-    if (!/ogx3_(mission|last_send|bar_excess|once|nav|human|session)/.test(k)) continue;
+    if (!/ogx3_(mission|last_send|bar_excess|once|nav|human|session|aster|debris|expo|burst|errpage|last_)/.test(k)) continue;
     try {
       const v = JSON.parse(game.store.get(k));
+      if (typeof v === "number") { game.store.set(k, JSON.stringify(v - ms)); continue; }
       if (v && typeof v === "object") {
-        for (const f of ["at", "since", "startedAt", "until", "lostAt", "triedAt"]) if (typeof v[f] === "number") v[f] -= ms;
+        for (const f of ["at", "since", "startedAt", "until", "lostAt", "triedAt", "lastScanAt", "sentAt", "rangesAt", "lastSendAt"]) if (typeof v[f] === "number") v[f] -= ms;
         game.store.set(k, JSON.stringify(v));
       }
     } catch {}
@@ -257,7 +315,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     }
     const inst = load(game, { cfg });
     try { await inst.tick(ticksPerLoad); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, 140));   // czas na dokonczenie krokow bota (jego wlasne pauzy sa 150x krotsze)
     try { inst.w.eval("if (typeof logEntries !== 'undefined') {}"); } catch {}
     if (process.env.DIAG2) {
       try { const st2 = inst.api.Situation.load(); console.log("      decyzja:", JSON.stringify(inst.api.decide(st2, inst.api.CFG, Date.now())).slice(0, 300), "| CFG.autoRescue:", inst.api.CFG.autoRescue, "| misja:", JSON.stringify(inst.api.Fly.mission())); } catch (e) { console.log("      decyzja rzuciła:", e.message); }
@@ -385,7 +443,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     const st2 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     const f2 = (st2.flights || [])[0];
     check("stan lotu przeszedł w zawrót (nie klika w kółko)", !f2 || ["recall_clicked", "recalled"].includes(f2.phase), JSON.stringify(st2.flights));
-    check("dziennik mówi o zawrocie", r2.logs.some(m => /ZAWRÓT/.test(m)), r2.logs.slice(0, 6).join(" | "));
+    check("dziennik mówi o zawrocie", r2.logs.some(m => /ZAWRÓT/.test(m)), r2.logs.filter(m => /LOT|ZAWR|recall/i.test(m)).slice(0, 10).join(" | "));
     g.land(0);                          // flota wraca na księżyc
     advance(g, 10 * 60e3);
     await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
@@ -478,6 +536,188 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     const { logs } = await run(g, { cfg: { autoRescue: true, expo: { enabled: false }, recon: false }, loads: 8, ticksPerLoad: 2 });
     check("bot NIE milczy — melduje, że nie wie, gdzie stoi flota", logs.some(m => /nie wiem, gdzie stoi flota|hangar nieznany|nieznan/i.test(m)), logs.slice(0, 8).join(" | "));
     check("i nie zmyśla wysyłki z pary, której nie zna", !g.sent.some(x => x.from === "1:100:9"), JSON.stringify(g.sent));
+  }
+
+  console.log("\n── 15. FS NOCNY: wyjście floty wieczorem i zawrót o świcie ──");
+  {
+    const H = new Date().getHours();
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: true, startHour: H, endHour: (H + 1) % 24, speedPct: 10 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },
+        { key: "1:100:9", name: "Bliska", moon: true },
+        { key: "5:200:3", name: "Daleka", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700 } },
+    });
+    g.flightSec = 4 * 3600;                     // FS na 10% do innej galaktyki = godziny
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const fs = g.sent[0];
+    check("FS wyprowadził flotę na noc", g.sent.length === 1, JSON.stringify(g.sent));
+    check("na NAJDALSZĄ kolonię (najdłuższy lot = najtrudniej trafić)", !!fs && fs.to === "5:200:3", JSON.stringify(fs));
+    check("powoli (10%) — żeby zużyć minimum deuteru", g.formSpeed === 10, String(g.formSpeed));
+    check("misja to stacjonowanie, nie atak", !!fs && /Deploy/i.test(fs.mission || ""), fs && fs.mission);
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const f = (st.flights || [])[0];
+    check("z zaplanowanym zawrotem o świcie", !!f && f.recallAt > Date.now(), f && new Date(f.recallAt).toISOString());
+    // Świt: termin zawrotu minął
+    advance(g, 3 * 3600e3);
+    const r2 = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
+    check("o świcie bot ZAWRACA flotę sam", !!(g.sent[0] && g.sent[0].returning), JSON.stringify(g.sent[0]));
+    check("i mówi o tym w dzienniku", r2.logs.some(m => /ZAWRÓT/.test(m)), r2.logs.slice(0, 5).join(" | "));
+  }
+
+  console.log("\n── 16. STRONA BŁĘDU GRY: bot wraca do gry zamiast zamierać ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
+    const g = new Game();
+    g.errorPage = true; g.page = "Error"; g.query = "?aspxerrorpath=/home";
+    const { logs } = await run(g, { cfg, loads: 4, ticksPerLoad: 2 });
+    check("bot rozpoznał stronę błędu", logs.some(m => /BŁĄD STRONY/.test(m)), logs.slice(0, 5).join(" | "));
+    check("i nie ruszył flotą na ślepo", g.sent.length === 0, JSON.stringify(g.sent));
+    g.errorPage = false; g.page = "home"; g.query = "";     // gra wróciła do siebie
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }];
+    advance(g, 5 * 60e3);
+    await run(g, { cfg: { ...cfg, recon: true, reconMs: 1 }, loads: 20, ticksPerLoad: 3 });
+    check("po powrocie gry obrona działa normalnie", g.sent.length === 1, JSON.stringify(g.sent));
+  }
+
+  console.log("\n── 17. OPERATOR PRZEŁĄCZA PLANETĘ W ŚRODKU FORMULARZA ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 }, "1:100:9|moon": { SMALL_CARGO: 3 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.hijackForm = true;                        // pierwszy klik „Next" = operator zmienia planetę
+    const { logs } = await run(g, { cfg, loads: 30, ticksPerLoad: 3 });
+    check("bot NIE wysłał floty z cudzej planety", g.sent.every(x => x.from === "1:100:5"), JSON.stringify(g.sent.map(x => x.from + "|" + x.fromBody)));
+    check("mimo przerwania dowiózł ratunek do końca", g.sent.length === 1, JSON.stringify(g.sent));
+    check("i wyszedł z atakowanego księżyca", !!g.sent[0] && g.sent[0].fromBody === "moon", JSON.stringify(g.sent[0]));
+  }
+
+  console.log("\n── 18. POTKNIĘCIE FORMULARZA: ratunek ponawiany po 45 s, nie po 3 min ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.deadNext = 1;                             // krok 2 bez przycisku „Next" = lot się wysypie
+    const r1 = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("(warunek wstępny) bot zaczął lot, ale formularz go zablokował", g.sent.length === 0 && r1.logs.some(m => /sąsiedni księżyc/.test(m)), r1.logs.slice(0, 6).join(" | "));
+    g.deadNext = 0;                             // gra wróciła do siebie
+    advance(g, 50e3);                           // minęło 50 s — przy karencji 3 min bot by stał
+    await run(g, { cfg, loads: 20, ticksPerLoad: 3 });
+    check("po 50 s bot POWTÓRZYŁ ratunek (karencja nie zjada dolotu)", g.sent.length === 1, JSON.stringify(g.sent));
+  }
+
+  console.log("\n── 19. NIEAKTUALNY HANGAR: flota nie stoi tam, gdzie bot myśli ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 600 } } });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });          // bot zapamiętuje flotę na księżycu
+    g.hangars["1:100:5|moon"] = {};                            // operator sam przeniósł flotę
+    g.hangars["1:100:5|planet"] = { BATTLESHIP: 600 };
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }];
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("bot nie wysłał floty z PUSTEGO księżyca", !g.sent.some(x => x.fromBody === "moon"), JSON.stringify(g.sent));
+    check("i nie zamilkł — albo melduje pusty hangar, albo bezpieczną stronę", logs.some(m => /pusty|bezpieczna strona|nie wiem, gdzie/i.test(m)), logs.slice(0, 8).join(" | "));
+  }
+
+  console.log("\n── 20. NIEŚWIEŻY PASEK nie może wywołać ślepego alarmu ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    g.ghosts = 2;
+    await run(g, { cfg, loads: 4, ticksPerLoad: 2 });     // bot widzi nadwyżkę, ale próg jeszcze nie minął
+    g.ghosts = 0;
+    g.hideBar = true;                                     // strona bez paska: stary odczyt zostaje w stanie
+    advance(g, 10 * 60e3);
+    const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("bot NIE ewakuuje floty na podstawie starego paska", g.sent.length === 0, JSON.stringify(g.sent));
+    check("i nie ogłasza ślepego alarmu z niczego", !logs.some(m => /ŚLEPY ALARM: pasek widzi/.test(m)), logs.slice(0, 6).join(" | "));
+  }
+
+  console.log("\n── 21. FORMULARZ BEZ SUWAKA PRĘDKOŚCI ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.noSpeeds = true;
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("ratunek i tak wychodzi (lepiej szybko niż wcale)", g.sent.length === 1, JSON.stringify(g.sent));
+    check("bot głośno melduje brak prędkości", logs.some(m => /prędkość.*(NIE USTAWIONA|nie ustawiona)/i.test(m)), logs.slice(0, 8).join(" | "));
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const f = (st.flights || [])[0];
+    check("bot nie udaje, że flota wisi w powietrzu — wpis domknie hangar CELU", !!f && f.recallAt === 0, JSON.stringify(f));
+    check("i mówi wprost, że flota wyląduje", logs.some(m => /WYLĄDUJE/.test(m)), logs.slice(0, 8).join(" | "));
+  }
+
+  console.log("\n── 22. MINING: skan układów → minery na asteroidę (wiersz 17) ──");
+  {
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      aster: { enabled: true, minTtlSec: 300, scanGapSec: 0 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20, BATTLESHIP: 100 } } });
+    g.asteroid = true;
+    let logs = (await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    for (let i = 0; i < 4 && !g.sent.length; i++) {         // dlawik skanu: 6 s miedzy ukladami
+      advance(g, 60e3);
+      logs = logs.concat((await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs);
+    }
+    const mine = g.sent.find(x => /Asteroid/i.test(x.mission || ""));
+    check("minery poleciały na asteroidę", !!mine, logs.filter(m => /ASTER|LOT/i.test(m)).slice(0, 8).join(" | ") + " || nawig: " + g.navigations.slice(0, 5).join(","));
+    check("celem jest pozycja 17", !!mine && /:17$/.test(mine.to || ""), JSON.stringify(mine));
+    check("poleciały TYLKO minery (flota bojowa została w domu)", !mine || !mine.ships.BATTLESHIP, JSON.stringify(mine && mine.ships));
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("lot ekonomiczny NIE trafia do stanu obrony", (st.flights || []).length === 0, JSON.stringify(st.flights));
+  }
+
+  console.log("\n── 23. ZŁOM: recyklery na własne pole szczątków ──");
+  {
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      debris: { enabled: true, everyMin: 0 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({ hangars: { "1:100:5|moon": { RECYCLER: 30, BATTLESHIP: 100 } } });
+    g.debris = true;
+    let logs = (await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    for (let i = 0; i < 4 && !g.sent.length; i++) {
+      advance(g, 60e3);
+      logs = logs.concat((await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs);
+    }
+    const col = g.sent.find(x => /Collect|Harvest|Recycl/i.test(x.mission || ""));
+    check("recyklery poleciały po złom", !!col, logs.filter(m => /ZŁOM|LOT/i.test(m)).slice(0, 8).join(" | ") + " || nawig: " + g.navigations.slice(0, 5).join(","));
+    check("celem jest POLE SZCZĄTKÓW, nie planeta", !col || col.toBody === "debris", JSON.stringify(col));
+    check("bez floty bojowej", !col || !col.ships.BATTLESHIP, JSON.stringify(col && col.ships));
+  }
+
+  console.log("\n── 24. ATAK PRZERYWA MINING (ekonomia nigdy nie wygrywa) ──");
+  {
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      aster: { enabled: true, minTtlSec: 300, scanGapSec: 0 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20, BATTLESHIP: 400 } } });
+    g.asteroid = true;
+    await run(g, { cfg, loads: 12, ticksPerLoad: 2 });
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }];
+    advance(g, 60e3);
+    await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const rescue = g.sent.find(x => /Deploy/i.test(x.mission || ""));
+    check("ratunek wyszedł mimo włączonego miningu", !!rescue, JSON.stringify(g.sent.map(x => (x.mission || "?") + "→" + x.to)));
+    check("i zabrał flotę bojową", !!rescue && rescue.ships.BATTLESHIP === 400, JSON.stringify(rescue && rescue.ships));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
