@@ -7,6 +7,7 @@ const { execFileSync } = require("child_process");
 const SUITES = [
   ["decyzje obrony (macierz incydentów)", "test3-decide.js"],
   ["E2E: prawdziwy bot na sztucznej grze (jsdom)", "test3-e2e.js"],
+  ["panel: budowa, pasek stanu, zwijanie (jsdom)", "test3-ui.js"],
 ];
 let failed = [];
 for (const [name, file] of SUITES) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.10.4
+// @version      3.11.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.10.4";
+  const VERSION = "3.11.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1483,53 +1483,140 @@
   function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); location.replace("/"); } }
 
   // ═══ PANEL ══════════════════════════════════════════════════════════════
+  // v3.11.0 (UX): powrót do wyglądu panelu z Ateny (2.x) — właściciel: „stary był
+  // ładny i nie przesłaniał". Trzy grzechy panelu 3.0, które to naprawia:
+  //   1. 300 px + left:8 zasłaniało menu gry (Overview…Simulators). 232 px kończy
+  //      się PRZED menu (pomiar z 2.65.3 na 13,6" MacBooku właściciela).
+  //   2. Wszystko rozwinięte na stałe → pół ekranu nawigacji. Teraz: PASEK STANU
+  //      na wierzchu (5 linii = 5 odpowiedzi bez klikania), ustawienia w zwiniętych
+  //      sekcjach (AUDYT-UX-PANEL-2026-08-03.md, „stan na wierzchu, ustawienia w środku").
+  //   3. Nie dało się go odsunąć ani zwinąć — nagłówek jest przeciągalny, „_" zwija
+  //      do samego nagłówka; pozycja, zwinięcie i otwarte sekcje przeżywają przeładowanie.
+  // ID przycisków i pól są te same co w 3.10.x — handlery i testy E2E bez zmian.
   const UI = {
     el: null,
     build() {
       if (document.getElementById("ogx3-panel")) return;
       const d = document.createElement("div"); d.id = "ogx3-panel";
-      d.style.cssText = "position:fixed;top:8px;left:8px;width:300px;max-height:95vh;overflow:auto;z-index:99999;background:#0b1220;color:#dfe8f5;font:12px/1.35 system-ui,sans-serif;border:1px solid #2b3a55;border-radius:8px;padding:8px;box-shadow:0 4px 18px rgba(0,0,0,.6)";
       d.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center"><b>OGameX 3 <span style="opacity:.6">v${VERSION}</span></b><button id="ogx3-on" class="ogx3-btn"></button></div>
-        <div id="ogx3-status" style="margin:6px 0;white-space:pre-wrap"></div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button id="ogx3-auto" class="ogx3-btn"></button>
-          <button id="ogx3-push" class="ogx3-btn"></button>
-          <button id="ogx3-voice" class="ogx3-btn"></button>
-          <button id="ogx3-recon" class="ogx3-btn"></button>
+        <style>
+          #ogx3-panel{position:fixed;top:10px;left:10px;width:232px;background:rgba(0,10,30,.92);border:1px solid #1a5276;border-radius:8px;color:#e0e0e0;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,.6);user-select:none;max-height:calc(100vh - 20px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+          #ogx3-panel.alarm{border-color:#e74c3c;box-shadow:0 0 0 1px #e74c3c66,0 4px 20px rgba(0,0,0,.6)}
+          #ogx3-panel .hd{background:linear-gradient(135deg,#1a5276,#0d2f4f);padding:8px 10px;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center;cursor:move;font-weight:bold;font-size:13px;color:#5dade2}
+          #ogx3-panel.alarm .hd{background:linear-gradient(135deg,#7a1e1e,#3d0f0f);color:#ffb3b3}
+          #ogx3-panel .hd .v{font-size:9px;color:#7f8c8d;font-weight:normal}
+          #ogx3-panel .min{cursor:pointer;font-size:16px;color:#9fb3c2;line-height:1;padding:0 4px}
+          #ogx3-panel .min:hover{color:#fff}
+          #ogx3-panel .strip{padding:7px 10px 6px;border-bottom:1px solid #1a5276;font-size:11px;line-height:1.6}
+          #ogx3-panel .row{display:flex;gap:5px;align-items:baseline}
+          #ogx3-panel .row .ico{width:15px;flex:none;text-align:center}
+          #ogx3-panel .row .lbl{width:58px;flex:none;color:#8fa8b8}
+          #ogx3-panel .row .val{color:#d7e2ea;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+          #ogx3-panel .row.ok .val{color:#6fcf97}
+          #ogx3-panel .row.busy .val{color:#f2b25c}
+          #ogx3-panel .row.alert .val{color:#ff6b6b;font-weight:700}
+          #ogx3-panel .row.dim .val{color:#7f8c8d}
+          #ogx3-panel .body{padding:8px 10px 10px}
+          #ogx3-panel .act{display:flex;gap:4px;margin-bottom:6px}
+          #ogx3-panel .sec{margin-bottom:4px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid #1a5276}
+          #ogx3-panel .sec.open{border-left-color:#27ae60}
+          #ogx3-panel .sec-t{padding:4px 8px;font-size:11px;color:#b9c9d4;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:6px}
+          #ogx3-panel .sec-t:hover{color:#fff}
+          #ogx3-panel .sec-t .arr{display:inline-block;width:9px;color:#5dade2}
+          #ogx3-panel .sec-t>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          #ogx3-panel .sec-t .tail{color:#7f8c8d;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:74px;flex:none}
+          #ogx3-panel .sec-b{display:none;padding:2px 8px 7px;font-size:11px;line-height:1.5}
+          #ogx3-panel .sec.open .sec-b{display:block}
+          #ogx3-panel .sec-b .line{margin:4px 0;display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+          #ogx3-panel .note{color:#8fa8b8;font-size:10px;margin-top:3px}
+          #ogx3-panel input{background:rgba(0,0,0,.35);border:1px solid #2b4a66;color:#e0e0e0;border-radius:3px;padding:1px 4px;font-size:11px}
+          #ogx3-panel .ogx3-btn{background:rgba(255,255,255,.1);color:#ccc;border:1px solid #555;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:10.5px}
+          #ogx3-panel .ogx3-btn:hover{background:rgba(255,255,255,.2);color:#fff}
+          #ogx3-panel #ogx3-on{padding:3px 12px;border:none;border-radius:4px;font-weight:bold;font-size:12px;color:#fff;cursor:pointer}
+          #ogx3-panel #ogx3-save{background:#c0392b;color:#fff;border-color:#e74c3c;font-weight:bold;flex:1;font-size:10px;padding:4px 2px;white-space:nowrap}
+          #ogx3-panel #ogx3-home{flex:1;font-size:10px;padding:4px 2px;white-space:nowrap}
+          #ogx3-panel .jr{margin:2px 0;font-size:10px;line-height:1.35;color:#b7c4cd}
+          #ogx3-panel .jr b{color:#5dade2;font-weight:600}
+          #ogx3-panel .jr.ATAK b,#ogx3-panel .jr.BŁĄD b{color:#ff6b6b}
+          #ogx3-panel .jr.RATUNEK b,#ogx3-panel .jr.POWRÓT b{color:#6fcf97}
+          #ogx3-panel #ogx3-status{white-space:pre-wrap;font-size:10px;line-height:1.4;color:#b7c4cd}
+          #ogx3-panel #ogx3-log{max-height:180px;overflow-y:auto;font:10px/1.35 ui-monospace,monospace;background:rgba(0,0,0,.3);padding:5px;border-radius:4px;margin-top:4px}
+        </style>
+        <div class="hd" id="ogx3-hd">
+          <span>OGameX 3 <span class="v">v${VERSION}</span></span>
+          <span style="display:flex;gap:6px;align-items:center"><button id="ogx3-on"></button><span class="min" id="ogx3-min" title="Zwiń / rozwiń panel">_</span></span>
         </div>
-        <div style="margin:6px 0">Rezerwa deuteru <input id="ogx3-res" style="width:120px" /> · prędkość ucieczki <input id="ogx3-spd" style="width:36px" />%</div>
-        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
-          <b>Fleet Save nocny</b> <button id="ogx3-fs" class="ogx3-btn"></button> od <input id="ogx3-fs-a" style="width:26px" />:00 do <input id="ogx3-fs-b" style="width:26px" />:00 · <span id="ogx3-fs-st" style="opacity:.75"></span>
+        <div class="strip" id="ogx3-strip">
+          <div class="row" id="ogx3-r-def"><span class="ico">🛡</span><span class="lbl">Obrona</span><span class="val">—</span></div>
+          <div class="row" id="ogx3-r-fleet"><span class="ico">🛰</span><span class="lbl">Flota</span><span class="val">—</span></div>
+          <div class="row" id="ogx3-r-expo"><span class="ico">🚀</span><span class="lbl">Ekspedycje</span><span class="val">—</span></div>
+          <div class="row" id="ogx3-r-min"><span class="ico">⛏</span><span class="lbl">Mining</span><span class="val">—</span></div>
+          <div class="row" id="ogx3-r-fs"><span class="ico">🌙</span><span class="lbl">Fleet Save</span><span class="val">—</span></div>
         </div>
-        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
-          <b>Złom</b> <button id="ogx3-deb" class="ogx3-btn"></button>
-        </div>
-        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
-          <b>Mining asteroid</b> <button id="ogx3-aster" class="ogx3-btn"></button> <span id="ogx3-aster-st" style="opacity:.75"></span>
-        </div>
-        <div style="margin:6px 0;border-top:1px solid #2b3a55;padding-top:6px">
-          <b>Ekspedycje</b> <button id="ogx3-expo" class="ogx3-btn"></button> <button id="ogx3-disc" class="ogx3-btn"></button><br>
-          fale <input id="ogx3-waves" style="width:34px" /> · rezerwa slotów <input id="ogx3-slotres" style="width:30px" /> · <span id="ogx3-expo-st" style="opacity:.75"></span>
-        </div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button id="ogx3-sim-moon" class="ogx3-btn">TEST: atak na księżyc</button>
-          <button id="ogx3-sim-planet" class="ogx3-btn">TEST: atak na planetę</button>
-          <button id="ogx3-dump" class="ogx3-btn">Zrzut DOM</button>
-          <button id="ogx3-pushtest" class="ogx3-btn">Test push</button>
-          <button id="ogx3-report" class="ogx3-btn">Kopiuj raport startowy</button>
-          <button id="ogx3-abort" class="ogx3-btn">Przerwij lot</button>
-        </div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">
-          <button id="ogx3-save" class="ogx3-btn" style="background:#7a1e1e;font-weight:bold">RATUJ FLOTĘ TERAZ</button>
-          <button id="ogx3-home" class="ogx3-btn">WRÓĆ NA BAZĘ</button>
-        </div>
-        <div style="margin-top:6px;opacity:.7;font-size:11px">ntfy: <span id="ogx3-topic"></span></div>
-        <div style="margin-top:6px;display:flex;justify-content:space-between"><b>Log</b><span><button id="ogx3-copy" class="ogx3-btn">Copy</button> <button id="ogx3-clear" class="ogx3-btn">Clear</button></span></div>
-        <div id="ogx3-log" style="max-height:38vh;overflow:auto;font:11px/1.3 ui-monospace,monospace;margin-top:4px"></div>
-        <style>.ogx3-btn{background:#1c2a44;color:#dfe8f5;border:1px solid #33507a;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:11px}.ogx3-btn:hover{background:#274070}</style>`;
+        <div class="body" id="ogx3-body">
+          <div class="act"><button id="ogx3-save" class="ogx3-btn">RATUJ FLOTĘ TERAZ</button><button id="ogx3-home" class="ogx3-btn">WRÓĆ NA BAZĘ</button></div>
+          <div class="sec" data-sec="def"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Obrona</span><span class="tail" id="ogx3-t-def"></span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-auto" class="ogx3-btn"></button><button id="ogx3-recon" class="ogx3-btn"></button></div>
+            <div class="line"><button id="ogx3-push" class="ogx3-btn"></button><button id="ogx3-voice" class="ogx3-btn"></button><button id="ogx3-pushtest" class="ogx3-btn">Test push</button></div>
+            <div class="line">Rezerwa deuteru <input id="ogx3-res" style="width:74px" /></div>
+            <div class="line">Prędkość ucieczki <input id="ogx3-spd" style="width:32px" />%</div>
+            <div class="note">ntfy: <span id="ogx3-topic"></span></div>
+          </div></div>
+          <div class="sec" data-sec="expo"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekspedycje</span><span class="tail" id="ogx3-t-expo"></span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-expo" class="ogx3-btn"></button><button id="ogx3-disc" class="ogx3-btn"></button></div>
+            <div class="line">fale <input id="ogx3-waves" style="width:30px" /> · rezerwa slotów <input id="ogx3-slotres" style="width:26px" /></div>
+            <div class="note" id="ogx3-expo-st"></div>
+          </div></div>
+          <div class="sec" data-sec="fs"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Fleet Save</span><span class="tail" id="ogx3-t-fs"></span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-fs" class="ogx3-btn"></button> od <input id="ogx3-fs-a" style="width:24px" />:00 do <input id="ogx3-fs-b" style="width:24px" />:00</div>
+            <div class="note" id="ogx3-fs-st"></div>
+          </div></div>
+          <div class="sec" data-sec="eco"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekonomia</span><span class="tail" id="ogx3-t-eco"></span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-aster" class="ogx3-btn"></button><button id="ogx3-deb" class="ogx3-btn"></button></div>
+            <div class="note" id="ogx3-aster-st"></div>
+          </div></div>
+          <div class="sec" data-sec="jr"><div class="sec-t"><span><span class="arr">▸</span> Dziennik obrony</span><span class="tail" id="ogx3-t-jr"></span></div><div class="sec-b"><div id="ogx3-journal"></div></div></div>
+          <div class="sec" data-sec="det"><div class="sec-t"><span><span class="arr">▸</span> Szczegóły stanu</span></div><div class="sec-b"><div id="ogx3-status"></div></div></div>
+          <div class="sec" data-sec="tools"><div class="sec-t"><span><span class="arr">▸</span> Narzędzia i testy</span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-sim-moon" class="ogx3-btn">TEST: atak na księżyc</button><button id="ogx3-sim-planet" class="ogx3-btn">TEST: atak na planetę</button></div>
+            <div class="line"><button id="ogx3-dump" class="ogx3-btn">Zrzut DOM</button><button id="ogx3-report" class="ogx3-btn">Kopiuj raport</button><button id="ogx3-abort" class="ogx3-btn">Przerwij lot</button></div>
+          </div></div>
+          <div class="sec" data-sec="log"><div class="sec-t"><span><span class="arr">▸</span> Log</span><span class="tail" id="ogx3-t-log"></span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-copy" class="ogx3-btn">Kopiuj</button><button id="ogx3-clear" class="ogx3-btn">Wyczyść</button></div>
+            <div id="ogx3-log"></div>
+          </div></div>
+        </div>`;
       document.body.appendChild(d); this.el = d;
       const $ = (id) => document.getElementById(id);
+
+      // ── pozycja, zwinięcie i otwarte sekcje przeżywają przeładowanie ────────
+      const pos = Store.get("ui_pos", null);
+      if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+        const maxL = Math.max(0, (window.innerWidth || 1200) - 60), maxT = Math.max(0, (window.innerHeight || 800) - 40);
+        d.style.left = Math.min(Math.max(0, pos.left), maxL) + "px";
+        d.style.top = Math.min(Math.max(0, pos.top), maxT) + "px";
+      }
+      const open = new Set(Store.get("ui_open", []) || []);
+      for (const sec of d.querySelectorAll(".sec")) {
+        if (open.has(sec.dataset.sec)) { sec.classList.add("open"); sec.querySelector(".arr").textContent = "▾"; }
+        sec.querySelector(".sec-t").onclick = () => {
+          const on = sec.classList.toggle("open");
+          sec.querySelector(".arr").textContent = on ? "▾" : "▸";
+          const s = new Set(Store.get("ui_open", []) || []);
+          on ? s.add(sec.dataset.sec) : s.delete(sec.dataset.sec);
+          Store.set("ui_open", [...s]);
+          if (on && sec.dataset.sec === "jr") this.renderJournal();
+        };
+      }
+      this.setMin(Store.get("ui_min", false) === true);
+      $("ogx3-min").onclick = () => this.setMin(!(Store.get("ui_min", false) === true));
+
+      // przeciąganie za nagłówek (pozycja zapisana po puszczeniu myszy)
+      { let drag = false, sx = 0, sy = 0, sl = 0, st = 0;
+        $("ogx3-hd").addEventListener("mousedown", (e) => { if (e.target.closest("button, .min")) return; const r = d.getBoundingClientRect(); drag = true; sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top; e.preventDefault(); });
+        document.addEventListener("mousemove", (e) => { if (!drag) return; d.style.left = (sl + e.clientX - sx) + "px"; d.style.top = (st + e.clientY - sy) + "px"; d.style.right = "auto"; });
+        document.addEventListener("mouseup", () => { if (!drag) return; drag = false; const r = d.getBoundingClientRect(); Store.set("ui_pos", { left: Math.round(r.left), top: Math.round(r.top) }); }); }
+
       $("ogx3-on").onclick = () => { CFG.enabled = !CFG.enabled; saveCfg(); log(`Bot ${CFG.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-auto").onclick = () => { CFG.autoRescue = !CFG.autoRescue; saveCfg(); log(`Auto-ratunek ${CFG.autoRescue ? "ON — bot RUSZA flotą" : "OFF — obserwator"}`, "warn"); this.renderStatus(); };
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
@@ -1580,41 +1667,116 @@
           if (Fly.start({ kind: "home", fromKey: a0.key, fromBody: "planet", toKey: a0.key, toBody: "moon", why: "RĘCZNY powrót na księżyc", speed: 100, home: true })) await Fly.tick();
           return;
         }
-        alert("Nie widzę lotu do zawrócenia ani floty na planecie pary z księżycem. Sprawdź panel — pole „Loty”.");
+        alert("Nie widzę lotu do zawrócenia ani floty na planecie pary z księżycem. Sprawdź panel — „Szczegóły stanu”, pole „Loty”.");
       };
       $("ogx3-copy").onclick = () => { const t = logEntries.map(e => `[${e.time}] [${e.type.toUpperCase()}] ${e.msg}`).join("\n"); navigator.clipboard?.writeText(t); };
       $("ogx3-clear").onclick = () => { logEntries = []; Store.set("log", []); this.renderLog(); };
       this.renderStatus(); this.renderLog();
     },
+    // Zwinięty panel = sam nagłówek (pasek stanu też znika — właściciel chciał
+    // móc go zupełnie usunąć z drogi). Alarm rozwija panel z powrotem.
+    setMin(on) {
+      Store.set("ui_min", !!on);
+      const b = document.getElementById("ogx3-body"), s = document.getElementById("ogx3-strip"), m = document.getElementById("ogx3-min");
+      if (b) b.style.display = on ? "none" : "block";
+      if (s) s.style.display = on ? "none" : "block";
+      if (m) { m.textContent = on ? "▫" : "_"; m.title = on ? "Rozwiń panel" : "Zwiń panel"; }
+    },
+    setRow(id, cls, text) {
+      const el = document.getElementById(id); if (!el) return;
+      el.className = "row" + (cls ? " " + cls : "");
+      el.querySelector(".val").textContent = text;
+    },
+    renderJournal() {
+      const el = document.getElementById("ogx3-journal"); if (!el) return;
+      const j = (Store.get("journal", []) || []).slice(0, 25);
+      el.innerHTML = j.length
+        ? j.map(e => `<div class="jr ${e.kind}"><b>${new Date(e.at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })} ${e.kind}</b> ${String(e.msg).replace(/</g, "&lt;")}</div>`).join("")
+        : `<div class="jr">(pusto — bot nic jeszcze nie zgłosił)</div>`;
+    },
     renderStatus() {
       if (!this.el) return; const $ = (id) => document.getElementById(id);
-      $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#1e6b3a" : "#6b1e1e";
-      $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (auto-ratunek OFF)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
-      $("ogx3-deb").textContent = `Złom ${CFG.debris.enabled ? "ON" : "OFF"}`; $("ogx3-deb").style.background = CFG.debris.enabled ? "#1e6b3a" : "#1c2a44";
-      $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "#1c2a44";
-      { const a0 = Store.get("aster", {}) || {}; $("ogx3-aster-st").textContent = CFG.aster.enabled ? `zakresy: ${(a0.ranges || []).length}${a0.sentTo ? ` · ostatnio: [${a0.sentTo}]` : ""}` : ""; }
-      $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "#1c2a44";
-      { const n = nightWindow(CFG.fs, new Date()); $("ogx3-fs-st").textContent = CFG.fs.enabled ? (n.active ? `NOC — flota powinna być w powietrzu, zawrót ${new Date(n.endsAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : `dzień (${n.nowHM})`) : "wyłączony"; }
-      $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "#1c2a44";
-      $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;
-      { const s0 = Situation.load(); const b = Store.get("burst", null); const e = s0.slots?.expo, f = s0.slots?.fleet;
-        $("ogx3-expo-st").textContent = `sloty: expo ${e ? e.used + "/" + e.total : "?"}, floty ${f ? f.used + "/" + f.total : "?"}${b && b.sent ? ` · seria ${b.sent}/${b.waves}` : ""}`; }
-      $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`; $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`; $("ogx3-recon").textContent = `Rekonesans ${CFG.recon ? "ON" : "OFF"}`; $("ogx3-recon").style.background = CFG.recon ? "#1c2a44" : "#6b1e1e"; $("ogx3-topic").textContent = Notifier.topic();
       const s = Situation.load(); const now = Date.now();
       const th = (s.threats || []).filter(t => t.arriveAt > now);
-      const fleets = Object.entries(s.hangars || {}).filter(([, h]) => h.total > 0 && now - h.at < 48 * 3600e3).sort((a, b) => b[1].total - a[1].total).slice(0, 4).map(([k, h]) => `${k.replace("|", " ")}: ${h.total.toLocaleString("pl-PL")} (${new Date(h.at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })})`).join("\n  ");
-      const fl = (s.flights || []).map(f => `${f.kind} [${f.fromKey}]→[${f.toKey}] ${f.phase}${f.recallAt ? " zawrót " + new Date(f.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : ""}`).join("\n  ");
+      const atk = th.filter(t => t.attack);
+
+      // ── nagłówek i przełączniki ──────────────────────────────────────────
+      $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#27ae60" : "#e74c3c";
+      $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (bez ruchu)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
+      $("ogx3-recon").textContent = `Rekonesans ${CFG.recon ? "ON" : "OFF"}`; $("ogx3-recon").style.background = CFG.recon ? "rgba(255,255,255,.1)" : "#6b1e1e";
+      $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`;
+      $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`;
+      $("ogx3-deb").textContent = `Złom ${CFG.debris.enabled ? "ON" : "OFF"}`; $("ogx3-deb").style.background = CFG.debris.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;
+      $("ogx3-topic").textContent = Notifier.topic();
+
+      // ── PASEK STANU: pięć linii = pięć odpowiedzi bez klikania ───────────
+      const night = nightWindow(CFG.fs, new Date());
+      const aster = Store.get("aster", {}) || {};
+      const burst = Store.get("burst", null);
+      const eSl = s.slots?.expo, fSl = s.slots?.fleet;
       const m = Fly.mission();
-      $("ogx3-status").textContent = `Aktywne: ${s.active ? `${s.active.body} [${s.active.key}]` : "?"} · pary: ${Object.keys(s.pairs || {}).length} · pasek: ${s.bar ? `${s.bar.foreign} obcych${s.bar.barType ? " (" + s.bar.barType + ")" : ""}` : "?"}\nZagrożenia: ${th.length ? th.map(t => `${t.attack ? "ATAK" : "sonda"} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - now) / 1000)}s`).join("; ") : "brak"}\nHangary:\n  ${fleets || "(wejdź na Fleet)"}\nLoty: ${fl ? "\n  " + fl : "brak"}${m ? `\nMISJA: ${m.step} [${m.fromKey}]→[${m.toKey}]` : ""}${Session.lostRecently() ? "\nSESJA WYGASŁA" : ""}`;
+      const flights = (s.flights || []);
+
+      if (Session.lostRecently()) this.setRow("ogx3-r-def", "alert", "SESJA WYGASŁA — zaloguj się");
+      else if (!CFG.enabled) this.setRow("ogx3-r-def", "dim", "bot WYŁĄCZONY");
+      else if (atk.length) this.setRow("ogx3-r-def", "alert", atk.map(t => `ATAK → [${t.dst}] ${t.dstBody === "moon" ? "☾" : "◍"} ${Math.max(0, Math.round((t.arriveAt - now) / 1000))}s`).join(" · "));
+      else if (th.length) this.setRow("ogx3-r-def", "busy", `sonda → [${th[0].dst}] ${Math.max(0, Math.round((th[0].arriveAt - now) / 1000))}s`);
+      else this.setRow("ogx3-r-def", CFG.autoRescue ? "ok" : "busy", `czysto · ${CFG.autoRescue ? "auto-ratunek" : "obserwator"}`);
+      this.el.classList.toggle("alarm", atk.length > 0 || Session.lostRecently());
+      if (atk.length && Store.get("ui_min", false) === true) this.setMin(false);   // alarm rozwija panel
+
+      { const a0 = s.active;
+        const h = a0 ? Situation.fleetAt(s, a0.key, now) : null;
+        const air = flights.filter(f => ["launched", "recall_clicked", "recall_failed"].includes(f.phase));
+        if (m) this.setRow("ogx3-r-fleet", "busy", `MISJA ${m.step} [${m.fromKey}]→[${m.toKey}]`);
+        else if (air.length) this.setRow("ogx3-r-fleet", "busy", `w powietrzu: [${air[0].fromKey}]→[${air[0].toKey}] ${air[0].phase}`);
+        else if (h) this.setRow("ogx3-r-fleet", "ok", `[${a0.key}] ${h.body === "moon" ? "☾" : "◍"} ${h.total.toLocaleString("pl-PL")} szt.`);
+        else this.setRow("ogx3-r-fleet", "dim", a0 ? `[${a0.key}] — wejdź na Fleet` : "nie widzę planety"); }
+
+      { const st = `${eSl ? eSl.used + "/" + eSl.total : "?"} · fl ${fSl ? fSl.used + "/" + fSl.total : "?"}${burst && burst.sent ? ` · s${burst.sent}/${burst.waves}` : ""}`;
+        this.setRow("ogx3-r-expo", CFG.expo.enabled ? "ok" : "dim", CFG.expo.enabled ? st : `OFF · ${st}`);
+        $("ogx3-expo-st").textContent = `sloty: expo ${eSl ? eSl.used + "/" + eSl.total : "?"}, floty ${fSl ? fSl.used + "/" + fSl.total : "?"}${burst && burst.sent ? ` · seria ${burst.sent}/${burst.waves}` : ""}`;
+        $("ogx3-t-expo").textContent = CFG.expo.enabled ? (CFG.expo.discoverer40 ? "ON · 40 min" : "ON") : "OFF"; }
+
+      { const txt = CFG.aster.enabled ? `zakresy ${(aster.ranges || []).length}${aster.sentTo ? ` · ost. [${aster.sentTo}]` : ""}` : "wyłączony";
+        this.setRow("ogx3-r-min", CFG.aster.enabled ? "ok" : "dim", txt);
+        $("ogx3-aster-st").textContent = CFG.aster.enabled ? `zakresy: ${(aster.ranges || []).length}${aster.sentTo ? ` · ostatnio: [${aster.sentTo}]` : ""}` : "";
+        $("ogx3-t-eco").textContent = `${CFG.aster.enabled ? "M ON" : "M OFF"} · ${CFG.debris.enabled ? "Z ON" : "Z OFF"}`; }
+
+      { const fsTxt = !CFG.fs.enabled ? "wyłączony" : (night.active ? `NOC — zawrót ${new Date(night.endsAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : `dzień (${night.nowHM}) · ${CFG.fs.startHour}:00–${CFG.fs.endHour}:00`);
+        this.setRow("ogx3-r-fs", !CFG.fs.enabled ? "dim" : (night.active ? "busy" : "ok"), fsTxt);
+        $("ogx3-fs-st").textContent = fsTxt;
+        $("ogx3-t-fs").textContent = CFG.fs.enabled ? `${CFG.fs.startHour}–${CFG.fs.endHour}` : "OFF"; }
+
+      $("ogx3-t-def").textContent = CFG.autoRescue ? "auto-ratunek" : "obserwator";
+      { const j = (Store.get("journal", []) || [])[0];
+        $("ogx3-t-jr").textContent = j ? `${new Date(j.at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })} ${j.kind}` : "pusto";
+        if (this.el.querySelector('.sec[data-sec="jr"]')?.classList.contains("open")) this.renderJournal(); }
+
+      // ── szczegóły (zwinięte): pełny stan jak w 3.10.x ────────────────────
+      const fleetsTxt = Object.entries(s.hangars || {}).filter(([, h]) => h.total > 0 && now - h.at < 48 * 3600e3).sort((a, b) => b[1].total - a[1].total).slice(0, 4).map(([k, h]) => `${k.replace("|", " ")}: ${h.total.toLocaleString("pl-PL")} (${new Date(h.at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })})`).join("\n  ");
+      const fl = flights.map(f => `${f.kind} [${f.fromKey}]→[${f.toKey}] ${f.phase}${f.recallAt ? " zawrót " + new Date(f.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : ""}`).join("\n  ");
+      $("ogx3-status").textContent = `Aktywne: ${s.active ? `${s.active.body} [${s.active.key}]` : "?"} · pary: ${Object.keys(s.pairs || {}).length} · pasek: ${s.bar ? `${s.bar.foreign} obcych${s.bar.barType ? " (" + s.bar.barType + ")" : ""}` : "?"}\nZagrożenia: ${th.length ? th.map(t => `${t.attack ? "ATAK" : "sonda"} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - now) / 1000)}s`).join("; ") : "brak"}\nHangary:\n  ${fleetsTxt || "(wejdź na Fleet)"}\nLoty: ${fl ? "\n  " + fl : "brak"}${m ? `\nMISJA: ${m.step} [${m.fromKey}]→[${m.toKey}]` : ""}${Session.lostRecently() ? "\nSESJA WYGASŁA" : ""}`;
     },
-    renderLog() { const el = document.getElementById("ogx3-log"); if (!el) return; const col = { error: "#ff7b7b", warn: "#ffd56b", success: "#7bff9b", info: "#dfe8f5" }; el.innerHTML = logEntries.slice(0, 150).map(e => `<div style="color:${col[e.type] || "#dfe8f5"}">${e.time} ${e.msg.replace(/</g, "&lt;")}</div>`).join(""); },
+    renderLog() {
+      const el = document.getElementById("ogx3-log");
+      const tail = document.getElementById("ogx3-t-log");
+      if (tail) tail.textContent = logEntries[0] ? `${logEntries[0].time} ${logEntries[0].msg}`.slice(0, 42) : "pusto";
+      if (!el) return;
+      const col = { error: "#ff7b7b", warn: "#ffd56b", success: "#7bff9b", info: "#dfe8f5" };
+      el.innerHTML = logEntries.slice(0, 150).map(e => `<div style="color:${col[e.type] || "#dfe8f5"}">${e.time} ${e.msg.replace(/</g, "&lt;")}</div>`).join("");
+    },
   };
 
   // ═══ START ══════════════════════════════════════════════════════════════
   // Eksport do testów (node): globalThis.OGX3 gdy brak DOM.
   if (typeof document === "undefined" || typeof window === "undefined") { globalThis.OGX3 = { decide, Situation, Bar, Rows, DEFAULTS }; return; }
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar }; } catch {}
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI }; } catch {}
   Store.set("last_load", Date.now());
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.

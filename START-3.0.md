@@ -12,11 +12,20 @@ Profil gracza: **ODKRYWCA** (ekspedycje 40 min ustawione domyślnie).
 ## Pierwszy dzień — dokładna kolejność
 | krok | co robisz | po czym poznasz, że OK |
 |---|---|---|
-| 1 | Zostaw **Obserwator** (auto-ratunek OFF), całą ekonomię OFF | panel: „Obserwator (auto-ratunek OFF)" |
+| 1 | Zostaw **Obserwator** (auto-ratunek OFF), całą ekonomię OFF | pasek stanu: 🛡 Obrona — „czysto · obserwator" |
 | 2 | Graj normalnie; zajrzyj raz na **Fleet** i raz na **Galaxy** | panel: „KALIBRACJA: 4/4" |
 | 3 | **Kopiuj raport startowy** → wklej Claude'owi | potwierdzę parsery albo poprawię selektory |
 | 4 | Po potwierdzeniu: **Auto-ratunek ON**, klik **TEST: atak na księżyc/planetę** | w logu pełna sekwencja lotu i zawrotu |
 | 5 | Dopiero potem włączaj ekonomię: **Ekspedycje** → (gdy będą minery) **Mining** → **Złom** → **FS nocny** | każdy moduł loguje, co robi i czego mu brakuje |
+
+## Panel (v3.11.0 — wygląd jak na Athenie)
+Szerokość **232 px**, więc kończy się przed menu gry (Overview, Resources…) i niczego nie zasłania.
+- **Pasek stanu** na górze — pięć linii, pięć odpowiedzi bez klikania: Obrona / Flota / Ekspedycje / Mining / Fleet Save. Kolor niesie znaczenie: zielony = spokój, pomarańczowy = praca, czerwony = alarm.
+- **Ustawienia siedzą w zwiniętych sekcjach** (klik w tytuł rozwija). Co jest otwarte, przeżywa przeładowanie.
+- **Nagłówek jest przeciągalny**, „_” zwija panel do samego nagłówka. Pozycja i zwinięcie zapisują się w GM storage.
+- **Atak rozwija zwinięty panel** i maluje go na czerwono — obrony nie da się przegapić przez schowany panel.
+- **RATUJ FLOTĘ TERAZ / WRÓĆ NA BAZĘ** są zawsze widoczne (nie chowają się w sekcji).
+- **Dziennik obrony** — ostatnie 25 zdarzeń (ATAK / RATUNEK / POWRÓT / BŁĄD) w panelu, nie tylko w pushu.
 
 ## Moduły (wszystko sterowane z panelu)
 | moduł | co robi | warunki, których pilnuje sam |
@@ -55,7 +64,8 @@ Profil gracza: **ODKRYWCA** (ekspedycje 40 min ustawione domyślnie).
 
 ## Testy
 ```
-node test3-all.js        # 164 asercje + 77 sprawdzeń E2E + składnia; sprawdzaj `echo $?` BEZ pipe'a
+node test3-all.js        # 164 asercje + 77 sprawdzeń E2E + 19 sprawdzeń panelu + składnia; sprawdzaj `echo $?` BEZ pipe'a
+#                          wymaga: npm install jsdom  (w katalogu repo)
 ```
 `test3-e2e.js` uruchamia **cały kod bota na sztucznej grze w jsdom** — **24 scenariusze**: pełna ewakuacja od wykrycia ataku do „Send fleet", zawrót floty i domknięcie lotu po powrocie, FS nocny (wyjście wieczorem + zawrót o świcie), ślepy alarm z paska i pasek nieświeży, utrata sesji, strona błędu gry, dwa ataki naraz, atak przerywający ekonomię, potknięcie formularza, przejęcie planety przez operatora w trakcie misji, nieaktualny hangar, formularz bez suwaka prędkości, mining, złom, dwie karty, przeładowania strony w środku misji.
 Macierz `test3-decide.js` obejmuje: obronę (27 scenariuszy, w tym wszystkie incydenty 27.08 i regresje z audytu 28.08), FS nocny, okno nocne, ekspedycje z serią, mining, złom, humanizera i strażników „ekonomia nie blokuje obrony".
