@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.15.0
+// @version      3.16.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.15.0";
+  const VERSION = "3.16.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -660,8 +660,18 @@
       const h = CFG.human || {};
       if (!h.breaks) return false;
       const now = Date.now();
+      // v3.16.0 (29.08 08:20): przerwa „po godzinie pracy" wypadała 13 SEKUND po
+      // włączeniu bota rano — bo termin następnej przerwy pochodził z wczorajszego
+      // wieczora, a przez noc bot był wyłączony. Przerwa ma imitować człowieka,
+      // który się zmęczył pracą; po przestoju nie ma z czego odpoczywać.
+      const idle = now - (Store.get("eco_last", 0) || 0);
+      Store.set("eco_last", now);
       let next = Store.get("break_next", 0) || 0;
-      if (!next) { Store.set("break_next", now + jitter(h.breakEveryMinMin, h.breakEveryMaxMin) * 60e3); return false; }
+      if (!next || (now >= next && idle > 20 * 60e3)) {
+        Store.set("break_next", now + jitter(h.breakEveryMinMin, h.breakEveryMaxMin) * 60e3);
+        if (next && !Once.said("break_stale", 60 * 60e3)) log("[PRZERWA] ekonomia stała dłużej niż 20 min (bot wyłączony) — zaległa przerwa przepada, licznik startuje od nowa.", "info");
+        return false;
+      }
       if (now < next) return false;
       const len = jitter(h.breakLenMinMin, h.breakLenMaxMin) * 60e3;
       Store.set("break_until", now + len);
@@ -2038,7 +2048,13 @@
       $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
       $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
-      $("ogx3-expo").onclick = () => { CFG.expo.enabled = !CFG.expo.enabled; saveCfg(); log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-expo").onclick = () => {
+        CFG.expo.enabled = !CFG.expo.enabled; saveCfg();
+        // v3.16.0: włączenie modułu ręcznie kasuje trwającą przerwę kawową — operator
+        // właśnie powiedział, czego chce, a przerwa i tak dotyczy tylko ekonomii.
+        if (CFG.expo.enabled && Human.onBreak()) { Store.set("break_until", 0); Store.set("break_next", Date.now() + jitter(CFG.human.breakEveryMinMin, CFG.human.breakEveryMaxMin) * 60e3); log("[PRZERWA] przerwana ręcznie — włączyłeś ekspedycje.", "info"); }
+        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus();
+      };
       $("ogx3-disc").onclick = () => { CFG.expo.discoverer40 = !CFG.expo.discoverer40; saveCfg(); log(`Odkrywca (40 min) ${CFG.expo.discoverer40 ? "ON" : "OFF — ekspedycje na " + CFG.expo.holdingHours + " h"}`, "info"); this.renderStatus(); };
       $("ogx3-waves").value = String(CFG.expo.waves); $("ogx3-waves").onchange = (e) => { CFG.expo.waves = Math.max(1, parseInt(e.target.value) || 1); saveCfg(); Store.del("burst"); log(`Fale ekspedycji: ${CFG.expo.waves} (seria liczona od nowa)`, "info"); };
       $("ogx3-slotres").value = String(CFG.expo.slotReserve); $("ogx3-slotres").onchange = (e) => { CFG.expo.slotReserve = Math.max(0, parseInt(e.target.value) || 0); saveCfg(); };

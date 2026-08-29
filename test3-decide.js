@@ -456,6 +456,7 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("minery: loty równoległe zamiast czekania na powrót", /parallel: true/.test(src) && /freeSlots\(s\)/.test(src) && /slotReserve/.test(src));
   check("minery: pojemność ładowni czytana PO ukośniku (0 / 1.000.000)", /cargo\\s\*space\[\^\\d\]\{0,20\}\[\\d \.,\]\*\\\//.test(src));
   check("minery: zero w konfiguracji znaczy zero, a nie wartosc domyslna (?? zamiast ||)", /scanGapSec \?\? 6/.test(src) && /gapSec \?\? 20/.test(src));
+  check("przerwa kawowa nie odpala sie po przestoju (zalegly termin przepada)", /idle > 20 \* 60e3/.test(src) && /eco_last/.test(src));
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
   check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));

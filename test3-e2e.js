@@ -930,6 +930,33 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     if (process.env.DIAG29) { console.log("   STAN ASTER:", game_store_dump(g)); console.log("   WSZYSTKIE LOGI:"); logs.slice(0, 25).forEach(m => console.log("     ", m.slice(0, 160))); console.log("   NAWIGACJE:", g.navigations.slice(0, 10)); }
   }
 
+  console.log("\n── 30. PRZERWA KAWOWA nie może wypaść zaraz po włączeniu bota ──");
+  {
+    // 29.08 08:20:12 — właściciel włączył ekspedycje o 08:19, a 13 sekund później
+    // bot zameldował „ekonomia pauzuje na ~13 min". Termin przerwy pochodził
+    // z poprzedniego wieczora (bot był w nocy wyłączony), więc zaległa przerwa
+    // odpaliła się natychmiast. Przerwa imituje zmęczenie pracą — po przestoju
+    // nie ma z czego odpoczywać.
+    const cfg = { autoRescue: true, recon: true, reconMs: 300000, bonus: { enabled: false },
+      expo: { enabled: true, waves: 1 }, aster: { enabled: false },
+      human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: true } };
+
+    const g = new Game({ hangars: { "1:100:5|moon": { LARGE_CARGO: 20 } } });
+    g.store.set("genesis.ogamex.net:ogx3_break_next", JSON.stringify(Date.now() - 60e3));   // przerwa „zaległa" z wczoraj
+    g.store.set("genesis.ogamex.net:ogx3_eco_last", JSON.stringify(Date.now() - 60 * 60e3)); // ekonomia stała godzinę
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 2 });
+    check("po nocnym przestoju bot NIE zaczyna od przerwy", !logs.some(m => /ekonomia pauzuje/.test(m)), logs.filter(m => /PRZERWA|EXPO/.test(m)).slice(0, 5).join(" | "));
+    check("i mówi, że zaległa przerwa przepada", logs.some(m => /zaległa przerwa przepada/.test(m)), logs.filter(m => /PRZERWA/.test(m)).slice(0, 4).join(" | "));
+    check("ekspedycja poleciała zamiast czekać kwadrans", g.sent.some(x => /16$/.test(String(x.to || ""))), JSON.stringify(g.sent.map(x => x.to)));
+
+    // kontrola: gdy ekonomia PRACOWAŁA i termin minął, przerwa ma normalnie wypaść
+    const g2 = new Game({ hangars: { "1:100:5|moon": { LARGE_CARGO: 20 } } });
+    g2.store.set("genesis.ogamex.net:ogx3_break_next", JSON.stringify(Date.now() - 60e3));
+    g2.store.set("genesis.ogamex.net:ogx3_eco_last", JSON.stringify(Date.now() - 60e3));    // pracowała przed chwilą
+    const r2 = await run(g2, { cfg, loads: 12, ticksPerLoad: 2 });
+    check("po godzinie pracy przerwa nadal działa", r2.logs.some(m => /ekonomia pauzuje/.test(m)), r2.logs.filter(m => /PRZERWA/.test(m)).slice(0, 4).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
