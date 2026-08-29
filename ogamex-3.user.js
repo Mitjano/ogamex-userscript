@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.19.0
+// @version      3.20.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.19.0";
+  const VERSION = "3.20.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2290,7 +2290,27 @@
         else if (h) this.setRow("ogx3-r-fleet", "ok", `[${a0.key}] ${h.body === "moon" ? "☾" : "◍"} ${h.total.toLocaleString("pl-PL")} szt.`);
         else this.setRow("ogx3-r-fleet", "dim", a0 ? `[${a0.key}] — wejdź na Fleet` : "nie widzę planety"); }
 
-      { const st = `${eSl ? eSl.used + "/" + eSl.total : "?"} · fl ${fSl ? fSl.used + "/" + fSl.total : "?"}${burst && burst.sent ? ` · s${burst.sent}/${burst.waves}` : ""}`;
+      // v3.20.0: Athena pokazywała „następna fala za ~Ns" — bez tego nie wiadomo,
+      // czy bot czeka, czy stoi. Powód bierzemy z tej samej funkcji, która decyduje.
+      const expoNext = (() => {
+        if (!CFG.expo.enabled) return "OFF";
+        try {
+          const why = Human.economyAllowed(s);
+          if (why) return why.startsWith("przerwa") ? why : why.slice(0, 22);
+          const p = expoPlan(s, CFG, now, burst);
+          if (p && p.skip) {
+            if (/odstęp między falami/.test(p.skip) && burst && burst.lastSendAt) {
+              const left = Math.max(0, (burst.lastSendAt + (burst.gapMs || 0)) - now);
+              return `następna za ${Math.ceil(left / 1000)} s`;
+            }
+            if (/czekam na powroty|ekspedycje \d/.test(p.skip)) return "czekam na powroty";
+            if (/rekonesans/.test(p.skip)) return "czekam na odczyt hangaru";
+            return p.skip.slice(0, 26);
+          }
+          return "fala gotowa";
+        } catch { return ""; }
+      })();
+      { const st = `${eSl ? eSl.used + "/" + eSl.total : "?"} · fl ${fSl ? fSl.used + "/" + fSl.total : "?"}${expoNext ? " · " + expoNext : ""}`;
         this.setRow("ogx3-r-expo", CFG.expo.enabled ? "ok" : "dim", CFG.expo.enabled ? st : `OFF · ${st}`);
         $("ogx3-expo-st").textContent = `sloty: expo ${eSl ? eSl.used + "/" + eSl.total : "?"}, floty ${fSl ? fSl.used + "/" + fSl.total : "?"}${burst && burst.sent ? ` · seria ${burst.sent}/${burst.waves}` : ""}`;
         $("ogx3-t-expo").textContent = CFG.expo.enabled ? (CFG.expo.discoverer40 ? "ON · 40 min" : "ON") : "OFF"; }
@@ -2341,10 +2361,15 @@
     const fresh = nl && Date.now() - nl.at < 20e3;
     log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${location.pathname}${location.search || ""}${fresh ? ` ← bot: ${nl.why}` : " ← otwarte ręcznie"}`, "info");
     const loads = (Store.get("loads", []) || []).filter(x => Date.now() - (x.t || x) < 60e3).map(x => (typeof x === "number" ? { t: x, bot: false } : x));
-    loads.push({ t: Date.now(), bot: !!fresh }); Store.set("loads", loads.slice(-20));
-    const byBot = loads.filter(x => x.bot).length;
-    if (byBot >= 4 && !Once.said("tempo", 60e3)) {
-      log(`[TEMPO] ${byBot} z ${loads.length} przeładowań w ostatniej minucie zrobił BOT (ostatnie: ${nl ? `${nl.why} → ${nl.to}` : "?"}). To wygląda na pętlę — pokaż tę linię Claude'owi.`, "warn");
+    loads.push({ t: Date.now(), bot: !!fresh, why: fresh ? String(nl.why || "") : "" }); Store.set("loads", loads.slice(-20));
+    // v3.20.0: normalna wysyłka floty to 4 przeładowania pod rząd (przełącz ciało →
+    // formularz → wysyłka → potwierdzenie) i alarm zapalał się na NIEJ (29.08 11:05).
+    // Pętla to nie „dużo nawigacji", tylko TEN SAM powód w kółko.
+    const bots = loads.filter(x => x.bot);
+    const same = bots.reduce((m, x) => { const k = String(x.why || "").slice(0, 28); m[k] = (m[k] || 0) + 1; return m; }, {});
+    const worst = Object.entries(same).sort((a, b) => b[1] - a[1])[0];
+    if (worst && worst[1] >= 4 && !Once.said("tempo", 60e3)) {
+      log(`[TEMPO] ten sam powód ${worst[1]}× w ostatniej minucie: „${worst[0]}". To wygląda na pętlę — pokaż tę linię Claude'owi.`, "warn");
     }
     if (!fresh) Store.set("manual_at", Date.now());   // operator sam klika po grze
   }
