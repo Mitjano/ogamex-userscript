@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.17.0
+// @version      3.17.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.17.0";
+  const VERSION = "3.17.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1309,6 +1309,11 @@
     bumpNav(m) { m.navs = (m.navs || 0) + 1; Store.set("mission", m); },
     async tick() {
       const m = this.mission(); if (!m) return;
+      // v3.17.1: misja sprzed dłuższej przerwy (wyłączony bot, aktualizacja skryptu)
+      // to nie jest NIEUDANA próba — to śmieć po poprzedniej sesji. Karencja 3 min
+      // na tę trasę kosztowała wtedy operatora kolejne minuty czekania na ekspedycję
+      // (29.08 09:22: „przerwany: 5 min bez potwierdzenia" → „trasa w karencji").
+      if (Date.now() - m.startedAt > 15 * 60e3) { Store.del("mission"); log(`[LOT] porzucona misja sprzed ${Math.round((Date.now() - m.startedAt) / 60000)} min (bot był wyłączony) — sprzątam bez karencji.`, "warn"); return; }
       if (Date.now() - m.startedAt > 5 * 60e3) return this.abort("5 min bez potwierdzenia wysyłki");
       if ((m.navs || 0) >= this.NAV_MAX) return this.abort(`${this.NAV_MAX} nawigacji bez otwarcia formularza — pętla przełączania ciał (krok „${m.step}", cel ${this.url(m)})`);
       try {

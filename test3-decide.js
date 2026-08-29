@@ -460,6 +460,7 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("przyciski formularza szukane TAKZE poza #content (jak w 2.x)", /exact\(inArea\) \|\| exact\(anywhere\)/.test(src));
   check("brak przycisku vs przycisk wylaczony to dwa rozne komunikaty", /BYŁ na stronie, ale przez/.test(src) && /NIE MA na stronie/.test(src));
   check("nieudane szukanie zrzuca liste KANDYDATOW", /KANDYDACI/.test(src));
+  check("misja sprzed przerwy sprzatana BEZ karencji trasy", /porzucona misja sprzed/.test(src) && /15 \* 60e3/.test(src));
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
   check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));
