@@ -64,6 +64,16 @@ const IDS = "on auto push voice recon deb aster fs fs-a fs-b expo disc waves slo
 const missing = IDS.filter(i => !$("ogx3-" + i));
 ck("wszystkie pola/przyciski z 3.10.x na miejscu", missing.length === 0, "brakuje: " + missing.join(", "));
 
+// v3.32.0: cisza nocna i przerwy kawowe muszą dać się wyłączyć BEZ grzebania
+// w GM storage (pytanie właściciela 29.08: „jak wyłączyć nocną przerwę?").
+const RYTM = "quiet quiet-a quiet-b breaks human-st".split(" ");
+const brakRytm = RYTM.filter(i => !$("ogx3-" + i));
+ck("rytm człowieka (cisza nocna + przerwy) sterowalny z panelu", brakRytm.length === 0, "brakuje: " + brakRytm.join(", "));
+$("ogx3-quiet").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+ck("klik wyłącza ciszę nocną i zapisuje to w configu", /"enabled":false/.test(JSON.stringify(JSON.parse(store.get("genesis.ogamex.net:ogx3_cfg") || "{}").quietHours || {})), String(store.get("genesis.ogamex.net:ogx3_cfg")).slice(0, 200));
+$("ogx3-breaks").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+ck("klik wyłącza przerwy kawowe i kasuje trwającą", JSON.parse(store.get("genesis.ogamex.net:ogx3_cfg") || "{}").human.breaks === false && Number(store.get("genesis.ogamex.net:ogx3_break_until")) === 0, String(store.get("genesis.ogamex.net:ogx3_break_until")));
+
 // alarm: czerwona ramka + rozwinięcie zwiniętego panelu
 $("ogx3-min").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));   // zwiń
 const api = w.__OGX3;

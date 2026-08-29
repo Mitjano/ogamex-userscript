@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.31.0
+// @version      3.32.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.31.0";
+  const VERSION = "3.32.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2269,6 +2269,9 @@
             <div class="line"><button id="ogx3-moon" class="ogx3-btn"></button> ≤ <input id="ogx3-moon-share" style="width:26px" />% metalu</div>
             <div class="note" id="ogx3-moon-st"></div>
             <div class="note" id="ogx3-aster-st"></div>
+            <div class="line"><button id="ogx3-quiet" class="ogx3-btn"></button> od <input id="ogx3-quiet-a" style="width:24px" />:00 do <input id="ogx3-quiet-b" style="width:24px" />:00</div>
+            <div class="line"><button id="ogx3-breaks" class="ogx3-btn"></button></div>
+            <div class="note" id="ogx3-human-st"></div>
           </div></div>
           <div class="sec" data-sec="jr"><div class="sec-t"><span><span class="arr">▸</span> Dziennik obrony</span><span class="tail" id="ogx3-t-jr"></span></div><div class="sec-b"><div id="ogx3-journal"></div></div></div>
           <div class="sec" data-sec="det"><div class="sec-t"><span><span class="arr">▸</span> Szczegóły stanu</span></div><div class="sec-b"><div id="ogx3-status"></div></div></div>
@@ -2343,6 +2346,15 @@
         CFG.expo.launchFrom = { galaxy: +m[1], system: +m[2], position: +m[3] }; saveCfg();
         log(`[EXPO] ekspedycje startują odtąd z [${m[1]}:${m[2]}:${m[3]}] — niezależnie od tego, gdzie klikasz.`, "info");
       };
+      // v3.32.0 (pytanie właściciela 29.08: „jak wyłączyć nocną przerwę?"):
+      // cisza nocna i przerwy kawowe siedziały wyłącznie w kodzie — jedyną drogą
+      // do ich zdjęcia było grzebanie w GM storage. Teraz obie są w panelu.
+      $("ogx3-quiet").onclick = () => { CFG.quietHours.enabled = !CFG.quietHours.enabled; saveCfg(); log(`Cisza nocna ekonomii ${CFG.quietHours.enabled ? `ON (${CFG.quietHours.startHour}:00–${CFG.quietHours.endHour}:00 ±20 min)` : "OFF — ekonomia pracuje całą dobę"}`, "info"); this.renderStatus(); };
+      $("ogx3-quiet-a").value = String(CFG.quietHours.startHour); $("ogx3-quiet-a").onchange = (e) => { CFG.quietHours.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
+      $("ogx3-quiet-b").value = String(CFG.quietHours.endHour); $("ogx3-quiet-b").onchange = (e) => { CFG.quietHours.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 5)); saveCfg(); this.renderStatus(); };
+      // Wyłączenie przerw kasuje także tę TRWAJĄCĄ — inaczej „OFF" zaczynałoby
+      // działać dopiero po kwadransie i wyglądało jak niedziałający przycisk.
+      $("ogx3-breaks").onclick = () => { CFG.human.breaks = !CFG.human.breaks; Store.set("break_until", 0); Store.set("break_next", 0); saveCfg(); log(`Przerwy „kawowe" ${CFG.human.breaks ? `ON (co ${CFG.human.breakEveryMinMin}–${CFG.human.breakEveryMaxMin} min na ${CFG.human.breakLenMinMin}–${CFG.human.breakLenMaxMin} min)` : "OFF — ekonomia bez przerw"}`, "info"); this.renderStatus(); };
       $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
       $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
@@ -2441,6 +2453,11 @@
       $("ogx3-moon").textContent = `Księżyce ${CFG.moon.enabled ? "ON" : "OFF"}`; $("ogx3-moon").style.background = CFG.moon.enabled ? "#5a4a1e" : "rgba(255,255,255,.1)";
       { const s1 = Situation.load(); const bez = Object.entries(s1.pairs || {}).filter(([, p]) => !p.hasMoon).length;
         $("ogx3-moon-st").textContent = CFG.moon.enabled ? `planet bez księżyca: ${bez} · WYDAJE METAL` : `planet bez księżyca: ${bez} (moduł wyłączony)`; }
+      $("ogx3-quiet").textContent = `Cisza nocna ${CFG.quietHours.enabled ? "ON" : "OFF"}`; $("ogx3-quiet").style.background = CFG.quietHours.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-breaks").textContent = `Przerwy ${CFG.human.breaks ? "ON" : "OFF"}`; $("ogx3-breaks").style.background = CFG.human.breaks ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-human-st").textContent = (CFG.quietHours.enabled || CFG.human.breaks)
+        ? `ekonomia śpi: ${[CFG.quietHours.enabled ? `${CFG.quietHours.startHour}:00–${CFG.quietHours.endHour}:00` : null, CFG.human.breaks ? (Human.onBreak() ? `przerwa (~${Human.breakLeftMin()} min)` : "przerwy co " + CFG.human.breakEveryMinMin + "–" + CFG.human.breakEveryMaxMin + " min") : null].filter(Boolean).join(" · ")} (obrona czuwa zawsze)`
+        : "ekonomia pracuje całą dobę, bez przerw";
       $("ogx3-fs").textContent = `FS ${CFG.fs.enabled ? "ON" : "OFF"}`; $("ogx3-fs").style.background = CFG.fs.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;

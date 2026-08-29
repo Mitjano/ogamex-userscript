@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.31.0, ~2325 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.32.0, ~2335 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
