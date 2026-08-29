@@ -127,7 +127,14 @@
     // ── LIMITY TEMPA (bezpieczeństwo konta) ──
     maxNavPerHour: 240,     // sufit nawigacji/h dla EKONOMII (obrona nigdy nie liczona)
     quietHours: { enabled: true, startHour: 23, endHour: 5 },   // cisza ekonomii, niezależna od FS
-    recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
+    // v3.25.0: Athena NIE MIAŁA cyklicznego rekonesansu — FleetRecon.scan() odpalał
+    // się wyłącznie wtedy, gdy bot i tak był na stronie floty (przy wysyłce, ratunku,
+    // FS). Objazd planet to wynalazek 3.0 i to on wkurzał operatora. Patrol domyślnie
+    // WYŁĄCZONY; hangar bierze się z trzech naturalnych źródeł:
+    //   1. każda Twoja wizyta na /fleet (odczyt za darmo),
+    //   2. ekspedycja/mining przed wysyłką dociąga hangar w TLE (bez nawigacji),
+    //   3. alarm — wtedy bot ma prawo wejść na atakowane ciało (limit 3 prób).
+    recon: false,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
     reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru Z FLOTĄ, zanim pójdziemy sprawdzić
     // v3.18.0: ciało, na którym ostatnio NIE BYŁO floty, nie wymaga częstych wizyt —
     // interesujące staje się dopiero, gdy coś tam wyląduje, a to bot i tak widzi po
@@ -318,6 +325,37 @@
 
   // Hangar na stronie /fleet: [data-ship-type][data-ship-quantity].
   const Hangar = {
+    // v3.24.0 (właściciel 29.08: „nie chcę, żeby przeskakiwało po planetach"):
+    // hangar da się odczytać BEZ ruszania strony operatora — pasek planet ma linki
+    // z identyfikatorem planety (?planet=UUID), więc pobieramy tę stronę fetchem
+    // i parsujemy w pamięci. Nawigacja zostaje wyłącznie jako awaryjne wyjście,
+    // gdy fork odda coś, czego nie umiemy przeczytać (wtedy: zrzut do logu).
+    async scanRemote(k, body) {
+      const el = PlanetBar.anchor(k, body);
+      const href = el && (el.getAttribute("href") || "");
+      const m = href && href.match(/[?&]planet=([^&#"']+)/i);   // fork używa UUID, ale nie zakładamy formatu
+      if (!m) return null;
+      try {
+        const r = await fetchT(`/fleet?planet=${m[1]}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+        if (!r.ok) return null;
+        const html = await r.text();
+        if (looksLoggedOut(r, html)) { Session.lost(); return null; }
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const ships = [...doc.querySelectorAll("[data-ship-type]")].map(e => ({ type: e.dataset.shipType, qty: parseInt(e.dataset.shipQuantity || "0") || 0 })).filter(x => x.type);
+        const txt = doc.body ? doc.body.textContent : "";
+        const shipsStep = ships.length > 0 || /no ships|there are no ships|brak statk/i.test(txt) || !!doc.querySelector("#btn-next-fleet2, .ship-item");
+        if (!shipsStep) {
+          if (!Once.said("scanremote_dom", 6 * 3600e3)) log(`[REKONESANS DOM] pobrana strona floty [${k}] nie wygląda na krok wyboru statków — wracam do wchodzenia na stronę. Fragment: ${txt.replace(/\s+/g, " ").slice(0, 300)}`, "warn");
+          return null;
+        }
+        const total = ships.reduce((x, y) => x + y.qty, 0);
+        const fm = txt.match(/Fleets:\s*(\d+)\s*\/\s*(\d+)/);
+        const em = txt.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
+        if (fm || em) { const s0 = Situation.load(); s0.slots = { fleet: fm ? { used: +fm[1], total: +fm[2] } : (s0.slots?.fleet || null), expo: em ? { used: +em[1], total: +em[2] } : (s0.slots?.expo || null), at: Date.now() }; Situation.save(s0); }
+        Situation.noteHangar({ key: k, body, total, ships, at: Date.now(), slots: fm ? { used: +fm[1], total: +fm[2] } : null });
+        return { key: k, body, total };
+      } catch (e) { return null; }
+    },
     scan() {
       if (page() !== "fleet") return null;
       const a = PlanetBar.active();
@@ -1011,7 +1049,21 @@
       const now = Date.now();
       const b = this.burst();
       const p = expoPlan(s, CFG, now, b);
-      if (p.skip) { if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info"); return false; }
+      if (p.skip) {
+        // v3.25.0: „hangar nieznany/stary" to jedyny skip, który bot może usunąć SAM —
+        // i robi to po cichu (fetch strony floty tej planety), bez przełączania Ci strony.
+        if (/hangar .* nieznany\/stary/.test(p.skip) && !Once.said("expo_pull", 60e3)) {
+          const hk = CFG.expo.launchFrom ? key(CFG.expo.launchFrom) : (s.active && s.active.key);
+          const pr = hk ? (s.pairs || {})[hk] : null;
+          const hb = (pr && pr.hasMoon && (s.hangars[`${hk}|moon`]?.total > 0)) ? "moon" : "planet";
+          if (hk) {
+            const got = await Hangar.scanRemote(hk, hb);
+            if (got) { log(`[EXPO] dociągnąłem hangar [${hk}] ${hb} w tle (${got.total.toLocaleString("pl-PL")} szt.) — wysyłka w następnym przebiegu.`, "info"); return false; }
+          }
+        }
+        if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info");
+        return false;
+      }
       const link = ExpoLink.get();
       if (!link || !link.mission) {
         // v3.9.2 (E2E): bot czekał, aż operator sam wejdzie na galaktykę. Teraz idzie
@@ -1845,6 +1897,10 @@
         // inaczej nigdy nie dowie się, gdzie jest flota, i obrona zostaje ślepa.
         if (allowed.size === 0 || allowed.has(`${a.key}|${a.body}`)) {
           Store.set("recon", { ...st, at: now });
+          // v3.24.0: najpierw próba CICHA — pobranie strony floty w tle, bez ruszania
+          // strony, na której siedzi operator.
+          const quiet = await Hangar.scanRemote(a.key, a.body);
+          if (quiet) { log(`[REKONESANS] hangar ${a.body} [${a.key}] odczytany w tle (${quiet.total.toLocaleString("pl-PL")} szt.) — bez przełączania strony.`, "info"); return false; }
           log(`[REKONESANS] sprawdzam hangar ${a.body} [${a.key}] — bez tego nie wiem, gdzie stoi flota.`, "info");
           const [g, sy, po] = a.key.split(":");
           Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `rekonesans hangaru ${a.body} [${a.key}]`);
@@ -1858,6 +1914,8 @@
       const el = PlanetBar.anchor(k, b);
       if (!el) { Store.set("recon", { at: now, idx: (st.idx || 0) + 1 }); return false; }
       Store.set("recon", { at: now, idx: (st.idx || 0) + 1 });
+      const quiet2 = await Hangar.scanRemote(k, b);
+      if (quiet2) { log(`[REKONESANS] hangar ${b} [${k}] odczytany w tle (${quiet2.total.toLocaleString("pl-PL")} szt.) — bez przełączania planety.`, "info"); return false; }
       log(`[REKONESANS] przechodzę na ${b} [${k}], żeby odczytać hangar.`, "info");
       el.click();
       return true;

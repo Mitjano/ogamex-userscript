@@ -83,12 +83,13 @@ class Game {
   loginHtml() { return `<form id="login" action="/auth/login"><input type="password" name="password"><button>Login</button></form>`; }
   hangarOf() { return this.hangars[`${this.active.key}|${this.active.body}`] || {}; }
   // ── HTML poszczególnych stron (kształt wzorowany na forku) ──
+  uuidOf(p) { return p.uuid || ("uuid-" + p.key); }
   planetBarHtml() {
     return `<ul id="planetList">` + this.pairs.map(p => {
       const sel = p.key === this.active.key;
       const pSel = sel && this.active.body === "planet" ? " selected" : "";
       const mSel = sel && this.active.body === "moon" ? " selected" : "";
-      return `<li><a href="#" class="planet-select${pSel}" data-key="${p.key}">${p.name} [${p.key}]</a>` +
+      return `<li><a href="/fleet?planet=${this.uuidOf(p)}" class="planet-select${pSel}" data-key="${p.key}">${p.name} [${p.key}]</a>` +
              (p.moon ? `<a href="#" class="moon-select${mSel}" data-key="${p.key}">Moon</a>` : "") + `</li>`;
     }).join("") + `</ul>`;
   }
@@ -188,6 +189,12 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   w.fetch = async (u) => ({ ok: true, redirected: !!game.loggedOut, url: game.loggedOut ? "/auth/login" : u, status: 200,
     text: async () => game.loggedOut ? game.loginHtml()
       : u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}${game.ownRowsHtml(true)}</tbody></table>`
+      : /^\/fleet\?planet=/.test(String(u)) ? (() => {
+          const id = String(u).split("planet=")[1];
+          const p = game.pairs.find(x => (x.uuid || ("uuid-" + x.key)) === id) || game.pairs[0];
+          const prev = game.active; game.active = { key: p.key, body: "planet" };
+          const html = game.fleetPageHtml(); game.active = prev; return html;
+        })()
       : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
       : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
@@ -813,7 +820,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:9", body: "planet" },     // ekspedycja startuje z KOLONII, dom to [1:100:5]
     });
     g.fleetUrlHijack = true;
-    const { logs } = await run(g, { cfg, loads: 40, ticksPerLoad: 2 });
+    const rA = await run(g, { cfg, loads: 40, ticksPerLoad: 2 });
+    const rB = await run(g, { cfg, loads: 40, ticksPerLoad: 2 });   // cichy odczyt hangaru konczy przebieg — wznawiamy
+    const logs = rA.logs.concat(rB.logs);
     check("bot PRZERWAŁ pętlę zamiast kręcić stroną 5 minut", logs.some(m => /pętla przełączania ciał|nie jest stroną floty|formularz nie otwiera/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 8).join(" | "));
     check("i zrobił to w kilkunastu nawigacjach, nie w trzydziestu", g.navigations.length <= 20, "nawigacji: " + g.navigations.length);
     check("powód nawigacji przeżył przeładowanie (log nie jest już niemy)", logs.some(m => /przełączam na|formularz \[/.test(m)), logs.filter(m => /LOT/.test(m)).slice(0, 6).join(" | "));
@@ -1076,6 +1085,28 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const yanks = g.navigations.filter(n => /^\/fleet\?x=1&y=100&z=9/.test(String(n)));
     check("bot NIE otwiera zakladki Flota kolonii, na ktorej jestes", yanks.length === 0, JSON.stringify(g.navigations.slice(0, 6)));
     check("i mowi, dlaczego tego nie robi", logs.some(m => /nie otwieram Ci zakładki Flota/.test(m)), logs.filter(m => /REKONESANS/.test(m)).slice(0, 3).join(" | "));
+  }
+
+  console.log("\n── 36. HANGAR CZYTANY W TLE — bez przelaczania planety (model Atheny) ──");
+  {
+    // Athena nie miala cyklicznego rekonesansu: FleetRecon.scan() odpalal sie tylko,
+    // gdy bot i tak byl na stronie floty. 3.0 dorobilo objazd planet i to on wkurzal
+    // operatora. Patrol jest teraz domyslnie OFF, a ekspedycja dociaga hangar fetchem.
+    const cfg = { autoRescue: true, recon: false, bonus: { enabled: false }, aster: { enabled: false },
+      expo: { enabled: true, waves: 1, launchFrom: { galaxy: 1, system: 100, position: 5 } },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: false }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|planet": { LARGE_CARGO: 30 } },
+      active: { key: "1:100:9", body: "planet" },     // operator siedzi na innej kolonii
+    });
+    g.page = "building/resource";
+    const r36a = await run(g, { cfg, loads: 30, ticksPerLoad: 3 });
+    const r36b = await run(g, { cfg, loads: 30, ticksPerLoad: 3 });
+    const logs = r36a.logs.concat(r36b.logs);
+    check("bot dociagnal hangar w tle, bez przelaczania planety", logs.some(m => /dociągnąłem hangar .* w tle|odczytany w tle/.test(m)), logs.filter(m => /EXPO|REKONESANS/.test(m)).slice(0, 5).join(" | "));
+    check("i nie wszedl na zakladke Flota kolonii operatora", !g.navigations.some(n => /^\/fleet\?x=1&y=100&z=9/.test(String(n))), JSON.stringify(g.navigations.slice(0, 6)));
+    check("ekspedycja i tak poleciala", g.sent.some(x => /16$/.test(String(x.to || ""))), JSON.stringify(g.sent.map(x => x.to)));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
