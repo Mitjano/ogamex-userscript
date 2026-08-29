@@ -649,6 +649,23 @@ console.log("\n── 35. PUSH: dlawik nie moze uciszac ataku na DRUGA kolonie (
   check("dlawik ATAK to 5 min, nie godzina", /ATAK: 5 \* 60e3/.test(src));
 }
 
+console.log("\n── 36. DOM = KSIEZYC po postawieniu ksiezyca (v3.34.0) ──");
+{
+  // Sytuacja z 29.08 20:28: gros floty juz na ksiezycu, a z ekspedycji wracaja
+  // fale na PLANETE. fleetAt() mowi wtedy "moon" (wiekszy hangar), wiec stara
+  // regula uznawala, ze dom jest domem — i wracajace statki zostawaly na planecie.
+  const s = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200) } });
+  const r = decide(s, CFG, NOW);
+  const fly = r.actions.find(a => a.kind === "fly" && /dom = ksi/.test(a.why));
+  check("wracajace statki z planety ida na ksiezyc, mimo wiekszego hangaru na ksiezycu", !!fly && fly.fromBody === "planet" && fly.toBody === "moon", JSON.stringify(r.actions));
+  const pusta = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": { total: 0, at: NOW - 60000, ships: [] } } });
+  check("pusta planeta nie generuje lotu (zero jalowych wysylek)", !decide(pusta, CFG, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(pusta, CFG, NOW).actions));
+  const stara = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200, "planet", 60 * 60e3) } });
+  check("odczyt planety sprzed godziny = nie ruszamy (moze juz tam nic nie ma)", !decide(stara, CFG, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(stara, CFG, NOW).actions));
+  const atak = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200) }, threats: [threat("3:272:7", "moon", 300)] });
+  check("przy ataku obrona ma pierwszenstwo (zaden lot do domu)", !decide(atak, CFG, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(atak, CFG, NOW).actions));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

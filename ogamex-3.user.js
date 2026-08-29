@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.33.0
+// @version      3.34.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.33.0";
+  const VERSION = "3.34.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -603,7 +603,15 @@
         // v3.10.2: klik zawrotu bez potwierdzenia (brak wiersza powrotnego) ponawiamy
         // po 2 min — inaczej jeden nieskuteczny klik zostawiał flotę w powietrzu.
         else if (f && f.kind === "air" && f.phase === "recall_clicked" && now - (f.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: f, why: "zawrót bez potwierdzenia — ponawiam" });
-        if (!f && fleet && fleet.body === "planet" && pairs[k].hasMoon && now - fleet.at < 30 * 60e3) { actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true }); continue; }
+        // v3.34.0 (po postawieniu księżyca 29.08 20:28): reguła pytała `fleetAt()`,
+        // czyli JEDNO „gdzie mieszka flota" — a to zwraca ciało z większym (albo
+        // świeżej odczytanym) hangarem. Gdy gros floty stoi już na księżycu, wracające
+        // z ekspedycji fale lądują na PLANECIE i nie ruszają się z niej: fleetAt mówi
+        // „moon", więc dom jest domem, nic do roboty. Patrzymy więc wprost na hangar
+        // PLANETY: cokolwiek na niej stoi, wraca na księżyc (przy okazji lot zabiera
+        // surowce planety — to jedyny dopływ deuteru na księżyc, który sam go nie robi).
+        const hp = (s.hangars || {})[`${k}|planet`];
+        if (!f && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) { actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true }); continue; }
         // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
         // co ucieczka (powolny Deploy + zawrót), tylko wyzwalany zegarem, nie atakiem.
         if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0 && now - (fleet.at || 0) > 60 * 60e3) {
