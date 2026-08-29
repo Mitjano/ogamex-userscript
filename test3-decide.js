@@ -638,6 +638,17 @@ console.log("\n── 34. EKSPEDYCJE: rezerwa slotow po zdjeciu sufitu (v3.29.0)
   check("ale rezerwa OBOWIAZUJE, gdy na innej kolonii stoja transportery", /rezerw/.test(guarded.skip || ""), JSON.stringify(guarded));
 }
 
+console.log("\n── 35. PUSH: dlawik nie moze uciszac ataku na DRUGA kolonie (v3.33.0) ──");
+{
+  const tk = new Function("kind", "msg", bodyOf("throttleKey(kind, msg) {"));
+  const a = tk("ATAK", "ATTACK → [1:217:6] planet za 300s");
+  const b = tk("ATAK", "ATTACK → [2:220:7] moon za 200s");
+  check("dwie rozne kolonie = dwa rozne klucze dlawika", a !== b, a + " vs " + b);
+  check("ta sama kolonia = ten sam klucz (bez spamu co tick)", tk("ATAK", "znow [1:217:6] za 120s") === a, tk("ATAK", "znow [1:217:6] za 120s") + " vs " + a);
+  check("wiadomosc bez wspolrzednych spada do klucza rodzaju", tk("BLAD", "cos poszlo nie tak") === "BLAD");
+  check("dlawik ATAK to 5 min, nie godzina", /ATAK: 5 \* 60e3/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

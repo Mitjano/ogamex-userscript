@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.32.0
+// @version      3.33.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.32.0";
+  const VERSION = "3.33.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -82,7 +82,12 @@
     THROTTLE: { ATAK: 5 * 60e3, RATUNEK: 2 * 60e3, POWRÓT: 5 * 60e3, BŁĄD: 5 * 60e3 },
     topic() { let t = Store.get("ntfy_topic", ""); if (!t) { t = "ogamex3-" + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); Store.set("ntfy_topic", t); } return t; },
     enabled() { return Store.get("ntfy_on", true) !== false; },
-    throttled(kind) { const last = Store.get("ntfy_last", {}) || {}; if (Date.now() - (last[kind] || 0) < (this.THROTTLE[kind] || 5 * 60e3)) return true; last[kind] = Date.now(); Store.set("ntfy_last", last); return false; },
+    // v3.33.0 (audyt T2 + pytanie właściciela 29.08: „czy alarm o ataku dojdzie?"):
+    // dławik liczył się po RODZAJU zdarzenia, więc atak na drugą kolonię w ciągu
+    // 5 minut po pierwszym NIE dawał pusha — cisza dokładnie wtedy, gdy dzieje się
+    // najwięcej. Kluczem jest teraz rodzaj + współrzędne z treści.
+    throttleKey(kind, msg) { const c = [...String(msg || "").matchAll(/\[(\d+:\d+:\d+)\]/g)].map(m => m[1]); return c.length ? `${kind}|${[...new Set(c)].sort().join(",")}` : kind; },
+    throttled(kind, msg) { const key = this.throttleKey(kind, msg); const last = Store.get("ntfy_last", {}) || {}; if (Date.now() - (last[key] || 0) < (this.THROTTLE[kind] || 5 * 60e3)) return true; last[key] = Date.now(); Store.set("ntfy_last", last); return false; },
     push(title, msg, priority = "default", tags = "") {
       if (!this.enabled()) { if (priority === "urgent" || priority === "high") log(`[PUSH] POMINIĘTE — push OFF (${title}).`, "warn"); return; }
       const topic = this.topic();
@@ -98,10 +103,10 @@
     },
     fromJournal(kind, msg) {
       const m = String(msg || "");
-      if (kind === "ATAK") { if (this.throttled("ATAK")) return; this.push("⚔️ ATAK (Genesis)", m, "urgent", "rotating_light"); this.speak("Uwaga! Atak na bazę!", 3); }
-      else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK")) return; this.push("🛟 Flota ewakuowana (Genesis)", m, "default", "shield"); }
-      else if (kind === "BŁĄD") { if (this.throttled("BŁĄD")) return; this.push("⚠️ Obrona: BŁĄD (Genesis)", m, "high", "warning"); }
-      else if (kind === "POWRÓT" && /wróci|wysłan/i.test(m)) { if (this.throttled("POWRÓT")) return; this.push("✅ Flota w domu (Genesis)", m, "min", "white_check_mark"); }
+      if (kind === "ATAK") { if (this.throttled("ATAK", m)) return; this.push("⚔️ ATAK (Genesis)", m, "urgent", "rotating_light"); this.speak("Uwaga! Atak na bazę!", 3); }
+      else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK", m)) return; this.push("🛟 Flota ewakuowana (Genesis)", m, "default", "shield"); }
+      else if (kind === "BŁĄD") { if (this.throttled("BŁĄD", m)) return; this.push("⚠️ Obrona: BŁĄD (Genesis)", m, "high", "warning"); }
+      else if (kind === "POWRÓT" && /wróci|wysłan/i.test(m)) { if (this.throttled("POWRÓT", m)) return; this.push("✅ Flota w domu (Genesis)", m, "min", "white_check_mark"); }
     },
   };
 
@@ -954,7 +959,10 @@
       if (Date.now() - at < 2 * 60e3) return null;
       Store.set("bonus_probe_at", Date.now());
       try {
-        const r = await fetchT("/home", { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+        // BEZ nagłówka XMLHttpRequest: fork oddaje wtedy sam fragment treści, a
+        // przycisk bonusu siedzi w MENU, poza nim. Z nagłówkiem sonda zawsze
+        // wracała pusta (log 29.08: „brak przycisku" co 30 min mimo bonusu).
+        const r = await fetchT("/home", { credentials: "same-origin" });
         if (!r.ok || /\/auth\/login/.test(r.url || "")) return null;
         const doc = new DOMParser().parseFromString(await r.text(), "text/html");
         // v3.31.0: "menu sprawdzone, przycisku nie ma" to inny stan niż "nie udało

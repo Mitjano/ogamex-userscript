@@ -184,7 +184,10 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   // GM storage + magazyny przeglądarki (trwałe między załadowaniami)
   w.GM_getValue = (k, d) => (game.store.has(k) ? game.store.get(k) : d);
   w.GM_setValue = (k, v) => game.store.set(k, v);
-  w.GM_xmlhttpRequest = () => {};
+  // v3.33.0: push na telefon był dotąd zaślepiony na głucho — audyt (T2) wytknął,
+  // że NIC go nie sprawdza. Teraz atrapa zapisuje każdy wysłany push.
+  game.pushes = game.pushes || [];
+  w.GM_xmlhttpRequest = (o) => { game.pushes.push({ url: o && o.url, title: o && o.headers && o.headers.Title, priority: o && o.headers && o.headers.Priority, body: o && o.data }); if (o && o.onload) o.onload({ status: 200 }); };
   const mkStorage = (m) => ({ getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) });
   Object.defineProperty(w, "sessionStorage", { value: mkStorage(game.session), configurable: true });
   Object.defineProperty(w, "localStorage", { value: mkStorage(game.local), configurable: true });
@@ -436,6 +439,25 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("zaplanowany zawrót po przejściu ataku", !!f && f.recallAt > Date.now(), f && new Date(f.recallAt).toISOString());
     check("wpis nie został 'pending' (wysyłka potwierdzona)", !!f && !f.pending, JSON.stringify(f));
     check("dziennik obrony zawiera wpis o ewakuacji", logs.some(m => /WYSŁANO/.test(m)) || logs.some(m => /Send fleet kliknięty/.test(m)), logs.slice(0, 6).join(" | "));
+    // v3.33.0 (obawa właściciela 29.08: „czy alarm o ataku w ogóle dojdzie?"):
+    // dotąd NIC nie sprawdzało pusha — GM_xmlhttpRequest był zaślepiony na głucho.
+    const atak = (g.pushes || []).filter(p => /ATAK/.test(p.title || ""));
+    check("atak wysyła push na telefon", atak.length >= 1, JSON.stringify((g.pushes || []).map(p => p.title)));
+    check("push o ataku ma priorytet urgent (przebija tryb cichy)", atak[0] && atak[0].priority === "urgent", atak[0] && atak[0].priority);
+    check("push idzie na ntfy.sh, na temat konta", atak[0] && /^https:\/\/ntfy\.sh\/ogamex3-/.test(atak[0].url || ""), atak[0] && atak[0].url);
+  }
+
+  console.log("\n── 2b. DWA ATAKI NA RÓŻNE KOLONIE: drugi push NIE jest dławiony ──");
+  {
+    // Klucz: drugi atak przychodzi PÓŹNIEJ, w oknie 5 min od pierwszego. Dławik
+    // liczony po samym rodzaju („ATAK") uciszał go w całości — telefon milczał
+    // dokładnie wtedy, gdy sytuacja się pogarszała.
+    const g = new Game({ threats: [{ id: "a1", src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }] });
+    await run(g, { cfg: { autoRescue: false, expo: { enabled: false } }, loads: 8, ticksPerLoad: 3 });
+    g.threats.push({ id: "a2", src: "9:9:8", dst: "1:100:9", dstBody: "moon", eta: 280 });
+    await run(g, { cfg: { autoRescue: false, expo: { enabled: false } }, loads: 8, ticksPerLoad: 3 });
+    const tresci = (g.pushes || []).filter(p => /ATAK/.test(p.title || "")).map(p => p.body || "").join(" || ");
+    check("drugi atak (inna kolonia, minutę później) TEŻ idzie na telefon", /1:100:5/.test(tresci) && /1:100:9/.test(tresci), tresci.slice(0, 300) || "brak pushy");
   }
 
   console.log("\n── 3. ATAK NA PLANETĘ przy flocie na księżycu → BEZ RUCHU ──");
