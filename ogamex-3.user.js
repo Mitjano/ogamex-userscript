@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.30.0
+// @version      3.31.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.30.0";
+  const VERSION = "3.31.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -949,6 +949,7 @@
     // na stronie z menu, dociągamy /home w TLE — dokładnie tak, jak ekspedycja
     // dociąga hangar (bez ruszania stroną właściciela). Odczyt najwyżej co 2 min.
     async findRemote() {
+      this.probed = false;
       const at = Store.get("bonus_probe_at", 0) || 0;
       if (Date.now() - at < 2 * 60e3) return null;
       Store.set("bonus_probe_at", Date.now());
@@ -956,6 +957,9 @@
         const r = await fetchT("/home", { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
         if (!r.ok || /\/auth\/login/.test(r.url || "")) return null;
         const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+        // v3.31.0: "menu sprawdzone, przycisku nie ma" to inny stan niż "nie udało
+        // się sprawdzić" — właściciel ma prawo wiedzieć, że bot NAPRAWDĘ patrzył.
+        this.probed = true;
         return doc.getElementById("btn-online-bonus")
           || doc.querySelector("a[href*='onlinebonus'], a[href*='online-bonus']")
           || [...doc.querySelectorAll("a, button")].find(e => /^(online bonus|bonus online)\b/i.test((e.textContent || "").replace(/\s+/g, " ").trim()))
@@ -1010,6 +1014,7 @@
         // Element z DOMParsera nie jest w drzewie strony — kliknąć go nie sposób,
         // więc bierzemy go tylko wtedy, gdy niesie adres do nawigacji.
         if (remote && remote.getAttribute && remote.getAttribute("href")) { el = remote; c = this.claimable(remote); if (c.ok) { c.label = (c.label || "Online bonus") + " (widziany w /home)"; c.remote = true; } }
+        else if (!remote && this.probed) c = { ok: false, why: "bonus jeszcze nie wrócił (menu /home sprawdzone)" };
       }
       if (!c.ok) {
         // v3.27.0 (zgłoszenie 29.08 13:25: „bot nie klika online bonus, na Athenie

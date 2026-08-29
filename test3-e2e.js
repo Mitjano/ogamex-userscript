@@ -899,6 +899,13 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bonus odebrany, choć na bieżącej stronie nie ma menu gry", g6.bonusClaims === 1, "odbiorów: " + g6.bonusClaims + " | " + r6.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
     check("i bot mówi, że zobaczył go w /home", r6.logs.some(m => /widziany w \/home/.test(m)), r6.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
 
+    // v3.31.0: gdy bot dociągnął /home i przycisku tam NIE MA, mówi to wprost —
+    // „brak przycisku" brzmiało jak ślepota bota, a to gra jeszcze nie dała bonusu.
+    const g7 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g7.bonus = false; g7.menuOnlyOnHome = true; g7.page = "fleet";
+    const r7 = await run(g7, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("sprawdzone /home bez bonusu = inny komunikat niż ślepota", r7.logs.some(m => /jeszcze nie wrócił/.test(m)), r7.logs.filter(m => /BONUS/.test(m)).slice(0, 3).join(" | "));
+
     // keepalive nie może parkować bota na stronie bez menu gry
     check("keepalive przeładowuje na /home, nie na \"/\"", /Nav\.go\("\/home", "keepalive/.test(SRC), (SRC.match(/keepalive: 10 min[^)]*/) || [""])[0]);
   }
