@@ -666,6 +666,32 @@ console.log("\n── 36. DOM = KSIEZYC po postawieniu ksiezyca (v3.34.0) ──
   check("przy ataku obrona ma pierwszenstwo (zaden lot do domu)", !decide(atak, CFG, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(atak, CFG, NOW).actions));
 }
 
+console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) ──");
+{
+  // Athena: „Destroy + snajperka powrotow" — napastnik zna sekunde ladowania fali.
+  // 3.x parsowal wlasne loty i NIGDY ich nie uzywal, a wiersz powrotu znika w chwili
+  // ladowania. Teraz termin powrotu zostaje w stanie i wymusza odczyt hangaru.
+  const s = base({
+    hangars: { "3:272:7|moon": H(70000) },                       // planeta nieczytana od dawna
+    landings: { "3:272:7|planet": NOW - 60e3 },                  // fala wrocila minute temu
+  });
+  const r = decide(s, CFG, NOW);
+  const rec = r.actions.find(a => a.kind === "recon" && a.key === "3:272:7" && a.body === "planet");
+  check("po powrocie floty bot idzie sprawdzic hangar TEGO ciala", !!rec, JSON.stringify(r.actions));
+  const czytane = base({
+    hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200, "planet", 30e3) },   // odczyt PO ladowaniu
+    landings: { "3:272:7|planet": NOW - 60e3 },
+  });
+  const r2 = decide(czytane, CFG, NOW);
+  check("gdy hangar czytany PO ladowaniu — zadnego zbednego rekonesansu", !r2.actions.some(a => a.kind === "recon"), JSON.stringify(r2.actions));
+  check("i od razu zapada decyzja: statki wracaja na ksiezyc", r2.actions.some(a => a.kind === "fly" && a.fromBody === "planet" && a.toBody === "moon"), JSON.stringify(r2.actions));
+  const stare = base({ hangars: { "3:272:7|moon": H(70000) }, landings: { "3:272:7|planet": NOW - 2 * 3600e3 } });
+  check("ladowanie sprzed dwoch godzin juz nikogo nie interesuje", !decide(stare, CFG, NOW).actions.some(a => a.kind === "recon"), JSON.stringify(decide(stare, CFG, NOW).actions));
+  const atak = base({ hangars: { "3:272:7|moon": H(70000) }, landings: { "3:272:7|planet": NOW - 60e3 }, threats: [threat("3:272:7", "moon", 300)] });
+  check("przy ataku obrona ma pierwszenstwo (nie dreptamy po hangarach)", !decide(atak, CFG, NOW).actions.some(a => /wrocila wlasna flota|wróciła własna flota/.test(a.why || "")), JSON.stringify(decide(atak, CFG, NOW).actions));
+  check("termin powrotu trafia do stanu (Situation), nie ginie z wierszem", /s\.landings = land/.test(src) && /isReturn \|\| !o\.dst/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

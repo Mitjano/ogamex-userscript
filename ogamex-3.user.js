@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.34.0
+// @version      3.35.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.34.0";
+  const VERSION = "3.35.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -470,6 +470,22 @@
       Store.set("bar_excess", s.barExcess);
       // własne loty (z Events — globalne; z listy — aktywna para)
       s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
+      // v3.35.0 (audyt floty 29.08, ścieżka A5 z Ateny: „Destroy + snajperka powrotów"):
+      // `s.own` było parsowane i NIGDY nieużywane, a wiersz powrotu znika z listy w tej
+      // samej sekundzie, w której flota ląduje — więc wiedza o lądowaniu ginęła razem
+      // z nim. Zapamiętujemy TERMIN każdego własnego powrotu; po jego minięciu obrona
+      // wie, że na tym ciele właśnie coś stanęło, i idzie to sprawdzić (a potem odesłać
+      // na księżyc), zamiast czekać na przypadkowy odczyt hangaru.
+      {
+        const land = { ...(this.load().landings || {}) };
+        for (const o of s.own) {
+          if (!o.isReturn || !o.dst) continue;
+          const lk = `${o.dst}|${o.dstBody || "planet"}`;
+          if (!land[lk] || o.arriveAt > land[lk]) land[lk] = o.arriveAt;
+        }
+        for (const [lk, at] of Object.entries(land)) if (now - at > 60 * 60e3) delete land[lk];
+        s.landings = land;
+      }
       // v3.7.2 (audyt): refresh() czeka na AJAX listy ruchów, więc obiekt załadowany
       // przed awaitem jest już nieaktualny — inna karta (albo Hangar.scan po
       // przeładowaniu) mogła w tym czasie dopisać świeży odczyt hangaru albo slotów.
@@ -610,6 +626,17 @@
         // „moon", więc dom jest domem, nic do roboty. Patrzymy więc wprost na hangar
         // PLANETY: cokolwiek na niej stoi, wraca na księżyc (przy okazji lot zabiera
         // surowce planety — to jedyny dopływ deuteru na księżyc, który sam go nie robi).
+        // v3.35.0: wróciła własna flota, a hangaru tego ciała nie czytaliśmy od
+        // lądowania — najpierw sprawdź, potem decyduj. Bez tego statki z powrotów
+        // czekały na przypadkowy odczyt (do ~8 min stania na planecie).
+        for (const [lk, at] of Object.entries(s.landings || {})) {
+          const [lkey, lbody] = lk.split("|");
+          if (lkey !== k || at > now || now - at > 30 * 60e3) continue;
+          const lh = (s.hangars || {})[lk];
+          if (lh && (lh.at || 0) >= at) continue;
+          actions.push({ kind: "recon", key: k, body: lbody, why: `wróciła własna flota na ${lbody === "moon" ? "księżyc" : "planetę"} [${k}] — sprawdzam hangar` });
+          break;
+        }
         const hp = (s.hangars || {})[`${k}|planet`];
         if (!f && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) { actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true }); continue; }
         // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
