@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.22.0
+// @version      3.23.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.22.0";
+  const VERSION = "3.23.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1830,14 +1830,27 @@
         const ttl = (h.total > 0) ? CFG.reconMs : (CFG.reconEmptyMs || CFG.reconMs);
         return now - h.at > ttl;
       };
+      // v3.23.0 (zgłoszenie 29.08 12:08: „ciągle przeskakuje na inne planety w zakładce
+      // flota"): ta gałąź odświeżała hangar ciała, na którym AKURAT JESTEŚ — więc gdy
+      // klikałeś budynki na kolonii, bot wyrywał Cię na jej zakładkę Flota. Ograniczenie
+      // z v3.21.0 dotyczyło tylko listy obiegowej. Teraz: sam z siebie wchodzi na Fleet
+      // WYŁĄCZNIE dla ciał z listy (przypięte ciało startowe albo ciała z flotą);
+      // dla każdego innego czyta hangar tylko wtedy, gdy i tak jesteś na /fleet.
+      const allowed = new Set(this.bodiesOf(s).map(([k, b]) => `${k}|${b}`));
       const a = s.active;
       if (a && stale(a.key, a.body)) {
-        if (page() === "fleet") { Hangar.scan(); return false; }                // już jesteśmy — wystarczy odczyt
-        Store.set("recon", { ...st, at: now });
-        log(`[REKONESANS] sprawdzam hangar ${a.body} [${a.key}] — bez tego nie wiem, gdzie stoi flota.`, "info");
-        const [g, sy, po] = a.key.split(":");
-        Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `rekonesans hangaru ${a.body} [${a.key}]`);
-        return true;
+        if (page() === "fleet") { Hangar.scan(); return false; }                // już jesteśmy — darmowy odczyt
+        // Wyjątek na rozruch: gdy nie ma jeszcze CZEGO pilnować (nic nie przypięte
+        // i żadnego hangaru z flotą), bot musi raz odczytać ciało, na którym stoisz —
+        // inaczej nigdy nie dowie się, gdzie jest flota, i obrona zostaje ślepa.
+        if (allowed.size === 0 || allowed.has(`${a.key}|${a.body}`)) {
+          Store.set("recon", { ...st, at: now });
+          log(`[REKONESANS] sprawdzam hangar ${a.body} [${a.key}] — bez tego nie wiem, gdzie stoi flota.`, "info");
+          const [g, sy, po] = a.key.split(":");
+          Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `rekonesans hangaru ${a.body} [${a.key}]`);
+          return true;
+        }
+        if (!Once.said("recon_skip_active", 30 * 60e3)) log(`[REKONESANS] jesteś na [${a.key}] — to nie jest ciało, które pilnuję, więc nie otwieram Ci zakładki Flota.`, "info");
       }
       const list = this.bodiesOf(s).filter(([k, b]) => stale(k, b));
       if (!list.length) return false;

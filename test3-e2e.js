@@ -1058,6 +1058,26 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bramka nadal chroni przed podwojna wysylka tej samej fali", expo.length === 2, "fal: " + expo.length);
   }
 
+  console.log("\n── 35. NIE WYRYWA OPERATORA NA ZAKLADKE FLOTA OBCEJ PLANETY ──");
+  {
+    // Zgloszenie 29.08 12:08: „ciagle przeskakuje na inne planety w zakladce flota".
+    // Gałąź „odswiez hangar ciala, na ktorym akurat jestes" nie podlegala ograniczeniu
+    // z v3.21.0 — wiec gdy operator klikal budynki na kolonii, bot wyrywal go na jej Fleet.
+    const cfg = { autoRescue: true, bonus: { enabled: false }, aster: { enabled: false },
+      expo: { enabled: false, launchFrom: { galaxy: 1, system: 100, position: 5 } },
+      recon: true, reconMode: "fleet", reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      active: { key: "1:100:9", body: "planet" },   // operator siedzi na kolonii
+    });
+    g.page = "building/resource";                    // ...i klika budynki, nie flote
+    const { logs } = await run(g, { cfg, loads: 20, ticksPerLoad: 2 });
+    const yanks = g.navigations.filter(n => /^\/fleet\?x=1&y=100&z=9/.test(String(n)));
+    check("bot NIE otwiera zakladki Flota kolonii, na ktorej jestes", yanks.length === 0, JSON.stringify(g.navigations.slice(0, 6)));
+    check("i mowi, dlaczego tego nie robi", logs.some(m => /nie otwieram Ci zakładki Flota/.test(m)), logs.filter(m => /REKONESANS/.test(m)).slice(0, 3).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
