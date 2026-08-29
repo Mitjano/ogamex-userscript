@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.17.1
+// @version      3.18.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.17.1";
+  const VERSION = "3.18.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -128,7 +128,12 @@
     maxNavPerHour: 240,     // sufit nawigacji/h dla EKONOMII (obrona nigdy nie liczona)
     quietHours: { enabled: true, startHour: 23, endHour: 5 },   // cisza ekonomii, niezależna od FS
     recon: true,            // rekonesans hangarów (bez niego bot NIE WIE, gdzie stoi flota)
-    reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru, zanim pójdziemy sprawdzić
+    reconMs: 8 * 60e3,      // jak stary może być odczyt hangaru Z FLOTĄ, zanim pójdziemy sprawdzić
+    // v3.18.0: ciało, na którym ostatnio NIE BYŁO floty, nie wymaga częstych wizyt —
+    // interesujące staje się dopiero, gdy coś tam wyląduje, a to bot i tak widzi po
+    // własnych lotach. Przy 12 ciałach odświeżanie wszystkich co 8 min oznaczało
+    // przeskok na inną planetę praktycznie non stop (zgłoszenie właściciela 29.08).
+    reconEmptyMs: 45 * 60e3,
     // ── HUMANIZER ──
     // Przerwy dotyczą WYŁĄCZNIE ekonomii. W 2.x przerwa kawowa usypiała cały
     // scheduler razem z keepalive (audyt A8: droga do wylogowania i 15 min
@@ -154,7 +159,11 @@
       parallel: true,        // resztą minerów obrabiaj kolejne asteroidy, nie czekaj na powrót
       partialRatio: 0.5,     // lot mniejszy niż połowa docelowego = czekamy na powroty
       slotReserve: 1,        // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
-      gapSec: 20 },          // odstęp między kolejnymi wysyłkami minerów
+      gapSec: 20,            // odstęp między kolejnymi wysyłkami minerów
+      // v3.18.0 (porównanie z 2.x): trzy rzeczy, które Athena miała, a 3.0 nie.
+      maxFlightMin: 45,      // za daleki układ pomijamy PRZED skanem, nie dopiero na formularzu
+      idleScanMin: 15,       // gdy obieg zakresów nie dał nic nowego — pauza zamiast kręcenia galaktyką
+      lockMin: 60 },         // te same koordy nie dostają drugiej floty (fork respawnuje asteroidy w tym samym miejscu)
     // v3.13.0: bonus online (zielony przycisk w menu gry) = antymateria + PUNKTY AKADEMII.
     // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
     // potwierdził 28.08, że na Genesis działa tak samo). Nie rusza flotą, więc domyślnie ON.
@@ -1138,6 +1147,23 @@
         log("[ASTER] nauczone: 1 miner uniesie " + per.toLocaleString("pl-PL") + " surowców (" + cap.toLocaleString("pl-PL") + " na " + qty + " szt.).", "success");
       } catch {}
     },
+    // 2.x: DispatchedAsteroids. Bez tego przy lotach RÓWNOLEGŁYCH druga fala potrafi
+    // polecieć na tę samą asteroidę, którą właśnie zabiera pierwsza — a fork wystawia
+    // asteroidy w tych samych koordach co kilkanaście minut, więc trafienie jest częste.
+    locked(st, key) { const l = (st.locks || {})[key] || 0; return l > Date.now(); },
+    lock(st, key) { const l = { ...(st.locks || {}) }; for (const k of Object.keys(l)) if (l[k] < Date.now()) delete l[k]; l[key] = Date.now() + (CFG.aster.lockMin || 60) * 60e3; return { ...st, locks: l }; },
+    // 2.x pomijało zakresy, do których lot trwa dłużej niż maxFlightMinutes. Wzór
+    // z Atheny (max(11, 11 + Δ/15) minut) jest tylko ZGRUBNY — na Genesis czas lotu
+    // i tak czytamy z formularza — ale wystarczy, żeby nie skanować drugiego końca
+    // galaktyki i nie palić na to nawigacji.
+    tooFar(homeKey, target) {
+      const cap = CFG.aster.maxFlightMin || 0;
+      if (!cap || !homeKey) return false;
+      const [hg, hs] = homeKey.split(":").map(Number);
+      if (hg !== target.galaxy) return true;
+      const est = Math.max(11, Math.ceil(11 + Math.abs(hs - target.system) / 15));
+      return est > cap;
+    },
     nextSystem(st) {
       const rs = st.ranges || []; if (!rs.length) return null;
       const r = rs[(st.idx || 0) % rs.length];
@@ -1185,8 +1211,26 @@
         if (!r.length) return false;
       }
       // jesteśmy na stronie galaktyki skanowanego układu? sprawdź wiersz 17
-      const target = this.nextSystem(st);
+      // pauza po pełnym obiegu bez łupu (2.x: scanIntervalMin) — inaczej bot kręci
+      // galaktyką bez końca co kilka sekund
+      if (st.idleUntil && now < st.idleUntil) return false;
+      let target = this.nextSystem(st);
       if (!target) return false;
+      // pomiń układy za daleko i te, na które już leci flota
+      let skipped = 0;
+      while (target && (this.tooFar(homeKey, target) || this.locked(st, `${target.galaxy}:${target.system}`))) {
+        st = this.advance(st);
+        skipped++;
+        if (skipped > 60) {   // pełny obieg bez kandydata: odpocznij zamiast kręcić
+          st.idleUntil = now + (CFG.aster.idleScanMin || 15) * 60e3;
+          this.save(st);
+          if (!Once.said("aster|idle", 30 * 60e3)) log(`[ASTER] cały obieg zakresów odpada (za daleko albo flota już tam leci) — pauza ${CFG.aster.idleScanMin} min.`, "info");
+          return false;
+        }
+        target = this.nextSystem(st);
+      }
+      if (!target) return false;
+      if (skipped) this.save(st);
       const onThat = page() === "galaxy" && new RegExp(`[?&]x=${target.galaxy}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${target.system}(?:&|$)`).test(location.search);
       if (onThat) {
         const hit = this.readRow17();
@@ -1195,7 +1239,7 @@
           const min = Math.max(60, CFG.aster.minTtlSec || 300);
           if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${target.galaxy}:${target.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return false; }
           log(`[ASTER] ZNALEZIONA asteroida [${target.galaxy}:${target.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${plan.qty.toLocaleString("pl-PL")} z ${miners.qty.toLocaleString("pl-PL")} minerów (${plan.why}).`, "success");
-          this.save({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` });
+          this.save(this.lock({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` }, `${target.galaxy}:${target.system}`));
           const astKey = `${target.galaxy}:${target.system}:17`;
           if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
           return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
@@ -1746,7 +1790,12 @@
         if (!Once.said("recon_manual", 5 * 60e3)) log("[REKONESANS] grasz — nie przełączam Ci planety. Wrócę, gdy przestaniesz klikać (najdalej za 5 min).", "info");
         return false;
       }
-      const stale = (k, b) => { const h = s.hangars[`${k}|${b}`]; return !h || now - h.at > CFG.reconMs; };
+      const stale = (k, b) => {
+        const h = s.hangars[`${k}|${b}`];
+        if (!h) return true;                                        // nigdy nie widziane
+        const ttl = (h.total > 0) ? CFG.reconMs : (CFG.reconEmptyMs || CFG.reconMs);
+        return now - h.at > ttl;
+      };
       const a = s.active;
       if (a && stale(a.key, a.body)) {
         if (page() === "fleet") { Hangar.scan(); return false; }                // już jesteśmy — wystarczy odczyt
