@@ -31,7 +31,7 @@ Szerokość **232 px**, więc kończy się przed menu gry (Overview, Resources�
 | moduł | co robi | warunki, których pilnuje sam |
 |---|---|---|
 | **Obrona** | atak w ciało z flotą → sąsiedni księżyc w układzie (powolny Deploy + zawrót); brak sąsiada → drugie ciało pary; oba ciała → inna kolonia; atak w puste ciało → nic | nigdy nie leci NA atakowane ciało · jedna ucieczka na parę · dolot < 40 s = tylko alarm · dom = księżyc |
-| **Rekonesans** | sam chodzi na `/fleet`, żeby wiedzieć, gdzie stoi flota | nigdy przy alarmie, misji ani locie · ciała Z FLOTĄ odświeża co 8 min, PUSTE co 45 min · ustępuje, gdy grasz (max 5 min) |
+| **Rekonesans** | sam chodzi na `/fleet`, żeby wiedzieć, gdzie stoi flota. **Domyślnie tryb „tylko flota”**: odwiedza wyłącznie ciała, na których widział flotę, ciało startowe ekspedycji i to, na którym akurat jesteś — nie objeżdża pustych kolonii. Przełącznik w panelu cyklicznie: tylko flota → wszystkie → OFF | ustępuje, gdy grasz (max 5 min) · **alarm to osobna ścieżka**: przy ataku bot wejdzie na każde ciało, także takie, którego hangaru nie zna (3 próby) |
 | **FS nocny** | w oknie (domyślnie 23–7) wyprowadza flotę na najdalszą nieatakowaną kolonię, zawrót o świcie | atak w nocy → normalny ratunek wygrywa z FS |
 | **Ekspedycje** | fale na poz. 16, 40 min (Odkrywca) | rozmiar fali zamrożony na serię · ostatnia fala domyka hangar · limity slotów · odstęp fal |
 | **Mining** | zakresy asteroid → skan systemów → minery na poz. 17, **flota dobierana pod urobek**, resztą minerów kolejne asteroidy (loty równoległe) | nie skanuje bez minerów · pomija asteroidy znikające przed dolotem · zostawia wolne sloty (rezerwa) · lot poniżej połowy sensownej fali czeka na powroty |

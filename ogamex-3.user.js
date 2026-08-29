@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.18.0
+// @version      3.19.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.18.0";
+  const VERSION = "3.19.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -134,6 +134,14 @@
     // własnych lotach. Przy 12 ciałach odświeżanie wszystkich co 8 min oznaczało
     // przeskok na inną planetę praktycznie non stop (zgłoszenie właściciela 29.08).
     reconEmptyMs: 45 * 60e3,
+    // v3.19.0 (decyzja właściciela 29.08: „nie chcę, żeby tak przeskakiwało co planetę
+    // i sprawdzało statki"): rekonesans ma tryby.
+    //   "fleet" — DOMYŚLNY: odwiedza tylko ciała, na których WIDZIAŁ flotę, plus ciało
+    //             startowe ekspedycji. Reszta uzupełnia się sama z Twoich wizyt na /fleet.
+    //   "all"   — dawne zachowanie: obchodzi wszystkie ciała po kolei.
+    // Alarm jest osobny i NIGDY nie podlega temu ograniczeniu: gdy atak leci w ciało,
+    // którego hangaru bot nie zna, i tak tam wejdzie — inaczej obrona byłaby ślepa.
+    reconMode: "fleet",
     // ── HUMANIZER ──
     // Przerwy dotyczą WYŁĄCZNIE ekonomii. W 2.x przerwa kawowa usypiała cały
     // scheduler razem z keepalive (audyt A8: droga do wylogowania i 15 min
@@ -1771,9 +1779,18 @@
   const Recon = {
     st() { return Store.get("recon", { at: 0, idx: 0 }) || { at: 0, idx: 0 }; },
     bodiesOf(s) {
-      const out = [];
-      for (const [k, p] of Object.entries(s.pairs || {})) { out.push([k, "planet"]); if (p.hasMoon) out.push([k, "moon"]); }
-      return out;
+      const all = [];
+      for (const [k, p] of Object.entries(s.pairs || {})) { all.push([k, "planet"]); if (p.hasMoon) all.push([k, "moon"]); }
+      if ((CFG.reconMode || "fleet") === "all") return all;
+      // tryb „fleet": pilnujemy tylko tego, co naprawdę trzeba znać na wypadek ataku —
+      // ciał z flotą (te bot widział) i ciała, z którego startują ekspedycje.
+      const lf = CFG.expo && CFG.expo.launchFrom ? key(CFG.expo.launchFrom) : null;
+      return all.filter(([k, b]) => {
+        const h = (s.hangars || {})[`${k}|${b}`];
+        if (h && h.total > 0) return true;                 // tu stoi flota
+        if (lf && k === lf && b === "planet") return true; // stąd startują ekspedycje
+        return false;
+      });
     },
     async tick(s) {
       if (!CFG.recon || Fly.mission()) return false;
@@ -2120,7 +2137,16 @@
       $("ogx3-auto").onclick = () => { CFG.autoRescue = !CFG.autoRescue; saveCfg(); log(`Auto-ratunek ${CFG.autoRescue ? "ON — bot RUSZA flotą" : "OFF — obserwator"}`, "warn"); this.renderStatus(); };
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
-      $("ogx3-recon").onclick = () => { CFG.recon = !CFG.recon; saveCfg(); log(`Rekonesans hangarów ${CFG.recon ? "ON" : "OFF — bot nie będzie wiedział, gdzie stoi flota"}`, CFG.recon ? "info" : "warn"); this.renderStatus(); };
+      // v3.19.0: trzy stany zamiast dwóch — „tylko flota" (domyślny), „wszystkie", OFF.
+      $("ogx3-recon").onclick = () => {
+        const cur = !CFG.recon ? "off" : (CFG.reconMode === "all" ? "all" : "fleet");
+        const next = cur === "fleet" ? "all" : cur === "all" ? "off" : "fleet";
+        CFG.recon = next !== "off"; CFG.reconMode = next === "all" ? "all" : "fleet"; saveCfg();
+        log(next === "fleet" ? "Rekonesans: TYLKO ciała z flotą (bot nie objeżdża pustych planet)"
+          : next === "all" ? "Rekonesans: WSZYSTKIE ciała po kolei (będzie przełączał planety)"
+          : "Rekonesans OFF — bot nie będzie wiedział, gdzie stoi flota", next === "off" ? "warn" : "info");
+        this.renderStatus();
+      };
       $("ogx3-deb").onclick = () => { CFG.debris.enabled = !CFG.debris.enabled; saveCfg(); log(`Zbieranie złomu ${CFG.debris.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-bonus").onclick = () => { CFG.bonus.enabled = !CFG.bonus.enabled; saveCfg(); log(`Bonus online ${CFG.bonus.enabled ? "ON — bot odbiera antymaterię i punkty Akademii" : "OFF"}`, "info"); this.renderStatus(); };
@@ -2223,7 +2249,9 @@
       // ── nagłówek i przełączniki ──────────────────────────────────────────
       $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#27ae60" : "#e74c3c";
       $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (bez ruchu)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
-      $("ogx3-recon").textContent = `Rekonesans ${CFG.recon ? "ON" : "OFF"}`; $("ogx3-recon").style.background = CFG.recon ? "rgba(255,255,255,.1)" : "#6b1e1e";
+      { const mode = !CFG.recon ? "OFF" : (CFG.reconMode === "all" ? "wszystkie" : "tylko flota");
+        $("ogx3-recon").textContent = `Rekonesans: ${mode}`;
+        $("ogx3-recon").style.background = CFG.recon ? "rgba(255,255,255,.1)" : "#6b1e1e"; }
       $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`;
       $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`;
       $("ogx3-deb").textContent = `Złom ${CFG.debris.enabled ? "ON" : "OFF"}`; $("ogx3-deb").style.background = CFG.debris.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
@@ -2301,7 +2329,7 @@
   // Eksport do testów (node): globalThis.OGX3 gdy brak DOM.
   if (typeof document === "undefined" || typeof window === "undefined") { globalThis.OGX3 = { decide, Situation, Bar, Rows, DEFAULTS }; return; }
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI }; } catch {}
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon }; } catch {}
   Store.set("last_load", Date.now());
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.

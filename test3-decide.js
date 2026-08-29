@@ -465,6 +465,8 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("minery: za daleki uklad pomijany PRZED skanem (2.x maxFlightMinutes)", /tooFar\(homeKey, target\)/.test(src) && /maxFlightMin/.test(src));
   check("minery: pelny obieg bez lupu = pauza, nie krecenie galaktyka", /idleUntil/.test(src) && /idleScanMin/.test(src));
   check("rekonesans rzadziej odwiedza ciala BEZ floty", /reconEmptyMs/.test(src));
+  check("rekonesans ma tryb TYLKO-FLOTA i jest on domyslny", /reconMode: "fleet"/.test(src) && /CFG\.reconMode \|\| "fleet"/.test(src));
+  check("alarm nadal moze wejsc na kazde cialo (osobna sciezka)", /wchodzę na Fleet/.test(src) && /alarm_scan/.test(src));
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
   check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));

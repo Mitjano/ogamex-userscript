@@ -977,6 +977,42 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("nie melduje falszywie braku przycisku", !logs.some(m => /NIE MA na stronie|pozostał WYŁĄCZONY/.test(m)), logs.filter(m => /przycisk/.test(m)).slice(0, 3).join(" | "));
   }
 
+  console.log("\n── 32. REKONESANS: koniec objazdu wszystkich planet ──");
+  {
+    // Decyzja właściciela 29.08: „nie chcę, żeby tak przeskakiwało co planetę i
+    // sprawdzało statki". Domyślny tryb „fleet" odwiedza tylko ciała, na których
+    // bot WIDZIAŁ flotę (plus ciało startowe ekspedycji i to, na którym akurat
+    // jesteś). Alarm to osobna ścieżka i nadal wolno mu wejść wszędzie.
+    const cfg = { autoRescue: true, expo: { enabled: false }, bonus: { enabled: false },
+      recon: true, reconMode: "fleet", reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }, { key: "1:100:3", name: "Druga", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 2 });
+    const hops = logs.filter(m => /REKONESANS\] przechodzę na/.test(m));
+    check("bot NIE objeżdża pustych kolonii", !hops.some(m => /1:100:9|1:100:3/.test(m)), hops.slice(0, 4).join(" | "));
+    check("ale zna hangar tam, gdzie stoi flota", logs.some(m => /sprawdzam hangar|1:100:5/.test(m)) || g.navigations.some(n => /z=5/.test(String(n))), g.navigations.slice(0, 6).join(","));
+
+    // tryb „all" = dawne zachowanie, dla kogoś, kto tego chce
+    const g2 = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    const r2 = await run(g2, { cfg: { ...cfg, reconMode: "all" }, loads: 25, ticksPerLoad: 2 });
+    // Kontrola trybu „all" na poziomie decyzji, nie zegara: symulator nie zmieści
+    // 90-sekundowego dławika rekonesansu w kilku sekundach przebiegu.
+    const inst = load(g2, { cfg });
+    const sit = inst.api.Situation.load();
+    inst.api.CFG.reconMode = "fleet";
+    const nFleet = inst.api.Recon.bodiesOf(sit).length;
+    inst.api.CFG.reconMode = "all";
+    const nAll = inst.api.Recon.bodiesOf(sit).length;
+    check("tryb WSZYSTKIE obejmuje więcej ciał niż tryb tylko-flota", nAll > nFleet, "fleet=" + nFleet + " all=" + nAll);
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
