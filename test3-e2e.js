@@ -1013,6 +1013,28 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("tryb WSZYSTKIE obejmuje więcej ciał niż tryb tylko-flota", nAll > nFleet, "fleet=" + nFleet + " all=" + nAll);
   }
 
+  console.log("\n── 33. REKONESANS PRZYPIETY DO CIALA STARTOWEGO ──");
+  {
+    // Właściciel 29.08: „flota jest zawsze tam, skąd wysyłane są ekspedycje, na innych
+    // planetach najwyżej są transportery". Gdy ciało startowe jest ustawione, rekonesans
+    // pilnuje TYLKO jego — nawet kolonia z transporterami nie jest warta przełączania planety.
+    const cfg = { autoRescue: true, bonus: { enabled: false }, aster: { enabled: false },
+      expo: { enabled: false, launchFrom: { galaxy: 1, system: 100, position: 5 } },
+      recon: true, reconMode: "fleet", reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 }, "1:100:9|planet": { SMALL_CARGO: 8 } },  // kolonia z transporterami
+      active: { key: "1:100:5", body: "moon" },
+    });
+    const inst = load(g, { cfg });
+    const sit = inst.api.Situation.load();
+    const bodies = inst.api.Recon.bodiesOf(sit).map(([k, b]) => k + "|" + b);
+    check("rekonesans pilnuje wylacznie ciala startowego", bodies.every(x => x.startsWith("1:100:5")), JSON.stringify(bodies));
+    check("kolonia z transporterami NIE trafia na liste", !bodies.some(x => x.startsWith("1:100:9")), JSON.stringify(bodies));
+    const { logs } = await run(g, { cfg, loads: 20, ticksPerLoad: 2 });
+    check("i w praktyce nie przelacza sie na kolonie", !logs.some(m => /przechodzę na .*1:100:9/.test(m)), logs.filter(m => /REKONESANS/.test(m)).slice(0, 4).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

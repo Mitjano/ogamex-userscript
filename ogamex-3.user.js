@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.20.0
+// @version      3.21.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.20.0";
+  const VERSION = "3.21.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1782,15 +1782,15 @@
       const all = [];
       for (const [k, p] of Object.entries(s.pairs || {})) { all.push([k, "planet"]); if (p.hasMoon) all.push([k, "moon"]); }
       if ((CFG.reconMode || "fleet") === "all") return all;
-      // tryb „fleet": pilnujemy tylko tego, co naprawdę trzeba znać na wypadek ataku —
-      // ciał z flotą (te bot widział) i ciała, z którego startują ekspedycje.
       const lf = CFG.expo && CFG.expo.launchFrom ? key(CFG.expo.launchFrom) : null;
-      return all.filter(([k, b]) => {
-        const h = (s.hangars || {})[`${k}|${b}`];
-        if (h && h.total > 0) return true;                 // tu stoi flota
-        if (lf && k === lf && b === "planet") return true; // stąd startują ekspedycje
-        return false;
-      });
+      // v3.21.0 (właściciel 29.08): „flota jest zawsze tam, skąd wysyłane są ekspedycje,
+      // na innych planetach najwyżej są transportery". Skoro tak, rekonesans nie ma po
+      // co przeklikiwać się po koloniach — gdy ciało startowe jest USTAWIONE, pilnuje
+      // wyłącznie jego. Kolonie z paroma transporterami nie są warte przełączania planety.
+      // (Alarm to osobna ścieżka: przy ataku bot i tak wejdzie na atakowane ciało.)
+      if (lf) return all.filter(([k]) => k === lf);
+      // Bez przypiętego ciała startowego: tylko te, na których bot WIDZIAŁ flotę.
+      return all.filter(([k, b]) => { const h = (s.hangars || {})[`${k}|${b}`]; return !!(h && h.total > 0); });
     },
     async tick(s) {
       if (!CFG.recon || Fly.mission()) return false;
@@ -2249,7 +2249,8 @@
       // ── nagłówek i przełączniki ──────────────────────────────────────────
       $("ogx3-on").textContent = CFG.enabled ? "ON" : "OFF"; $("ogx3-on").style.background = CFG.enabled ? "#27ae60" : "#e74c3c";
       $("ogx3-auto").textContent = CFG.autoRescue ? "Auto-ratunek ON" : "Obserwator (bez ruchu)"; $("ogx3-auto").style.background = CFG.autoRescue ? "#1e6b3a" : "#5a4a1e";
-      { const mode = !CFG.recon ? "OFF" : (CFG.reconMode === "all" ? "wszystkie" : "tylko flota");
+      { const lf0 = CFG.expo && CFG.expo.launchFrom ? `${CFG.expo.launchFrom.galaxy}:${CFG.expo.launchFrom.system}:${CFG.expo.launchFrom.position}` : null;
+        const mode = !CFG.recon ? "OFF" : (CFG.reconMode === "all" ? "wszystkie" : (lf0 ? `tylko [${lf0}]` : "tylko flota"));
         $("ogx3-recon").textContent = `Rekonesans: ${mode}`;
         $("ogx3-recon").style.background = CFG.recon ? "rgba(255,255,255,.1)" : "#6b1e1e"; }
       $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`;
