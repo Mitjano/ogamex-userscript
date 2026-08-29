@@ -474,6 +474,16 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("alarm nadal moze wejsc na kazde cialo (osobna sciezka)", /wchodzę na Fleet/.test(src) && /alarm_scan/.test(src));
   check("rekonesans przypiety do ciala startowego, gdy jest ustawione", /if \(lf\) return all\.filter\(\(\[k\]\) => k === lf\);/.test(src));
   check("rekonesans nie otwiera Fleet dla ciala spoza listy (poza rozruchem)", /allowed\.size === 0 \|\| allowed\.has/.test(src));
+  // NAUCZKA 29.08: trzy wersje pod rzad poszly na main z NIEPODBITYM @version
+  // (patch podmieniajacy numer zostal wyciety przy edycji skryptu lataczego),
+  // wiec Tampermonkey nie zaciagnal ich w ogole — bot chodzil na starym kodzie,
+  // a ja raportowalem "wypchniete". Ten test pilnuje, zeby numer w naglowku
+  // i w kodzie byly zgodne; rozjazd = czerwony test przed pushem.
+  {
+    const hv = (src.match(/@version\s+([\d.]+)/) || [])[1];
+    const cv = (src.match(/const VERSION = "([\d.]+)"/) || [])[1];
+    check(`@version (${hv}) zgodny z const VERSION (${cv})`, !!hv && hv === cv, `naglowek=${hv} kod=${cv}`);
+  }
   check("alarm tempa przeładowań", /\[TEMPO\]/.test(src));
   check("nadzorca przeładowuje stronę po 3 min ciszy pętli", /function watchdog\(\)[\s\S]{0,900}?Nav\.go\("\/"/.test(src) && /setInterval\(watchdog, 60e3\)/.test(src));
   check("nadzorca nie przerywa trwającej misji lotu", /function watchdog\(\)[\s\S]{0,400}?if \(Fly\.mission\(\)\) return;/.test(src));
