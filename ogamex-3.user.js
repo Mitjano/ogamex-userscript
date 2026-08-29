@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.29.0
+// @version      3.30.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.29.0";
+  const VERSION = "3.30.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -944,6 +944,24 @@
       if (byHref) return byHref;
       return [...document.querySelectorAll("a, button")].find(e => !own(e) && e.offsetParent !== null && /^(online bonus|bonus online)\b/i.test((e.textContent || "").replace(/\s+/g, " ").trim())) || null;
     },
+    // v3.30.0: strona bez menu gry (ekran po wysyłce floty, krok formularza, "/")
+    // to nie jest dowód, że bonusu nie ma. Zamiast czekać na przypadkową wizytę
+    // na stronie z menu, dociągamy /home w TLE — dokładnie tak, jak ekspedycja
+    // dociąga hangar (bez ruszania stroną właściciela). Odczyt najwyżej co 2 min.
+    async findRemote() {
+      const at = Store.get("bonus_probe_at", 0) || 0;
+      if (Date.now() - at < 2 * 60e3) return null;
+      Store.set("bonus_probe_at", Date.now());
+      try {
+        const r = await fetchT("/home", { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+        if (!r.ok || /\/auth\/login/.test(r.url || "")) return null;
+        const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+        return doc.getElementById("btn-online-bonus")
+          || doc.querySelector("a[href*='onlinebonus'], a[href*='online-bonus']")
+          || [...doc.querySelectorAll("a, button")].find(e => /^(online bonus|bonus online)\b/i.test((e.textContent || "").replace(/\s+/g, " ").trim()))
+          || null;
+      } catch { return null; }
+    },
     claimable(el) {
       if (!el) return { ok: false, why: "brak przycisku" };
       const label = (el.textContent || "").replace(/\s+/g, " ").trim();
@@ -985,8 +1003,14 @@
           return false;
         }
       }
-      const el = this.find();
-      const c = this.claimable(el);
+      let el = this.find();
+      let c = this.claimable(el);
+      if (!c.ok && c.why === "brak przycisku") {
+        const remote = await this.findRemote();
+        // Element z DOMParsera nie jest w drzewie strony — kliknąć go nie sposób,
+        // więc bierzemy go tylko wtedy, gdy niesie adres do nawigacji.
+        if (remote && remote.getAttribute && remote.getAttribute("href")) { el = remote; c = this.claimable(remote); if (c.ok) { c.label = (c.label || "Online bonus") + " (widziany w /home)"; c.remote = true; } }
+      }
       if (!c.ok) {
         // v3.27.0 (zgłoszenie 29.08 13:25: „bot nie klika online bonus, na Athenie
         // działało"): BRAK przycisku na stronie to nie powód do karencji — bot tika
@@ -1002,8 +1026,9 @@
       if (!Once.said("bonus_markup", 24 * 3600e3)) log(`[BONUS DOM] ${el.outerHTML.replace(/\s+/g, " ").slice(0, 300)}`, "info");
       st.pending = now; this.save(st);
       const href = el.tagName === "A" ? (el.getAttribute("href") || "") : "";
+      if (c.remote && !href) { st.pending = 0; this.save(st); return false; }
       log(`[BONUS] odbieram bonus online („${c.label}").`, "success");
-      if (href && href !== "#" && !/^javascript:/i.test(href)) { Nav.go(el.href || href, "bonus online (antymateria + punkty Akademii)"); return true; }
+      if (href && href !== "#" && !/^javascript:/i.test(href)) { Nav.go(c.remote ? href : (el.href || href), "bonus online (antymateria + punkty Akademii)"); return true; }
       Nav.click(el, "bonus online (antymateria + punkty Akademii)");
       return true;
     },
@@ -2137,7 +2162,11 @@
     return true;
   }
 
-  function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); Nav.go("/", "keepalive: 10 min bez nawigacji"); } }
+    // v3.30.0 (log 29.08 13:26–15:52): keepalive parkował bota na "/" — stronie BEZ
+  // menu gry. Bot bezczynny siedzi tam między ekspedycjami, więc `Bonus.find()`
+  // NIGDY nie widział przycisku ("brak przycisku" co 30 min w logu), a bonus
+  // wpadał tylko wtedy, gdy właściciel sam klikał po grze. Parkujemy na /home.
+  function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); Nav.go("/home", "keepalive: 10 min bez nawigacji"); } }
 
   // ═══ PANEL ══════════════════════════════════════════════════════════════
   // v3.11.0 (UX): powrót do wyglądu panelu z Ateny (2.x) — właściciel: „stary był

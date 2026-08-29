@@ -148,7 +148,10 @@ class Game {
       <div>Requirements: ${(km * this.moonKmCost).toLocaleString("de-DE")} Metal</div>
       <a id="btn-form-moon" href="#">Form a moon</a></div>`;
   }
-  bonusHtml() { return this.bonus ? `<nav id="menu"><a href="/home/onlinebonus" id="btn-online-bonus">Online bonus</a></nav>` : ""; }
+  bonusMenu() { return `<nav id="menu"><a href="/home/onlinebonus" id="btn-online-bonus">Online bonus</a></nav>`; }
+  // `menuOnlyOnHome` odwzorowuje fork: strona "/" (tam parkuje keepalive) i kroki
+  // formularza floty nie mają menu gry, więc przycisku bonusu na nich NIE MA.
+  bonusHtml() { return this.bonus && !(this.menuOnlyOnHome && this.page !== "home") ? this.bonusMenu() : ""; }
   bodyHtml() {
     if (this.loggedOut) return this.loginHtml();
     if (this.errorPage) return `<div class="error-page"><h1>Error occurred</h1><p>Runtime Error — Internal Server Error</p><a href="/">Back to game</a></div>`;
@@ -195,6 +198,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
           const prev = game.active; game.active = { key: p.key, body: "planet" };
           const html = game.fleetPageHtml(); game.active = prev; return html;
         })()
+      : /^\/home(\?|$)/.test(String(u)) ? (game.bonus ? game.bonusMenu() : "<div id='overview'>Overview</div>")
       : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
       : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
@@ -885,6 +889,18 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     await run(g5, { cfg, loads: 6, ticksPerLoad: 2 });
     check("brak przycisku nie blokuje odbioru na następnej stronie", g5.bonusClaims === 1, "odbiorów: " + g5.bonusClaims);
     check("i brak przycisku nie jest karany karencją", !r5a.logs.some(m => /brak przycisku.*wracam za/.test(m)), r5a.logs.filter(m => /BONUS/.test(m)).slice(0, 3).join(" | "));
+
+    // Log 29.08 13:26–15:52: bot bezczynny stoi na stronie BEZ menu gry (keepalive
+    // parkował go na "/"), więc `find()` co 30 min pisał „brak przycisku", a bonus
+    // wpadał tylko wtedy, gdy właściciel sam klikał po grze. Menu dociągamy w tle.
+    const g6 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g6.bonus = true; g6.menuOnlyOnHome = true; g6.page = "fleet";   // strona bez menu
+    const r6 = await run(g6, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("bonus odebrany, choć na bieżącej stronie nie ma menu gry", g6.bonusClaims === 1, "odbiorów: " + g6.bonusClaims + " | " + r6.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+    check("i bot mówi, że zobaczył go w /home", r6.logs.some(m => /widziany w \/home/.test(m)), r6.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+
+    // keepalive nie może parkować bota na stronie bez menu gry
+    check("keepalive przeładowuje na /home, nie na \"/\"", /Nav\.go\("\/home", "keepalive/.test(SRC), (SRC.match(/keepalive: 10 min[^)]*/) || [""])[0]);
   }
 
   console.log("\n── 28. KSIĘŻYCE: stawianie za metal (moduł WYDAJE surowce) ──");

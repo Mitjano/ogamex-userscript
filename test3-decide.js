@@ -456,7 +456,7 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("[TEMPO] nie liczy klikniec operatora", /bot: !!fresh/.test(src) && /manual_at/.test(src));
   check("panel pokazuje ODLICZANIE do nastepnej fali (jak Athena)", /następna za \$\{Math\.ceil/.test(src) && /fala gotowa/.test(src));
   check("rekonesans nie wyrywa strony grającemu (ale nie dłużej niż 5 min)", /manual_at/.test(src) && /now - manual < 45e3 && now - \(st\.at \|\| 0\) < 5 \* 60e3/.test(src));
-  check("bonus online: odbiór przez nawigację, nie klik (wyścig z 2.x)", /const Bonus = \{/.test(src) && /Nav\.go\(el\.href \|\| href, "bonus online/.test(src));
+  check("bonus online: odbiór przez nawigację, nie klik (wyścig z 2.x)", /const Bonus = \{/.test(src) && /Nav\.go\(c\.remote \? href : \(el\.href \|\| href\), "bonus online/.test(src));
   check("bonus online: odliczanie i wyszarzenie nie są odbierane", /odliczanie/.test(src) && /wyszarzony/.test(src));
   check("bonus online: odbiór potwierdzany po przeładowaniu", /if \(st\.pending\)/.test(src) && /kliknięcie nie odebrało bonusu/.test(src));
   check("minery: rozmiar floty liczony pod urobek (right-sizing z 2.x)", /size\(st, available\)/.test(src) && /buffer/.test(src) && /percentile/.test(src));
