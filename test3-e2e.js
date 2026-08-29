@@ -54,6 +54,7 @@ class Game {
     this.asteroidYield = 500_000;    // typowy urobek asteroidy w dzienniku
     this.metal = 3_800_000_000;      // pasek surowców (moduł księżyców liczy z niego budżet)
     this.moonKmCost = 300_000;       // koszt metalu za 1 km średnicy (atrapa cennika forka)
+    this.nextOutsideContent = false;   // „Next" w stopce, POZA #content (jak na Genesis)
     this.bonus = false;       // zielony „Online bonus" w menu (antymateria + punkty Akademii)
     this.bonusClaims = 0;
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
@@ -113,8 +114,8 @@ class Game {
     return `<div id="content">
       <div>Fleets: ${this.slots.fleet.used} / ${this.slots.fleet.total} Expeditions: ${this.slots.expo.used} / ${this.slots.expo.total}</div>
       <div id="step1">${ships || "There are no ships on this planet at this time."}</div>
-      <a class="btn-continue" id="btn-next-fleet2">Next</a>
-    </div>`;
+      ${this.nextOutsideContent ? "" : '<a class="btn-continue" id="btn-next-fleet2">Next</a>'}
+    </div>${this.nextOutsideContent ? '<div class="form-footer"><span>Selected fleet points: 31.272</span><button id="btn-next-fleet2" class="btn btn-success">Next</button></div>' : ""}`;
   }
   step2Html() {
     return `<div id="content">
@@ -887,7 +888,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:5", body: "moon" },
     });
     g2.metal = 1_000_000;        // budżet 250 tys. — nawet 2000 km (600 mln) nie wchodzi
-    const r2 = await run(g2, { cfg, loads: 15, ticksPerLoad: 2 });
+    const r2 = await run(g2, { cfg, loads: 35, ticksPerLoad: 3 });   // ciasny budżet loadów bywał źródłem mrugania
     check("przy pustej kasie NIE stawia księżyca", !g2.moonBuilt, JSON.stringify(g2.moonBuilt));
     check("i mówi wprost, że za drogo", r2.logs.some(m => /za drogo/.test(m)), r2.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
 
@@ -955,6 +956,25 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g2.store.set("genesis.ogamex.net:ogx3_eco_last", JSON.stringify(Date.now() - 60e3));    // pracowała przed chwilą
     const r2 = await run(g2, { cfg, loads: 12, ticksPerLoad: 2 });
     check("po godzinie pracy przerwa nadal działa", r2.logs.some(m => /ekonomia pauzuje/.test(m)), r2.logs.filter(m => /PRZERWA/.test(m)).slice(0, 4).join(" | "));
+  }
+
+  console.log("\n── 31. PRZYCISK NEXT POZA #content (Genesis) ──");
+  {
+    // Incydent 29.08 08:38 i 08:42: formularz wypełniony (55/23/346/451 statków),
+    // zielony „Next" widoczny na ekranie — a bot po 25 s przerywał lot z „przycisk
+    // niedostępny". Szukał wyłącznie wewnątrz #content, a na tym forku przycisk
+    // stoi w stopce formularza, poza tym kontenerem. 2.x miało fallback na całą
+    // stronę i dlatego „na Athenie działało bardzo dobrze".
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.nextOutsideContent = true;              // „Next" tylko w stopce, poza #content
+    const { logs } = await run(g, { cfg, loads: 30, ticksPerLoad: 3 });
+    check("bot znajduje Next w stopce i wysyla flote", g.sent.length >= 1, JSON.stringify(g.sent.map(x => x.from + "->" + x.to + " " + JSON.stringify(x.ships))));
+    check("kolejne kliki nie wysylaja PUSTYCH flot", g.sent.filter(x => Object.keys(x.ships || {}).length > 0).length === 1, JSON.stringify(g.sent.map(x => x.ships)));
+    check("nie melduje falszywie braku przycisku", !logs.some(m => /NIE MA na stronie|pozostał WYŁĄCZONY/.test(m)), logs.filter(m => /przycisk/.test(m)).slice(0, 3).join(" | "));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

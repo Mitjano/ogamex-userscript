@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.16.0
+// @version      3.17.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.16.0";
+  const VERSION = "3.17.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1335,16 +1335,55 @@
         }
       } catch (e) { this.abort(`błąd: ${e.message}`); }
     },
+    // v3.17.0 (incydent 29.08 08:38 i 08:42): formularz był wypełniony, zielony
+    // „Next" widoczny na ekranie, a bot go NIE ZNAJDOWAŁ i po 25 s przerywał lot —
+    // bo szukał wyłącznie wewnątrz #content, a na tym forku przycisk stoi w stopce
+    // formularza, poza tym kontenerem. Teraz szukamy w trzech podejściach, od
+    // najostrożniejszego: dokładny tekst w #content → dokładny tekst gdziekolwiek
+    // (poza panelem i paskiem planet) → krótki przycisk ZAWIERAJĄCY tekst.
     findButton(text) {
+      const want = String(text).trim().toLowerCase();
+      const alt = { next: ["next", "dalej", "weiter", "continue"], "send fleet": ["send fleet", "wyślij flotę", "wyslij flote", "send"] }[want] || [want];
+      const ok = (el) => el.offsetParent !== null && !el.closest("#ogx3-panel") && !el.closest(".planet-select, .moon-select, .sidebar, nav");
+      const label = (el) => String(el.value || el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
       const area = document.querySelector("#content, .content, main, #fleet, .fleet-content, .fleet-form") || document.body;
-      return [...area.querySelectorAll("a, button, input[type='submit']")].find(el => (el.value || el.textContent || "").trim() === text && el.offsetParent !== null && !el.closest("#ogx3-panel")) || null;
+      const sel = "a, button, input[type='submit'], input[type='button'], [role='button']";
+      const inArea = [...area.querySelectorAll(sel)].filter(ok);
+      const anywhere = [...document.querySelectorAll(sel)].filter(ok);
+      const exact = (list) => list.find(el => alt.includes(label(el)));
+      const loose = (list) => list.find(el => { const l = label(el); return l.length <= 24 && alt.some(a => l.includes(a)); });
+      return exact(inArea) || exact(anywhere) || loose(inArea) || loose(anywhere) || null;
     },
     isDisabled(el) { return !el || el.disabled || el.classList.contains("disabled") || el.getAttribute("aria-disabled") === "true"; },
     async clickWhenEnabled(text, maxMs = 25000) {
       const t0 = Date.now();
-      while (Date.now() - t0 < maxMs) { const b = this.findButton(text); if (b && !this.isDisabled(b)) { b.click(); log(`[LOT] klik „${text}"`, "info"); return true; } await sleep(400); }
+      // Rozróżnienie z 2.x (v2.66.3): „przycisk był, ale WYŁĄCZONY" to zupełnie inna
+      // usterka niż „przycisku nie ma" — pierwsze znaczy, że gra nie przyjmuje floty
+      // (np. brak deuteru), drugie, że nie trafiamy w markup.
+      let seen = null, saidWait = false;
+      while (Date.now() - t0 < maxMs) {
+        const b = this.findButton(text);
+        if (b) seen = b;
+        if (b && !this.isDisabled(b)) {
+          if (saidWait) log(`[LOT] przycisk „${text}" ożył po ${((Date.now() - t0) / 1000).toFixed(1)}s — klikam.`, "info");
+          b.click();
+          log(`[LOT] klik „${text}" (<${b.tagName.toLowerCase()}${b.id ? " id=" + b.id : ""}>)`, "info");
+          return true;
+        }
+        if (b && !saidWait) { saidWait = true; log(`[LOT] przycisk „${text}" jest wyłączony — czekam, zamiast klikać w martwy element.`, "info"); }
+        await sleep(400);
+      }
+      // Bez listy KANDYDATÓW ten błąd był nie do rozwiązania z logu: wiadomo było
+      // tylko, że „nie ma przycisku", a nie jak ten przycisk wygląda w markupie.
+      const cands = [...document.querySelectorAll("a, button, input[type='submit'], input[type='button'], [role='button']")]
+        .filter(el => el.offsetParent !== null && !el.closest("#ogx3-panel"))
+        .map(el => `<${el.tagName.toLowerCase()}${el.id ? " id=" + el.id : ""}${el.className ? " class=\"" + String(el.className).slice(0, 40) + "\"" : ""}${el.disabled ? " DISABLED" : ""}>${String(el.value || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}`)
+        .slice(0, 25).join(" | ");
       const txt = (document.querySelector("#content, .content, form") || document.body).textContent.replace(/\s+/g, " ").trim();
-      log(`[LOT] przycisk „${text}" niedostępny przez ${maxMs / 1000}s. Tekst formularza: …${txt.slice(-300)}`, "error");
+      log(seen
+        ? `[LOT] przycisk „${text}" BYŁ na stronie, ale przez ${maxMs / 1000}s pozostał WYŁĄCZONY — gra nie przyjmuje tej floty. KANDYDACI: ${cands}`
+        : `[LOT] przycisku „${text}" NIE MA na stronie (${maxMs / 1000}s). KANDYDACI: ${cands}`, "error");
+      log(`[LOT] tekst formularza: …${txt.slice(-300)}`, "error");
       return false;
     },
     async form(m) {
