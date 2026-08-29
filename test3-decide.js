@@ -289,7 +289,10 @@ console.log("\n── 17. EKSPEDYCJE: seria (rozmiar zamrożony, ostatnia fala d
   const last = expoPlan(s, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 3, lastSendAt: NOW - 120000, gapMs: 60000 });
   check("ostatnia fala serii zabiera CAŁY hangar (zero resztek)", last.ships[0].qty === 600 && last.last === true, JSON.stringify(last.ships));
   const fill = expoPlan(ebase({ slots: { fleet: { used: 0, total: 10 }, expo: { used: 3, total: 6 }, at: NOW } }), ECFG, NOW, null);
-  check("fala zapełniająca ostatni wolny slot też domyka hangar", fill.last === true && fill.ships[0].qty === 800, JSON.stringify(fill.ships));
+  // v3.26.0: fala zamiatajaca bierze do 3x swojego udzialu (SWEEP_CAP_X z 2.x),
+  // a nie caly hangar — inaczej jedna ekspedycja wywozi cala flote bojowa
+  // (log gracza 29.08 12:52: BATTLESHIP x6273, minute pozniej "brak statkow").
+  check("fala zamiatajaca bierze do 3x udzialu, nie caly hangar", fill.last === true && fill.ships[0].qty === 600, JSON.stringify(fill.ships));
 }
 
 console.log("\n── 18. EKSPEDYCJE: flota za mała ──");

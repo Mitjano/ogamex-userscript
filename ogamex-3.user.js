@@ -1024,7 +1024,16 @@
     const frozen = burst && burst.waves === waves && burst.sizes && (burst.sent || 0) < waves ? burst.sizes : null;
     const lastOfBurst = waves === 1 || (frozen && (burst.sent || 0) >= waves - 1) || (expo && expo.total && expo.used >= cap - 1);
     const share = (qty) => { const raw = Math.floor(qty / waves); if (raw <= 0) return qty >= waves ? raw : (waves === 1 ? qty : 0); return raw; };
-    const ships = avail.map(x => ({ type: x.type, qty: lastOfBurst ? x.qty : (frozen?.[x.type] !== undefined ? Math.min(frozen[x.type], x.qty) : share(x.qty)) })).filter(x => x.qty > 0);
+    // v3.26.0 (audyt + log 29.08 12:52): fala domykająca serię brała CAŁY hangar —
+    // 6273 pancerników poszło jedną ekspedycją, a minutę później „brak statków do
+    // wysłania". 2.x miało na to sufit SWEEP_CAP_X = 3 (fala zamiatająca bierze
+    // najwyżej 3× swój udział), dopisany po incydencie 05.08 z 86,7 mld statków.
+    const SWEEP_CAP_X = 3;
+    const ships = avail.map(x => {
+      const base = frozen?.[x.type] !== undefined ? Math.min(frozen[x.type], x.qty) : share(x.qty);
+      const qty = lastOfBurst ? Math.min(x.qty, Math.max(base, (base || Math.ceil(x.qty / waves)) * SWEEP_CAP_X)) : base;
+      return { type: x.type, qty };
+    }).filter(x => x.qty > 0);
     if (!ships.length) return { skip: `flota za mała na ${waves} fal — zmniejsz liczbę fal` };
     // v3.7.1 (audyt): rezerwa slotów istnieje po to, żeby RATUNEK miał czym lecieć.
     // Na starcie uniwersum jest 1 slot floty, więc rezerwa 1 blokowałaby ekspedycje
