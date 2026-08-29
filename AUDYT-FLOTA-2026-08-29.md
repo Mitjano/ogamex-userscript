@@ -56,3 +56,28 @@ wiedzy o terminach powrotów) zostały dziś zamknięte i mają testy regresji.
 Największe ryzyko nie jest już w kodzie, tylko w łańcuchu powiadomienia: **push, którego
 nikt nie odbiera, jest wart tyle, co jego brak** — i to jest jedyna rzecz na tej liście,
 której bot nie naprawi sam.
+
+## 5. Uzupełnienie po zgłoszeniu właściciela (29.08 21:00) — zwinięty pasek misji
+
+Właściciel przypomniał sobie problem z Atheny: **pasek misji pokazuje samą liczbę lotów**
+(„13 Missions: 13 Own · Next: 09:32 · Type: Expedition") i dopiero rozwinięcie zakładki
+pokazuje wiersze ze współrzędnymi i czasami. Athena zderzyła się z tym 05.08 (v2.74.0:
+„wiersze listy flot renderują się DOPIERO po rozwinięciu").
+
+Co to znaczy dla 3.x przy zwiniętym pasku:
+- `Rows.readEvents()` nie widzi nic — zostaje lista `/home/fleetmovementlist`, a ta na
+  forku pokazuje **tylko aktywną parę**. Atak na inną kolonię spada więc do ślepego
+  alarmu, czyli 60 s zwłoki i ratunek „na oślep" zamiast konkretnego celu.
+- Nowy zegar powrotów (v3.35.0) nie ma z czego czytać terminów — a to on chroni przed
+  snajperką powrotów.
+
+**v3.36.0**: `Rows.ensureOpen()` — gdy nie ma ani jednego wiersza, a pasek mówi, że loty
+istnieją, bot klika w pasek (najwyżej raz na minutę, tylko w element, który nie nawiguje).
+Jeśli po kliknięciu wierszy nadal nie ma, raz na 6 h leci zrzut markupu do logu, zamiast
+cichego „nie widzę".
+
+Uwaga wdrożeniowa: pierwsza wersja tej poprawki `await`-owała 1,2 s na render **wewnątrz
+przebiegu obrony** — i E2E natychmiast złapało skutek: dwie identyczne ewakuacje w jednym
+scenariuszu (poszerzone okno wyścigu dwóch przebiegów). Funkcja jest więc synchroniczna:
+klika i wraca, a wiersze czyta następny przebieg. Stabilność sprawdzona czterema
+przebiegami E2E pod rząd.

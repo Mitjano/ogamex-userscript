@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.35.0
+// @version      3.36.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.35.0";
+  const VERSION = "3.36.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -326,6 +326,47 @@
       const trs = [...document.querySelectorAll("#fleet-movement-content tr[class*='row-mission-type-'], #layoutFleetMovements tr[class*='row-mission-type-']")];
       return trs.map(tr => this.classify(tr, own));
     },
+    // v3.36.0 (zgłoszenie właściciela 29.08 20:56 + lekcja Atheny v2.74.0 z 05.08 23:08:
+    // „wiersze listy flot renderują się DOPIERO po rozwinięciu"): zwinięty pasek misji
+    // pokazuje samą LICZBĘ lotów („13 Missions: 13 Own · Type: Expedition") — bez
+    // współrzędnych i bez czasów. Wtedy jedynym źródłem celu zostaje lista ruchów,
+    // a ta na forku pokazuje tylko aktywną parę: atak na inną kolonię schodzi do
+    // ślepego alarmu (60 s zwłoki), a własne powroty w ogóle nie mają zegara.
+    // Rozwijamy panel sami — jednym kliknięciem w pasek, najwyżej raz na minutę.
+    // SYNCHRONICZNIE i bez czekania na render: to jest gorąca ścieżka obrony, a każdy
+    // dodatkowy `await` poszerza okno, w którym dwa przebiegi mogą podjąć tę samą
+    // decyzję (E2E 29.08: dwie identyczne ewakuacje w jednym scenariuszu). Klikamy
+    // i wracamy — wiersze przeczyta następny przebieg, 20 s później.
+    ensureOpen() {
+      const st = Store.get("events_open", {}) || {};
+      if (this.readEvents(new Set()).length) { if (st.at) Store.set("events_open", {}); return false; }
+      const bar = Bar.read();
+      if (!bar || !bar.total) return false;                       // nie ma żadnych lotów = nie ma czego rozwijać
+      if (Date.now() - (st.at || 0) < 60e3) {
+        // klik już był, a wierszy nadal nie ma — markup forka jest inny, niż zakładamy
+        if (st.at && !st.dumped && Date.now() - st.at > 3e3 && !Once.said("events_dom", 6 * 3600e3)) {
+          const box = document.querySelector("#fleet-movement-content, #layoutFleetMovements");
+          log(`[LOTY DOM] kliknąłem w pasek misji, a wierszy nadal nie widzę — zrzut do dopisania selektorów: ${((box && box.outerHTML) || document.body.innerHTML).replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
+          Store.set("events_open", { ...st, dumped: true });
+        }
+        return false;
+      }
+      const mine = (e) => e.closest("#ogx3-panel");
+      const tog = [...document.querySelectorAll("a, button, div, span, td, h2, h3")].find(e => {
+        if (mine(e) || e.offsetParent === null || e.children.length > 3) return false;
+        const href = e.getAttribute && e.getAttribute("href");
+        if (href && href !== "#" && !/^javascript:/i.test(href)) return false;   // nic, co nawiguje
+        const t = (e.textContent || "").replace(/\s+/g, " ").trim();
+        return t.length < 120 && /\d+\s*Missions?\s*:/i.test(t);
+      });
+      if (!tog) return false;
+      Store.set("events_open", { at: Date.now() });
+      log("[LOTY] pasek misji jest zwinięty — rozwijam listę, żeby poznać cele i czasy.", "info");
+      try { tog.click(); } catch { return false; }
+      const n = this.readEvents(new Set()).length;
+      if (n) log(`[LOTY] lista rozwinięta — widzę ${n} wierszy z współrzędnymi.`, "success");
+      return true;
+    },
   };
 
   // Hangar na stronie /fleet: [data-ship-type][data-ship-quantity].
@@ -433,6 +474,7 @@
       const own = PlanetBar.ownKeys();
       const bar = Bar.read(); if (bar) s.bar = { ...bar, at: now };
       s.night = nightWindow(CFG.fs, new Date(now));
+      Rows.ensureOpen();                // zwinięty pasek misji = zero współrzędnych (v3.36.0)
       const evRows = Rows.readEvents(own);
       const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
       Session.maybeRecover();

@@ -155,7 +155,13 @@ class Game {
   bodyHtml() {
     if (this.loggedOut) return this.loginHtml();
     if (this.errorPage) return `<div class="error-page"><h1>Error occurred</h1><p>Runtime Error — Internal Server Error</p><a href="/">Back to game</a></div>`;
-    const events = `${this.bonusHtml()}<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}${this.ownRowsHtml(false)}</tbody></table>`;
+    // v3.36.0: fork pokazuje wiersze lotów DOPIERO po rozwinięciu paska misji —
+    // zwinięty daje samą liczbę („13 Missions: 13 Own"), bez współrzędnych i czasów.
+    const misje = this.threats.length + (this.ownFlights || []).length;
+    const barTxt = `<div id="mission-bar">${misje} Missions: ${(this.ownFlights || []).length} Own${this.threats.length ? ` ${this.threats.length} Hostile` : ""}</div>`;
+    const events = this.eventsCollapsed
+      ? `${this.bonusHtml()}${barTxt}`
+      : `${this.bonusHtml()}<table id="fleet-movement-content"><tbody>${this.rowsHtml(false)}${this.ownRowsHtml(false)}</tbody></table>`;
     let main = "";
     if (this.page === "fleet") main = this.formStep === 0 ? this.fleetPageHtml() : this.formStep === 1 ? this.step2Html() : this.step3Html();
     else if (this.page === "galaxy") {
@@ -276,6 +282,11 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       if (dur) dur.textContent = `Duration of flight (one way): ${secs >= 3600
         ? `${String(Math.floor(secs / 3600)).padStart(2, "0")}:${String(Math.floor(secs % 3600 / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`
         : `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`}`;
+      return;
+    }
+    if (id === "mission-bar" || id === "bar") {  // klik w pasek misji rozwija listę lotów (gra ma jeden pasek)
+      game.eventsCollapsed = false;
+      w.document.body.innerHTML = game.bodyHtml();
       return;
     }
     if (id === "diameter" || (el.id === "diameter")) { return; }
@@ -458,6 +469,20 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     await run(g, { cfg: { autoRescue: false, expo: { enabled: false } }, loads: 8, ticksPerLoad: 3 });
     const tresci = (g.pushes || []).filter(p => /ATAK/.test(p.title || "")).map(p => p.body || "").join(" || ");
     check("drugi atak (inna kolonia, minutę później) TEŻ idzie na telefon", /1:100:5/.test(tresci) && /1:100:9/.test(tresci), tresci.slice(0, 300) || "brak pushy");
+  }
+
+
+  console.log("\n── 2c. ZWINIĘTY PASEK MISJI: bot sam rozwija listę lotów ──");
+  {
+    // Zgłoszenie właściciela 29.08 20:56 (i lekcja Atheny v2.74.0): zwinięty pasek
+    // pokazuje samą liczbę lotów — „13 Missions: 13 Own" — bez współrzędnych i czasów.
+    // Bez rozwinięcia atak na inną kolonię schodzi do ślepego alarmu (60 s zwłoki).
+    const g = new Game({ threats: [{ id: "z1", src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }] });
+    g.eventsCollapsed = true;
+    const { logs } = await run(g, { cfg: { autoRescue: true, expo: { enabled: false } }, loads: 10, ticksPerLoad: 3 });
+    check("bot zauważył zwinięty pasek i kliknął w niego", logs.some(m => /pasek misji jest zwinięty/.test(m)), logs.slice(0, 6).join(" | "));
+    check("po rozwinięciu widzi wiersze ze współrzędnymi", logs.some(m => /lista rozwinięta/.test(m)), logs.filter(m => /LOTY/.test(m)).slice(0, 4).join(" | "));
+    check("i ratuje flotę tak samo jak przy rozwiniętej liście", g.sent.length === 1 && g.sent[0].from === "1:100:5", JSON.stringify(g.sent));
   }
 
   console.log("\n── 3. ATAK NA PLANETĘ przy flocie na księżycu → BEZ RUCHU ──");
