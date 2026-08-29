@@ -114,3 +114,50 @@ formularza, wolnej odpowiedzi serwera, innego markupu paska misji.
 
 Nie zaczynałem żadnego z punktów 2–6 — czekają na decyzję właściciela, bo część z nich
 (zwłaszcza O1–O3) zmienia zachowanie obrony i wymaga nowych scenariuszy E2E, a nie samych regexów.
+
+---
+
+# Aneks — audyt kontrolny po v3.28.0 (29.08, popołudnie)
+
+Sprawdzone na żywym kodzie, nie z pamięci: każde znalezisko odtworzone przypadkiem
+testowym, który jest CZERWONY na v3.28.0 i zielony na v3.29.0 (weryfikacja przez
+podmianę pliku na wersję z HEAD).
+
+## Naprawione w v3.29.0
+
+| # | waga | co było | co jest |
+|---|---|---|---|
+| **O1** | P0 | Wpis lotu z tej pary powodował `continue` w pętli obrony — atak na parę, z której cokolwiek leciało, nie dawał **ani alarmu, ani pusha**. Fazy `done` nikt nigdy nie ustawia, a `recalled` żyje do `recallAt + 60 min`, więc po udanym zawrocie para milczała godzinę. | Ratunku nadal nie ma (flota w powietrzu), ale idzie alarm `error` z pushem, dławiony 5 min: osobna treść dla floty wracającej („sprawdź, czy zdąży wylądować po uderzeniu") i dla lotu w toku. |
+| **O2** | P0 | „Bezpieczna strona" (hold) zapadała na odczycie hangaru sprzed nawet **48 h** — `fleetsAt()` tyle akceptuje. Gdy właściciel sam przestawił flotę, bot uznawał atakowane ciało za puste i milczał. | Świeży odczyt (≤30 min) = spokojny hold jak dotąd. Starszy = alarm `error` z pushem („NIE WIEM, czy flota nadal stoi po bezpiecznej stronie") + rekonesans, gdy do uderzenia >90 s. |
+| **O3** | P0 | Ślepy alarm gasł w całości, gdy istniał **jakikolwiek** rozpoznany atak — także na obcą, pustą kolonię. Dokładnie wariant, dla którego moduł powstał (12.08 na Athenie). | Ślepy alarm działa niezależnie od cudzych ataków; pomijane są tylko pary, które mają własne rozpoznane zagrożenie (obsługuje je pętla wyżej). Nadwyżka na pasku i tak odejmuje loty rozpoznane. |
+| **E2** | P0 | Rezerwa slotów floty była omijana zawsze, gdy fala bierze cały hangar — a po zdjęciu sufitu (v3.28.0) bierze go niemal zawsze. Pole „rezerwa slotów" w panelu nie robiło NIC. | Ominięcie tylko wtedy, gdy poza ciałem startowym **nigdzie nie stoi flota** (transportery na koloniach też potrzebują slotu na ucieczkę). W przeciwnym razie rezerwa obowiązuje. |
+
+Testy: sekcje 33–34 w `test3-decide.js` (8 asercji obronnych + 2 ekonomiczne).
+6 z nich pada na v3.28.0 — to są testy regresji, nie ozdoby.
+
+## Zweryfikowane, znalezisko NIE potwierdzone
+
+- **T1** („asercja o wygasaniu `pending` trafia w niewłaściwą linię") — sprawdzone
+  eksperymentalnie: po usunięciu z `flightStale()` warunku `f.pending && now - f.sentAt > 10 min`
+  test **pada** (`osierocony wpis 'pending' NIE zaslepia obrony pary`). Asercja jest skuteczna;
+  wpis z audytu porannego był błędny.
+
+## Nadal otwarte (świadomie, w kolejności)
+
+| # | waga | rzecz |
+|---|---|---|
+| T2 | P0 | Push na telefon nie jest testowany w ogóle (`GM_xmlhttpRequest` zaślepiony). Dławik `THROTTLE.ATAK` działa po RODZAJU, nie po zagrożeniu — drugi atak w ciągu 5 min może nie wygenerować pusha. Po O1/O2 przez pusha idzie więcej stanów, więc waga rośnie. |
+| T4 | P0 | Gra w atrapie nigdy nie odmawia wysyłki (brak deuteru, brak slotu) — ścieżka najbliższa defektowi „nieśmiertelny `pending`" nie jest przechodzona. |
+| T3 | P1 | Wiersz ACS („Players: 1/2") nie powstaje w atrapie — reguła „jedna współrzędna = CEL" ma tylko regex. |
+| K1 | P0 | Zero widoku zarobku: łup z ekspedycji nie jest parsowany, więc nie da się stwierdzić, czy bot zarabia. 2.x miało potwierdzone endpointy `/messages/messagedata?MessageCategoryType=FLEET_EXPEDITION` i `FLEET_OTHER`. |
+| — | — | **Obrona nigdy nie była sprawdzona na żywo na Genesis** — przycisk „TEST: atak na planetę" w panelu wciąż nieklikany. Wszystko powyżej to dowód z testów, nie z gry. |
+| — | — | Mining nie ruszył ani razu — brak statków (Asteroid Miner) na koncie, nie błąd kodu. |
+
+## Skutek uboczny do obserwacji
+
+Patrol rekonesansu jest domyślnie WYŁĄCZONY (decyzja właściciela z 29.08), więc wiedza
+o hangarach kolonii innych niż baza ekspedycyjna bierze się tylko z Twoich wizyt na
+`/fleet`. Po poprawce O2 atak na taką kolonię da alarm „nie wiem, gdzie flota" zamiast
+cichego „bezpieczna strona". To jest zamierzone — cisza przy ataku jest gorsza niż
+zbędny alarm — ale jeśli takich alarmów będzie dużo, właściwą odpowiedzią jest włączenie
+rekonesansu w trybie `fleet`, nie ściszanie obrony.

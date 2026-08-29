@@ -593,6 +593,51 @@ console.log("── 32. BEZPIECZEŃSTWO KONTA (v3.9.1) ──");
   check("strażnik strony błędu ma dławik", /errpage_at[\s\S]{0,120}?2 \* 60e3/.test(src));
 }
 
+console.log("\n── 33. AUDYT 29.08: cisza obrony i rezerwa slotow (v3.29.0) ──");
+{
+  // O1: lot z tej pary kazal robic `continue` — atak nie dawal ani alarmu, ani pusha.
+  // Faza "done" nie jest ustawiana nigdzie, a "recalled" zyje do recallAt + 60 min.
+  const air = { kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 10 * 60e3, recallAt: NOW - 5 * 60e3, phase: "recalled", recalledAt: NOW - 6 * 60e3 };
+  const s1 = base({ threats: [threat("3:272:7", "moon", 300)], flights: [air] });
+  const r1 = decide(s1, CFG, NOW);
+  check("atak na pare z lotem w powietrzu NIE jest przemilczany", r1.alerts.some(a => a.key === "3:272:7" && a.level === "error"), JSON.stringify(r1.alerts));
+  check("alarm mowi, ze flota WRACA (a nie ze wszystko gra)", r1.alerts.some(a => /WRACA/.test(a.msg)), JSON.stringify(r1.alerts.map(a => a.msg)));
+  check("i nadal nie probuje ratowac floty, ktorej nie ma w hangarze", !r1.actions.some(a => a.kind === "fly"), JSON.stringify(r1.actions));
+
+  // O2: "bezpieczna strona" na odczycie sprzed wielu godzin to zgadywanie.
+  const stale = base({ threats: [threat("3:272:7", "planet", 300)],
+    hangars: { "3:272:7|moon": H(9e9, "moon", 10 * 3600e3) } });
+  const rS = decide(stale, CFG, NOW);
+  check("hold NIE zapada na hangarze sprzed 10 h", !rS.actions.some(a => a.kind === "hold"), JSON.stringify(rS.actions));
+  check("zamiast tego alarm z pushem i rekonesans", rS.alerts.some(a => a.level === "error" && /NIE WIEM/.test(a.msg)) && rS.actions.some(a => a.kind === "recon"), JSON.stringify(rS.actions) + JSON.stringify(rS.alerts.map(a => a.msg)));
+  const okFresh = base({ threats: [threat("3:272:7", "planet", 300)],
+    hangars: { "3:272:7|moon": H(9e9, "moon", 5 * 60e3) } });
+  check("swiezy odczyt (5 min) nadal daje spokojne 'bezpieczna strona'", decide(okFresh, CFG, NOW).actions.some(a => a.kind === "hold"), JSON.stringify(decide(okFresh, CFG, NOW).actions));
+
+  // O3: slepy alarm gasl w calosci, gdy gdziekolwiek trwal rozpoznany atak.
+  const blind = base({ barExcess: { active: true, count: 1, since: NOW - 70e3 },
+    threats: [threat("5:100:4", "planet", 300)],
+    hangars: { "3:272:7|moon": H(9e9), "5:100:4|planet": H(10) } });
+  const rB = decide(blind, CFG, NOW);
+  check("slepy alarm dziala mimo rozpoznanego ataku na INNA kolonie", rB.actions.some(a => a.blind && a.fromKey === "3:272:7"), JSON.stringify(rB.actions));
+  check("ale nie dubluje akcji na parze, ktora ma wlasny atak", !rB.actions.some(a => a.blind && a.fromKey === "5:100:4"), JSON.stringify(rB.actions));
+}
+
+console.log("\n── 34. EKSPEDYCJE: rezerwa slotow po zdjeciu sufitu (v3.29.0) ──");
+{
+  // Odkad fala domykajaca bierze caly hangar, `takesAll` jest prawdziwe niemal
+  // zawsze — a wtedy pole "rezerwa slotow" w panelu nie robilo NIC.
+  const cfgR = { ...ECFG, expo: { ...ECFG.expo, slotReserve: 1, waves: 1 } };
+  const one = { fleet: { used: 4, total: 5 }, expo: { used: 0, total: 4 }, at: NOW };
+  const alone = expoPlan(ebase({ slots: one }), cfgR, NOW, null);
+  check("caly hangar leci, gdy nigdzie indziej nie ma floty (nie ma czego ratowac)", !alone.skip, JSON.stringify(alone));
+  const withOther = ebase({ slots: one });
+  withOther.hangars["1:100:9|planet"] = { total: 300, at: NOW - 60e3, ships: [{ type: "SMALL_CARGO", qty: 300 }] };
+  const guarded = expoPlan(withOther, cfgR, NOW, null);
+  check("ale rezerwa OBOWIAZUJE, gdy na innej kolonii stoja transportery", /rezerw/.test(guarded.skip || ""), JSON.stringify(guarded));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

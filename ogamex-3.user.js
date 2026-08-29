@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.28.0
+// @version      3.29.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.28.0";
+  const VERSION = "3.29.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -646,10 +646,34 @@
       }
       const bodies = attackedBodies(k);
       const f = inFlightFrom(k);
-      if (f) { if (f.kind === "air" && f.phase === "launched") { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); } continue; }
+      if (f) {
+        if (f.kind === "air" && f.phase === "launched") { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); }
+        // v3.29.0 (audyt O1): wpis lotu kazał tu ROBIĆ `continue` — czyli atak na parę,
+        // z której coś już leci, nie dawał ani alarmu, ani pusha. Fazy "done" nikt
+        // nigdy nie ustawia, a faza "recalled" żyje aż do `recallAt + 60 min`, więc
+        // przez godzinę po udanym zawrocie para była cicha. Ratować nie ma czego
+        // (flota w powietrzu), ale MILCZEĆ nie wolno: wracająca flota może wylądować
+        // dokładnie pod uderzenie i tylko właściciel może to rozstrzygnąć.
+        else if (f.phase === "recalled" || f.phase === "recall_clicked") alerts.push({ key: k, level: "error", throttleMs: 5 * 60e3, msg: `ATAK na [${k}] za ${secs}s, a flota WRACA z [${f.toKey}] — sprawdź, czy zdąży wylądować po uderzeniu; nie mam czego ratować` });
+        else alerts.push({ key: k, level: "error", throttleMs: 5 * 60e3, msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa lot (${f.kind}/${f.phase}) — flota jest w powietrzu, reaguj ręcznie, jeśli wróci za wcześnie` });
+        continue;
+      }
       // ratujemy z ciała, które JEST pod atakiem; przy dwóch takich — z większego
       const hitBodies = all.filter(x => bodies.has(x.body) || bodies.has("unknown")).sort((a, b) => b.total - a.total);
-      if (!hitBodies.length) { actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona` }); continue; }
+      if (!hitBodies.length) {
+        // v3.29.0 (audyt O2): `fleetsAt` przyjmuje odczyty hangaru sprzed nawet 48 h,
+        // więc „flota stoi na drugim ciele, jest bezpieczna" potrafiło opierać się na
+        // wczorajszej wiedzy. Jeśli sam przestawiłeś flotę, bot uznawał atakowane
+        // ciało za puste i milczał. Świeży odczyt (30 min) = decyzja; stary = alarm
+        // z pushem i prośba o rekonesans, bo to jest dokładnie stan „nie wiem".
+        const freshest = Math.max(...all.map(x => x.at || 0), 0);
+        if (now - freshest > 30 * 60e3) {
+          alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — hangar czytany ${Math.round((now - freshest) / 60000)} min temu, NIE WIEM, czy flota nadal stoi po bezpiecznej stronie` });
+          if (secs > 90) actions.push({ kind: "recon", key: k, body: [...bodies][0] === "moon" ? "moon" : "planet", why: `atak, a dane o hangarze [${k}] sprzed ${Math.round((now - freshest) / 60000)} min — sprawdzam` });
+          continue;
+        }
+        actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona` }); continue;
+      }
       const src0 = hitBodies[0];
       if (hitBodies.length > 1) alerts.push({ key: k, level: "warn", msg: `flota na OBU ciałach [${k}] pod atakiem — ratuję najpierw ${src0.body} (${src0.total.toLocaleString("pl-PL")}), drugie ciało w następnym przebiegu` });
       fleet.body = src0.body; fleet.total = src0.total;
@@ -672,10 +696,15 @@
     // ŚLEPY ALARM: pasek widzi obce loty, których nie umiemy przypisać do celu.
     // Nie zgadujemy celu — ratujemy tam, gdzie stoi flota (największy hangar),
     // dokładnie tak, jak 2.x po katastrofie 12.08.
-    if (s.barExcess && s.barExcess.active && !(s.threats || []).some(t => t.attack && t.arriveAt > now)) {
+    // v3.29.0 (audyt O3): warunek brzmiał „i nie ma ŻADNEGO rozpoznanego ataku",
+    // więc jeden rozpoznany atak na pustą kolonię gasił ślepy alarm dla całej
+    // reszty konta — dokładnie wariant, dla którego moduł powstał (12.08 na
+    // Athenie). Nadwyżka na pasku i tak odejmuje loty rozpoznane; pary z własnym
+    // atakiem obsługuje pętla wyżej, więc tutaj wystarczy je pominąć.
+    if (s.barExcess && s.barExcess.active) {
       const withFleet = Object.keys(pairs)
         .map(k => ({ k, f: fleetsAt(k).sort((a, b) => b.total - a.total)[0] }))
-        .filter(x => x.f && !inFlightFrom(x.k))
+        .filter(x => x.f && !inFlightFrom(x.k) && threatsFor(x.k).length === 0)
         .sort((a, b) => b.f.total - a.f.total);
       if (withFleet.length) {
         const t = withFleet[0];
@@ -1052,7 +1081,14 @@
     // na zawsze. Ale gdy fala zabiera CAŁY hangar, ratować nie ma już czego —
     // wtedy rezerwa jest bezprzedmiotowa i wolno zająć ostatni slot.
     const takesAll = avail.every(a => (ships.find(x => x.type === a.type)?.qty || 0) >= a.qty);
-    if (!takesAll && fleet && fleet.total && fleet.total - fleet.used <= (e.slotReserve || 0)) {
+    // v3.29.0 (audyt E2): odkąd fala domykająca bierze CAŁY hangar, `takesAll` jest
+    // prawdziwe niemal zawsze — a wtedy rezerwa slotów w panelu nie robiła NIC.
+    // „Ratować nie ma czego" jest prawdą tylko wtedy, gdy poza tym ciałem nie stoi
+    // nigdzie indziej żadna flota (na innych planetach stoją transportery i one
+    // też potrzebują slotu, żeby uciec). Sprawdzamy to na znanych hangarach.
+    const fleetElsewhere = Object.entries(s.hangars || {})
+      .some(([kk, hh]) => kk !== `${homeKey}|${body}` && (hh?.total || 0) > 0 && now - (hh.at || 0) < 48 * 3600e3);
+    if ((!takesAll || fleetElsewhere) && fleet && fleet.total && fleet.total - fleet.used <= (e.slotReserve || 0)) {
       return { skip: `wolne sloty floty ≤ rezerwa (${e.slotReserve}) — fala zostawiłaby flotę bez slotu na ucieczkę` };
     }
     const [g, sy] = homeKey.split(":");
