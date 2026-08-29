@@ -480,7 +480,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const g = new Game({ threats: [{ id: "z1", src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }] });
     g.eventsCollapsed = true;
     const { logs } = await run(g, { cfg: { autoRescue: true, expo: { enabled: false } }, loads: 10, ticksPerLoad: 3 });
-    check("bot zauważył zwinięty pasek i kliknął w niego", logs.some(m => /pasek misji jest zwinięty/.test(m)), logs.slice(0, 6).join(" | "));
+    check("bot zauważył zwiniętą listę i kliknął w kandydata", logs.some(m => /lista lotów zwinięta — klikam w/.test(m)), logs.slice(0, 6).join(" | "));
     check("po rozwinięciu widzi wiersze ze współrzędnymi", logs.some(m => /lista rozwinięta/.test(m)), logs.filter(m => /LOTY/.test(m)).slice(0, 4).join(" | "));
     check("i ratuje flotę tak samo jak przy rozwiniętej liście", g.sent.length === 1 && g.sent[0].from === "1:100:5", JSON.stringify(g.sent));
   }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.36.0
+// @version      3.37.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.36.0";
+  const VERSION = "3.37.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -342,29 +342,46 @@
       if (this.readEvents(new Set()).length) { if (st.at) Store.set("events_open", {}); return false; }
       const bar = Bar.read();
       if (!bar || !bar.total) return false;                       // nie ma żadnych lotów = nie ma czego rozwijać
-      if (Date.now() - (st.at || 0) < 60e3) {
-        // klik już był, a wierszy nadal nie ma — markup forka jest inny, niż zakładamy
-        if (st.at && !st.dumped && Date.now() - st.at > 3e3 && !Once.said("events_dom", 6 * 3600e3)) {
-          const box = document.querySelector("#fleet-movement-content, #layoutFleetMovements");
-          log(`[LOTY DOM] kliknąłem w pasek misji, a wierszy nadal nie widzę — zrzut do dopisania selektorów: ${((box && box.outerHTML) || document.body.innerHTML).replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
-          Store.set("events_open", { ...st, dumped: true });
-        }
-        return false;
-      }
+      if (Date.now() - (st.at || 0) < 30e3) return false;         // jedna próba na pół minuty
+      // v3.37.0 (zrzut właściciela 29.08 21:57): kliknięcie w licznik misji NIE
+      // napełniło listy — kontener `#fleet-movement-content` był obecny i PUSTY,
+      // czyli fork dociąga wiersze dopiero na właściwe kliknięcie. Nie zgadujemy
+      // jednego selektora: próbujemy kilku kandydatów, po jednym na przebieg,
+      // i mówimy w logu, w co klikamy. Gdy żaden nie zadziała — zrzut markupu
+      // paska (tego jeszcze nie mieliśmy) i prośba o jedno ręczne rozwinięcie.
       const mine = (e) => e.closest("#ogx3-panel");
-      const tog = [...document.querySelectorAll("a, button, div, span, td, h2, h3")].find(e => {
-        if (mine(e) || e.offsetParent === null || e.children.length > 3) return false;
+      const clickable = (e) => {
+        if (!e || mine(e) || e.offsetParent === null) return false;
         const href = e.getAttribute && e.getAttribute("href");
-        if (href && href !== "#" && !/^javascript:/i.test(href)) return false;   // nic, co nawiguje
+        return !(href && href !== "#" && !/^javascript:/i.test(href));          // nic, co nawiguje
+      };
+      const barEl = [...document.querySelectorAll("a, button, div, span, td, h2, h3")].find(e => {
+        if (!clickable(e) || e.children.length > 3) return false;
         const t = (e.textContent || "").replace(/\s+/g, " ").trim();
         return t.length < 120 && /\d+\s*Missions?\s*:/i.test(t);
       });
-      if (!tog) return false;
-      Store.set("events_open", { at: Date.now() });
-      log("[LOTY] pasek misji jest zwinięty — rozwijam listę, żeby poznać cele i czasy.", "info");
-      try { tog.click(); } catch { return false; }
+      const wrap = document.querySelector("#layoutFleetMovements");
+      const cands = [
+        { el: barEl, why: "licznik misji" },
+        { el: barEl && barEl.parentElement, why: "rodzic licznika misji" },
+        { el: wrap && wrap.querySelector(".header .title"), why: "nagłówek „Events”" },
+        { el: wrap && wrap.querySelector(".header"), why: "pasek nagłówka listy lotów" },
+        { el: wrap, why: "cały kontener listy lotów" },
+      ].filter(c => clickable(c.el));
+      const tried = st.tried || 0;
+      if (tried >= cands.length) {
+        if (!Once.said("events_dom", 6 * 3600e3)) {
+          log(`[LOTY DOM] żadne z ${cands.length} kliknięć nie rozwinęło listy lotów. ROZWIŃ JĄ RĘCZNIE RAZ — gra zapamiętuje ten wybór. Markup paska: ${((barEl && (barEl.parentElement || barEl).outerHTML) || "brak paska").replace(/\s+/g, " ").slice(0, 1200)}`, "error");
+        }
+        Store.set("events_open", { at: Date.now(), tried, dumped: true });
+        return false;
+      }
+      const pick = cands[tried];
+      Store.set("events_open", { at: Date.now(), tried: tried + 1 });
+      log(`[LOTY] lista lotów zwinięta — klikam w ${pick.why} (próba ${tried + 1}/${cands.length}).`, "info");
+      try { pick.el.click(); } catch { return false; }
       const n = this.readEvents(new Set()).length;
-      if (n) log(`[LOTY] lista rozwinięta — widzę ${n} wierszy z współrzędnymi.`, "success");
+      if (n) { log(`[LOTY] lista rozwinięta — widzę ${n} wierszy ze współrzędnymi (${pick.why}).`, "success"); Store.set("events_open", {}); }
       return true;
     },
   };
