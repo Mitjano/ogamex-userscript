@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.21.0
+// @version      3.22.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.21.0";
+  const VERSION = "3.22.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -825,14 +825,23 @@
         return false;
       }
       const metal = this.metal();
-      const budget = metal ? Math.floor(metal * Math.min(1, Math.max(0.01, CFG.moon.maxMetalShare || 0.25))) : null;
+      // v3.22.0 (audyt): przy nieodczytanym metalu budzet byl null, a warunek
+      // "budget == null || c <= budget" przepuszczal PIERWSZA srednice z listy (8944 km).
+      // Nieznany stan konta nie moze znaczyc "wydaj ile chcesz" — wtedy nie budujemy.
+      if (metal == null) {
+        const curX = this.st(); this.noteTry(curX, key0); curX.m = null; this.save(curX);
+        log("[KSIEZYC] nie odczytalem stanu metalu — nie ryzykuje zakupu najwiekszej srednicy.", "error");
+        log("[KSIEZYC DOM] pasek surowcow: " + ((document.querySelector(".resource-item-metal, #resources_metal, [class*='metal']") || document.body).outerHTML || "").replace(/\s+/g, " ").slice(0, 300), "warn");
+        return false;
+      }
+      const budget = Math.floor(metal * Math.min(1, Math.max(0.01, CFG.moon.maxMetalShare ?? 0.25)));
       let picked = null;
       for (const km of this.KM) {
         if (km < (CFG.moon.minKm || 1000)) break;
         await this.setKm(input, km);
         const c = this.cost();
         if (c == null) continue;
-        if (budget == null || c <= budget) { picked = { km, cost: c }; break; }
+        if (c <= budget) { picked = { km, cost: c }; break; }
       }
       if (!picked) {
         const n = this.noteTry(cur, key0);
@@ -1380,8 +1389,16 @@
         if (m.step === "form") {
           // v3.9.0 (audyt): jeśli klik "Send fleet" przeładował stronę, misja zostaje
           // w Store — bez tej bramki bot wysłałby DRUGĄ identyczną falę.
+          // v3.22.0 (audyt 29.08, potwierdzone logiem 09:27:03 "juz poszla 81s temu"):
+          // bramka anty-duplikat powstala dla RATUNKU (jeden lot na pare), a fale
+          // ekspedycji leca z tego samego ciala na ten sam cel co 60-90 s — wiec kasowala
+          // fale 2..N po cichu. 2.x wypinalo z niej ekspedycje wprost. Dla ekonomii
+          // zostaje waskie okno 20 s: chroni przed podwojnym klikiem po przeladowaniu,
+          // ale nie zjada serii.
+          const ECO_KINDS = ["expedition", "asteroid", "debris"];
+          const guardMs = ECO_KINDS.includes(m.kind) ? 20e3 : 3 * 60e3;
           const ls = Store.get("last_send", null);
-          if (ls && Date.now() - ls.at < 3 * 60e3 && ls.toKey === m.toKey && ls.from === m.fromKey) {
+          if (ls && Date.now() - ls.at < guardMs && ls.toKey === m.toKey && ls.from === m.fromKey) {
             log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");
             Store.del("mission"); return;
           }
@@ -2304,7 +2321,7 @@
               const left = Math.max(0, (burst.lastSendAt + (burst.gapMs || 0)) - now);
               return `następna za ${Math.ceil(left / 1000)} s`;
             }
-            if (/czekam na powroty|ekspedycje \d/.test(p.skip)) return "czekam na powroty";
+            if (/czekam na powroty|ekspedycje \d/.test(p.skip)) return p.skip.replace("— czekam na powroty", "").trim();   // v3.22.0: NIE ukrywamy "(limit fal N)" — to jedyne miejsce, gdzie widac, ze bot blokuje sie wlasnym ustawieniem
             if (/rekonesans/.test(p.skip)) return "czekam na odczyt hangaru";
             return p.skip.slice(0, 26);
           }

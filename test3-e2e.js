@@ -1035,6 +1035,29 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("i w praktyce nie przelacza sie na kolonie", !logs.some(m => /przechodzę na .*1:100:9/.test(m)), logs.filter(m => /REKONESANS/.test(m)).slice(0, 4).join(" | "));
   }
 
+  console.log("\n── 34. SERIA FAL: bramka anty-duplikat nie moze zjadac fali 2 ──");
+  {
+    // Audyt 29.08 + log gracza 09:27:03 „wysyłka do [1:217:16] już poszła 81s temu —
+    // nie powtarzam": bramka pisana dla ratunku (3 min, ta sama para → ten sam cel)
+    // kasowała kolejne fale ekspedycji, bo wszystkie lecą stamtąd samego na poz. 16.
+    const cfg = { autoRescue: true, recon: true, reconMs: 300000, bonus: { enabled: false }, aster: { enabled: false },
+      expo: { enabled: true, waves: 2, gapMinSec: 0, gapMaxSec: 0, slotReserve: 0 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({ hangars: { "1:100:5|moon": { LARGE_CARGO: 40, LIGHT_FIGHTER: 20 } } });
+    g.slots = { fleet: { used: 0, total: 8 }, expo: { used: 0, total: 4 } };
+    const r1 = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("(warunek wstepny) fala 1 poszla", g.sent.filter(x => /16$/.test(String(x.to || ""))).length === 1, JSON.stringify(g.sent.map(x => x.to)));
+    // W grze odstep miedzy falami to 60-90 s; symulator nie czeka minuty, wiec
+    // przesuwamy zegar o 30 s — wiecej niz okno 20 s, ktore zostawilismy ekonomii.
+    advance(g, 30e3);
+    const r2 = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const expo = g.sent.filter(x => /16$/.test(String(x.to || "")));
+    const logs = r1.logs.concat(r2.logs);
+    check("fala 2 tez wyszla (bramka nie zjada serii)", expo.length >= 2, "fal: " + expo.length + " | " + logs.filter(m => /EXPO/.test(m)).slice(0, 4).join(" | "));
+    // ...ale bramka nadal ma chronic przed WYSLANIEM TEJ SAMEJ fali dwa razy
+    check("bramka nadal chroni przed podwojna wysylka tej samej fali", expo.length === 2, "fal: " + expo.length);
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

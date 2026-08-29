@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.21.0, ~2215 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.22.0, ~2230 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
@@ -33,5 +33,6 @@ Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane cia
 ## Historia i kontekst
 - `STAN-I-PLAN.md` — dziennik 2.x (ostatnie sekcje = 27.08: brama, ucieczka na sąsiedni księżyc, pamięć ataku, 7 błędów stanu).
 - `AUDYT-3.0-2026-08-28.md` — dlaczego 3.0 i co przenosimy.
+- `AUDYT-3.x-2026-08-29.md` — pełny audyt czterech warstw (obrona/ekonomia/testy/panel) z listą otwartych P0.
 - Audyty 2.x: `AUDYT-HUBY-2026-08-27.md`, `AUDYT-HUBY-2-OBRONA-2026-08-27.md`, `MOON-STRATEGY-2026-08-26.md`.
 - Fakty o forku (potwierdzone zrzutami): panel **Events i pasek misji są GLOBALNE** (wszystkie kolonie), lista `/home/fleetmovementlist` pokazuje tylko aktywną parę · wiersz ACS ma „Players: 1/2" zamiast źródła, więc jedyna współrzędna to CEL · przełącznik ciała celu to `data-planet-type` (1=planeta, 2=księżyc) · misja „stacjonuj" to `.mission-item.DEPLOY` · zawrót to `a.x_btn_fleet_return` · czas lotu: „Duration of flight … MM:SS".
