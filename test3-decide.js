@@ -288,11 +288,13 @@ console.log("\n── 17. EKSPEDYCJE: seria (rozmiar zamrożony, ostatnia fala d
   check("2. fala serii = zamrożone 200, nie 150 (600/4)", p.ships[0].qty === 200, JSON.stringify(p.ships));
   const last = expoPlan(s, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 3, lastSendAt: NOW - 120000, gapMs: 60000 });
   check("ostatnia fala serii zabiera CAŁY hangar (zero resztek)", last.ships[0].qty === 600 && last.last === true, JSON.stringify(last.ships));
+  const fillAvail = ebase().hangars["1:100:5|planet"].ships[0].qty;
   const fill = expoPlan(ebase({ slots: { fleet: { used: 0, total: 10 }, expo: { used: 3, total: 6 }, at: NOW } }), ECFG, NOW, null);
-  // v3.26.0: fala zamiatajaca bierze do 3x swojego udzialu (SWEEP_CAP_X z 2.x),
-  // a nie caly hangar — inaczej jedna ekspedycja wywozi cala flote bojowa
-  // (log gracza 29.08 12:52: BATTLESHIP x6273, minute pozniej "brak statkow").
-  check("fala zamiatajaca bierze do 3x udzialu, nie caly hangar", fill.last === true && fill.ships[0].qty === 600, JSON.stringify(fill.ships));
+  // v3.28.0 (zgloszenie 29.08 13:26: "ostatnia fala 4/4 ma wyslac WSZYSTKO"):
+  // fala zapelniajaca ostatni wolny slot ekspedycji zamiata hangar do zera.
+  // Sufit 3x udzialu z 2.x chronil flote parkowana po FS — na Genesis takiej
+  // floty nie ma, wiec zostawial tylko statki bezczynne w hangarze.
+  check("fala zamiatajaca zabiera caly hangar (nic nie zostaje w domu)", fill.last === true && fill.ships[0].qty === fillAvail, JSON.stringify(fill.ships) + " | w hangarze: " + fillAvail);
 }
 
 console.log("\n── 18. EKSPEDYCJE: flota za mała ──");

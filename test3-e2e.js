@@ -872,6 +872,19 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("inna bramka niż cisza (sufit nawigacji) wstrzymuje odbiór", g4.bonusClaims === 0, "odbiorów: " + g4.bonusClaims);
     check("i bot pisze, dlaczego nie odbiera (koniec cichego nicnierobienia)", r4.logs.some(m => /\[BONUS\] nie odbieram teraz/.test(m)), r4.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
     check("i bot mówi dlaczego", r2.logs.some(m => /odliczanie/.test(m)), r2.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+
+    // Zgłoszenie 29.08 13:25: „bot nie klika online bonus". Bot tika także na
+    // stronach BEZ menu gry (kroki formularza floty, ekran po wysyłce), a każde
+    // takie tiknięcie odsuwało próbę o 10 minut — przy ekspedycjach co parę minut
+    // bonus nie wracał praktycznie nigdy. Brak przycisku to nie kara, tylko
+    // „spróbuj na następnej stronie".
+    const g5 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g5.bonus = false;                       // strona bez menu gry
+    const r5a = await run(g5, { cfg, loads: 6, ticksPerLoad: 2 });
+    g5.bonus = true;                        // menu wróciło, bonus czeka
+    await run(g5, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("brak przycisku nie blokuje odbioru na następnej stronie", g5.bonusClaims === 1, "odbiorów: " + g5.bonusClaims);
+    check("i brak przycisku nie jest karany karencją", !r5a.logs.some(m => /brak przycisku.*wracam za/.test(m)), r5a.logs.filter(m => /BONUS/.test(m)).slice(0, 3).join(" | "));
   }
 
   console.log("\n── 28. KSIĘŻYCE: stawianie za metal (moduł WYDAJE surowce) ──");

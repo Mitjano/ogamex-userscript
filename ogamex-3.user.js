@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.26.0
+// @version      3.28.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.26.0";
+  const VERSION = "3.28.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -959,8 +959,15 @@
       const el = this.find();
       const c = this.claimable(el);
       if (!c.ok) {
-        st.nextTry = now + (c.wait || 10 * 60e3); this.save(st);
-        if (!Once.said("bonus|" + c.why, 6 * 3600e3)) log(`[BONUS] nie odbieram: ${c.why}.`, "info");
+        // v3.27.0 (zgłoszenie 29.08 13:25: „bot nie klika online bonus, na Athenie
+        // działało"): BRAK przycisku na stronie to nie powód do karencji — bot tika
+        // także na stronach bez menu gry (kroki formularza floty, ekrany po wysyłce),
+        // a każde takie tiknięcie odsuwało próbę o 10 MINUT. Przy ekspedycjach co parę
+        // minut bonus nie wracał praktycznie nigdy, a log milczał (dławik 6 h).
+        // Athena odsuwała próbę TYLKO dla wyszarzenia (10 min) i odliczania (5 min);
+        // „nie widzę przycisku" znaczyło po prostu „spróbuj na następnej stronie".
+        if (c.wait) { st.nextTry = now + c.wait; this.save(st); }
+        if (!Once.said("bonus|" + c.why, 30 * 60e3)) log(`[BONUS] nie odbieram: ${c.why}${c.wait ? ` — wracam za ${Math.round(c.wait / 60000)} min` : " (spróbuję na następnej stronie)"}.`, "info");
         return false;
       }
       if (!Once.said("bonus_markup", 24 * 3600e3)) log(`[BONUS DOM] ${el.outerHTML.replace(/\s+/g, " ").slice(0, 300)}`, "info");
@@ -1024,15 +1031,20 @@
     const frozen = burst && burst.waves === waves && burst.sizes && (burst.sent || 0) < waves ? burst.sizes : null;
     const lastOfBurst = waves === 1 || (frozen && (burst.sent || 0) >= waves - 1) || (expo && expo.total && expo.used >= cap - 1);
     const share = (qty) => { const raw = Math.floor(qty / waves); if (raw <= 0) return qty >= waves ? raw : (waves === 1 ? qty : 0); return raw; };
-    // v3.26.0 (audyt + log 29.08 12:52): fala domykająca serię brała CAŁY hangar —
-    // 6273 pancerników poszło jedną ekspedycją, a minutę później „brak statków do
-    // wysłania". 2.x miało na to sufit SWEEP_CAP_X = 3 (fala zamiatająca bierze
-    // najwyżej 3× swój udział), dopisany po incydencie 05.08 z 86,7 mld statków.
-    const SWEEP_CAP_X = 3;
+    // ── OSTATNIA fala serii zabiera CAŁY hangar ──
+    // Udział fali to dzielenie w dół, więc po wszystkich falach w hangarze
+    // zostaje reszta z zaokrąglenia plus produkcja z czasu serii. Fala
+    // domykająca zabiera to wszystko, żeby flota nie stała w domu do powrotu.
+    // v3.26.0 dopisała tu sufit 3× udziału (port SWEEP_CAP_X z 2.x, gdzie
+    // chronił flotę bojową zaparkowaną po porannym FS). v3.28.0 GO ZDEJMUJE:
+    // na Genesis nie ma FS ani floty parkowanej w domu — wszystko poza
+    // `excludeTypes` jest flotą ekspedycyjną, a sufit zostawiał ją bezczynnie
+    // w hangarze (log 29.08 13:26: ostatnia fala 4/4 wzięła 1236 pancerników
+    // zamiast całej reszty). Statki, które mają zostać w domu, wpisuje się do
+    // wykluczeń — to jedyny właściwy hamulec na tym uniwersum.
     const ships = avail.map(x => {
       const base = frozen?.[x.type] !== undefined ? Math.min(frozen[x.type], x.qty) : share(x.qty);
-      const qty = lastOfBurst ? Math.min(x.qty, Math.max(base, (base || Math.ceil(x.qty / waves)) * SWEEP_CAP_X)) : base;
-      return { type: x.type, qty };
+      return { type: x.type, qty: lastOfBurst ? x.qty : base };
     }).filter(x => x.qty > 0);
     if (!ships.length) return { skip: `flota za mała na ${waves} fal — zmniejsz liczbę fal` };
     // v3.7.1 (audyt): rezerwa slotów istnieje po to, żeby RATUNEK miał czym lecieć.
