@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.40.0
+// @version      3.40.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.40.0";
+  const VERSION = "3.40.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -309,6 +309,34 @@
         friendly: friendlyCls, hostile: hostileCls, attack, spy: isSpy && !friendlyCls, isReturn,
         html: (tr.outerHTML || "").replace(/\s+/g, " ").slice(0, 900) };
     },
+    // v3.40.1 (audyt obrony 30.08) — SONDA DIAGNOSTYCZNA, bez wpływu na decyzje.
+    // Lista ruchów pokazuje tylko aktywną parę, więc atak na pozostałe 13 kolonii jest
+    // dla bota niewidoczny inaczej niż jako liczba na pasku. Strona floty przyjmuje
+    // `?planet=UUID` (używa tego `Hangar.scanRemote`) — sprawdzamy, czy lista ruchów
+    // też. Jeśli tak, cała ślepota znika BEZ rozwijania czegokolwiek w DOM.
+    // Sonda tylko LOGUJE wynik. Po 3 nierozstrzygniętych próbach wyłącza się sama.
+    async probePlanetList(own) {
+      const st = Store.get("mv_probe", { n: 0, done: false, at: 0 }) || {};
+      if (st.done || (st.n || 0) >= 3) return;
+      if (Date.now() - (st.at || 0) < 10 * 60e3) return;
+      const act = PlanetBar.active();
+      const other = PlanetBar.pairs().find(p => !act || p.key !== act.key);
+      if (!other) return;
+      const el = PlanetBar.anchor(other.key, "planet");
+      const m = el && (el.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i);
+      if (!m) return;
+      Store.set("mv_probe", { ...st, n: (st.n || 0) + 1, at: Date.now() });
+      try {
+        const res = await fetchT(`${this.URL}?planet=${m[1]}`, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!res.ok) { log(`[SONDA LISTY] /home/fleetmovementlist?planet= dla [${other.key}] → HTTP ${res.status}. Parametr chyba nieobsługiwany.`, "warn"); return; }
+        const html = await res.text();
+        if (looksLoggedOut(res, html)) return;
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const rows = [...doc.querySelectorAll("tr[class*='row-mission-type-']")].map(tr => this.classify(tr, own));
+        const coords = [...new Set(rows.flatMap(r => [r.src, r.dst]).filter(Boolean))];
+        log(`[SONDA LISTY] pytałem o [${other.key}] → ${rows.length} wierszy, współrzędne: ${coords.join(", ") || "brak"}. Jeśli widać TU koordy tej kolonii, a nie tylko aktywnej pary — parametr DZIAŁA i ślepota na kolonie znika.`, "warn");
+      } catch (e) { log(`[SONDA LISTY] błąd: ${e.message}`, "warn"); }
+    },
     async fetchList(own) {
       try {
         const res = await fetchT(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
@@ -386,7 +414,9 @@
         // kandydatów czekamy 10 minut i próbujemy CAŁĄ listę od nowa — strona floty
         // bywa renderowana inaczej niż przegląd, więc następne wejście może trafić.
         if (Date.now() - (st.at || 0) < 10 * 60e3) return false;
-        if (!Once.said("events_dom", 6 * 3600e3)) {
+        // v3.40.1: dumpa dostawaliśmy raz na 6 h, więc po każdej poprawce trzeba było
+        // czekać pół dnia na dane. Diagnostyka ma być szybka: raz na 30 minut.
+        if (!Once.said("events_dom", 30 * 60e3)) {
           // v3.40.0: zrzucamy KONTENER listy lotów, a nie górną nawigację — poprzedni
           // zrzut (09:58:06) pokazał `<div id="header">`, czyli menu gry, i był bezużyteczny
           // do znalezienia właściwego przełącznika.
@@ -514,6 +544,7 @@
       Rows.ensureOpen();                // zwinięty pasek misji = zero współrzędnych (v3.36.0)
       const evRows = Rows.readEvents(own);
       const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
+      try { await Rows.probePlanetList(own); } catch {}   // v3.40.1: diagnostyka, nie wpływa na decyzje
       Session.maybeRecover();
       const rows = [...evRows.map(r => ({ ...r, source: "events" })), ...list.rows.map(r => ({ ...r, source: "list" }))];
       // symulacja (panel): syntetyczny wrogi wiersz

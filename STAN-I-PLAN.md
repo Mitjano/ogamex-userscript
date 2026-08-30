@@ -6,6 +6,38 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 13:00 — v3.40.1: wersja DIAGNOSTYCZNA (lista lotów + sonda listy ruchów)
+
+**Co potwierdził log ownera z 3.40.0 (10:33–12:49):**
+- **Cichy odczyt kolonii DZIAŁA.** Bot poznał hangary dziesięciu kolonii bez jednej nawigacji:
+  [1:217:7] 12 221, [1:217:8] 12 341, [1:217:9] 12 221, [1:218:9] 12 221, [1:225:8] 12 210,
+  [1:225:9] 12 221, [1:234:7] 12 221, [1:234:8] 12 221, [1:205:9] 11 110, [2:223:9] 11 113,
+  [2:224:7] 11 111. Czyli na każdej kolonii stoi ~11–12 tys. statków, o których bot do dziś
+  nie wiedział — i których nie miałby jak ratować.
+- **Zero sztormu nawigacji.** Podwójne `[WAKE]` zniknęło. Ciche odpuszczanie przy pustym hangarze
+  działa (`12:10:09 brak statków do wysłania (poza wykluczeniami)`, `12:13:01 hangar pusty`).
+- **Lista lotów nadal się nie rozwija** — cykl „próba 1/2 → 2/2" co ~10 min, bez skutku, i wciąż
+  tylko DWÓCH kandydatów. Czyli jawny przycisk „Fleet movements" NIE został znaleziony nawet
+  na stronie floty. Zrzutu kontenera brak, bo dławik `events_dom` wynosił 6 h.
+
+**Zmiany 3.40.1 — same DIAGNOSTYCZNE, bez wpływu na decyzje:**
+1. Zrzut kontenera listy lotów co **30 minut** zamiast raz na 6 h. Bez tego każda poprawka
+   wymagała pół dnia czekania na dane.
+2. **SONDA `[SONDA LISTY]`**: strona floty przyjmuje `?planet=UUID` (korzysta z tego
+   `Hangar.scanRemote`), więc sprawdzamy, czy `/home/fleetmovementlist` też. Jeśli tak, to
+   ślepota na 13 kolonii znika BEZ rozwijania czegokolwiek w DOM — a to jest najważniejsza
+   dziura obronna z audytu. Sonda tylko LOGUJE (ile wierszy i jakie współrzędne wróciły dla
+   pytanej kolonii), odpala się raz na 10 minut i **po 3 próbach wyłącza się sama**.
+
+**Czego szukamy w logu po tej wersji:** linii `[SONDA LISTY] pytałem o [x:y:z] → N wierszy,
+współrzędne: …`. Jeśli wśród współrzędnych są koordy PYTANEJ kolonii, a nie tylko aktywnej pary —
+przepinamy wykrywanie ataków na ten endpoint i problem listy lotów przestaje mieć znaczenie.
+Plus `[LOTY DOM] … Kontener listy: …` — markup, po którym da się znaleźć właściwy przełącznik.
+
+**Testy:** 409 sprawdzeń, zero błędów.
+
+---
+
 ## AKTUALIZACJA 30.08, 10:45 — v3.40.0: wnioski z audytu obrony + z testu ownera 10:22
 
 **Test ownera na 3.39.2 (10:22:32 → 10:25:39) wypadł CZYSTO** i potwierdził wszystkie poprawki
