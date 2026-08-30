@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.39.0
+// @version      3.39.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.39.0";
+  const VERSION = "3.39.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -690,17 +690,16 @@
         // v3.35.0: wróciła własna flota, a hangaru tego ciała nie czytaliśmy od
         // lądowania — najpierw sprawdź, potem decyduj. Bez tego statki z powrotów
         // czekały na przypadkowy odczyt (do ~8 min stania na planecie).
-        // v3.39.0 (incydent 30.08): wpis lotu domyka się odczytem hangaru CELU, a ten
-        // przychodził wyłącznie z `s.landings`, czyli z LISTY LOTÓW w grze. Gdy lista
-        // jest zwinięta (a bot nie zawsze umie ją rozwinąć), landings jest puste i wpis
-        // wisi do 10-minutowego timeoutu. Po upływie ETA prosimy o odczyt hangaru celu
-        // SAMI: decyzja nadal zapada po HANGARZE, zegar mówi tylko, kiedy warto spojrzeć.
-        if (f && !f.recallAt && f.flightMs && now >= (f.sentAt || 0) + f.flightMs + 15e3) {
-          const dh = (s.hangars || {})[`${f.toKey}|${f.toBody}`];
-          if (!dh || (dh.at || 0) <= (f.sentAt || 0) + f.flightMs) {
-            actions.push({ kind: "recon", key: f.toKey, body: f.toBody, why: `lot ${f.kind} [${f.fromKey}]→[${f.toKey}] powinien już wylądować — sprawdzam hangar celu` });
-          }
-        }
+        // v3.39.1 (WYCOFANE, incydent 30.08 po południu: „ciągle odświeża stronę").
+        // 3.39.0 kazała tu prosić o rekonesans hangaru CELU po upływie ETA lotu.
+        // Zamiar był dobry (wpis lotu domyka się odczytem hangaru, a ten zależy od
+        // listy lotów w grze), ale akcja `recon` trafia do egzekutora zaprojektowanego
+        // dla ALARMU: on nawiguje albo klika w pasek planet, czyli PRZEŁĄCZA operatorowi
+        // planetę. W rutynowej ciszy — a takich lotów jest kilka na godzinę — to znaczy
+        // przeładowanie gry co przebieg. Zamykanie wpisu zostaje więc tam, gdzie było:
+        // odczyt hangaru z naturalnych źródeł + `confirmPendingSend()` (v3.39.0), które
+        // zdejmuje `pending` po przeładowaniu i to ONO usuwa 10-minutowy zastój.
+        // Wracać do tego wyłącznie CICHĄ ścieżką (Hangar.scanRemote, bez nawigacji).
         for (const [lk, at] of Object.entries(s.landings || {})) {
           const [lkey, lbody] = lk.split("|");
           if (lkey !== k || at > now || now - at > 30 * 60e3) continue;

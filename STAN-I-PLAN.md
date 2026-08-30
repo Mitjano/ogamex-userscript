@@ -6,6 +6,32 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08 po południu — v3.39.1: WYCOFANIE rekonesansu po ETA (regresja z 3.39.0)
+
+Zgłoszenie ownera: „coś się spierdoliło i ciągle stronę odświeża". Winna jest moja zmiana
+z 3.39.0, punkt 2 — „po upływie ETA bot sam prosi o odczyt hangaru celu".
+
+**Dlaczego to było złe.** Zamiar był dobry (wpis lotu domyka się odczytem hangaru CELU, a ten
+zależał od listy lotów w grze, u ownera zwiniętej). Ale akcja `recon` trafia do egzekutora
+napisanego dla ALARMU: on `Nav.go('/fleet?x=…')` albo `Nav.click(anchor)` w pasek planet, czyli
+PRZEŁĄCZA operatorowi planetę i przeładowuje grę. W alarmie to uzasadniona cena (limit 3 prób,
+`alarm_scan`). W rutynowej ciszy — a lotów „dom = księżyc" i ratunków jest kilka na godzinę —
+oznacza to przeładowanie co przebieg pętli, czyli dokładnie to, czego owner nie znosi
+(„nie chcę, żeby tak przeskakiwało po planetach", 29.08).
+
+**Wycofane w całości.** Zostaje `confirmPendingSend()` z 3.39.0 — i to ONO usuwa właściwą
+przyczynę 20-minutowego paraliżu (wpis `pending` czekający na 10-minutowy timeout, bo
+`send.click()` nawiguje przed kodem potwierdzającym). Reszta 3.39.0 bez zmian.
+
+**Wniosek na przyszłość:** do rutynowego domykania lotów wolno użyć WYŁĄCZNIE cichej ścieżki
+(`Hangar.scanRemote` — fetch w tle, bez nawigacji). Akcja `recon` z decide() jest z definicji
+kosztowna: nawiguje. Test w sekcji 19b pilnuje teraz, że cisza + lot po ETA nie generuje
+ŻADNEJ akcji `recon` ani `fly`.
+
+**Testy:** `node test3-all.js` — 403 sprawdzenia, zero błędów.
+
+---
+
 ## AKTUALIZACJA 30.08 — v3.39.0 (Genesis): księgowość lotów po teście ratunku na żywo
 
 Owner odpalił „TEST: atak na księżyc" o 09:17:56. Decyzja była poprawna (skok moon→planet,

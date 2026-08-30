@@ -368,26 +368,24 @@ console.log("\n── 19b. KSIĘGOWOŚĆ LOTÓW (incydent na żywo 30.08, v3.39.
   check("komunikat podaje cel i godzinę lądowania",
     a1.some(a => /\[3:272:7\]/.test(a.msg) && /ląduje \d\d:\d\d:\d\d/.test(a.msg)), JSON.stringify(a1.map(a => a.msg)));
 
-  // Druga połowa incydentu: po wylądowaniu wpis lotu wisiał do 10-minutowego timeoutu,
-  // bo zamyka go odczyt hangaru CELU, a ten przychodził tylko z listy lotów w grze.
+  // v3.39.1 (incydent „ciągle odświeża stronę"): 3.39.0 kazała po upływie ETA prosić
+  // o rekonesans hangaru CELU. Akcja `recon` trafia jednak do egzekutora pisanego dla
+  // ALARMU — a ten NAWIGUJE albo klika w pasek planet, czyli przełącza operatorowi
+  // planetę. W rutynowej ciszy (kilka lotów na godzinę) = przeładowanie gry co przebieg.
+  // Wycofane. Ten test PILNUJE, żeby cisza nie generowała nawigacji.
   const poEta = { ...lecialo, pending: false, sentAt: NOW - 300e3 };
   const cisza = decide(base({ hangars: {}, threats: [], flights: [poEta] }), CFG, NOW);
-  const rec = (cisza.actions || []).find(a => a.kind === "recon" && /powinien już wylądować/.test(a.why || ""));
-  check("po upływie ETA bot sam prosi o odczyt hangaru CELU", !!rec, JSON.stringify(cisza.actions));
-  check("i celuje w ciało docelowe lotu, nie w źródło", rec && rec.key === "3:272:7" && rec.body === "planet", JSON.stringify(rec));
+  check("cisza + lot po ETA → ŻADNEJ akcji nawigującej (rekonesans/lot)",
+    !(cisza.actions || []).some(a => a.kind === "recon" || a.kind === "fly"), JSON.stringify(cisza.actions));
+  check("w szczególności: bez rekonesansu „powinien już wylądować” (wycofane w 3.39.1)",
+    !(cisza.actions || []).some(a => /powinien już wylądować/.test(a.why || "")), JSON.stringify(cisza.actions));
 
-  // ...ale nie powtarza tego w kółko, gdy hangar celu już odczytano po lądowaniu
-  const swiezy = base({ hangars: { "3:272:7|planet": { total: 1000, at: NOW - 10e3, ships: [] } }, threats: [], flights: [poEta] });
-  const bezSpamu = decide(swiezy, CFG, NOW);
-  check("odczyt świeższy niż lądowanie → bot nie prosi o niego drugi raz",
-    !(bezSpamu.actions || []).some(a => /powinien już wylądować/.test(a.why || "")), JSON.stringify(bezSpamu.actions));
-
-  // lot z zawrotem (ucieczka w powietrze) MA zostać w powietrzu — nie domykamy go po ETA
+  // lot z zawrotem też nie może w ciszy nic nawigować przed terminem zawrotu
   const ucieczka = { kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
     sentAt: NOW - 300e3, flightMs: 106e3, recallAt: NOW + 3600e3, phase: "launched", tries: 0 };
   const air = decide(base({ hangars: {}, threats: [], flights: [ucieczka] }), CFG, NOW);
-  check("ucieczka z zawrotem NIE jest domykana po ETA (ma czekać w powietrzu)",
-    !(air.actions || []).some(a => /powinien już wylądować/.test(a.why || "")), JSON.stringify(air.actions));
+  check("ucieczka czeka w powietrzu — cisza nie wystawia jej żadnej akcji",
+    !(air.actions || []).some(a => a.kind === "recon" || a.kind === "fly"), JSON.stringify(air.actions));
 }
 
 console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
