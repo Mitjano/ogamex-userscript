@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.39.2
+// @version      3.40.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.39.2";
+  const VERSION = "3.40.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -387,7 +387,11 @@
         // bywa renderowana inaczej niż przegląd, więc następne wejście może trafić.
         if (Date.now() - (st.at || 0) < 10 * 60e3) return false;
         if (!Once.said("events_dom", 6 * 3600e3)) {
-          log(`[LOTY DOM] żadne z ${cands.length} kliknięć nie rozwinęło listy lotów — próbuję dalej co 10 min. Markup paska: ${((fmBtn && fmBtn.outerHTML) || (barEl && (barEl.parentElement || barEl).outerHTML) || "brak paska").replace(/\s+/g, " ").slice(0, 1200)}`, "warn");
+          // v3.40.0: zrzucamy KONTENER listy lotów, a nie górną nawigację — poprzedni
+          // zrzut (09:58:06) pokazał `<div id="header">`, czyli menu gry, i był bezużyteczny
+          // do znalezienia właściwego przełącznika.
+          const dump = (wrap && wrap.outerHTML) || (fmBtn && fmBtn.outerHTML) || (document.querySelector("#fleet-movement-content") || {}).outerHTML || (barEl && (barEl.parentElement || barEl).outerHTML) || "brak kontenera listy lotów";
+          log(`[LOTY DOM] żadne z ${cands.length} kliknięć nie rozwinęło listy lotów (strona: ${page()}) — próbuję dalej co 10 min. Kontener listy: ${String(dump).replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
         }
         Store.set("events_open", { at: Date.now(), tried: 0, dumped: true });
         return false;
@@ -2143,6 +2147,36 @@
       // bramki co ataki — rekonesans stawał na zawsze, hangary się starzały i bot
       // przestawał wiedzieć, gdzie stoi flota. Blokuje tylko ATAK.
       if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
+      // v3.40.0 (audyt obrony 30.08): rekonesans pilnuje tylko ciała startowego, więc bot
+      // NIE WIEDZIAŁ, co stoi na pozostałych 13 koloniach — a bez tego nawet wykryty atak
+      // kończy się „nie wiem, gdzie stoi flota" i ratunek nie rusza. Czytamy je CICHO:
+      // fetch strony floty w tle, zero nawigacji, zero przełączania Twojej planety.
+      // Jedno ciało na przebieg, nie częściej niż raz na minutę, każde ciało raz na 45 min.
+      // To NIE jest akcja `recon` z decide() — tamta nawiguje i to ona zrobiła sztorm 09:59.
+      {
+        const bg = Store.get("recon_bg", { at: 0, idx: 0 }) || { at: 0, idx: 0 };
+        if (now - (bg.at || 0) > 60e3) {
+          const covered = new Set(this.bodiesOf(s).map(([k, b]) => `${k}|${b}`));
+          const rest = [];
+          for (const [k, p] of Object.entries(s.pairs || {})) {
+            for (const b of (p.hasMoon ? ["planet", "moon"] : ["planet"])) {
+              const hk = `${k}|${b}`;
+              if (covered.has(hk)) continue;
+              const h = (s.hangars || {})[hk];
+              if (h && now - (h.at || 0) < (CFG.reconEmptyMs || 45 * 60e3)) continue;
+              rest.push([k, b]);
+            }
+          }
+          if (rest.length) {
+            const [bk, bb] = rest[(bg.idx || 0) % rest.length];
+            Store.set("recon_bg", { at: now, idx: (bg.idx || 0) + 1 });
+            const got = await Hangar.scanRemote(bk, bb);
+            if (got && got.total > 0 && !Once.said(`bg|${bk}|${bb}`, 6 * 3600e3)) {
+              log(`[REKONESANS] kolonia ${bb} [${bk}] odczytana w tle: ${got.total.toLocaleString("pl-PL")} szt. — teraz wiem, że tam coś stoi.`, "info");
+            }
+          }
+        }
+      }
       if (flightsBlocking(s, Date.now())) return false;    // lot w powietrzu: nie kręcimy stroną
       const st = this.st();
       if (now - (st.at || 0) < 90e3) return false;                              // najwyżej raz na 90 s
@@ -2250,7 +2284,11 @@
       const s = await Situation.refresh();
       const { actions, alerts } = decide(s, CFG, Date.now());
       for (const a of alerts) {
-        const k = `alert|${a.key}|${a.msg.slice(0, 40)}`;
+        // v3.40.0 (test ownera 10:23–10:25): ten sam alert poszedł OSIEM razy mimo
+        // dławika 5 min, bo w kluczu siedziało odliczanie („za 107s", „za 87s"…) —
+        // każda sekunda tworzyła nowy klucz. Cyfry z klucza wypadają; para (`a.key`)
+        // nadal rozdziela alarmy z różnych kolonii.
+        const k = `alert|${a.key}|${a.msg.replace(/\d+/g, "#").slice(0, 60)}`;
         if (Once.said(k, a.throttleMs || 60e3)) continue;
         log(`[OBRONA] ${a.msg}`, a.level === "error" ? "error" : "warn");
         if ((a.unknownPair || a.blind) && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
@@ -2702,11 +2740,14 @@
       else if (!CFG.enabled) this.setRow("ogx3-r-def", "dim", "bot WYŁĄCZONY");
       else if (atk.length) this.setRow("ogx3-r-def", "alert", atk.map(t => `ATAK → [${t.dst}] ${t.dstBody === "moon" ? "☾" : "◍"} ${Math.max(0, Math.round((t.arriveAt - now) / 1000))}s`).join(" · "));
       else if (th.length) this.setRow("ogx3-r-def", "busy", `sonda → [${th[0].dst}] ${Math.max(0, Math.round((th[0].arriveAt - now) / 1000))}s`);
-      // v3.39.0: zwinięta lista lotów psuje CAŁĄ księgowość lotów (bot nie widzi
-      // własnych lądowań, więc wpisy wygasają dopiero timeoutem — 30.08 kosztowało to
-      // 20 minut paraliżu). Dotąd mówiła o tym jedna linia w logu, w środku nocy.
-      else if ((Store.get("events_open", null) || {}).dumped) this.setRow("ogx3-r-def", "alert", "ROZWIŃ LISTĘ LOTÓW w grze (Fleet movements) — nie widzę własnych lotów");
-      else this.setRow("ogx3-r-def", CFG.autoRescue ? "ok" : "busy", `czysto · ${CFG.autoRescue ? "auto-ratunek" : "obserwator"}`);
+      // v3.40.0 (audyt obrony 30.08): w 3.39.0 ostrzeżenie o zwiniętej liście lotów
+      // ZASŁANIAŁO stan obrony — operator przestał widzieć najważniejszą informację
+      // w całym panelu („czy jest czysto"). Ostrzeżenie idzie OBOK stanu, nigdy zamiast.
+      else {
+        const listBad = !!(Store.get("events_open", null) || {}).dumped;
+        this.setRow("ogx3-r-def", listBad ? "busy" : (CFG.autoRescue ? "ok" : "busy"),
+          `czysto · ${CFG.autoRescue ? "auto-ratunek" : "obserwator"}${listBad ? " · ⚠ lista lotów zwinięta" : ""}`);
+      }
       this.el.classList.toggle("alarm", atk.length > 0 || Session.lostRecently());
       if (atk.length && Store.get("ui_min", false) === true) this.setMin(false);   // alarm rozwija panel
 
@@ -2779,6 +2820,9 @@
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
   try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon }; } catch {}
   Store.set("last_load", Date.now());
+  // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
+  // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.
+  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); } }
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }

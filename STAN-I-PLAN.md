@@ -6,6 +6,49 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 10:45 — v3.40.0: wnioski z audytu obrony + z testu ownera 10:22
+
+**Test ownera na 3.39.2 (10:22:32 → 10:25:39) wypadł CZYSTO** i potwierdził wszystkie poprawki
+z 3.39.x: wiersz symulacji jako WARN zamiast ERROR-a, decyzja „atak w moon → drugie ciało",
+`confirmPendingSend()` zdjęło `pending` w sekundę (`10:23:15 wpis nie czeka na timeout`),
+komunikat „flota już wyleciała (swap → [1:217:6] planeta, ląduje 10:25:00), nie ma czego ratować"
+zamiast sześciu ERROR-ów, ZERO sztormu nawigacji. Flota wróciła na księżyc sama.
+
+Test ujawnił jednak jeszcze jedną rzecz: **ten sam alert poszedł OSIEM razy** (10:23:15–10:24:59)
+mimo dławika 5 min, bo klucz dławika zawierał odliczanie („za 107s", „za 87s"…) i każda sekunda
+tworzyła nowy klucz. Cyfry wypadają teraz z klucza; para nadal rozdziela alarmy z różnych kolonii.
+
+### Zmiany 3.40.0
+1. **Wiersz „Obrona" w panelu: ostrzeżenie OBOK stanu, nie zamiast.** W 3.39.0 komunikat
+   „ROZWIŃ LISTĘ LOTÓW" zasłonił `czysto · auto-ratunek` — owner przestał widzieć najważniejszą
+   informację w panelu. Teraz: `czysto · auto-ratunek · ⚠ lista lotów zwinięta`.
+2. **Cichy odczyt pozostałych kolonii** (`recon_bg`). Audyt pokazał, że przy `reconMode="fleet"`
+   i przypiętym ciele startowym bot NIE ZNA hangarów 13 kolonii — więc nawet wykryty atak kończy
+   się „nie wiem, gdzie stoi flota". Teraz czyta je `Hangar.scanRemote` (fetch w tle, ZERO
+   nawigacji, zero przełączania planety operatora): jedno ciało na przebieg, nie częściej niż raz
+   na minutę, każde ciało raz na 45 min. To NIE jest akcja `recon` z decide() — tamta nawiguje
+   i to ona zrobiła sztorm 09:59.
+3. **Flaga „nie umiem rozwinąć listy lotów" nie przeżywa aktualizacji** — każda wersja przynosi
+   nowych kandydatów i dostaje czystą kartę.
+4. **Zrzut markupu listy lotów pokazuje KONTENER listy**, a nie górną nawigację (zrzut z 09:58:06
+   pokazał `<div id="header">`, czyli menu gry — bezużyteczny). Dochodzi informacja, na której
+   stronie bot próbował.
+5. Dławik alertów bez odliczania (wyżej).
+
+**Testy:** 409 sprawdzeń, zero błędów.
+
+### DALEJ OTWARTE
+- **Kanał ntfy na telefonie ownera** — push działa (HTTP 200), ale telefon subskrybuje kanał 2.x
+  z Atheny. Trzeba dodać `ogamex3-d0zjvhl9eiho`. Bez tego warstwa alarmowa nie istnieje.
+- **Lista lotów wciąż zwinięta.** Przycisk „Fleet movements" jest na stronie Fleet, owner siedzi
+  zwykle na Overview. Następny zrzut (już z właściwego kontenera) powie, w co klikać.
+- **Progi sonda vs atak**: na Genesis floty latają wolniej niż na Athenie (owner 30.08), więc
+  `confirmMs` 20 s i `barHoldMs` 60 s można PODNIEŚĆ — mniej wyrywania floty na sondę, a i tak
+  zdąży przy prawdziwym ataku. Do ustalenia liczb z ownerem.
+- Adaptacyjne odpytywanie i lekki keepalive (mniej żądań do serwera gry) — niezrobione.
+
+---
+
 ## AKTUALIZACJA 30.08, 10:30 — v3.39.2: koniec sztormu nawigacji + lista lotów to robota BOTA
 
 **SZTORM 09:59:20–09:59:47 — około 90 przeładowań `/fleet` w 27 sekund.** Owner podejrzewał,

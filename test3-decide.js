@@ -400,8 +400,15 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
     /wiersz z symulacji panelu/.test(src) && /r\.source === "sim" \? "warn" : "error"/.test(src));
   check("blokada uśpienia zakładana pod zamkiem (koniec podwójnego WAKE)",
     /_busy: false,/.test(src) && /!this\._busy && \(!this\._lock/.test(src));
-  check("panel krzyczy, gdy lista lotów w grze jest zwinięta",
-    /ROZWIŃ LISTĘ LOTÓW w grze/.test(src));
+  // v3.40.0: ostrzeżenie o zwiniętej liście lotów ma stać OBOK stanu obrony, nigdy
+  // zamiast niego (w 3.39.0 zasłoniło „czysto · auto-ratunek" i owner przestał widzieć,
+  // czy obrona w ogóle działa).
+  check("panel pokazuje stan obrony ORAZ ostrzeżenie o zwiniętej liście lotów",
+    /czysto · \$\{CFG\.autoRescue \? "auto-ratunek" : "obserwator"\}\$\{listBad \? " · ⚠ lista lotów zwinięta" : ""\}/.test(src));
+  check("dławik alertów nie liczy odliczania sekund jako nowego alertu",
+    /a\.msg\.replace\(\/\\d\+\/g, "#"\)\.slice\(0, 60\)/.test(src));
+  check("kolonie poza rekonesansem czytane CICHO, bez nawigacji",
+    /recon_bg/.test(src) && /odczytana w tle: \$\{got\.total/.test(src) && /Hangar\.scanRemote\(bk, bb\)/.test(src));
   // v3.39.2 — sztorm 30.08 09:59 (~90 przeładowań /fleet w 27 s). Lot „dom = księżyc"
   // zabiera cały hangar planety, ale zapis hangaru ŹRÓDŁA zostawał nietknięty, więc po
   // domknięciu wpisu lotu decide() wystawiał ten sam lot bez końca, a bramka
