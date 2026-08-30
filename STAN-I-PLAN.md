@@ -6,6 +6,28 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 21:50 — v3.43.1: dwie usterki wychwycone z logu 21:43
+
+**1. Bramka „grasz" z 3.43.0 działa** (`21:43:04 [EXPO] wstrzymane: grasz — ekspedycja czeka
+jeszcze ~6 min`) — ale przy okazji zablokowała **BONUS ONLINE**
+(`[BONUS] nie odbieram teraz: grasz — …`). To jest błąd proporcji: bonus to JEDEN klik w link
+w menu gry, nie przełączanie planety, wpada raz na parę godzin i daje antymaterię plus punkty
+Akademii. Zwolniony z bramki „grasz" (ciszę nocną i przerwy nadal respektuje).
+
+**2. Sonda listy była TRWALE uśpiona fałszywym werdyktem.** O 20:05:53 fałszywy alarm ✅ zapisał
+w stanie `mv_probe = { done: true, works: true }`. Poprawka logiki w 3.42.1 nic by nie dała, bo
+`done: true` na starcie sondy powoduje natychmiastowy `return` — sonda nigdy by się już nie
+uruchomiła, a w stanie siedziałaby bzdura („parametr działa"), na której ktoś mógłby kiedyś
+zbudować obronę kolonii. Teraz nowa wersja kasuje ZATRZASKI diagnostyki (`mv_probe` i
+`events_open`), tak jak od 3.40.0 kasuje flagę listy lotów.
+
+Wniosek na przyszłość: **każdy latch typu „już sprawdzone, nie sprawdzaj więcej" musi umierać
+razem z wersją**, bo inaczej błąd w logice pomiaru zostaje w danych na zawsze.
+
+**Testy:** 422 sprawdzenia, zero błędów.
+
+---
+
 ## AKTUALIZACJA 30.08, 20:45 — v3.43.0: ekonomia nie wyrywa operatorowi planety
 
 **Zgłoszenie ownera (20:31): „dlaczego bot przeskakuje na jakieś inne planety/moony? bez sensu,

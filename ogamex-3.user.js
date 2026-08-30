@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.43.0
+// @version      3.43.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.43.0";
+  const VERSION = "3.43.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1257,7 +1257,11 @@
       const why = Human.economyAllowed(s);
       if (why) {
         const playing = Date.now() - (Store.get("manual_at", 0) || 0) < 10 * 60e3;
-        if (!(playing && /godziny ciszy|okno nocne/.test(why))) {
+        // v3.43.1 (log 21:43:04): nowa bramka „grasz" z 3.43.0 zablokowała też BONUS
+        // ONLINE — a to jest jeden klik w link w menu gry, nie przełączanie planety,
+        // i wpada rzadko (antymateria + punkty Akademii). Skoro operator i tak klika,
+        // konto jest jawnie online i ten klik niczego nie kosztuje. Zwolniony z bramki.
+        if (!(playing && /godziny ciszy|okno nocne/.test(why)) && !/grasz —/.test(why)) {
           if (!Once.said("bonus_wait|" + why.slice(0, 14), 60 * 60e3)) log(`[BONUS] nie odbieram teraz: ${why}.`, "info");
           return false;
         }
@@ -2942,7 +2946,11 @@
   Store.set("last_load", Date.now());
   // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
   // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.
-  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); } }
+  // v3.43.1: przy nowej wersji kasujemy ZATRZASKI diagnostyki. Sonda listy zapisała
+  // 20:05:53 werdykt `done: true, works: true` na podstawie fałszywego alarmu (błąd
+  // poprawiony w 3.42.1) — i przez ten zatrzask NIGDY BY SIĘ JUŻ NIE URUCHOMIŁA,
+  // zostawiając w stanie bzdurę. Nowa wersja = czysta karta dla obu latch-y.
+  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); } }
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }

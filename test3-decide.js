@@ -421,6 +421,10 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
   // kolonią NIEOBECNĄ w odpowiedzi bez parametru, a werdykt wymaga OBU warunków naraz.
   check("kandydatem może być tylko kolonia nieobecna w odpowiedzi bez parametru",
     /!bez\.coords\.includes\(p\.key\)/.test(src));
+  check("zatrzask sondy nie przeżywa aktualizacji (fałszywy werdykt z 20:05 by ją uśpił)",
+    /Store\.del\("mv_probe"\)/.test(src));
+  check("bonus online zwolniony z bramki „grasz” (jeden klik w menu, nie przełączanie planety)",
+    /&& !\/grasz —\/\.test\(why\)/.test(src));
   check("werdykt ✅ wymaga RÓŻNICY odpowiedzi ORAZ koordów pytanej kolonii",
     /const inne = bez\.ids !== zP\.ids;/.test(src) && /if \(inne && maKolonie\)/.test(src));
   check("dławik alertów nie liczy odliczania sekund jako nowego alertu",
