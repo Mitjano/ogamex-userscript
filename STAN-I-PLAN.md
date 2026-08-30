@@ -6,6 +6,62 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08 — v3.39.0 (Genesis): księgowość lotów po teście ratunku na żywo
+
+Owner odpalił „TEST: atak na księżyc" o 09:17:56. Decyzja była poprawna (skok moon→planet,
+lot 106 s, forma i wysyłka bez zarzutu), ale ujawniła cztery rzeczy.
+
+**1. Wpis lotu wisiał 10 minut zamiast sekund — i to jest sedno.** `send.click()` NAWIGUJE
+NATYCHMIAST, więc kod stojący za klikiem (ten, który zdejmuje `pending` z wpisu lotu) nigdy się
+nie wykonał. Wpis `pending` blokuje parę aż do 10-minutowego timeoutu: `09:28:46 wpis "swap"
+wisi 10 min bez potwierdzenia — zdejmuję` i DOPIERO po tym `dom = księżyc`. Druga noga tak samo
+(09:38:53). Ratunek trwał 106 s, paraliż 20 minut — bez powrotu na księżyc i bez ekspedycji.
+FIX: `confirmPendingSend()` w pętli obrony czyta dowód wysyłki z adresu gry
+(`/fleet?fleetSendSuccessfully`) i zdejmuje `pending` po przeładowaniu; bramka anty-duplikat
+(„wysyłka już poszła Xs temu") robi to samo.
+
+**2. Wpis domykał się wyłącznie odczytem hangaru CELU, a ten zależał od `s.landings`,** czyli od
+LISTY LOTÓW w grze — a ta jest u ownera zwinięta i bot nie umie jej rozwinąć (`09:24:19` i
+`09:25:06` próba 1/2 i 2/2, wcześniej 03:57:55 pełny zrzut z prośbą „ROZWIŃ JĄ RĘCZNIE RAZ").
+FIX: po upływie ETA lotu bot SAM prosi o odczyt hangaru celu. Zasada „stan lotu zamykany
+HANGAREM, nie zegarem" zostaje — zegar mówi tylko, KIEDY warto spojrzeć. Loty z zawrotem
+(ucieczka w powietrze) są z tego wyłączone: mają czekać w powietrzu.
+**DLA OWNERA:** i tak rozwiń raz „> Fleet movements" w grze — gra zapamiętuje ten wybór.
+Od 3.39.0 panel o to krzyczy w wierszu Obrona, zamiast chować to w logu o 3:57 w nocy.
+
+**3. Sześć ERROR-ów „nie wiem, gdzie stoi flota" w trakcie alarmu** (09:18:38–09:20:38), choć bot
+minutę wcześniej sam wysłał z tej pary ratunek i wpis lotu leżał w stanie. FIX: gdy z pary trwa
+lot, komunikat brzmi „flota już wyleciała (swap → [1:217:6] planeta, ląduje 09:20:24), nie ma
+czego ratować" i jest ostrzeżeniem, nie błędem. **Rekonesans zostaje w obu przypadkach** —
+„coś stąd wyleciało" nie dowodzi, że hangar jest pusty (mogły dojść nowe statki).
+
+**4. Fałszywe `[TEMPO]` o pętli keepalive.** Jedna nawigacja bota tłumaczyła KAŻDE przeładowanie
+przez następne 20 s, także te wyklikane przez ownera (08:49:50 keepalive → /home, a potem
+/messages, /messages?planet, /wiki dostały etykietę „bot: keepalive"). Detektor pętli zgłaszał
+coś, czego nie było. FIX: ślad nawigacji bota zużywa się po pierwszym przeładowaniu.
+To samo dotyczyło `[TEMPO]` „lot: formularz" o 08:28:34. **Keepalive NIE był w pętli.**
+
+Drobne przy okazji: wiersz symulacji dostał opis (koniec `[ATAK DOM] wrogi wiersz (ATTACK, sim):
+undefined` przy każdym teście) i nie jest już zgłaszany jako ERROR; blokada uśpienia zakładana
+pod zamkiem (podwójne „[WAKE] blokada uśpienia zwolniona" brało się z dwóch równoległych
+`ensure()`); `[BONUS] nie odbieram…` raz na godzinę zamiast co pół.
+
+**Testy:** `node test3-all.js` — 404 sprawdzenia, zero błędów. Nowe sekcje 19b i 19c w
+`test3-decide.js` odtwarzają incydent: alarm z lotem w powietrzu (komunikat, poziom, ETA,
+zachowany rekonesans), rekonesans celu po ETA, brak powtarzania go przy świeżym odczycie,
+oraz wyłączenie lotów z zawrotem.
+
+**NIEROZSTRZYGNIĘTE (decyzja ownera).** Fala domykająca ekspedycji wysyła CAŁY hangar, więc flota
+jest w powietrzu niemal bez przerwy — test ratunku o 09:18 uratował 21 368 statków (11
+kolonizatorów, 20 983 recyklery, 374 minery), bo cała flota bojowa (110 087 HC, 114 876 HF,
+111 183 BS…) wyleciała o 08:29 na ekspedycję. To nie jest bug, tylko skutek ustawień: jeśli część
+floty ma zostawać w domu, właściwym hamulcem jest `excludeTypes` albo świadoma zmiana reguły
+zamiatania. Do tego wciąż otwarte: pomiar łupu z ekspedycji (wymaga parsowania wiadomości
+o powrotach) i priorytet 3 z audytu wydajności Firefoxa (przerysowywanie logu, zapis co 800 ms,
+ściąganie 209 KB co 15 min).
+
+---
+
 ## AKTUALIZACJA 30.08 — v3.38.0 (Genesis): rozmiar fali ekspedycji z dzielnika malejącego + koniec fałszywego „Obrona: BŁĄD"
 
 Zgłoszenie ownera (30.08, ~08:20): „bot wysłał trzecią flotę, a jeszcze bardzo dużo statków

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.38.0
+// @version      3.39.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.38.0";
+  const VERSION = "3.39.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -498,7 +498,9 @@
       const rows = [...evRows.map(r => ({ ...r, source: "events" })), ...list.rows.map(r => ({ ...r, source: "list" }))];
       // symulacja (panel): syntetyczny wrogi wiersz
       const sim = Store.get("sim", null);
-      if (sim && sim.until > now) rows.push({ id: "sim", type: "ATTACK", src: "9:999:9", dst: sim.key, dstBody: sim.body, eta: Math.max(5, Math.round((sim.arriveAt - now) / 1000)), attack: true, spy: false, mine: false, hostile: true, source: "sim" });
+      // v3.39.0: wiersz symulacji nie miał pola `html`, więc test w panelu witał
+      // operatora ERROR-em „wrogi wiersz (ATTACK, sim): undefined".
+      if (sim && sim.until > now) rows.push({ id: "sim", type: "ATTACK", src: "9:999:9", dst: sim.key, dstBody: sim.body, eta: Math.max(5, Math.round((sim.arriveAt - now) / 1000)), attack: true, spy: false, mine: false, hostile: true, source: "sim", html: "(wiersz z symulacji panelu — TEST, nie prawdziwy atak)" });
       else if (sim) { Store.del("sim"); log("[TEST] symulacja zakończona.", "info"); }
       // zagrożenia: dedup po id albo (dst|A/S|eta/20); pamięć do dolotu (+60 s)
       const seen = new Map();
@@ -519,7 +521,7 @@
         const k = r.id || `${r.dst}|${r.attack ? "A" : "S"}|${Math.round(arriveAt / 20000)}`;
         const prev = seen.get(k);
         seen.set(k, { id: r.id || null, dst: r.dst, dstBody: r.dstBody || prev?.dstBody || null, arriveAt, attack: !!r.attack, spy: !!r.spy, src: r.src || prev?.src || null, srcBody: r.srcBody, type: r.type, seenAt: prev?.seenAt || now, lastSeenAt: now, source: r.source, html: r.html });
-        if (!prev && r.attack) log(`[ATAK DOM] wrogi wiersz (${r.type}, ${r.source}): ${r.html}`, "error");
+        if (!prev && r.attack) log(`[ATAK DOM] wrogi wiersz (${r.type}, ${r.source}): ${r.html}`, r.source === "sim" ? "warn" : "error");
       }
       s.threats = [...seen.values()];
       // v3.9.1 (audyt): PASEK JAKO TRZECIE ŹRÓDŁO PRAWDY. Fork gubi na liście ataki
@@ -688,6 +690,17 @@
         // v3.35.0: wróciła własna flota, a hangaru tego ciała nie czytaliśmy od
         // lądowania — najpierw sprawdź, potem decyduj. Bez tego statki z powrotów
         // czekały na przypadkowy odczyt (do ~8 min stania na planecie).
+        // v3.39.0 (incydent 30.08): wpis lotu domyka się odczytem hangaru CELU, a ten
+        // przychodził wyłącznie z `s.landings`, czyli z LISTY LOTÓW w grze. Gdy lista
+        // jest zwinięta (a bot nie zawsze umie ją rozwinąć), landings jest puste i wpis
+        // wisi do 10-minutowego timeoutu. Po upływie ETA prosimy o odczyt hangaru celu
+        // SAMI: decyzja nadal zapada po HANGARZE, zegar mówi tylko, kiedy warto spojrzeć.
+        if (f && !f.recallAt && f.flightMs && now >= (f.sentAt || 0) + f.flightMs + 15e3) {
+          const dh = (s.hangars || {})[`${f.toKey}|${f.toBody}`];
+          if (!dh || (dh.at || 0) <= (f.sentAt || 0) + f.flightMs) {
+            actions.push({ kind: "recon", key: f.toKey, body: f.toBody, why: `lot ${f.kind} [${f.fromKey}]→[${f.toKey}] powinien już wylądować — sprawdzam hangar celu` });
+          }
+        }
         for (const [lk, at] of Object.entries(s.landings || {})) {
           const [lkey, lbody] = lk.split("|");
           if (lkey !== k || at > now || now - at > 30 * 60e3) continue;
@@ -726,9 +739,23 @@
       const secs = Math.round((soonest - now) / 1000);
       const firstSeen = Math.min(...th.map(t => t.seenAt));
       if (!fleet) {
+        // v3.39.0 (test na żywo 30.08 09:18): ta gałąź krzyczała „nie wiem, gdzie stoi
+        // flota" SZEŚĆ razy pod rząd w trakcie alarmu — choć bot minutę wcześniej sam
+        // wysłał z tej pary ratunek i wpis lotu leżał w stanie. Skoro z pary trwa lot,
+        // wiemy dokładnie, gdzie jest flota. Ślepotę zgłaszamy tylko wtedy, gdy naprawdę
+        // jesteśmy ślepi — inaczej operator uczy się ignorować czerwone linie.
+        const fOut = inFlightFrom(k);
+        if (fOut) {
+          const land = (fOut.sentAt || 0) + (fOut.flightMs || 0);
+          alerts.push({ key: k, level: "warn", throttleMs: 5 * 60e3,
+            msg: `atak na [${k}] za ${secs}s — flota już wyleciała (${fOut.kind} → [${fOut.toKey}] ${fOut.toBody === "moon" ? "ksiezyc" : "planeta"}${fOut.flightMs ? `, ląduje ${new Date(land).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}), nie ma czego ratować` });
+        }
         // v3.9.0 (audyt): "nie wiem, gdzie flota" + "nie sprawdzę, bo alarm" = zero
         // akcji przez cały dolot. Gdy jest czas (>90 s), prosimy o rekonesans TEJ pary.
-        alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru)` });
+        // v3.39.0: rekonesans zostaje TAKŻE wtedy, gdy z pary trwa lot. „Coś stąd
+        // wyleciało" nie znaczy „w hangarze nie ma nic" — mogły dojść nowe statki,
+        // a ucieczka sprzed godzin nie jest dowodem na pusty dom.
+        else alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru)` });
         // v3.9.2 (E2E): sprawdzamy ciało, w które leci atak (a gdy nieznane — najpierw
         // księżyc, bo tam zwykle mieszka flota). Wcześniej recon zawsze celował
         // w planetę: przy flocie na księżycu bot odczytywał pusty hangar i zostawał
@@ -1127,7 +1154,7 @@
         // Athena odsuwała próbę TYLKO dla wyszarzenia (10 min) i odliczania (5 min);
         // „nie widzę przycisku" znaczyło po prostu „spróbuj na następnej stronie".
         if (c.wait) { st.nextTry = now + c.wait; this.save(st); }
-        if (!Once.said("bonus|" + c.why, 30 * 60e3)) log(`[BONUS] nie odbieram: ${c.why}${c.wait ? ` — wracam za ${Math.round(c.wait / 60000)} min` : " (spróbuję na następnej stronie)"}.`, "info");
+        if (!Once.said("bonus|" + c.why, 60 * 60e3)) log(`[BONUS] nie odbieram: ${c.why}${c.wait ? ` — wracam za ${Math.round(c.wait / 60000)} min` : " (spróbuję na następnej stronie)"}.`, "info");
         return false;
       }
       if (!Once.said("bonus_markup", 24 * 3600e3)) log(`[BONUS DOM] ${el.outerHTML.replace(/\s+/g, " ").slice(0, 300)}`, "info");
@@ -1646,6 +1673,13 @@
           const ls = Store.get("last_send", null);
           if (ls && Date.now() - ls.at < guardMs && ls.toKey === m.toKey && ls.from === m.fromKey) {
             log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");
+            // v3.39.0: skoro wiemy, że wysyłka poszła, zdejmujemy `pending` z wpisu lotu.
+            // Kod robiący to po kliku nie wykonał się, bo „Send fleet" przeładował stronę.
+            try {
+              const sD = Situation.load();
+              const fD = (sD.flights || []).find(x => x.fromKey === m.fromKey && x.pending);
+              if (fD) { delete fD.pending; if (m.flightMs) fD.flightMs = m.flightMs; Situation.save(sD); log(`[LOT] wpis lotu [${fD.fromKey}]→[${fD.toKey}] potwierdzony (wysyłka już poszła).`, "success"); }
+            } catch {}
             Store.del("mission"); return;
           }
           if (page() !== "fleet") { navGuard(m, this); return; }
@@ -1967,13 +2001,19 @@
   // ekranu/systemu, gdy karta widoczna) i CICHY dźwięk (karta odtwarzająca
   // audio nie jest dławiona w tle). Bez uprawnień, bez plików.
   const Wake = {
-    _lock: null, _ctx: null,
+    _lock: null, _ctx: null, _busy: false,
     async ensure() {
       try {
-        if ("wakeLock" in navigator && document.visibilityState === "visible" && (!this._lock || this._lock.released)) {
-          this._lock = await navigator.wakeLock.request("screen");
-          this._lock.addEventListener?.("release", () => log("[WAKE] blokada uśpienia zwolniona.", "warn"));
-          if (!Once.said("wake_on", 6 * 3600e3)) log("[WAKE] blokada uśpienia aktywna — komputer nie zaśnie, póki karta z grą jest widoczna.", "info");
+        // v3.39.0: ensure() woła i pętla obrony, i visibilitychange. Bez zamka dwa
+        // wywołania wchodziły w `await request()` równolegle i powstawały DWIE blokady
+        // z dwoma listenerami — stąd podwójne „[WAKE] blokada uśpienia zwolniona.".
+        if ("wakeLock" in navigator && document.visibilityState === "visible" && !this._busy && (!this._lock || this._lock.released)) {
+          this._busy = true;
+          try {
+            this._lock = await navigator.wakeLock.request("screen");
+            this._lock.addEventListener?.("release", () => log("[WAKE] blokada uśpienia zwolniona.", "warn"));
+            if (!Once.said("wake_on", 6 * 3600e3)) log("[WAKE] blokada uśpienia aktywna — komputer nie zaśnie, póki karta z grą jest widoczna.", "info");
+          } finally { this._busy = false; }
         }
       } catch (e) { if (!Once.said("wake_err", 3600e3)) log(`[WAKE] nie udało się zablokować uśpienia: ${e.message}`, "warn"); }
       try {
@@ -2133,12 +2173,31 @@
 
   // ═══ PĘTLA OBRONY ═══════════════════════════════════════════════════════
   let running = false;
+  // v3.39.0 (incydent 30.08 09:18): klik „Send fleet" NAWIGUJE NATYCHMIAST, więc kod,
+  // który po udanej wysyłce zdejmuje `pending` z wpisu lotu, często nigdy się nie
+  // wykonuje. Wpis wisiał wtedy do 10-minutowego timeoutu i przez ten czas decide()
+  // uznawał parę za „w locie": ratunek trwał 106 s, a flota siedziała na planecie
+  // 10 minut i ekspedycje stały. Po przeładowaniu dowód wysyłki daje sama gra —
+  // adres /fleet?fleetSendSuccessfully.
+  function confirmPendingSend() {
+    try {
+      if (!location.href.includes("fleetSendSuccessfully")) return;
+      const ls = Store.get("last_send", null); if (!ls) return;
+      const s = Situation.load();
+      const f = (s.flights || []).find(x => x.pending && x.fromKey === ls.from && Math.abs((x.sentAt || 0) - ls.at) < 60e3);
+      if (!f) return;
+      delete f.pending; Situation.save(s);
+      log(`[LOT] wysyłka [${f.fromKey}]→[${f.toKey}] potwierdzona przez grę po przeładowaniu — wpis nie czeka na timeout.`, "success");
+    } catch {}
+  }
+
   async function defenceTick() {
     if (running || !CFG.enabled) return; running = true;
     try {
       if (errorPageGuard()) return;
       if (!TabLock.acquire()) return;
       Store.set("last_tick", Date.now());
+      confirmPendingSend();
       Wake.ensure();
       Calib.collect();
       if (page() === "fleet") Hangar.scan();
@@ -2597,6 +2656,10 @@
       else if (!CFG.enabled) this.setRow("ogx3-r-def", "dim", "bot WYŁĄCZONY");
       else if (atk.length) this.setRow("ogx3-r-def", "alert", atk.map(t => `ATAK → [${t.dst}] ${t.dstBody === "moon" ? "☾" : "◍"} ${Math.max(0, Math.round((t.arriveAt - now) / 1000))}s`).join(" · "));
       else if (th.length) this.setRow("ogx3-r-def", "busy", `sonda → [${th[0].dst}] ${Math.max(0, Math.round((th[0].arriveAt - now) / 1000))}s`);
+      // v3.39.0: zwinięta lista lotów psuje CAŁĄ księgowość lotów (bot nie widzi
+      // własnych lądowań, więc wpisy wygasają dopiero timeoutem — 30.08 kosztowało to
+      // 20 minut paraliżu). Dotąd mówiła o tym jedna linia w logu, w środku nocy.
+      else if ((Store.get("events_open", null) || {}).dumped) this.setRow("ogx3-r-def", "alert", "ROZWIŃ LISTĘ LOTÓW w grze (Fleet movements) — nie widzę własnych lotów");
       else this.setRow("ogx3-r-def", CFG.autoRescue ? "ok" : "busy", `czysto · ${CFG.autoRescue ? "auto-ratunek" : "obserwator"}`);
       this.el.classList.toggle("alarm", atk.length > 0 || Session.lostRecently());
       if (atk.length && Store.get("ui_min", false) === true) this.setMin(false);   // alarm rozwija panel
@@ -2679,6 +2742,12 @@
     const nl = Store.get("nav_last", null);
     const fresh = nl && Date.now() - nl.at < 20e3;
     log(`OGameX Assistant 3 v${VERSION} — ${CFG.enabled ? "ON" : "OFF"}, ${CFG.autoRescue ? "AUTO-RATUNEK" : "OBSERWATOR"}, ${location.pathname}${location.search || ""}${fresh ? ` ← bot: ${nl.why}` : " ← otwarte ręcznie"}`, "info");
+    // v3.39.0 (log 30.08 08:49–08:50): jedna nawigacja bota tłumaczyła KAŻDE
+    // przeładowanie przez następne 20 s — także te, które operator wyklikał sam.
+    // Cztery strony pod rząd dostawały etykietę „bot: keepalive", a detektor [TEMPO]
+    // zgłaszał nieistniejącą pętlę. Nawigacja bota powoduje dokładnie JEDNO
+    // przeładowanie, więc jej ślad zużywa się po pierwszym użyciu.
+    if (fresh) { try { Store.del("nav_last"); } catch {} }
     const loads = (Store.get("loads", []) || []).filter(x => Date.now() - (x.t || x) < 60e3).map(x => (typeof x === "number" ? { t: x, bot: false } : x));
     loads.push({ t: Date.now(), bot: !!fresh, why: fresh ? String(nl.why || "") : "" }); Store.set("loads", loads.slice(-20));
     // v3.20.0: normalna wysyłka floty to 4 przeładowania pod rząd (przełącz ciało →

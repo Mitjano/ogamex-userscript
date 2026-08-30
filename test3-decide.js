@@ -350,6 +350,62 @@ console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
 }
 
 
+console.log("\n── 19b. KSIĘGOWOŚĆ LOTÓW (incydent na żywo 30.08, v3.39.0) ──");
+{
+  // Test ratunku 09:17–09:21: bot sam wysłał flotę z księżyca na planetę, a przez cały
+  // pozostały dolot powtarzał ERROR „nie wiem, gdzie stoi flota" — sześć razy pod rząd,
+  // choć wpis lotu leżał w stanie i mówił dokładnie, gdzie ta flota jest.
+  const lecialo = { kind: "swap", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:7", toBody: "planet",
+    sentAt: NOW - 60e3, flightMs: 106e3, recallAt: 0, phase: "launched", pending: true, tries: 0 };
+  const alarm = decide(base({ hangars: {}, threats: [threat("3:272:7", "moon", 120)], flights: [lecialo] }), CFG, NOW);
+  const a1 = (alarm.alerts || []).filter(a => a.key === "3:272:7");
+  check("alarm + lot w powietrzu → mówi, że flota wyleciała, nie że jest ślepy",
+    a1.some(a => /już wyleciała/.test(a.msg)) && !a1.some(a => /nie wiem, gdzie stoi flota/.test(a.msg)), JSON.stringify(a1));
+  check("i nie jest to ERROR (to normalny przebieg, nie awaria)",
+    a1.every(a => a.level !== "error"), JSON.stringify(a1.map(a => a.level)));
+  check("mimo lotu w powietrzu NADAL prosi o rekonesans (mogły dojść nowe statki)",
+    (alarm.actions || []).some(a => a.kind === "recon" && a.key === "3:272:7"), JSON.stringify(alarm.actions));
+  check("komunikat podaje cel i godzinę lądowania",
+    a1.some(a => /\[3:272:7\]/.test(a.msg) && /ląduje \d\d:\d\d:\d\d/.test(a.msg)), JSON.stringify(a1.map(a => a.msg)));
+
+  // Druga połowa incydentu: po wylądowaniu wpis lotu wisiał do 10-minutowego timeoutu,
+  // bo zamyka go odczyt hangaru CELU, a ten przychodził tylko z listy lotów w grze.
+  const poEta = { ...lecialo, pending: false, sentAt: NOW - 300e3 };
+  const cisza = decide(base({ hangars: {}, threats: [], flights: [poEta] }), CFG, NOW);
+  const rec = (cisza.actions || []).find(a => a.kind === "recon" && /powinien już wylądować/.test(a.why || ""));
+  check("po upływie ETA bot sam prosi o odczyt hangaru CELU", !!rec, JSON.stringify(cisza.actions));
+  check("i celuje w ciało docelowe lotu, nie w źródło", rec && rec.key === "3:272:7" && rec.body === "planet", JSON.stringify(rec));
+
+  // ...ale nie powtarza tego w kółko, gdy hangar celu już odczytano po lądowaniu
+  const swiezy = base({ hangars: { "3:272:7|planet": { total: 1000, at: NOW - 10e3, ships: [] } }, threats: [], flights: [poEta] });
+  const bezSpamu = decide(swiezy, CFG, NOW);
+  check("odczyt świeższy niż lądowanie → bot nie prosi o niego drugi raz",
+    !(bezSpamu.actions || []).some(a => /powinien już wylądować/.test(a.why || "")), JSON.stringify(bezSpamu.actions));
+
+  // lot z zawrotem (ucieczka w powietrze) MA zostać w powietrzu — nie domykamy go po ETA
+  const ucieczka = { kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 300e3, flightMs: 106e3, recallAt: NOW + 3600e3, phase: "launched", tries: 0 };
+  const air = decide(base({ hangars: {}, threats: [], flights: [ucieczka] }), CFG, NOW);
+  check("ucieczka z zawrotem NIE jest domykana po ETA (ma czekać w powietrzu)",
+    !(air.actions || []).some(a => /powinien już wylądować/.test(a.why || "")), JSON.stringify(air.actions));
+}
+
+console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
+{
+  check("wysyłka potwierdzana adresem gry po przeładowaniu (klik nawiguje natychmiast)",
+    /function confirmPendingSend\(\)/.test(src) && /fleetSendSuccessfully/.test(src) && /confirmPendingSend\(\);/.test(src));
+  check("bramka anty-duplikat też zdejmuje `pending` z wpisu lotu",
+    /wpis lotu \[\$\{fD\.fromKey\}\]→\[\$\{fD\.toKey\}\] potwierdzony/.test(src));
+  check("ślad nawigacji bota zużywa się RAZ (fałszywe [TEMPO] o pętli keepalive)",
+    /if \(fresh\) \{ try \{ Store\.del\("nav_last"\); \} catch \{\} \}/.test(src));
+  check("wiersz symulacji ma opis i nie jest zgłaszany jako ERROR",
+    /wiersz z symulacji panelu/.test(src) && /r\.source === "sim" \? "warn" : "error"/.test(src));
+  check("blokada uśpienia zakładana pod zamkiem (koniec podwójnego WAKE)",
+    /_busy: false,/.test(src) && /!this\._busy && \(!this\._lock/.test(src));
+  check("panel krzyczy, gdy lista lotów w grze jest zwinięta",
+    /ROZWIŃ LISTĘ LOTÓW w grze/.test(src));
+}
+
 console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");
 {
   const FSCFG = Object.assign({}, CFG, { fs: { enabled: true, startHour: 23, endHour: 7, speedPct: 10, target: null } });
