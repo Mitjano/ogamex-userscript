@@ -6,6 +6,35 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 20:20 — v3.42.1: sonda dała FAŁSZYWY ALARM, poprawione
+
+**Log ownera, 20:05:53:**
+`[SONDA LISTY] ✅ PARAMETR DZIAŁA. Bez parametru 9 wierszy (1:217:16, 1:217:6), dla [1:217:6]
+9 wierszy (1:217:16, 1:217:6).`
+
+To jest **fałszywy alarm i mój błąd**. Te dane dowodzą czegoś dokładnie odwrotnego: identyczna
+liczba wierszy i identyczne współrzędne z parametrem i bez. ✅ zapaliło się wyłącznie dlatego,
+że wylosowaną „inną kolonią" była **para bazowa [1:217:6]**, której koordy są w każdej odpowiedzi
+(cały ruch ekspedycyjny leci [1:217:6] → [1:217:16]). Warunek `!takiSam || maKolonie` przepuszczał
+sukces po samym `maKolonie`. Pięć minut wcześniej ta sama sonda na innej kolonii dała werdykt
+poprawny: `20:00:43 ❌ parametr IGNOROWANY — ta sama odpowiedź z nim i bez niego`.
+
+**Poprawka:** kandydatem może być tylko kolonia, której koordów NIE MA w odpowiedzi bez parametru
+(inaczej jej obecność niczego nie dowodzi), a werdykt ✅ wymaga teraz OBU warunków naraz: innej
+odpowiedzi ORAZ koordów pytanej kolonii. Sama różnica id nie wystarcza, bo loty startują i lądują
+między dwoma pomiarami i odpowiedzi mogą różnić się z przyczyn naturalnych.
+
+**Stan wiedzy na teraz:** wszystko wskazuje, że parametr jest IGNOROWANY (werdykt z 20:00:43 plus
+dane z 20:05:53). Poprawiona sonda ma to potwierdzić w sposób, któremu można ufać. Owner dodał
+przy okazji istotny kontekst: **„nikt mnie nie szpiegował"** — czyli te 9 wierszy to wyłącznie
+własne ekspedycje, a bot nie miał dotąd ani jednej okazji zobaczyć, jak w tym forku wygląda
+WROGI wiersz na liście. Wszystkie nasze reguły klasyfikacji wrogich lotów są nadal nieprzetestowane
+na żywym ataku — jedyne, co je sprawdzało, to symulacja z panelu.
+
+**Testy:** 419 sprawdzeń, zero błędów.
+
+---
+
 ## AKTUALIZACJA 30.08, 19:00 — v3.42.0: koniec ślepej uliczki, panel mówi prawdę, sonda rozstrzyga
 
 Trzy poprawki wynikające wprost z wieczornych zrzutów.

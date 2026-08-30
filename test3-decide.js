@@ -415,7 +415,14 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
   check("bot nie klika już w pusty panel Events (5 h prób nie dało wiersza)",
     /!content0\.children\.length/.test(src) && /Nie klikam w niego/.test(src));
   check("sonda listy porównuje A/B i zawsze zostawia ślad w logu",
-    /PARAMETR DZIAŁA/.test(src) && /parametr IGNOROWANY/.test(src) && /nie widzę innej kolonii niż aktywna/.test(src));
+    /PARAMETR DZIAŁA/.test(src) && /parametr IGNOROWANY/.test(src) && /nie mam rozstrzygającego kandydata/.test(src));
+  // v3.42.1 (fałszywy alarm 20:05:53): sonda ogłosiła sukces przy IDENTYCZNYCH danych,
+  // bo wylosowała parę bazową, której koordy są w każdej odpowiedzi. Kandydat musi być
+  // kolonią NIEOBECNĄ w odpowiedzi bez parametru, a werdykt wymaga OBU warunków naraz.
+  check("kandydatem może być tylko kolonia nieobecna w odpowiedzi bez parametru",
+    /!bez\.coords\.includes\(p\.key\)/.test(src));
+  check("werdykt ✅ wymaga RÓŻNICY odpowiedzi ORAZ koordów pytanej kolonii",
+    /const inne = bez\.ids !== zP\.ids;/.test(src) && /if \(inne && maKolonie\)/.test(src));
   check("dławik alertów nie liczy odliczania sekund jako nowego alertu",
     /a\.msg\.replace\(\/\\d\+\/g, "#"\)\.slice\(0, 60\)/.test(src));
   check("kolonie poza rekonesansem czytane CICHO, bez nawigacji",

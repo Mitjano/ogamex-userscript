@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.42.0
+// @version      3.42.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.42.0";
+  const VERSION = "3.42.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -331,11 +331,6 @@
       // od „nie odpaliła się". I ma porównywać A/B: to samo zapytanie BEZ parametru i Z
       // parametrem innej kolonii. Identyczny wynik = parametr ignorowany, kropka.
       const act = PlanetBar.active();
-      const other = PlanetBar.pairs().find(p => !act || p.key !== act.key);
-      if (!other) { log("[SONDA LISTY] nie widzę innej kolonii niż aktywna — nie mam czego porównać.", "warn"); return; }
-      const el = PlanetBar.anchor(other.key, "planet");
-      const m = el && (el.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i);
-      if (!m) { log(`[SONDA LISTY] pasek planet nie daje mi identyfikatora kolonii [${other.key}] (href="${el ? el.getAttribute("href") : "brak kotwicy"}") — nie mam jak zapytać o jej ruchy.`, "warn"); return; }
       const grab = async (url) => {
         const res = await fetchT(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
         if (!res.ok) return { err: `HTTP ${res.status}` };
@@ -347,16 +342,32 @@
       };
       try {
         const bez = await grab(this.URL);
+        if (bez.err) { log(`[SONDA LISTY] nie udało się pobrać listy bez parametru (${bez.err}).`, "warn"); return; }
+        // v3.42.1 (fałszywy alarm 20:05:53): pytana kolonia MUSI być taka, której koordów
+        // NIE MA w odpowiedzi bez parametru — inaczej „widzę jej koordy" nic nie dowodzi.
+        // Poprzednia wersja wylosowała [1:217:6], czyli parę bazową, której współrzędne
+        // są w każdej odpowiedzi (cały ruch ekspedycyjny), i ogłosiła sukces przy
+        // DOSŁOWNIE IDENTYCZNYCH danych: 9 wierszy tu i 9 wierszy tam.
+        const kandydaci = PlanetBar.pairs().filter(p => (!act || p.key !== act.key) && !bez.coords.includes(p.key));
+        const other = kandydaci[0];
+        if (!other) { log(`[SONDA LISTY] każda moja kolonia występuje już w odpowiedzi bez parametru (${bez.coords.join(", ") || "brak"}) — nie mam rozstrzygającego kandydata, spróbuję później.`, "warn"); return; }
+        const el = PlanetBar.anchor(other.key, "planet");
+        const m = el && (el.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i);
+        if (!m) { log(`[SONDA LISTY] pasek planet nie daje identyfikatora kolonii [${other.key}] — nie mam jak zapytać o jej ruchy.`, "warn"); return; }
         const zP = await grab(`${this.URL}?planet=${m[1]}`);
-        if (bez.err || zP.err) { log(`[SONDA LISTY] nie udało się pobrać (bez parametru: ${bez.err || "ok"}, z parametrem: ${zP.err || "ok"}).`, "warn"); return; }
-        const takiSam = bez.ids === zP.ids;
+        if (zP.err) { log(`[SONDA LISTY] nie udało się pobrać listy dla [${other.key}] (${zP.err}).`, "warn"); return; }
+        // Werdykt: parametr działa TYLKO gdy odpowiedź jest inna ORAZ pojawiły się w niej
+        // koordy pytanej kolonii. Sama różnica id to za mało — loty startują i lądują
+        // między pomiarami, więc dwie odpowiedzi mogą się różnić z przyczyn naturalnych.
+        const inne = bez.ids !== zP.ids;
         const maKolonie = zP.coords.includes(other.key);
-        if (!takiSam || maKolonie) {
+        if (inne && maKolonie) {
           Store.set("mv_probe", { n: 0, done: true, works: true, at: Date.now() });
-          log(`[SONDA LISTY] ✅ PARAMETR DZIAŁA. Bez parametru ${bez.rows.length} wierszy (${bez.coords.join(", ") || "brak"}), dla [${other.key}] ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}). Da się czytać ruchy każdej kolonii osobno — POKAŻ TĘ LINIĘ CLAUDE'OWI, wtedy wpina to w obronę.`, "error");
+          log(`[SONDA LISTY] ✅ PARAMETR DZIAŁA. Bez parametru ${bez.rows.length} wierszy (${bez.coords.join(", ") || "brak"}), dla [${other.key}] ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — i są tam koordy pytanej kolonii, których wcześniej nie było. POKAŻ TĘ LINIĘ CLAUDE'OWI.`, "error");
         } else {
-          Store.set("mv_probe", { n: (st.n || 0) + 1, done: (st.n || 0) + 1 >= 6, works: false, at: Date.now() });
-          log(`[SONDA LISTY] ❌ parametr IGNOROWANY — ta sama odpowiedź z nim i bez niego (${bez.rows.length} wierszy: ${bez.coords.join(", ") || "brak"}). Ruchy innych kolonii są dla bota niewidoczne. Próba ${(st.n || 0) + 1}/6.`, "warn");
+          const done = (st.n || 0) >= 6;
+          Store.set("mv_probe", { n: st.n || 0, done, works: false, at: Date.now() });
+          log(`[SONDA LISTY] ❌ parametr IGNOROWANY (próba ${st.n || 0}/6): pytałem o [${other.key}], dostałem ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — ${inne ? "inne id, ale BEZ koordów tej kolonii" : "dokładnie to samo co bez parametru"}. Ruchy innych kolonii są dla bota niewidoczne.${done ? " To był ostatni test — temat zamykam." : ""}`, "warn");
         }
       } catch (e) { log(`[SONDA LISTY] błąd: ${e.message}`, "warn"); }
     },
