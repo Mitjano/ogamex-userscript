@@ -6,6 +6,57 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08 — v3.38.0 (Genesis): rozmiar fali ekspedycji z dzielnika malejącego + koniec fałszywego „Obrona: BŁĄD"
+
+Zgłoszenie ownera (30.08, ~08:20): „bot wysłał trzecią flotę, a jeszcze bardzo dużo statków
+zostało; mam wrażenie, że na Athenie działało to inaczej". Panel: ekspedycje 3/4, hangar
+księżyca [1:217:6] = 238 343 szt. (z tego 21 368 to wykluczenia: 20 983 recyklery,
+374 minery, 11 kolonizatorów).
+
+**Co było.** `expoPlan` liczyło rozmiar fali jako `floor(ilość / fale)` i ZAMRAŻAŁO wynik
+w `burst.sizes` na całą serię (port reguły z 2.x — inaczej każda kolejna fala dzieliła resztę
+i seria wygasała). Skutek uboczny: ekspedycje wracające W TRAKCIE serii nie trafiały do fal
+2..N-1, bo te słały porcję sprzed serii. Log 30.08: hangar 41 711 szt. o 08:00 → 197 408 szt.
+o 08:08, a fale dalej po ~72 tys. Cała nadwyżka spadała na falę domykającą.
+Wrażenie ownera o Athenie jest trafne, ale różnica idzie w drugą stronę: 2.x miało
+`SWEEP_CAP_X` (fala domykająca ≤ 3× udziału), zdjęte w v3.28.0 — na Athenie w domu zostawało
+WIĘCEJ, nie mniej.
+
+**Co jest.** `share(qty) = floor(qty / left)`, gdzie `left` = ile fal serii jeszcze zostało.
+Gdy nic nie wraca, wynik identyczny jak przy zamrażaniu (po 1. fali 200 z 800 zostaje 600,
+600/3 = 200 — fale nadal równe). Gdy wraca, nadwyżka rozkłada się natychmiast, a fala
+domykająca zastaje normalną porcję zamiast 217 tys. statków. `burst.sizes` zniknęło ze stanu
+serii — został sam licznik `sent`. Opis fali w logu mówi teraz „fala 2/4 — 66 666 szt."
+zamiast „1/4 floty" (potrzebne, żeby dało się w ogóle zmierzyć, czy większa fala = większy łup).
+
+**Drugi błąd z tego samego logu (05:06 i 06:51):** `[LOT] przerwany: brak pól statków`,
+a w zrzucie same wykluczenia — `COLONY_SHIP(11), RECYCLER(20983), ASTEROID_MINER(374)`.
+Bramka `if (!avail.length) skip` w `expoPlan` działa na odczycie hangaru sprzed nawigacji,
+więc gdy w międzyczasie zostały tylko statki spoza planu, bot i tak otwierał formularz,
+nie wypełniał żadnego pola i leciał ERROR → `Journal.add("BŁĄD")` → push „⚠️ Obrona: BŁĄD"
+na telefon o piątej rano. Teraz `Fly.form()` rozpoznaje ten przypadek (są elementy statków,
+ale żaden nie jest w planie) i odpuszcza falę cichym abortem: warn w logu, 3-minutowa
+karencja trasy, ZERO wpisu w dzienniku i zero pusha. Nieznany markup dalej krzyczy jak dotąd.
+
+**Testy:** `node test3-all.js` — 0 błędów. Nowa sekcja 17b w `test3-decide.js` odtwarza
+incydent (hangar rośnie w środku serii → 2. fala 666 z 2000, nie porcja sprzed serii;
+pełna seria 1000 → 250/250/250/250 i zero resztek; stary `burst` z 3.37 ignorowany)
+plus dwie kontrole źródła w sekcji 19.
+
+**NIEROZSTRZYGNIĘTE — do zmierzenia przez ownera.** Czy gigantyczna fala domykająca w ogóle
+się opłaca. W klasycznym OGame łup z ekspedycji ma sufit powiązany z rankingiem i ładownością;
+jeśli ten fork liczy podobnie, fala z 217 tys. statków przywozi tyle samo, co dużo mniejsza.
+Wzoru forka nie znam i nie zgadywałem. Log ma już rozmiar wysłanej fali — brakuje strony
+przychodowej, czyli parsowania wiadomości z powrotów ekspedycji (osobna robota, nie jedna
+linijka, jak wcześniej napisałem). Dopiero to powie, ile fal ma sens.
+
+**UWAGA do suwaka „fale":** `lastOfBurst` zapala się także przy `expo.used >= cap - 1`,
+a `cap = min(fale, sloty ekspedycji)`. Przy 4 slotach czwarta wysyłka ZAWSZE zamiata hangar,
+niezależnie od tego, czy ustawisz 4 fale, czy 14. Po v3.38.0 nie boli, bo fale 1–3 zabierają
+już równe porcje bieżącego hangaru.
+
+---
+
 ## AKTUALIZACJA 25.08 (32) — v2.104.0: PEŁNY AUDYT po dniu symulacji (4 przeglądy) i konsolidacja poprawek
 
 Powód: 21:18–21:50 seria symulacji ujawniła 3 realne dziury, a moje szybkie

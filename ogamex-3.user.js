@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.37.0
+// @version      3.38.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.37.0";
+  const VERSION = "3.38.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1164,9 +1164,15 @@
 
   // CZYSTA funkcja: czy i czym wysłać falę. Wejście = sytuacja + config + czas
   // + stan serii. Wyjście: null albo { toKey, ships:[{type,qty}], duration, last }.
-  // Reguły z 2.x (kupione incydentami): rozmiar fali ZAMROŻONY na serię (inaczej
-  // każda kolejna dzieli resztę i seria wygasa), a fala domykająca serię lub
-  // ostatni wolny slot zabiera CAŁY hangar (inaczej reszta z zaokrągleń stoi w domu).
+  // v3.38.0: rozmiar fali liczy DZIELNIK MALEJĄCY — `floor(ilość / ile fal zostało)`
+  // z AKTUALNEGO hangaru. Do 3.37 liczby były ZAMRAŻANE na starcie serii (port z 2.x),
+  // żeby kolejne fale nie dzieliły reszty i seria nie wygasała. Cena: powroty, które
+  // lądują w trakcie serii, nie trafiały do fal 2..N-1 i CAŁA nadwyżka spadała na falę
+  // domykającą (zgłoszenie 30.08 „wysłał trzecią flotę, a bardzo dużo zostało": hangar
+  // urósł w środku serii z 41 711 do 197 408 szt., a fale słały porcję zamrożoną przy
+  // 41 711). Dzielnik malejący daje fale równe TAK SAMO jak zamrażanie, gdy nic nie
+  // wraca (600/3 = 200 = zamrożone 200), a gdy wraca — rozkłada to natychmiast.
+  // Fala domykająca serię albo ostatni wolny slot nadal zabiera CAŁY hangar.
   function expoPlan(s, cfg, now, burst) {
     const e = cfg.expo || {};
     if (!e.enabled) return { skip: "wyłączone" };
@@ -1189,9 +1195,10 @@
     const avail = (h.ships || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
     if (!avail.length) return { skip: "brak statków do wysłania (poza wykluczeniami)" };
     const waves = Math.max(1, e.waves || 1);
-    const frozen = burst && burst.waves === waves && burst.sizes && (burst.sent || 0) < waves ? burst.sizes : null;
-    const lastOfBurst = waves === 1 || (frozen && (burst.sent || 0) >= waves - 1) || (expo && expo.total && expo.used >= cap - 1);
-    const share = (qty) => { const raw = Math.floor(qty / waves); if (raw <= 0) return qty >= waves ? raw : (waves === 1 ? qty : 0); return raw; };
+    const inSeries = (burst && burst.waves === waves && (burst.sent || 0) < waves) ? (burst.sent || 0) : 0;
+    const left = Math.max(1, waves - inSeries);   // ile fal serii jeszcze zostało
+    const lastOfBurst = waves === 1 || inSeries >= waves - 1 || (expo && expo.total && expo.used >= cap - 1);
+    const share = (qty) => Math.floor(qty / left);
     // ── OSTATNIA fala serii zabiera CAŁY hangar ──
     // Udział fali to dzielenie w dół, więc po wszystkich falach w hangarze
     // zostaje reszta z zaokrąglenia plus produkcja z czasu serii. Fala
@@ -1203,11 +1210,8 @@
     // w hangarze (log 29.08 13:26: ostatnia fala 4/4 wzięła 1236 pancerników
     // zamiast całej reszty). Statki, które mają zostać w domu, wpisuje się do
     // wykluczeń — to jedyny właściwy hamulec na tym uniwersum.
-    const ships = avail.map(x => {
-      const base = frozen?.[x.type] !== undefined ? Math.min(frozen[x.type], x.qty) : share(x.qty);
-      return { type: x.type, qty: lastOfBurst ? x.qty : base };
-    }).filter(x => x.qty > 0);
-    if (!ships.length) return { skip: `flota za mała na ${waves} fal — zmniejsz liczbę fal` };
+    const ships = avail.map(x => ({ type: x.type, qty: lastOfBurst ? x.qty : share(x.qty) })).filter(x => x.qty > 0);
+    if (!ships.length) return { skip: `flota za mała na ${waves} fal (zostało ${left}) — zmniejsz liczbę fal` };
     // v3.7.1 (audyt): rezerwa slotów istnieje po to, żeby RATUNEK miał czym lecieć.
     // Na starcie uniwersum jest 1 slot floty, więc rezerwa 1 blokowałaby ekspedycje
     // na zawsze. Ale gdy fala zabiera CAŁY hangar, ratować nie ma już czego —
@@ -1270,16 +1274,17 @@
         if (!Once.said(`expoblk|${p.fromKey}`, 5 * 60e3)) log(`[EXPO] trasa [${p.fromKey}]→[${p.toKey}] w karencji po nieudanym locie — czekam.`, "warn");
         return false;
       }
-      const sizes = {}; for (const x of p.ships) sizes[x.type] = x.qty;
       const sent = (b && b.waves === p.waves && !p.last) ? (b.sent || 0) + 1 : (p.last ? 0 : 1);
+      const total = p.ships.reduce((n, x) => n + x.qty, 0);
       // v3.10.2 (audyt regresji): licznik fali zapisywany PRZED Fly.start — odmowa
       // startu (trwa inna misja) i tak zjadala fale z serii. Najpierw start, potem licznik.
       const started = Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
-        why: `ekspedycja ${p.last ? "(domyka serię — cały hangar)" : `(1/${p.waves} floty)`}`, speed: 100, plan: p.ships,
+        why: `ekspedycja ${p.last ? "(domyka serię — cały hangar)" : `(fala ${sent}/${p.waves})`} — ${total.toLocaleString("pl-PL")} szt.`, speed: 100, plan: p.ships,
         missionType: "EXPEDITION", takeResources: false, duration: p.duration, missionId: link.mission });
       if (!started) return false;
-      Store.set("burst", p.last ? { waves: p.waves, sizes: null, sent: 0, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000 }
-                                : { waves: p.waves, sizes: (b && b.sizes && b.waves === p.waves) ? b.sizes : sizes, sent, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000 });
+      // v3.38.0: `sizes` zniknęło — rozmiar fali liczy dzielnik malejący z bieżącego
+      // hangaru, więc stanem serii jest sam licznik wysłanych fal.
+      Store.set("burst", { waves: p.waves, sent: p.last ? 0 : sent, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000 });
       return true;
     },
   };
@@ -1744,7 +1749,22 @@
           await sleep(jitter(300, 600));
         }
       }
-      if (!loaded.length) { log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error"); return this.abort("brak pól statków"); }
+      if (!loaded.length) {
+        // v3.38.0 (log 30.08, 05:06 i 06:51): plan fali powstaje na odczycie hangaru
+        // sprzed nawigacji. Gdy do formularza zostaną WYŁĄCZNIE statki spoza planu
+        // (recyklery, minery, kolonizatory), żadne pole się nie wypełni — ale to nie
+        // jest nieznany markup, tylko nieaktualny plan. Do 3.37 leciał z tego ERROR,
+        // wpis „BŁĄD" w dzienniku i push „⚠️ Obrona: BŁĄD" na telefon o piątej rano.
+        const stale = !!want && els.length > 0 && !els.some(el =>
+          (parseInt(el.dataset.shipQuantity || "0") || 0) > 0 &&
+          (want.get(String(el.dataset.shipType || "").toUpperCase()) || 0) > 0);
+        if (stale) {
+          log(`[LOT] plan nieaktualny — w hangarze ${m.fromBody} [${m.fromKey}] zostały tylko statki spoza planu (${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")}). Odpuszczam falę.`, "warn");
+          return this.abort("plan nieaktualny — w hangarze tylko statki spoza planu", { quiet: true });
+        }
+        log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error");
+        return this.abort("brak pól statków");
+      }
       log(`[LOT] załadowano: ${loaded.join(", ")}`, "info");
       await sleep(jitter(400, 800));
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);

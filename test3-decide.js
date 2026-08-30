@@ -280,12 +280,14 @@ console.log("\n── 16. EKSPEDYCJE: limity slotów i odstęp fal ──");
   check("stary odczyt hangaru → najpierw rekonesans", /rekonesans/.test(expoPlan(ebase({ hangars: { "1:100:5|planet": { total: 1000, at: NOW - 20 * 60000, ships: [{ type: "LIGHT_FIGHTER", qty: 800 }] } } }), ECFG, NOW, null).skip || ""));
 }
 
-console.log("\n── 17. EKSPEDYCJE: seria (rozmiar zamrożony, ostatnia fala domyka hangar) ──");
+console.log("\n── 17. EKSPEDYCJE: seria (dzielnik malejący, ostatnia fala domyka hangar) ──");
 {
-  // hangar stopniał po 1. fali, ale rozmiar fali jest ZAMROŻONY z serii
+  // v3.38.0: rozmiar fali to `floor(ilość / ile fal zostało)` z BIEŻĄCEGO hangaru.
+  // Gdy nic nie wraca, wynik jest identyczny jak przy dawnym zamrażaniu: po 1. fali
+  // (200 z 800) w hangarze zostaje 600, a 600/3 = 200 — fale nadal są równe.
   const s = ebase({ hangars: { "1:100:5|planet": { total: 600, at: NOW - 60000, ships: [{ type: "LIGHT_FIGHTER", qty: 600 }] } } });
-  const p = expoPlan(s, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 1, lastSendAt: NOW - 120000, gapMs: 60000 });
-  check("2. fala serii = zamrożone 200, nie 150 (600/4)", p.ships[0].qty === 200, JSON.stringify(p.ships));
+  const p = expoPlan(s, ECFG, NOW, { waves: 4, sent: 1, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("2. fala serii = 200 (600/3 pozostałych fal), nie 150 (600/4)", p.ships[0].qty === 200, JSON.stringify(p.ships));
   const last = expoPlan(s, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 200 }, sent: 3, lastSendAt: NOW - 120000, gapMs: 60000 });
   check("ostatnia fala serii zabiera CAŁY hangar (zero resztek)", last.ships[0].qty === 600 && last.last === true, JSON.stringify(last.ships));
   const fillAvail = ebase().hangars["1:100:5|planet"].ships[0].qty;
@@ -295,6 +297,31 @@ console.log("\n── 17. EKSPEDYCJE: seria (rozmiar zamrożony, ostatnia fala d
   // Sufit 3x udzialu z 2.x chronil flote parkowana po FS — na Genesis takiej
   // floty nie ma, wiec zostawial tylko statki bezczynne w hangarze.
   check("fala zamiatajaca zabiera caly hangar (nic nie zostaje w domu)", fill.last === true && fill.ships[0].qty === fillAvail, JSON.stringify(fill.ships) + " | w hangarze: " + fillAvail);
+}
+
+console.log("\n── 17b. EKSPEDYCJE: powroty w środku serii (zgłoszenie 30.08) ──");
+{
+  // Incydent: hangar urósł z 41 711 do 197 408 szt. w środku serii (wróciły wcześniejsze
+  // ekspedycje). Do 3.37 fale 2..N słały porcję zamrożoną przy 41 711, więc po trzech
+  // falach w domu stało ~217 tys. statków i dopiero fala domykająca je zgarniała.
+  const grew = ebase({ hangars: { "1:100:5|planet": { total: 2000, at: NOW - 60000, ships: [{ type: "LIGHT_FIGHTER", qty: 2000 }] } } });
+  const w2 = expoPlan(grew, ECFG, NOW, { waves: 4, sent: 1, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("2. fala po powrotach = 666 (2000/3), nie porcja sprzed serii", w2.ships[0].qty === 666, JSON.stringify(w2.ships));
+  const w3 = expoPlan(grew, ECFG, NOW, { waves: 4, sent: 2, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("3. fala z 4 bierze połowę tego, co JEST teraz", w3.ships[0].qty === 1000 && w3.last !== true, JSON.stringify(w3.ships));
+
+  // stan serii zapisany jeszcze przez 3.37 (z `sizes`) nie może zmieniać wyniku
+  const oldState = expoPlan(grew, ECFG, NOW, { waves: 4, sizes: { LIGHT_FIGHTER: 10 }, sent: 1, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("stary burst z 3.37 (`sizes`) jest ignorowany, nie zawyża/zaniża fali", oldState.ships[0].qty === 666, JSON.stringify(oldState.ships));
+
+  // cała seria na spokojnym hangarze rozkłada się równo i kończy pustym hangarem
+  let hangar = 1000, sent = 0; const porcje = [];
+  for (let i = 0; i < 4; i++) {
+    const st = ebase({ hangars: { "1:100:5|planet": { total: hangar, at: NOW - 60000, ships: [{ type: "LIGHT_FIGHTER", qty: hangar }] } } });
+    const pl = expoPlan(st, ECFG, NOW, sent === 0 ? null : { waves: 4, sent, lastSendAt: NOW - 120000, gapMs: 60000 });
+    const q = pl.ships[0].qty; porcje.push(q); hangar -= q; sent = pl.last ? 0 : sent + 1;
+  }
+  check("4 fale z hangaru 1000 → 250/250/250/250 i zero resztek", porcje.join("/") === "250/250/250/250" && hangar === 0, porcje.join("/") + " reszta " + hangar);
 }
 
 console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
@@ -309,6 +336,11 @@ console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
   check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"\) \{[\s\S]{0,500}?flights/.test(src), "brak wyłączenia expedition z flights");
   check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
   check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
+  // v3.38.0: hangar z samymi wykluczeniami = nieaktualny plan, nie awaria markupu.
+  // Musi iść cichym abortem (bez Journal.add "BŁĄD" → bez pusha "⚠️ Obrona: BŁĄD").
+  check("nieaktualny plan fali odpuszczany po cichu, bez pusha o błędzie",
+    /plan nieaktualny — w hangarze tylko statki spoza planu", \{ quiet: true \}/.test(src));
+  check("stan serii nie trzyma już zamrożonych rozmiarów (`sizes`)", !/sizes: \(b && b\.sizes/.test(src) && !/burst\.sizes/.test(src));
 }
 
 
