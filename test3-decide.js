@@ -341,6 +341,12 @@ console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
   check("nieaktualny plan fali odpuszczany po cichu, bez pusha o błędzie",
     /plan nieaktualny — w hangarze tylko statki spoza planu", \{ quiet: true \}/.test(src));
   check("stan serii nie trzyma już zamrożonych rozmiarów (`sizes`)", !/sizes: \(b && b\.sizes/.test(src) && !/burst\.sizes/.test(src));
+  // v3.38.0: bramka „nieaktualny plan" siedzi w Fly.form(), czyli w kodzie WSPÓLNYM
+  // dla ekspedycji i RATUNKU. Ratunek leci bez planu (`m.plan` puste → `want === null`),
+  // więc warunek MUSI zaczynać się od `!!want` — inaczej ucieczka floty przed atakiem
+  // mogłaby zostać po cichu odpuszczona zamiast wystartować.
+  check("ratunek (lot bez planu) nie może wpaść w bramkę nieaktualnego planu",
+    /const stale = !!want && els\.length > 0 && !els\.some\(/.test(src));
 }
 
 
