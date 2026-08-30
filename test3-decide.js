@@ -484,6 +484,47 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
     /eco_wait_since/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src) && /ruszy minutę po ostatnim kliknięciu/.test(src) && !/6 \* 60e3/.test(src));
 }
 
+console.log("\n── 19e. GOTOWOŚĆ OBRONY I PODSUMOWANIE PO PRZERWIE (v3.45.0) ──");
+{
+  // Priorytet ownera 30.08: „najważniejsze, żeby obronił flotę gdy ktoś zaatakuje".
+  // Bot ma sprawdzać warunki obrony NA SUCHO, a nie dowiadywać się o brakach przy ataku.
+  const body = bodyOf("function defenceReadiness(s) {");
+  const readiness = new Function("CFG", "Session", "Notifier", "Situation", "key",
+    `return function defenceReadiness(s) {${body}}`);
+  const CFG_OK = { enabled: true, autoRescue: true, expo: { launchFrom: null } };
+  const Sess = { lostRecently: () => false };
+  const Notif = { enabled: () => true };
+  const Sit = { fleetAt: (s, k, now) => ({ body: "moon", total: 1000, at: now }) };
+  const kfn = (c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null);
+  const R = (cfg, sess, notif, sit) => readiness(cfg || CFG_OK, sess || Sess, notif || Notif, sit || Sit, kfn);
+  const stan = () => ({ active: { key: "3:272:7", body: "moon" },
+    pairs: { "3:272:7": { hasMoon: true }, "3:272:2": { hasMoon: true } },
+    hangars: { "3:272:7|moon": { total: 1000, at: Date.now() - 60e3 } } });
+
+  check("wszystko w porządku → zero braków", R()(stan()).length === 0, JSON.stringify(R()(stan())));
+  check("bot wyłączony jest zgłaszany", /bot WYŁĄCZONY/.test(R({ ...CFG_OK, enabled: false })(stan()).join("|")));
+  check("auto-ratunek OFF jest zgłaszany", /auto-ratunek OFF/.test(R({ ...CFG_OK, autoRescue: false })(stan()).join("|")));
+  check("push OFF jest zgłaszany (bez niego nie ma drugiej linii obrony)",
+    /push OFF/.test(R(null, null, { enabled: () => false })(stan()).join("|")));
+  check("wygasła sesja jest zgłaszana", /SESJA WYGAS/.test(R(null, { lostRecently: () => true })(stan()).join("|")));
+  const stary = stan(); stary.hangars["3:272:7|moon"].at = Date.now() - 60 * 60e3;
+  check("hangar sprzed godziny = brak wiedzy, gdzie stoi flota",
+    /nieczytany od ponad 30 min/.test(R()(stary).join("|")), JSON.stringify(R()(stary)));
+  const sama = stan(); sama.pairs = { "3:272:7": { hasMoon: true } };
+  check("jedna kolonia → nie ma dokąd uciec", /nie ma dokąd uciec/.test(R()(sama).join("|")));
+  check("samokontrola chodzi raz na 5 min, nie na każdym przebiegu (koszt w ticku)",
+    /Store\.get\("ready_at", 0\)[\s\S]{0,40}5 \* 60e3/.test(src));
+  check("samokontrola niczym nie nawiguje ani nie wysyła",
+    !/Nav\.|Fly\.start|location\./.test(body), body.slice(0, 120));
+
+  // Podsumowanie po przerwie: liczy TYLKO wpisy z okresu ciszy, a brak wpisów przy
+  // wyłączonym bocie nie może brzmieć jak „spokojnie".
+  check("podsumowanie bierze wpisy dziennika dopiero od ostatniego ticku",
+    /\(x\.at \|\| 0\) >= ostatni/.test(src));
+  check("cisza przy wyłączonym bocie nie jest raportowana jako spokój",
+    /nie znaczy „spokojnie" — znaczy „nie patrzyłem"/.test(src));
+}
+
 console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");
 {
   const FSCFG = Object.assign({}, CFG, { fs: { enabled: true, startHour: 23, endHour: 7, speedPct: 10, target: null } });

@@ -6,6 +6,38 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 23:15 — v3.45.0: samokontrola gotowości obrony + podsumowanie po przerwie
+
+Priorytet ownera z 22:40: **„najważniejsze, żeby obronił flotę gdy ktoś zaatakuje"**. Dwie rzeczy
+z tej listy, obie czytają tylko stan — nic nie nawigują i nic nie wysyłają.
+
+**1. Samokontrola gotowości (`defenceReadiness`).** Do tej pory bot dowiadywał się o brakach
+DOPIERO przy ataku, kiedy na dyskusję jest za późno. Teraz raz na 5 minut sprawdza na sucho:
+bot włączony, auto-ratunek ON, sesja żywa, push włączony, hangar pilnowanego ciała czytany
+w ostatnich 30 min, flota w ogóle widoczna, jest dokąd uciec. Braki idą jedną linią
+`[GOTOWOŚĆ] obrona NIE jest w pełni gotowa: …` (raz na godzinę), a stan pełnej gotowości
+potwierdza `[GOTOWOŚĆ] obrona gotowa: …` raz na 6 h — żeby cisza nie była dwuznaczna.
+
+**2. Podsumowanie po przerwie.** Odpowiedź na pytanie ownera „czy jak ktoś mnie w nocy zaatakuje,
+to rano zobaczę to w logach?". Zwykły log mieści 400 wpisów, czyli nocą 8–10 godzin — po długiej
+ciszy może się przewinąć. Dziennik obrony trzyma 600 wpisów WYŁĄCZNIE obronnych. Po przerwie
+dłuższej niż 3 h bot wypisuje na górze logu bilans z dziennika **liczony tylko od ostatniego
+ticku** (starsze wpisy opisują poprzednią sesję i wprowadzałyby w błąd) plus do sześciu
+konkretnych linii ATAK/BŁĄD z godzinami. Gdy nic nie ma, mówi wprost, że **brak wpisów przy
+wyłączonym bocie nie znaczy „spokojnie", tylko „nie patrzyłem"**, i odsyła do raportu bojowego
+w wiadomościach gry.
+
+**Czego nauczył pakiet E2E (znowu).** Pierwsza wersja liczyła gotowość w KAŻDYM przebiegu pętli.
+Testy natychmiast to wyłapały: dodatkowa praca w ticku przesuwała czas rzeczywisty na tyle, że
+20-sekundowa bramka anty-duplikat ekspedycji zdążyła wygasnąć i przechodziła trzecia fala
+(`fal: 3` zamiast 2). Sprawdziłem to porządnie — `git stash` i pakiet na czystym 3.44.0 był
+zielony, więc regresja była moja, nie flaki harnessu. Samokontrola chodzi teraz raz na 5 minut.
+
+**Testy:** 433 sprawdzenia, zero błędów. Pełny pakiet trwa ~3 minuty (E2E samo ~1:50) — przy
+uruchamianiu trzeba dać mu czas, bo ucięcie w połowie daje mylące „FAIL"-e.
+
+---
+
 ## AKTUALIZACJA 30.08, 22:10 — v3.44.0: ekonomia czeka TAK DŁUGO, JAK GRASZ (zdjęty sufit 6 min)
 
 **Owner (22:05): „ciągle przełącza planety!"** — i miał rację, mimo bramki z 3.43.0.

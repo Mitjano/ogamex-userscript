@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.44.0
+// @version      3.45.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.44.0";
+  const VERSION = "3.45.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2398,6 +2398,30 @@
     } catch {}
   }
 
+  // v3.45.0 (priorytet ownera 30.08: „najważniejsze, żeby obronił flotę gdy ktoś zaatakuje"):
+  // do tej pory bot dowiadywał się, że czegoś mu brakuje, DOPIERO przy ataku — a wtedy jest
+  // za późno na dyskusję, czy hangar jest świeży i czy push w ogóle włączony. Ta funkcja
+  // sprawdza warunki obrony NA SUCHO, zanim cokolwiek się stanie, i mówi o brakach wprost.
+  // Nic nie nawiguje i nic nie wysyła — czyta tylko stan.
+  function defenceReadiness(s) {
+    const braki = [];
+    const now = Date.now();
+    if (!CFG.enabled) braki.push("bot WYŁĄCZONY");
+    if (!CFG.autoRescue) braki.push("auto-ratunek OFF — będę tylko alarmował, nie ruszę flotą");
+    if (Session.lostRecently()) braki.push("SESJA WYGASŁA — zaloguj się");
+    if (!Notifier.enabled()) braki.push("push OFF — nie dostaniesz alarmu na telefon");
+    const guard = (CFG.expo && CFG.expo.launchFrom) ? key(CFG.expo.launchFrom) : (s.active && s.active.key);
+    if (!guard) braki.push("nie wiem, którego ciała pilnować (brak paska planet)");
+    else {
+      const hm = (s.hangars || {})[`${guard}|moon`], hp = (s.hangars || {})[`${guard}|planet`];
+      const swiezy = [hm, hp].some(h => h && now - (h.at || 0) < 30 * 60e3);
+      if (!swiezy) braki.push(`hangar [${guard}] nieczytany od ponad 30 min — nie wiem, gdzie stoi flota`);
+      else if (!Situation.fleetAt(s, guard, now)) braki.push(`na [${guard}] nie widzę żadnej floty (cała w powietrzu?)`);
+    }
+    if (Object.keys(s.pairs || {}).length < 2) braki.push("jedna kolonia — nie ma dokąd uciec");
+    return braki;
+  }
+
   async function defenceTick() {
     if (running || !CFG.enabled) return; running = true;
     try {
@@ -2419,6 +2443,19 @@
         if (Once.said(k, a.throttleMs || 60e3)) continue;
         log(`[OBRONA] ${a.msg}`, a.level === "error" ? "error" : "warn");
         if ((a.unknownPair || a.blind) && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
+      }
+      // Samokontrola to przegląd okresowy, nie sprawdzian na każdym przebiegu: raz na 5 minut.
+      // (Pakiet E2E pokazał to od razu — dodatkowa praca w KAŻDYM ticku przesuwała czas
+      // rzeczywisty na tyle, że 20-sekundowa bramka anty-duplikat ekspedycji zdążyła wygasnąć
+      // i przechodziła trzecia fala. Tanio i rzadko zamiast drogo i ciągle.)
+      if (Date.now() - (Store.get("ready_at", 0) || 0) > 5 * 60e3) {
+        Store.set("ready_at", Date.now());
+        const braki = defenceReadiness(s);
+        if (braki.length) {
+          if (!Once.said("gotowosc|" + braki.join("|").slice(0, 60), 60 * 60e3)) log(`[GOTOWOŚĆ] obrona NIE jest w pełni gotowa: ${braki.join("; ")}.`, "error");
+        } else if (!Once.said("gotowosc_ok", 6 * 3600e3)) {
+          log("[GOTOWOŚĆ] obrona gotowa: bot ON, auto-ratunek ON, hangar świeży, jest dokąd uciec, push włączony.", "success");
+        }
       }
       const attacks = (s.threats || []).filter(t => t.attack && t.arriveAt > Date.now());
       if (attacks.length) { const k = `atak|${attacks.map(t => t.id || t.dst).join(",")}`; if (!Once.said(k, 10 * 60e3)) Journal.add("ATAK", attacks.map(t => `${t.type} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - Date.now()) / 1000)}s (${t.source})`).join("; ")); }
@@ -2989,6 +3026,28 @@
       log(`[TEMPO] ten sam powód ${worst[1]}× w ostatniej minucie: „${worst[0]}". To wygląda na pętlę — pokaż tę linię Claude'owi.`, "warn");
     }
     if (!fresh) Store.set("manual_at", Date.now());   // operator sam klika po grze
+  }
+  // v3.45.0 (pytanie ownera: „czy jak ktoś mnie w nocy zaatakuje, to rano zobaczę to w logach?"):
+  // zwykły log mieści 400 wpisów, czyli w nocy jakieś 8–10 godzin — po długiej przerwie może
+  // się przewinąć. Dziennik obrony trzyma 600 wpisów WYŁĄCZNIE obronnych, więc przetrwa.
+  // Po każdej dłuższej ciszy wypisujemy z niego podsumowanie na samej górze logu.
+  {
+    const ostatni = Store.get("last_tick", 0) || 0;
+    const przerwa = Date.now() - ostatni;
+    if (ostatni && przerwa > 3 * 3600e3) {
+      const godz = Math.round(przerwa / 3600e3);
+      // TYLKO wpisy z okresu przerwy — starsze opisują poprzednią sesję i wprowadzałyby w błąd.
+      const j = (Store.get("journal", []) || []).filter(x => (x.at || 0) >= ostatni);
+      const ile = (k) => j.filter(x => x.kind === k).length;
+      if (j.length) {
+        log(`[PODSUMOWANIE] bot milczał ${godz} h. W dzienniku obrony z tego czasu: ${ile("ATAK")} × ATAK, ${ile("RATUNEK")} × ratunek, ${ile("POWRÓT")} × powrót, ${ile("BŁĄD")} × błąd.`, ile("ATAK") ? "error" : "info");
+        for (const x of j.filter(x => x.kind === "ATAK" || x.kind === "BŁĄD").slice(0, 6)) {
+          log(`[PODSUMOWANIE] ${new Date(x.at).toLocaleString("pl-PL")} ${x.kind}: ${x.msg}`, "warn");
+        }
+      } else {
+        log(`[PODSUMOWANIE] bot milczał ${godz} h i NIC nie zapisało się w dzienniku obrony. Uwaga: jeśli bot był wyłączony albo karta zamknięta, to nie znaczy „spokojnie" — znaczy „nie patrzyłem". Jedynym pewnym źródłem jest wtedy raport bojowy w wiadomościach gry.`, "warn");
+      }
+    }
   }
   try { if (page() === "fleet") Hangar.scan(); } catch (e) { log(`[START] odczyt hangaru: ${e.message}`, "warn"); }
   try { Wake.ensure(); Calib.collect(); } catch (e) { log(`[START] wake/kalibracja: ${e.message}`, "warn"); }
