@@ -6,6 +6,42 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 22:10 — v3.44.0: ekonomia czeka TAK DŁUGO, JAK GRASZ (zdjęty sufit 6 min)
+
+**Owner (22:05): „ciągle przełącza planety!"** — i miał rację, mimo bramki z 3.43.0.
+
+**Dlaczego bramka nie wystarczyła.** Dałem jej sufit sześciu minut: po nich przepuszczała
+ekspedycję, nawet gdy operator dalej klikał. Log pokazuje to wprost: `21:55:25 [EXPO] wstrzymane:
+grasz` → i `22:02:33 ekspedycja (domyka serię — cały hangar)` z nawigacją na formularz, bo minął
+sufit. Sufit miał chronić serię ekspedycji przed zagłodzeniem przy długiej sesji — ale to była
+MOJA ocena kompromisu, nie decyzja ownera, a on powiedział jasno dwa razy, że przełączanie
+planety w trakcie gry mu przeszkadza.
+
+**Zmiana: sufit ZDJĘTY.** Ekonomia (ekspedycje, mining, złom) czeka tak długo, jak grasz, i rusza
+**minutę po ostatnim kliknięciu**. Komunikat mówi, ile już czeka: `grasz — ekonomia czeka od N min
+(ruszy minutę po ostatnim kliknięciu)`. Cena jest jawna i owner ją zna: przy długiej sesji sloty
+ekspedycji stoją bezczynnie. **Obrona i ratunek nie podlegają tej bramce** — reagują natychmiast,
+niezależnie od tego, co operator robi.
+
+Przy okazji z tego samego logu: `22:03:15 [LOT] wysyłka NIE potwierdzona (brak komunikatu)` →
+`przerwany: brak potwierdzenia wysyłki`. Wysyłka szła w środku intensywnego klikania operatora
+(22:01–22:03) — dwa strumienie nawigacji w jednej karcie deptały sobie po piętach. Ostrzejsza
+bramka powinna takie kolizje wyeliminować; jeśli wrócą, trzeba będzie sprawdzić osobno.
+
+**Sonda listy — WERDYKT KOŃCOWY: ❌ parametr IGNOROWANY.** Dwa niezależne, poprawne pomiary po
+naprawie z 3.42.1: `21:55:25` (pytanie o [1:217:7], 8 wierszy, dokładnie to samo co bez parametru)
+i `22:00:26` (pytanie o [1:217:8], 7 wierszy, to samo). Kandydaci byli tym razem właściwi —
+kolonie NIEOBECNE w odpowiedzi bez parametru. `/home/fleetmovementlist?planet=` nie działa.
+
+**Co to znaczy:** nie ma już żadnej znanej drogi, żeby bot zobaczył atak na kolonię inną niż
+aktywna. Panel mówi o tym wprost („⚠ 13 kolonii bez nadzoru"). Do decyzji ownera zostają trzy
+opcje z audytu: przyjąć ryzyko, rotować aktywną parę (odrzucone — przełącza planetę), albo
+poszukać innej strony gry renderującej ruchy per kolonia.
+
+**Testy:** 422 sprawdzenia, zero błędów.
+
+---
+
 ## AKTUALIZACJA 30.08, 21:50 — v3.43.1: dwie usterki wychwycone z logu 21:43
 
 **1. Bramka „grasz" z 3.43.0 działa** (`21:43:04 [EXPO] wstrzymane: grasz — ekspedycja czeka

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.43.1
+// @version      3.44.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.43.1";
+  const VERSION = "3.44.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1013,16 +1013,27 @@
       {
         // Sygnał „gram" bierzemy z PRAWDZIWYCH kliknięć operatora: zdarzenia `isTrusted`
         // generuje wyłącznie przeglądarka na skutek działania człowieka — klik wywołany
-        // z kodu (`el.click()`) ma tam false. Dzięki temu bot nie uzna własnej wysyłki
-        // floty za „operator gra" i nie zablokuje sam sobie ekonomii. Heurystyka po liczbie
-        // przeładowań, której próbowałem najpierw, myliła te dwa przypadki i dusiła serię.
+        // z kodu (`el.click()`) ma tam false, więc bot nie zablokuje sam sobie ekonomii.
+        //
+        // v3.44.0: ZDJĘTY SUFIT 6 MINUT. W 3.43.0 bramka po sześciu minutach przepuszczała
+        // ekspedycję mimo trwającej gry — i dokładnie to owner zobaczył 30.08 o 22:02
+        // („ciągle przełącza planety!"): o 21:55 wysyłka wstrzymana, o 22:02 przepuszczona,
+        // bo minął sufit. Ekonomia czeka teraz TAK DŁUGO, JAK GRASZ, i rusza minutę po
+        // ostatnim kliknięciu. Cena jest jawna: przy długiej sesji sloty ekspedycji stoją —
+        // to świadomy wybór ownera („przenosić flotę ma tylko podczas ataku", 18:04).
+        // Obrona i ratunek NIE podlegają tej bramce i działają natychmiast.
         const now2 = Date.now();
         const klik = Store.get("input_at", 0) || 0;
-        const since = Store.get("eco_wait_since", 0) || 0;
-        if (now2 - klik < 90e3) {
-          if (!since) { Store.set("eco_wait_since", now2); return "grasz — nie przełączam Ci planety, ekspedycja poczeka"; }
-          if (now2 - since < 6 * 60e3) return `grasz — ekspedycja czeka jeszcze ~${Math.ceil((6 * 60e3 - (now2 - since)) / 60000)} min`;
-        } else if (since) Store.set("eco_wait_since", 0);
+        const cisza = now2 - klik;
+        if (cisza < 60e3) {
+          const since = Store.get("eco_wait_since", 0) || 0;
+          if (!since) Store.set("eco_wait_since", now2);
+          const czeka = Math.round((now2 - (since || now2)) / 60000);
+          return czeka >= 1
+            ? `grasz — ekonomia czeka od ${czeka} min (ruszy minutę po ostatnim kliknięciu)`
+            : "grasz — nie przełączam Ci planety, ekspedycja poczeka";
+        }
+        if (Store.get("eco_wait_since", 0)) Store.set("eco_wait_since", 0);
       }
       if (NavRate.over()) return `sufit ${CFG.maxNavPerHour} nawigacji/h — ekonomia czeka`;
       return null;

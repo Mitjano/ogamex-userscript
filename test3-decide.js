@@ -481,7 +481,7 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
   // przestanie klikać, ale nie dłużej niż 6 minut.
   check("ekonomia czeka, gdy operator gra (i nie dłużej niż 6 min)",
     /grasz — nie przełączam Ci planety, ekspedycja poczeka/.test(src) &&
-    /eco_wait_since/.test(src) && /6 \* 60e3/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src));
+    /eco_wait_since/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src) && /ruszy minutę po ostatnim kliknięciu/.test(src) && !/6 \* 60e3/.test(src));
 }
 
 console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");
