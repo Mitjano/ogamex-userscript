@@ -472,6 +472,12 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
     /if \(!m\.home && m\.kind !== "expedition"[\s\S]{0,200}?sR\.rescues\[m\.fromKey\] = Date\.now\(\)/.test(src));
   check("panel ma przełącznik „flota rusza się tylko przy ataku”",
     /Flota rusza się TYLKO przy ataku/.test(src) && /CFG\.homeToMoon = !CFG\.homeToMoon/.test(src));
+  // v3.43.0 (owner 20:31): każda fala ekspedycji zaczynała się od przełączenia aktywnego
+  // ciała na księżyc bazowy — w środku rozbudowy kolonii. Ekonomia ma czekać, aż operator
+  // przestanie klikać, ale nie dłużej niż 6 minut.
+  check("ekonomia czeka, gdy operator gra (i nie dłużej niż 6 min)",
+    /grasz — nie przełączam Ci planety, ekspedycja poczeka/.test(src) &&
+    /eco_wait_since/.test(src) && /6 \* 60e3/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src));
 }
 
 console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");

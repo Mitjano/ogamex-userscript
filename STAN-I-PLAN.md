@@ -6,6 +6,41 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 20:45 — v3.43.0: ekonomia nie wyrywa operatorowi planety
+
+**Zgłoszenie ownera (20:31): „dlaczego bot przeskakuje na jakieś inne planety/moony? bez sensu,
+bardzo mnie to denerwuje".**
+
+**Diagnoza.** Większość wpisów w logu z 19:35–20:31 jest podpisana `← otwarte ręcznie` — to
+własne kliknięcia ownera po koloniach (moonformation, building/resource). Ale co kilkanaście minut
+wchodzi wpis bota: `[LOT] przełączam na moon [1:217:6]` + `← bot: lot: przełączenie na moon`.
+To początek KAŻDEJ fali ekspedycji: formularz floty wymaga, żeby ciało startowe było aktywne, więc
+bot przestawia aktywną planetę na księżyc bazowy. Przy pięciu falach w serii (owner podniósł
+`fale` na 5 o 18:06) i kilku seriach na godzinę oznacza to regularne wyrywanie operatora
+z rozbudowywanej kolonii. Rekonesans szanował to od dawna („grasz — nie przełączam Ci planety"),
+ekonomia nie.
+
+**Zmiana.** `Human.economyAllowed()` — czyli jedna bramka dla ekspedycji, miningu i złomu —
+czeka, gdy operator gra: 90 s od ostatniego kliknięcia, najwyżej 6 minut z rzędu (żeby seria nie
+stanęła na cały wieczór). Obrona i rekonesans NIE są tym objęte.
+
+**Jak rozpoznajemy „gram" — dwie ślepe uliczki i rozwiązanie:**
+1. `manual_at` (przeładowanie nieprzypisane botowi) — E2E natychmiast pokazał, że to zabija całą
+   ekonomię: w sztucznej grze każde wczytanie strony jest „ręczne". W realu też było złe, bo
+   `/fleet?fleetSendSuccessfully` po wysyłce bota bywa oznaczane jako ręczne.
+2. Pięć nie-botowych przeładowań w minucie — nadal myliło normalną wysyłkę floty (4 przeładowania
+   pod rząd) z graniem i zjadało falę 2 z serii. E2E znowu to złapał.
+3. **Zadziałało: `isTrusted`.** Nasłuch `click`/`keydown`/`wheel` w fazie przechwytywania; flaga
+   `isTrusted` jest true wyłącznie dla zdarzeń wygenerowanych przez przeglądarkę na skutek
+   działania człowieka. Klik z kodu (`el.click()`, którym bot obsługuje formularz floty) ma tam
+   false, więc bot nie potrafi udać operatora i zablokować sam sobie ekonomii. W jsdom nie ma
+   zaufanych zdarzeń, więc testy przechodzą bez sztuczek.
+
+**Testy:** 420 sprawdzeń, zero błędów. Warto odnotować, że E2E dwa razy z rzędu zatrzymał
+złą wersję tej poprawki, zanim trafiła na produkcję.
+
+---
+
 ## AKTUALIZACJA 30.08, 20:20 — v3.42.1: sonda dała FAŁSZYWY ALARM, poprawione
 
 **Log ownera, 20:05:53:**

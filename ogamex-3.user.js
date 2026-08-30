@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.42.1
+// @version      3.43.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.42.1";
+  const VERSION = "3.43.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1003,6 +1003,27 @@
       // (domyślnie!) ekonomia chodziła 24/7, co jest głośniejsze niż cokolwiek
       // w arytmetyce floty. Cisza ma własne, niezależne okno z jitterem granic.
       if (!CFG.human.economyAtNight && this.quiet()) return "godziny ciszy (konto ma wyglądać na śpiące)";
+      // v3.43.0 (owner 30.08 20:31: „dlaczego bot przeskakuje na jakieś inne planety/moony?
+      // bez sensu, bardzo mnie to denerwuje"): KAŻDA fala ekspedycji zaczyna się od
+      // `[LOT] przełączam na moon [1:217:6]` — czyli wyrywa operatorowi aktywne ciało
+      // w środku rozbudowy kolonii, i to przy pięciu falach w serii, kilka razy na godzinę.
+      // Rekonesans szanuje to od dawna („grasz — nie przełączam Ci planety"), ekonomia nie.
+      // Teraz czeka, aż przestaniesz klikać — ale najwyżej 6 minut, żeby seria ekspedycji
+      // nie stanęła na cały wieczór, gdy grasz bez przerwy.
+      {
+        // Sygnał „gram" bierzemy z PRAWDZIWYCH kliknięć operatora: zdarzenia `isTrusted`
+        // generuje wyłącznie przeglądarka na skutek działania człowieka — klik wywołany
+        // z kodu (`el.click()`) ma tam false. Dzięki temu bot nie uzna własnej wysyłki
+        // floty za „operator gra" i nie zablokuje sam sobie ekonomii. Heurystyka po liczbie
+        // przeładowań, której próbowałem najpierw, myliła te dwa przypadki i dusiła serię.
+        const now2 = Date.now();
+        const klik = Store.get("input_at", 0) || 0;
+        const since = Store.get("eco_wait_since", 0) || 0;
+        if (now2 - klik < 90e3) {
+          if (!since) { Store.set("eco_wait_since", now2); return "grasz — nie przełączam Ci planety, ekspedycja poczeka"; }
+          if (now2 - since < 6 * 60e3) return `grasz — ekspedycja czeka jeszcze ~${Math.ceil((6 * 60e3 - (now2 - since)) / 60000)} min`;
+        } else if (since) Store.set("eco_wait_since", 0);
+      }
       if (NavRate.over()) return `sufit ${CFG.maxNavPerHour} nawigacji/h — ekonomia czeka`;
       return null;
     },
@@ -2953,6 +2974,13 @@
   try { if (page() === "fleet") Hangar.scan(); } catch (e) { log(`[START] odczyt hangaru: ${e.message}`, "warn"); }
   try { Wake.ensure(); Calib.collect(); } catch (e) { log(`[START] wake/kalibracja: ${e.message}`, "warn"); }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") Wake.ensure(); });
+  // v3.43.0: ślad PRAWDZIWEJ aktywności operatora. `isTrusted` jest true wyłącznie dla
+  // zdarzeń wygenerowanych przez przeglądarkę na skutek działania człowieka — klik
+  // wywołany z kodu (`el.click()`, którym bot obsługuje formularz floty) ma tam false.
+  // Dzięki temu bot nigdy nie uzna własnej wysyłki za „operator gra".
+  for (const ev of ["click", "keydown", "wheel"]) {
+    try { document.addEventListener(ev, (e) => { if (e && e.isTrusted) Store.set("input_at", Date.now()); }, { capture: true, passive: true }); } catch {}
+  }
   defenceTick();
   setInterval(defenceTick, CFG.tickMs);
   setInterval(keepalive, 60e3);
