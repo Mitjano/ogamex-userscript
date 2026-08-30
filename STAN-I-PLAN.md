@@ -6,6 +6,44 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 10:30 — v3.39.2: koniec sztormu nawigacji + lista lotów to robota BOTA
+
+**SZTORM 09:59:20–09:59:47 — około 90 przeładowań `/fleet` w 27 sekund.** Owner podejrzewał,
+że to on klikał — nie, każdy wpis jest podpisany `← bot: lot: formularz [1:217:6]→[1:217:6]`
+i idzie w parze z `[LOT] dom = księżyc` oraz `wysyłka już poszła Xs temu`, trzy razy na sekundę.
+
+**Mechanizm.** Lot „dom = księżyc" zabiera CAŁY hangar planety, ale nasz zapis hangaru ŹRÓDŁA
+zostawał nietknięty — dalej twierdził, że na planecie stoi 460 tys. statków. Dopóki wpis lotu
+wisiał (do 3.38 aż 10 min, bo `pending` czekał na timeout), `!f` blokowało regułę i nikt tego nie
+zauważył. Od 3.39.0 `confirmPendingSend()` zdejmuje `pending` w sekundę, a hangar CELU domyka wpis
+(`09:59:15 [LOT] domknięty — flota widziana na [1:217:6 moon] (460 553)`) — i od tej sekundy
+decide() wystawiał ten sam lot w kółko, bramka anty-duplikat ścinała go po jednej NAWIGACJI na
+obrót, a pętla kręciła się z prędkością przeładowań strony. Czyli: 3.39.0 nie stworzyła błędu,
+tylko zdjęła z niego dziesięciominutową zaślepkę.
+
+**Naprawione trzema rzeczami:**
+1. `emptySourceHangar()` — po KAŻDEJ potwierdzonej wysyłce lotu obronnego (normalna ścieżka,
+   `confirmPendingSend()` i bramka anty-duplikat) hangar źródła jest zerowany. Skoro flota
+   wyleciała, źródło jest puste — i decide() nie ma już powodu powtarzać lotu.
+2. Bramka anty-duplikat wysyła trasę w **karencję** (`fly_block`) na resztę swojego okna, zamiast
+   tylko kasować misję. Egzekutor mówi wtedy „trasa w karencji — czekam" i NIE nawiguje.
+3. Karencja **tylko dla lotów obronnych** — E2E natychmiast złapał, że objęcie nią ekspedycji
+   zjada falę 2 z serii (te lecą tą samą trasą co 60–90 s). Test „fala 2 też wyszła" zadziałał
+   dokładnie tak, jak miał.
+
+**LISTA LOTÓW — bot ma sobie radzić sam (owner, 30.08).** Do 3.39.1 po dwóch nieudanych próbach
+bot poddawał się, prosił operatora o ręczne rozwinięcie i milczał 6 h. Zrzut z 09:58:06 pokazał
+przy okazji, że heurystyka „N Missions:" trafiała w `<div id="header">`, czyli w GÓRNĄ NAWIGACJĘ.
+Teraz: pierwszym kandydatem jest jawny przycisk **„Fleet movements"** (fork ma go na stronie floty,
+widać na zrzucie ekranu ownera), potem jego rodzic, dopiero potem stare heurystyki — a po
+wyczerpaniu listy bot czeka 10 minut i próbuje CAŁĄ listę od nowa, zamiast oddawać robotę
+operatorowi. Prośba „ROZWIŃ JĄ RĘCZNIE RAZ" usunięta z kodu.
+
+**Testy:** 407 sprawdzeń, zero błędów. Nowe kontrole w 19c pilnują zerowania źródła, karencji
+trasy, wyłączenia ekspedycji z karencji i tego, że bot nie prosi już operatora o rozwijanie listy.
+
+---
+
 ## AKTUALIZACJA 30.08 po południu — v3.39.1: WYCOFANIE rekonesansu po ETA (regresja z 3.39.0)
 
 Zgłoszenie ownera: „coś się spierdoliło i ciągle stronę odświeża". Winna jest moja zmiana

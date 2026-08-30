@@ -402,6 +402,19 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
     /_busy: false,/.test(src) && /!this\._busy && \(!this\._lock/.test(src));
   check("panel krzyczy, gdy lista lotów w grze jest zwinięta",
     /ROZWIŃ LISTĘ LOTÓW w grze/.test(src));
+  // v3.39.2 — sztorm 30.08 09:59 (~90 przeładowań /fleet w 27 s). Lot „dom = księżyc"
+  // zabiera cały hangar planety, ale zapis hangaru ŹRÓDŁA zostawał nietknięty, więc po
+  // domknięciu wpisu lotu decide() wystawiał ten sam lot bez końca, a bramka
+  // anty-duplikat ścinała go po jednej nawigacji na obrót.
+  check("po potwierdzonej wysyłce hangar ŹRÓDŁA jest zerowany",
+    /function emptySourceHangar\(fromKey, fromBody, why\)/.test(src) &&
+    (src.match(/emptySourceHangar\(/g) || []).length >= 4);
+  check("bramka anty-duplikat wysyła trasę w karencję (koniec pętli nawigacji)",
+    /blG\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\] = ls\.at \+ guardMs/.test(src));
+  check("karencja NIE dotyczy ekspedycji (fale lecą tą samą trasą co 60–90 s)",
+    /if \(!ECO_KINDS\.includes\(m\.kind\)\) \{[\s\S]{0,400}?blG\[/.test(src));
+  check("lista lotów: bot próbuje jawnego przycisku „Fleet movements” i nie poddaje się",
+    /przycisk „Fleet movements”/.test(src) && /próbuję dalej co 10 min/.test(src) && !/ROZWIŃ JĄ RĘCZNIE RAZ/.test(src));
 }
 
 console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");

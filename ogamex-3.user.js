@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.39.1
+// @version      3.39.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.39.1";
+  const VERSION = "3.39.2";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -361,7 +361,18 @@
         return t.length < 120 && /\d+\s*Missions?\s*:/i.test(t);
       });
       const wrap = document.querySelector("#layoutFleetMovements");
+      // v3.39.2 (owner 30.08: „bot ma sam sobie radzić ze wszystkim" — i ma rację):
+      // do 3.39.1 kandydaci opierali się na liczniku „N Missions:", a zrzut z 09:58:06
+      // pokazał, że heurystyka trafiała w `<div id="header">`, czyli w GÓRNĄ NAWIGACJĘ.
+      // Fork ma na stronie floty jawny przełącznik „Fleet movements" (widoczny na
+      // zrzucie ekranu ownera) — szukamy go wprost po tekście, zanim zaczniemy zgadywać.
+      const byText = (re) => [...document.querySelectorAll("a, button, div, span, td, h2, h3, .title")]
+        .filter(e => clickable(e) && e.children.length <= 3)
+        .find(e => { const t = (e.textContent || "").replace(/\s+/g, " ").trim(); return t.length < 60 && re.test(t); });
+      const fmBtn = byText(/fleet\s*movements?/i);
       const cands = [
+        { el: fmBtn, why: "przycisk „Fleet movements”" },
+        { el: fmBtn && fmBtn.parentElement, why: "rodzic przycisku „Fleet movements”" },
         { el: barEl, why: "licznik misji" },
         { el: barEl && barEl.parentElement, why: "rodzic licznika misji" },
         { el: wrap && wrap.querySelector(".header .title"), why: "nagłówek „Events”" },
@@ -370,10 +381,15 @@
       ].filter(c => clickable(c.el));
       const tried = st.tried || 0;
       if (tried >= cands.length) {
+        // v3.39.2: dawniej bot poddawał się i prosił operatora o ręczne rozwinięcie
+        // (a potem milczał 6 h). To jest jego robota, nie operatora: po wyczerpaniu
+        // kandydatów czekamy 10 minut i próbujemy CAŁĄ listę od nowa — strona floty
+        // bywa renderowana inaczej niż przegląd, więc następne wejście może trafić.
+        if (Date.now() - (st.at || 0) < 10 * 60e3) return false;
         if (!Once.said("events_dom", 6 * 3600e3)) {
-          log(`[LOTY DOM] żadne z ${cands.length} kliknięć nie rozwinęło listy lotów. ROZWIŃ JĄ RĘCZNIE RAZ — gra zapamiętuje ten wybór. Markup paska: ${((barEl && (barEl.parentElement || barEl).outerHTML) || "brak paska").replace(/\s+/g, " ").slice(0, 1200)}`, "error");
+          log(`[LOTY DOM] żadne z ${cands.length} kliknięć nie rozwinęło listy lotów — próbuję dalej co 10 min. Markup paska: ${((fmBtn && fmBtn.outerHTML) || (barEl && (barEl.parentElement || barEl).outerHTML) || "brak paska").replace(/\s+/g, " ").slice(0, 1200)}`, "warn");
         }
-        Store.set("events_open", { at: Date.now(), tried, dumped: true });
+        Store.set("events_open", { at: Date.now(), tried: 0, dumped: true });
         return false;
       }
       const pick = cands[tried];
@@ -1679,6 +1695,16 @@
               const fD = (sD.flights || []).find(x => x.fromKey === m.fromKey && x.pending);
               if (fD) { delete fD.pending; if (m.flightMs) fD.flightMs = m.flightMs; Situation.save(sD); log(`[LOT] wpis lotu [${fD.fromKey}]→[${fD.toKey}] potwierdzony (wysyłka już poszła).`, "success"); }
             } catch {}
+            // v3.39.2: samo skasowanie misji NIE wystarczy — decide() wystawi tę samą
+            // trasę w następnym przebiegu, bramka znów ją zetnie i tak w kółko, po jednej
+            // nawigacji na obrót (sztorm 09:59). Trasa idzie w karencję na resztę okna
+            // bramki: egzekutor mówi wtedy „w karencji — czekam" i NIE nawiguje.
+            // TYLKO dla lotów obronnych: fale ekspedycji lecą tą samą trasą co 60–90 s,
+            // więc karencja zjadłaby serię (złapane przez E2E „fala 2 też wyszła").
+            if (!ECO_KINDS.includes(m.kind)) {
+              emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat");
+              try { const blG = Store.get("fly_block", {}) || {}; blG[`${m.fromKey}>${m.toKey}`] = ls.at + guardMs; Store.set("fly_block", blG); } catch {}
+            }
             Store.del("mission"); return;
           }
           if (page() !== "fleet") { navGuard(m, this); return; }
@@ -1925,6 +1951,7 @@
         else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0 }];
       }
       Situation.save(s);
+      if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
       Store.del("mission");
       if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
@@ -2178,6 +2205,25 @@
   // uznawał parę za „w locie": ratunek trwał 106 s, a flota siedziała na planecie
   // 10 minut i ekspedycje stały. Po przeładowaniu dowód wysyłki daje sama gra —
   // adres /fleet?fleetSendSuccessfully.
+  // v3.39.2 (sztorm 30.08 09:59:20–09:59:47, ~90 przeładowań /fleet w 27 s):
+  // lot „dom = księżyc" zabiera CAŁY hangar planety, ale nasz zapis hangaru ŹRÓDŁA
+  // zostawał niezmieniony — dalej mówił „na planecie stoi 460 tys. statków". Gdy wpis
+  // lotu został domknięty odczytem hangaru CELU (a od 3.39.0 dzieje się to w sekundy,
+  // nie po 10 min), decide() natychmiast wystawiał TEN SAM lot jeszcze raz, bramka
+  // anty-duplikat go blokowała, misja znikała — i całość od nowa, przy czym każda
+  // iteracja to jedna nawigacja. Skoro wiemy, że flota wyleciała, źródło jest puste.
+  function emptySourceHangar(fromKey, fromBody, why) {
+    try {
+      const s = Situation.load();
+      const hk = `${fromKey}|${fromBody}`;
+      const h = s.hangars[hk];
+      if (!h || (h.total || 0) === 0) return;
+      s.hangars[hk] = { total: 0, ships: [], at: Date.now() };
+      Situation.save(s);
+      log(`[LOT] hangar ${fromBody} [${fromKey}] wyzerowany — flota z niego wyleciała (${why}).`, "info");
+    } catch {}
+  }
+
   function confirmPendingSend() {
     try {
       if (!location.href.includes("fleetSendSuccessfully")) return;
@@ -2187,6 +2233,7 @@
       if (!f) return;
       delete f.pending; Situation.save(s);
       log(`[LOT] wysyłka [${f.fromKey}]→[${f.toKey}] potwierdzona przez grę po przeładowaniu — wpis nie czeka na timeout.`, "success");
+      emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu");
     } catch {}
   }
 
