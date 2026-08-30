@@ -36,6 +36,11 @@ const flightsBlocking = (st, now) => (st.flights || []).some(f => f.phase !== "d
 const decide = new Function("Situation", "flightStale", "flightsBlocking", `return function decide(s, cfg, now) {${decideBody}}`)(Situation, flightStale, flightsBlocking);
 
 const CFG = { confirmMs: 20000, tooLateSec: 40, airSpeedPct: 10, recallBufferSec: 90 };
+// v3.41.0: rutynowe zwożenie floty planeta→księżyc jest od teraz OPCJĄ i domyślnie OFF
+// (decyzja ownera 30.08: „przenosić flotę ma tylko podczas ataku"). Testy, które badają
+// SAM MECHANIZM zwożenia, muszą go jawnie włączyć — inaczej sprawdzałyby, że opcja jest
+// wyłączona, a nie że mechanizm działa.
+const CFG_H2M = { ...CFG, homeToMoon: true };
 const NOW = 1_700_000_000_000;
 const H = (total, body, agoMs = 30000) => ({ total, at: NOW - agoMs, ships: [] });
 
@@ -119,8 +124,8 @@ console.log("\n── 5. INCYDENT 27.08 11:26 — jedna ucieczka na parę, druga
 console.log("\n── 6. INCYDENT 27.08 12:42 — dom = KSIĘŻYC, nigdy powrót na planetę ──");
 {
   const s = base({ hangars: { "3:272:7|planet": H(1.5e12, "planet", 5 * 60000) }, threats: [] });
-  const a = decide(s, CFG, NOW).actions[0];
-  check("cisza + flota na planecie pary z księżycem → lot na KSIĘŻYC", a && a.kind === "fly" && a.toBody === "moon" && a.home === true, JSON.stringify(a));
+  const a = decide(s, CFG_H2M, NOW).actions[0];
+  check("cisza + flota na planecie pary z księżycem → lot na KSIĘŻYC (przy homeToMoon=ON)", a && a.kind === "fly" && a.toBody === "moon" && a.home === true, JSON.stringify(a));
   const s2 = base({ pairs: { "5:100:4": { hasMoon: false, galaxy: 5, system: 100, position: 4 } }, hangars: { "5:100:4|planet": H(1e9, "planet", 5 * 60000) }, threats: [] });
   check("para BEZ księżyca → żadnego lotu do domu", decide(s2, CFG, NOW).actions.length === 0);
   const s3 = base({ hangars: { "3:272:7|moon": H(1.5e12) }, threats: [] });
@@ -422,6 +427,38 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
     /if \(!ECO_KINDS\.includes\(m\.kind\)\) \{[\s\S]{0,400}?blG\[/.test(src));
   check("lista lotów: bot próbuje jawnego przycisku „Fleet movements” i nie poddaje się",
     /przycisk „Fleet movements”/.test(src) && /próbuję dalej co 10 min/.test(src) && !/ROZWIŃ JĄ RĘCZNIE RAZ/.test(src));
+}
+
+console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.08) ──");
+{
+  // 18:03:54 — owner postawił księżyc na [1:217:8] i bot NATYCHMIAST wysłał tam
+  // 12 341 transporterów regułą „dom = księżyc". Owner: „nie chcę, żeby to robił.
+  // Przenosić flotę ma tylko podczas ataku". Reguła jest teraz opcją, domyślnie OFF.
+  const stoi = base({ hangars: { "3:272:7|planet": { total: 12341, at: NOW - 60e3, ships: [] } }, threats: [], flights: [] });
+  const off = decide(stoi, { ...CFG, homeToMoon: false }, NOW);
+  check("domyślnie: flota na planecie NIE jest zwożona na księżyc",
+    !(off.actions || []).some(a => a.kind === "fly"), JSON.stringify(off.actions));
+  const on = decide(stoi, { ...CFG, homeToMoon: true }, NOW);
+  check("po włączeniu opcji zwożenie działa jak dawniej",
+    (on.actions || []).some(a => a.kind === "fly" && a.toBody === "moon" && /dom = księżyc/.test(a.why)), JSON.stringify(on.actions));
+
+  // ...ale powrót po RATUNKU ma działać nawet przy wyłączonej opcji: skoro bot sam
+  // wywiózł flotę na drugie ciało, ma ją odstawić z powrotem.
+  const poRatunku = base({ hangars: { "3:272:7|planet": { total: 12341, at: NOW - 60e3, ships: [] } },
+    threats: [], flights: [], rescues: { "3:272:7": NOW - 5 * 60e3 } });
+  const back = decide(poRatunku, { ...CFG, homeToMoon: false }, NOW);
+  check("powrót po ratunku działa mimo wyłączonego zwożenia",
+    (back.actions || []).some(a => a.kind === "fly" && a.toBody === "moon" && a.backHome === true), JSON.stringify(back.actions));
+
+  const stary = base({ hangars: { "3:272:7|planet": { total: 12341, at: NOW - 60e3, ships: [] } },
+    threats: [], flights: [], rescues: { "3:272:7": NOW - 8 * 3600e3 } });
+  check("stempel ratunku sprzed 8 h już nie uprawnia do zwożenia",
+    !(decide(stary, { ...CFG, homeToMoon: false }, NOW).actions || []).some(a => a.kind === "fly"));
+
+  check("ewakuacja zostawia stempel w stanie (Fly), powrót nie",
+    /if \(!m\.home && m\.kind !== "expedition"[\s\S]{0,200}?sR\.rescues\[m\.fromKey\] = Date\.now\(\)/.test(src));
+  check("panel ma przełącznik „flota rusza się tylko przy ataku”",
+    /Flota rusza się TYLKO przy ataku/.test(src) && /CFG\.homeToMoon = !CFG\.homeToMoon/.test(src));
 }
 
 console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");
@@ -767,11 +804,11 @@ console.log("\n── 36. DOM = KSIEZYC po postawieniu ksiezyca (v3.34.0) ──
   // fale na PLANETE. fleetAt() mowi wtedy "moon" (wiekszy hangar), wiec stara
   // regula uznawala, ze dom jest domem — i wracajace statki zostawaly na planecie.
   const s = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200) } });
-  const r = decide(s, CFG, NOW);
+  const r = decide(s, CFG_H2M, NOW);
   const fly = r.actions.find(a => a.kind === "fly" && /dom = ksi/.test(a.why));
   check("wracajace statki z planety ida na ksiezyc, mimo wiekszego hangaru na ksiezycu", !!fly && fly.fromBody === "planet" && fly.toBody === "moon", JSON.stringify(r.actions));
   const pusta = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": { total: 0, at: NOW - 60000, ships: [] } } });
-  check("pusta planeta nie generuje lotu (zero jalowych wysylek)", !decide(pusta, CFG, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(pusta, CFG, NOW).actions));
+  check("pusta planeta nie generuje lotu (zero jalowych wysylek)", !decide(pusta, CFG_H2M, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(pusta, CFG_H2M, NOW).actions));
   const stara = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200, "planet", 60 * 60e3) } });
   check("odczyt planety sprzed godziny = nie ruszamy (moze juz tam nic nie ma)", !decide(stara, CFG, NOW).actions.some(a => /dom = ksi/.test(a.why || "")), JSON.stringify(decide(stara, CFG, NOW).actions));
   const atak = base({ hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200) }, threats: [threat("3:272:7", "moon", 300)] });
@@ -794,7 +831,7 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
     hangars: { "3:272:7|moon": H(70000), "3:272:7|planet": H(1200, "planet", 30e3) },   // odczyt PO ladowaniu
     landings: { "3:272:7|planet": NOW - 60e3 },
   });
-  const r2 = decide(czytane, CFG, NOW);
+  const r2 = decide(czytane, CFG_H2M, NOW);
   check("gdy hangar czytany PO ladowaniu — zadnego zbednego rekonesansu", !r2.actions.some(a => a.kind === "recon"), JSON.stringify(r2.actions));
   check("i od razu zapada decyzja: statki wracaja na ksiezyc", r2.actions.some(a => a.kind === "fly" && a.fromBody === "planet" && a.toBody === "moon"), JSON.stringify(r2.actions));
   const stare = base({ hangars: { "3:272:7|moon": H(70000) }, landings: { "3:272:7|planet": NOW - 2 * 3600e3 } });

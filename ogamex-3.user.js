@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.40.1
+// @version      3.41.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.40.1";
+  const VERSION = "3.41.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -114,6 +114,13 @@
   const DEFAULTS = {
     enabled: true,          // pętla obrony chodzi
     autoRescue: false,      // false = OBSERWATOR (alarmuje, nie rusza flotą). Włącz w panelu po potwierdzeniu markupu.
+    // v3.41.0 (owner 30.08 18:04: „stworzyłem nowego moona i bot od razu wysłał transportery
+    // z planety na moona. Nie chcę, żeby to robił. Przenosić flotę ma tylko podczas ataku"):
+    // reguła „dom = księżyc" zwoziła na księżyc WSZYSTKO, co stanęło na planecie — powroty
+    // ekspedycji, transportery kolonii, świeżo postawiony księżyc od razu dostawał dostawę.
+    // Teraz jest to OPCJA i domyślnie WYŁĄCZONA. Powrót po ratunku działa niezależnie:
+    // gdy to BOT wywiózł flotę z tej pary, wolno mu ją przywieźć z powrotem.
+    homeToMoon: false,
     deutReserve: 0,         // zostaje na ciele przy każdym locie (Athena: 100 mld; Genesis start: 0)
     airSpeedPct: 10,        // ucieczka w powietrze: prędkość
     confirmMs: 20000,       // potwierdzenie zagrożenia przed ruchem (artefakty paska)
@@ -760,7 +767,15 @@
           break;
         }
         const hp = (s.hangars || {})[`${k}|planet`];
-        if (!f && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) { actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: "dom = księżyc", speed: 100, recall: false, home: true }); continue; }
+        // v3.41.0: rutynowe zwożenie na księżyc jest teraz OPCJĄ (domyślnie OFF, decyzja
+        // ownera 30.08). Bez niej bot rusza flotą wyłącznie przy ataku — a powrót po
+        // ratunku zostaje, bo skoro sam wywiózł flotę na drugie ciało, ma ją odstawić.
+        const rescuedAt = (s.rescues || {})[k] || 0;
+        const backFromRescue = rescuedAt > 0 && now - rescuedAt < 6 * 3600e3;
+        if (!f && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (cfg.homeToMoon || backFromRescue)) {
+          actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: backFromRescue ? "powrót po ratunku: planeta → księżyc" : "dom = księżyc", speed: 100, recall: false, home: true, backHome: backFromRescue });
+          continue;
+        }
         // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
         // co ucieczka (powolny Deploy + zawrót), tylko wyzwalany zegarem, nie atakiem.
         if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0 && now - (fleet.at || 0) > 60 * 60e3) {
@@ -1987,6 +2002,11 @@
       }
       Situation.save(s);
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
+      // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
+      // flotę na księżyc, nawet gdy rutynowe zwożenie jest wyłączone.
+      if (!m.home && m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
+        try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = Date.now(); Situation.save(sR); } catch {}
+      }
       Store.del("mission");
       if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
@@ -2544,6 +2564,7 @@
           <div class="act"><button id="ogx3-save" class="ogx3-btn">RATUJ FLOTĘ TERAZ</button><button id="ogx3-home" class="ogx3-btn">WRÓĆ NA BAZĘ</button></div>
           <div class="sec" data-sec="def"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Obrona</span><span class="tail" id="ogx3-t-def"></span></div><div class="sec-b">
             <div class="line"><button id="ogx3-auto" class="ogx3-btn"></button><button id="ogx3-recon" class="ogx3-btn"></button></div>
+            <div class="line"><button id="ogx3-h2m" class="ogx3-btn"></button></div>
             <div class="line"><button id="ogx3-push" class="ogx3-btn"></button><button id="ogx3-voice" class="ogx3-btn"></button><button id="ogx3-pushtest" class="ogx3-btn">Test push</button></div>
             <div class="line">Rezerwa deuteru <input id="ogx3-res" style="width:74px" /></div>
             <div class="line">Prędkość ucieczki <input id="ogx3-spd" style="width:32px" />%</div>
@@ -2613,6 +2634,7 @@
 
       $("ogx3-on").onclick = () => { CFG.enabled = !CFG.enabled; saveCfg(); if (CFG.enabled) Store.set("last_tick", Date.now()); log(`Bot ${CFG.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-auto").onclick = () => { CFG.autoRescue = !CFG.autoRescue; saveCfg(); log(`Auto-ratunek ${CFG.autoRescue ? "ON — bot RUSZA flotą" : "OFF — obserwator"}`, "warn"); this.renderStatus(); };
+      $("ogx3-h2m").onclick = () => { CFG.homeToMoon = !CFG.homeToMoon; saveCfg(); log(CFG.homeToMoon ? "Zwożenie floty planeta→księżyc: ON (bot będzie konsolidował flotę)" : "Zwożenie floty planeta→księżyc: OFF — flota rusza się tylko przy ataku (i wraca po ratunku)", "warn"); this.renderStatus(); };
       $("ogx3-push").onclick = () => { Store.set("ntfy_on", !Notifier.enabled()); this.renderStatus(); };
       $("ogx3-voice").onclick = () => { Store.set("voice_on", !Store.get("voice_on", false)); this.renderStatus(); };
       // v3.19.0: trzy stany zamiast dwóch — „tylko flota" (domyślny), „wszystkie", OFF.
@@ -2740,6 +2762,8 @@
         const mode = !CFG.recon ? "OFF" : (CFG.reconMode === "all" ? "wszystkie" : (lf0 ? `tylko [${lf0}]` : "tylko flota"));
         $("ogx3-recon").textContent = `Rekonesans: ${mode}`;
         $("ogx3-recon").style.background = CFG.recon ? "rgba(255,255,255,.1)" : "#6b1e1e"; }
+      $("ogx3-h2m").textContent = CFG.homeToMoon ? "Zwożenie na księżyc ON" : "Flota rusza się TYLKO przy ataku";
+      $("ogx3-h2m").style.background = CFG.homeToMoon ? "#5a4a1e" : "#1e6b3a";
       $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`;
       $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`;
       $("ogx3-deb").textContent = `Złom ${CFG.debris.enabled ? "ON" : "OFF"}`; $("ogx3-deb").style.background = CFG.debris.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";

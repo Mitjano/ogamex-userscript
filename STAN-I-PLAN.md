@@ -6,6 +6,48 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 18:15 — v3.41.0: flota rusza się TYLKO przy ataku + rozwiązana zagadka listy lotów
+
+**Decyzja ownera (18:04):** „stworzyłem nowego moona na nowej planecie i bot od razu wysłał
+transportery z planety na moona. Nie chcę, żeby to robił. Przenosić flotę ma tylko podczas ataku."
+W logu: `18:03:54 dom = księżyc: [1:217:8] planet → [1:217:8] moon` i `HEAVY_CARGO×12 341`.
+
+**Zmiana.** Reguła „dom = księżyc" jest od teraz OPCJĄ `CFG.homeToMoon`, **domyślnie WYŁĄCZONĄ**,
+z przełącznikiem w panelu („Flota rusza się TYLKO przy ataku" / „Zwożenie na księżyc ON").
+Powrót po RATUNKU działa niezależnie od tej opcji: każda ewakuacja (swap/air) zostawia w stanie
+stempel `rescues[para]`, a on przez 6 h uprawnia bota do odstawienia floty na księżyc — bo skoro
+sam ją wywiózł, ma ją przywieźć. Lot ma wtedy `backHome: true` i inny opis w logu
+(„powrót po ratunku: planeta → księżyc").
+
+Trzy stare testy badały SAM MECHANIZM zwożenia, więc dostały jawne `CFG_H2M` (homeToMoon=ON) —
+inaczej sprawdzałyby, że opcja jest wyłączona, zamiast że mechanizm działa.
+
+## LISTA LOTÓW — zagadka rozwiązana, klikanie nie miało szans
+Zrzut z 3.40.1 (15:31, 16:06, 16:40, 17:15, 17:50) pokazuje ZA KAŻDYM RAZEM to samo:
+
+```html
+<div id="layoutFleetMovements" class="fleet-movement-wrapper">
+  <div class="header"><span class="title">Events</span></div>
+  <div class="content" id="fleet-movement-content"></div>
+  <div class="footer"></div>
+</div>
+```
+
+Kontener **istnieje i jest PUSTY** — nie „zwinięty". Nie ma czego rozwijać: fork po prostu nie
+renderuje wierszy ruchów w tym panelu na stronach, na których bot bywa (`home`, `building/facility`).
+Klikanie w licznik misji nigdy tego nie zmieni, a lista kandydatów miała tylko 2 pozycje, bo
+`clickable()` odrzuca elementy niewidoczne (`offsetParent === null`) — czyli m.in. nagłówek tego
+schowanego kontenera. **Cała ścieżka „rozwiń listę" była ślepą uliczką.**
+
+Wniosek: wykrywanie ataków na kolonie musi iść przez `/home/fleetmovementlist` z parametrem
+planety (sonda `[SONDA LISTY]` z 3.40.1 — w logu ownera jeszcze się nie pojawiła, bo odpala się
+raz na 10 min i tylko gdy jest inna kolonia niż aktywna). Jeśli parametr nie działa, zostaje
+pasek misji jako jedyne źródło i trzeba to nazwać wprost w panelu.
+
+**Testy:** 415 sprawdzeń, zero błędów.
+
+---
+
 ## AKTUALIZACJA 30.08, 13:00 — v3.40.1: wersja DIAGNOSTYCZNA (lista lotów + sonda listy ruchów)
 
 **Co potwierdził log ownera z 3.40.0 (10:33–12:49):**
