@@ -6,6 +6,40 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 30.08, 19:00 — v3.42.0: koniec ślepej uliczki, panel mówi prawdę, sonda rozstrzyga
+
+Trzy poprawki wynikające wprost z wieczornych zrzutów.
+
+**1. Bot przestał klikać w panel „Events".** Pięć zrzutów (15:31, 16:06, 16:40, 17:15, 17:50)
+pokazało to samo: `<div class="content" id="fleet-movement-content"></div>` — kontener istnieje
+i jest PUSTY. To nie panel „zwinięty", tylko panel, którego fork nie wypełnia na stronach, po
+których bot się porusza. Pięć godzin prób co 10 minut nie dało ani jednego wiersza. Teraz bot
+rozpoznaje ten stan (kontener obecny, zero dzieci), mówi to raz na 6 h i **przestaje klikać**.
+
+**2. Panel mówi prawdę.** Komunikat „⚠ lista lotów zwinięta" był mylący — sugerował, że wystarczy
+coś rozwinąć. Prawda brzmi inaczej, więc wiersz Obrona pokazuje teraz
+`czysto · auto-ratunek · ⚠ 13 kolonii bez nadzoru`. Operator ma widzieć, czego bot NIE pilnuje,
+a nie mieć poczucie, że wszystko jest pod kontrolą.
+
+**3. Sonda `[SONDA LISTY]` rozstrzyga zamiast sugerować.** Wcześniej mogła zamilknąć (brak
+kotwicy w pasku, brak innej kolonii) i cisza była nie do odróżnienia od „nie odpaliła się".
+Teraz: odpala się co 5 min zamiast co 10, do 6 prób, **zawsze zostawia ślad w logu**, a zamiast
+zgadywać po współrzędnych robi porównanie **A/B** — to samo zapytanie bez parametru i z parametrem
+innej kolonii. Identyczne id lotów = parametr ignorowany, koniec tematu. Różne albo widoczne
+koordy pytanej kolonii = parametr działa i wpinamy to w obronę.
+
+**Testy:** 417 sprawdzeń, zero błędów.
+
+### Co to znaczy dla obrony kolonii (stan na teraz)
+Mechanika ratunku jest gotowa i sprawdzona: bot **widzi, na które ciało leci atak** (`dstBody`
+z ikony księżyca w wierszu; przy `unknown` celowo NIE skacze na drugie ciało, tylko ucieka
+w powietrze), ucieka w kolejności sąsiedni księżyc w układzie → drugie ciało pary → inna kolonia,
+i **zabiera surowce** (`takeResources` domyślnie ON, minus rezerwa deuteru — owner ma 0).
+Brakuje wyłącznie SYGNAŁU: atak na kolonię inną niż aktywna jest niewidoczny. Sonda powie, czy da
+się to naprawić czytaniem ruchów per kolonia, czy trzeba to nazwać martwym polem na stałe.
+
+---
+
 ## AKTUALIZACJA 30.08, 18:15 — v3.41.0: flota rusza się TYLKO przy ataku + rozwiązana zagadka listy lotów
 
 **Decyzja ownera (18:04):** „stworzyłem nowego moona na nowej planecie i bot od razu wysłał

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.41.0
+// @version      3.42.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.41.0";
+  const VERSION = "3.42.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -324,24 +324,40 @@
     // Sonda tylko LOGUJE wynik. Po 3 nierozstrzygniętych próbach wyłącza się sama.
     async probePlanetList(own) {
       const st = Store.get("mv_probe", { n: 0, done: false, at: 0 }) || {};
-      if (st.done || (st.n || 0) >= 3) return;
-      if (Date.now() - (st.at || 0) < 10 * 60e3) return;
+      if (st.done || (st.n || 0) >= 6) return;
+      if (Date.now() - (st.at || 0) < 5 * 60e3) return;
+      Store.set("mv_probe", { ...st, n: (st.n || 0) + 1, at: Date.now() });
+      // v3.42.0: sonda ma ZAWSZE zostawić ślad — cisza po niej była nie do odróżnienia
+      // od „nie odpaliła się". I ma porównywać A/B: to samo zapytanie BEZ parametru i Z
+      // parametrem innej kolonii. Identyczny wynik = parametr ignorowany, kropka.
       const act = PlanetBar.active();
       const other = PlanetBar.pairs().find(p => !act || p.key !== act.key);
-      if (!other) return;
+      if (!other) { log("[SONDA LISTY] nie widzę innej kolonii niż aktywna — nie mam czego porównać.", "warn"); return; }
       const el = PlanetBar.anchor(other.key, "planet");
       const m = el && (el.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i);
-      if (!m) return;
-      Store.set("mv_probe", { ...st, n: (st.n || 0) + 1, at: Date.now() });
-      try {
-        const res = await fetchT(`${this.URL}?planet=${m[1]}`, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-        if (!res.ok) { log(`[SONDA LISTY] /home/fleetmovementlist?planet= dla [${other.key}] → HTTP ${res.status}. Parametr chyba nieobsługiwany.`, "warn"); return; }
+      if (!m) { log(`[SONDA LISTY] pasek planet nie daje mi identyfikatora kolonii [${other.key}] (href="${el ? el.getAttribute("href") : "brak kotwicy"}") — nie mam jak zapytać o jej ruchy.`, "warn"); return; }
+      const grab = async (url) => {
+        const res = await fetchT(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!res.ok) return { err: `HTTP ${res.status}` };
         const html = await res.text();
-        if (looksLoggedOut(res, html)) return;
+        if (looksLoggedOut(res, html)) return { err: "wylogowany" };
         const doc = new DOMParser().parseFromString(html, "text/html");
         const rows = [...doc.querySelectorAll("tr[class*='row-mission-type-']")].map(tr => this.classify(tr, own));
-        const coords = [...new Set(rows.flatMap(r => [r.src, r.dst]).filter(Boolean))];
-        log(`[SONDA LISTY] pytałem o [${other.key}] → ${rows.length} wierszy, współrzędne: ${coords.join(", ") || "brak"}. Jeśli widać TU koordy tej kolonii, a nie tylko aktywnej pary — parametr DZIAŁA i ślepota na kolonie znika.`, "warn");
+        return { rows, ids: [...new Set(rows.map(r => r.id).filter(Boolean))].sort().join(","), coords: [...new Set(rows.flatMap(r => [r.src, r.dst]).filter(Boolean))].sort() };
+      };
+      try {
+        const bez = await grab(this.URL);
+        const zP = await grab(`${this.URL}?planet=${m[1]}`);
+        if (bez.err || zP.err) { log(`[SONDA LISTY] nie udało się pobrać (bez parametru: ${bez.err || "ok"}, z parametrem: ${zP.err || "ok"}).`, "warn"); return; }
+        const takiSam = bez.ids === zP.ids;
+        const maKolonie = zP.coords.includes(other.key);
+        if (!takiSam || maKolonie) {
+          Store.set("mv_probe", { n: 0, done: true, works: true, at: Date.now() });
+          log(`[SONDA LISTY] ✅ PARAMETR DZIAŁA. Bez parametru ${bez.rows.length} wierszy (${bez.coords.join(", ") || "brak"}), dla [${other.key}] ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}). Da się czytać ruchy każdej kolonii osobno — POKAŻ TĘ LINIĘ CLAUDE'OWI, wtedy wpina to w obronę.`, "error");
+        } else {
+          Store.set("mv_probe", { n: (st.n || 0) + 1, done: (st.n || 0) + 1 >= 6, works: false, at: Date.now() });
+          log(`[SONDA LISTY] ❌ parametr IGNOROWANY — ta sama odpowiedź z nim i bez niego (${bez.rows.length} wierszy: ${bez.coords.join(", ") || "brak"}). Ruchy innych kolonii są dla bota niewidoczne. Próba ${(st.n || 0) + 1}/6.`, "warn");
+        }
       } catch (e) { log(`[SONDA LISTY] błąd: ${e.message}`, "warn"); }
     },
     async fetchList(own) {
@@ -377,6 +393,19 @@
       if (this.readEvents(new Set()).length) { if (st.at) Store.set("events_open", {}); return false; }
       const bar = Bar.read();
       if (!bar || !bar.total) return false;                       // nie ma żadnych lotów = nie ma czego rozwijać
+      // v3.42.0 (zrzuty 15:31–17:50): kontener `#layoutFleetMovements` ISTNIEJE i jest PUSTY
+      // — `<div class="content" id="fleet-movement-content"></div>` bez ani jednego wiersza.
+      // To nie jest panel „zwinięty", tylko panel, którego fork NIE WYPEŁNIA na stronach,
+      // po których bot się porusza. Nie ma czego rozwijać, więc przestajemy w to klikać:
+      // pięć godzin prób co 10 minut nie dało ani jednego wiersza. Zostaje jedno zdanie
+      // do logu i uczciwa informacja w panelu, że kolonie są poza nadzorem.
+      const wrap0 = document.querySelector("#layoutFleetMovements");
+      const content0 = document.getElementById("fleet-movement-content");
+      if (wrap0 && content0 && !content0.children.length) {
+        Store.set("events_open", { at: Date.now(), tried: 0, dumped: true, emptyPanel: true });
+        if (!Once.said("events_empty", 6 * 3600e3)) log("[LOTY] panel „Events” jest na tej stronie PUSTY (nie zwinięty) — gra go tu nie wypełnia. Nie klikam w niego; ataki na kolonie muszą iść innym źródłem.", "warn");
+        return false;
+      }
       if (Date.now() - (st.at || 0) < 30e3) return false;         // jedna próba na pół minuty
       // v3.37.0 (zrzut właściciela 29.08 21:57): kliknięcie w licznik misji NIE
       // napełniło listy — kontener `#fleet-movement-content` był obecny i PUSTY,
@@ -2799,9 +2828,13 @@
       // ZASŁANIAŁO stan obrony — operator przestał widzieć najważniejszą informację
       // w całym panelu („czy jest czysto"). Ostrzeżenie idzie OBOK stanu, nigdy zamiast.
       else {
-        const listBad = !!(Store.get("events_open", null) || {}).dumped;
-        this.setRow("ogx3-r-def", listBad ? "busy" : (CFG.autoRescue ? "ok" : "busy"),
-          `czysto · ${CFG.autoRescue ? "auto-ratunek" : "obserwator"}${listBad ? " · ⚠ lista lotów zwinięta" : ""}`);
+        // v3.42.0: „lista lotów zwinięta" było MYLĄCE — panel Events nie jest zwinięty,
+        // tylko pusty, i nie da się go rozwinąć. Prawda brzmi: ataki na kolonie inne niż
+        // aktywna są dla bota niewidoczne. Operator ma to widzieć wprost.
+        const slepy = !!(Store.get("events_open", null) || {}).dumped;
+        const ile = Math.max(0, Object.keys(s.pairs || {}).length - 1);
+        this.setRow("ogx3-r-def", slepy ? "busy" : (CFG.autoRescue ? "ok" : "busy"),
+          `czysto · ${CFG.autoRescue ? "auto-ratunek" : "obserwator"}${slepy ? ` · ⚠ ${ile} kolonii bez nadzoru` : ""}`);
       }
       this.el.classList.toggle("alarm", atk.length > 0 || Session.lostRecently());
       if (atk.length && Store.get("ui_min", false) === true) this.setMin(false);   // alarm rozwija panel

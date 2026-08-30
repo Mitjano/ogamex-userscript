@@ -408,8 +408,14 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
   // v3.40.0: ostrzeżenie o zwiniętej liście lotów ma stać OBOK stanu obrony, nigdy
   // zamiast niego (w 3.39.0 zasłoniło „czysto · auto-ratunek" i owner przestał widzieć,
   // czy obrona w ogóle działa).
-  check("panel pokazuje stan obrony ORAZ ostrzeżenie o zwiniętej liście lotów",
-    /czysto · \$\{CFG\.autoRescue \? "auto-ratunek" : "obserwator"\}\$\{listBad \? " · ⚠ lista lotów zwinięta" : ""\}/.test(src));
+  // v3.42.0: komunikat „lista lotów zwinięta" był MYLĄCY — panel Events nie jest zwinięty,
+  // tylko pusty i nie do rozwinięcia. Panel ma mówić prawdę: ile kolonii jest bez nadzoru.
+  check("panel pokazuje stan obrony ORAZ ile kolonii jest poza nadzorem",
+    /czysto · \$\{CFG\.autoRescue \? "auto-ratunek" : "obserwator"\}\$\{slepy \? ` · ⚠ \$\{ile\} kolonii bez nadzoru` : ""\}/.test(src));
+  check("bot nie klika już w pusty panel Events (5 h prób nie dało wiersza)",
+    /!content0\.children\.length/.test(src) && /Nie klikam w niego/.test(src));
+  check("sonda listy porównuje A/B i zawsze zostawia ślad w logu",
+    /PARAMETR DZIAŁA/.test(src) && /parametr IGNOROWANY/.test(src) && /nie widzę innej kolonii niż aktywna/.test(src));
   check("dławik alertów nie liczy odliczania sekund jako nowego alertu",
     /a\.msg\.replace\(\/\\d\+\/g, "#"\)\.slice\(0, 60\)/.test(src));
   check("kolonie poza rekonesansem czytane CICHO, bez nawigacji",
