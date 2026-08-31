@@ -1275,6 +1275,19 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 600 }] });
     await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
     check("(warunek wstępny) ewakuacja poszła", g.sent.length === 1, JSON.stringify(g.sent));
+    // v3.53.1 (incydent 19:29:08 na żywo): fala ekspedycji wylądowała na źródle ratunku
+    // i „domknęła" wpis lotu — bot zapomniał o 11 mln statków i NIGDY ich nie zawrócił.
+    // Symulacja: hangar źródła pełny (świeży odczyt) PRZED terminem zawrotu → wpis zostaje.
+    advance(g, 90e3);
+    {
+      const K0 = "genesis.ogamex.net:ogx3_situation";
+      const st0 = JSON.parse(g.store.get(K0) || "{}");
+      st0.hangars["1:100:5|moon"] = { total: 500, at: Date.now(), ships: [] };
+      g.store.set(K0, JSON.stringify(st0));
+    }
+    const rMid = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    const stGuard = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("fala w hangarze źródła NIE domyka lotu ratunku przed terminem zawrotu", (stGuard.flights || []).some(f => f.phase === "launched"), JSON.stringify(stGuard.flights) + " | " + rMid.logs.filter(m => /LOT/.test(m)).slice(0, 3).join(" | "));
     g.threats = [];                    // napastnik ZAWRÓCIŁ — wiersze i pasek czyste, dolot miał być za ~10 min
     await run(g, { cfg, loads: 4, ticksPerLoad: 2 });   // refresh łapie czysty pasek (start okna 60 s)
     const stMid = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");

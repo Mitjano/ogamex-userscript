@@ -1059,11 +1059,16 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
   check("refresh: pasek świeży + foreign=0 utrzymane ≥60 s → zagrożenia zdjęte", /s\.hostileClear = clear \?/.test(src) && /napastnik ZAWRÓCIŁ/.test(src) && /t\.source === "sim"/.test(src));
   check("sygnał wymaga ŚWIEŻEGO paska (≤90 s) i liczbowego total", /now - \(s\.bar\.at \|\| 0\) < 90e3/.test(src) && /typeof s\.bar\.total === "number"/.test(src));
   check("flaga fs utrwalana we wpisie lotu (FS odróżnialny od ratunku)", (src.match(/fs: !!m\.fs/g) || []).length >= 2);
+  // v3.53.1 (log 19:26:59): świeżo widziany wiersz ataku NIE jest kasowany starym paskiem
+  check("wiersz widziany <30 s temu przeżywa 'czysty pasek' (świeży dowód > stary pasek)", /now - \(t\.lastSeenAt \|\| 0\) < 30e3/.test(src));
 }
 
 // ── v3.52.0: wzorce w źródle — strażnik fałszywego domknięcia + rejestr w Fly ──
 {
-  check("lądowanie z rejestru NIE domyka wpisu ratunku przed terminem zawrotu", /toEksp = f\.recallAt && h\.at < f\.recallAt/.test(src) && /wpis ratunku ZOSTAJE/.test(src));
+  // v3.53.1 (incydent 19:29:08, stracony zawrót 11 mln statków): warunek NIE zależy już
+  // od rejestru powrotów (ten nie znał fal sprzed aktualizacji) — lot "launched" z zawrotem
+  // w przyszłości fizycznie NIE MOŻE stać w hangarze źródła, kropka.
+  check("hangar źródła pełny przed terminem zawrotu NIE domyka lotu 'launched'", /rescueStillOut = f\.recallAt && f\.phase === "launched" && h\.at < f\.recallAt/.test(src) && /wpis ZOSTAJE/.test(src));
   check("rejestr zapisywany PRZED klikiem Send fleet, tylko z czasem lotu z formularza", /m\.flightMs\) \{\s*\n\s*const sE = Situation\.load\(\);\s*\n\s*sE\.expected/.test(src));
   check("wpis rejestru potwierdzany po wysyłce i po przeładowaniu (confirmPendingSend)", /e0\.pending/.test(src) && /\(s\.expected \|\| \[\]\)\.find\(x => x\.pending && x\.fromKey === ls\.from/.test(src));
   check("rejestr wygaszany: pending>10 min, godzinę po lądowaniu; korekta zegarem z listy", /e\.pending && now - \(e\.sentAt \|\| 0\) > 10 \* 60e3/.test(src) && /best\.returnAt = o\.arriveAt/.test(src));

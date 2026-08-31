@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.53.0
+// @version      3.53.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.53.0";
+  const VERSION = "3.53.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -636,7 +636,11 @@
         s.hostileClear = clear ? (s.hostileClear && s.hostileClear.since ? s.hostileClear : { since: now }) : null;
         if (s.hostileClear && now - s.hostileClear.since >= 60e3) {
           const before = (s.threats || []).length;
-          s.threats = (s.threats || []).filter(t => t.source === "sim");
+          // v3.53.1 (log 19:26:59: świeżo wykryty atak skasowany w TEJ SAMEJ sekundzie):
+          // wiersz widziany na liście w ostatnich 30 s jest ŻYWYM dowodem — pasek
+          // sprzed ataku nie może go unieważnić. Zdejmujemy tylko zagrożenia, których
+          // lista nie potwierdziła od ≥30 s.
+          s.threats = (s.threats || []).filter(t => t.source === "sim" || now - (t.lastSeenAt || 0) < 30e3);
           if (s.threats.length < before) log(`[OBRONA] pasek misji czysty od ≥60 s — napastnik ZAWRÓCIŁ (${before - s.threats.length} zagrożeń zdjętych przed terminem dolotu). Ucieczka może wracać.`, "success");
         }
       }
@@ -716,13 +720,17 @@
         const watchKey = f.recallAt ? `${f.fromKey}|${f.fromBody}` : `${f.toKey}|${f.toBody}`;
         const h = s.hangars[watchKey];
         if (h && h.total > 0 && h.at > f.sentAt + 60e3) {
-          // v3.52.0 (audyt powrotów 31.08): przed terminem zawrotu ratunek NIE MOŻE stać
-          // w hangarze źródła — jeśli odczyt trafia w okno ±3 min lądowania fali z rejestru
-          // powrotów, to jej statki, nie powrót ratunku. Fałszywe domknięcie rozjeżdżało
-          // stan (bot myślał, że ratunek wrócił, a ten wciąż wisiał w powietrzu bez opieki).
-          const toEksp = f.recallAt && h.at < f.recallAt && (s.expected || []).some(e => !e.pending && `${e.fromKey}|${e.fromBody}` === watchKey && Math.abs(h.at - e.returnAt) < 3 * 60e3);
-          if (!toEksp) { log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${h.total.toLocaleString("pl-PL")}).`, "success"); return false; }
-          if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny, ale to lądowanie z rejestru powrotów — wpis ratunku ZOSTAJE (zawrót planowo).`, "info");
+          // v3.52.0 (audyt powrotów 31.08) + v3.53.1 (incydent 19:29:08 — STRACONY ZAWRÓT
+          // 11 mln statków): lot z zawrotem w fazie "launched" NIE MOŻE stać w hangarze
+          // źródła przed terminem zawrotu — fizycznie wciąż leci. Statki widziane w źródle
+          // to powroty ekspedycji, i to NIEZALEŻNIE od rejestru powrotów (3.52 pytała
+          // rejestr, a ten nie znał fal wysłanych przed aktualizacją — fałszywe domknięcie
+          // wykasowało wpis i 11 mln statków poleciało 5 h w jedną stronę bez zawrotu).
+          // Ręczny zawrót operatora nie cierpi: wykrycie „[OPERATOR] ręczny zawrót"
+          // przestawia fazę na "recalled" i wtedy domknięcie hangarem działa normalnie.
+          const rescueStillOut = f.recallAt && f.phase === "launched" && h.at < f.recallAt;
+          if (!rescueStillOut) { log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${h.total.toLocaleString("pl-PL")}).`, "success"); return false; }
+          if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny PRZED terminem zawrotu — to powroty/lądowania, nie ratunek; wpis ZOSTAJE (zawrót planowo).`, "info");
         }
         if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis, para znów pod pełną obroną.`, "warn"); return false; }
         if (now - f.sentAt > 12 * 3600e3) return false;
