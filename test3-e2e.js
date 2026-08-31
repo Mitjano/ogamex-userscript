@@ -365,6 +365,8 @@ function advance(game, ms) {
       for (const f of st.flights || []) { f.sentAt -= ms; if (f.recallAt) f.recallAt -= ms; }
       if (st.barExcess && st.barExcess.since) st.barExcess.since -= ms;
       if (st.bar && st.bar.at) st.bar.at -= ms;
+      if (st.hostileClear && st.hostileClear.since) st.hostileClear.since -= ms;
+      for (const e of st.expected || []) { if (e.sentAt) e.sentAt -= ms; if (e.returnAt) e.returnAt -= ms; }
       game.store.set(K, JSON.stringify(st));
     }
   } catch {}
@@ -1259,6 +1261,32 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const rescue = g.sent.find(x => x.from === "1:100:5" && /Deploy/i.test(x.mission || ""));
     check("bot ponownie odczytał hangar (odczyt sprzed lądowania ≠ świeży) i URATOWAŁ falę", !!rescue, JSON.stringify(g.sent) + " | " + logs.filter(m => /REKONESANS|fala|ratun/i.test(m)).slice(0, 5).join(" | "));
     check("ratunek poszedł na sąsiedni księżyc, nie na atakowaną parę", !rescue || (rescue.to === "1:100:9" && rescue.toBody === "moon"), JSON.stringify(rescue));
+  }
+
+  console.log("\n── 38. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił → flota nie czeka do martwego terminu ──");
+  {
+    // Owner 31.08 (prawdziwy atak 18:48): napastnik ręcznie zawrócił, pasek czysty,
+    // a bot trzymał ucieczkę w powietrzu do planowanego dolotu. Pasek misji jest
+    // GLOBALNY — zero obcych utrzymane ≥60 s to dowód zawrotu, nie artefakt.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    // eta 600 s: zawrót (dolot+90 s bufora = 690 s) wypada PRZED lądowaniem ucieczki
+    // (810 s przy 10%), więc lot realnie wisi w powietrzu z zaplanowanym zawrotem —
+    // przy dłuższym dolocie wroga recallOf() słusznie robi z ucieczki lądowanie.
+    const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 600 }] });
+    await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("(warunek wstępny) ewakuacja poszła", g.sent.length === 1, JSON.stringify(g.sent));
+    g.threats = [];                    // napastnik ZAWRÓCIŁ — wiersze i pasek czyste, dolot miał być za ~10 min
+    await run(g, { cfg, loads: 4, ticksPerLoad: 2 });   // refresh łapie czysty pasek (start okna 60 s)
+    const stMid = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("chwilę po zniknięciu wroga bot JESZCZE nie zawraca (okno 60 s)", !(g.sent[0] && g.sent[0].returning), JSON.stringify(g.sent[0]));
+    check("sygnał czystego paska zapisany", !!(stMid.hostileClear && stMid.hostileClear.since), JSON.stringify(stMid.hostileClear));
+    advance(g, 2 * 60e3);              // minęły 2 min ciszy — wciąż PRZED planowanym dolotem (recallAt daleko)
+    const { logs } = await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("bot zdjął zagrożenia przed terminem (napastnik ZAWRÓCIŁ w logu)", logs.some(m => /napastnik ZAWRÓCIŁ/.test(m)), logs.filter(m => /OBRONA|ZAWR/.test(m)).slice(0, 5).join(" | "));
+    check("i KLIKNĄŁ wcześniejszy zawrót ucieczki", !!(g.sent[0] && g.sent[0].returning), JSON.stringify(g.sent[0]));
+    const st2 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const f2 = (st2.flights || [])[0];
+    check("stan lotu przeszedł w zawrót", !f2 || ["recall_clicked", "recalled"].includes(f2.phase), JSON.stringify(st2.flights));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

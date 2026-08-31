@@ -1032,6 +1032,35 @@ console.log("\n── R6. cisza + fala wylądowała na nieaktywnej parze → cic
   check("rekonesans jest CICHY (zakaz nawigacji w ciszy)", !!r && r.quiet === true, JSON.stringify(r));
 }
 
+console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił = pasek czysty ≥60 s ──");
+{
+  const flight = (over = {}) => Object.assign({ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 5 * 60e3, flightMs: 900e3, recallAt: NOW + 8 * 60e3, phase: "launched", tries: 0 }, over);
+  // zagrożenia zdjęte (refresh), pasek czysty od 2 min → zawrót PRZED terminem
+  const s1 = base({ hangars: {}, flights: [flight()], hostileClear: { since: NOW - 120e3 } });
+  const a1 = decide(s1, CFG, NOW).actions.find(a => a.kind === "recall");
+  check("pasek czysty ≥60 s → zawrót przed terminem", !!a1 && /napastnik zawrócił/.test(a1.why), JSON.stringify(decide(s1, CFG, NOW).actions));
+  // pasek czysty dopiero od 30 s → jeszcze czekamy
+  const s2 = base({ hangars: {}, flights: [flight()], hostileClear: { since: NOW - 30e3 } });
+  check("czysty dopiero 30 s → bez zawrotu (może być artefakt)", !decide(s2, CFG, NOW).actions.some(a => a.kind === "recall"), JSON.stringify(decide(s2, CFG, NOW).actions));
+  // brak sygnału → stare zachowanie: czekamy do recallAt
+  const s3 = base({ hangars: {}, flights: [flight()] });
+  check("bez sygnału paska → czeka do recallAt jak dotąd", !decide(s3, CFG, NOW).actions.some(a => a.kind === "recall"), JSON.stringify(decide(s3, CFG, NOW).actions));
+  // lot FS nocnego NIGDY nie jest zawracany tym sygnałem (w nocy pasek zawsze czysty)
+  const s4 = base({ hangars: {}, flights: [flight({ fs: true })], hostileClear: { since: NOW - 10 * 60e3 } });
+  check("lot FS (fs:true) NIE jest zawracany czystym paskiem", !decide(s4, CFG, NOW).actions.some(a => a.kind === "recall"), JSON.stringify(decide(s4, CFG, NOW).actions));
+  // po terminie recallAt działa stara reguła niezależnie od paska
+  const s5 = base({ hangars: {}, flights: [flight({ recallAt: NOW - 1000 })] });
+  const a5 = decide(s5, CFG, NOW).actions.find(a => a.kind === "recall");
+  check("po recallAt zawrót jak dotąd (stara reguła nietknięta)", !!a5 && /ataki minęły/.test(a5.why), JSON.stringify(decide(s5, CFG, NOW).actions));
+}
+
+// ── v3.53.0: wzorce w źródle — zdejmowanie zagrożeń po zawrocie napastnika ──
+{
+  check("refresh: pasek świeży + foreign=0 utrzymane ≥60 s → zagrożenia zdjęte", /s\.hostileClear = clear \?/.test(src) && /napastnik ZAWRÓCIŁ/.test(src) && /t\.source === "sim"/.test(src));
+  check("sygnał wymaga ŚWIEŻEGO paska (≤90 s) i liczbowego total", /now - \(s\.bar\.at \|\| 0\) < 90e3/.test(src) && /typeof s\.bar\.total === "number"/.test(src));
+  check("flaga fs utrwalana we wpisie lotu (FS odróżnialny od ratunku)", (src.match(/fs: !!m\.fs/g) || []).length >= 2);
+}
+
 // ── v3.52.0: wzorce w źródle — strażnik fałszywego domknięcia + rejestr w Fly ──
 {
   check("lądowanie z rejestru NIE domyka wpisu ratunku przed terminem zawrotu", /toEksp = f\.recallAt && h\.at < f\.recallAt/.test(src) && /wpis ratunku ZOSTAJE/.test(src));

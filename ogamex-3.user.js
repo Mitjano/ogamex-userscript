@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.52.0
+// @version      3.53.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.52.0";
+  const VERSION = "3.53.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -621,6 +621,25 @@
       // rozpoznane wiersze" utrzymująca się dłużej niż próg = atak, którego nie widzimy.
       s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), now, CFG);
       Store.set("bar_excess", s.barExcess);
+      // v3.53.0 (owner 31.08: „atakujący ręcznie zawrócił flotę — już jest bezpiecznie,
+      // nic nie leci, nie ma potrzeby trzymać floty na FS"): WCZEŚNIEJSZY ZAWRÓT.
+      // Pamięć zagrożenia do planowanego dolotu chroni przed zwykłym zniknięciem
+      // wiersza (nieudany fetch, strona bez listy, przełączona para) — ale pasek
+      // misji jest GLOBALNY: świeży odczyt z ZEREM obcych lotów, utrzymany ≥60 s,
+      // to dowód zawrotu napastnika, nie artefakt odczytu. Wtedy zdejmujemy
+      // zagrożenia przed terminem, a decide() zawraca ucieczkę od razu. Finta
+      // (zawrót → natychmiastowa druga wysyłka) nie jest groźna: nowy wiersz ataku
+      // wraca do stanu w sekundę, a flota po powrocie jest ratowana normalną ścieżką.
+      {
+        const barFresh = s.bar && now - (s.bar.at || 0) < 90e3;
+        const clear = !!(barFresh && typeof s.bar.total === "number" && (s.bar.foreign || 0) === 0);
+        s.hostileClear = clear ? (s.hostileClear && s.hostileClear.since ? s.hostileClear : { since: now }) : null;
+        if (s.hostileClear && now - s.hostileClear.since >= 60e3) {
+          const before = (s.threats || []).length;
+          s.threats = (s.threats || []).filter(t => t.source === "sim");
+          if (s.threats.length < before) log(`[OBRONA] pasek misji czysty od ≥60 s — napastnik ZAWRÓCIŁ (${before - s.threats.length} zagrożeń zdjętych przed terminem dolotu). Ucieczka może wracać.`, "success");
+        }
+      }
       // własne loty (z Events — globalne; z listy — aktywna para)
       s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, srcBody: r.srcBody, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
       // v3.35.0 (audyt floty 29.08, ścieżka A5 z Ateny: „Destroy + snajperka powrotów"):
@@ -814,6 +833,11 @@
         // floty w powietrzu jest gorsze niz spozniony zawrot (FS nocny trwa 8 h).
         const f = inFlightFrom(k) || (s.flights || []).find(x => x.fromKey === k && x.kind === "air" && ["launched", "recall_clicked"].includes(x.phase));
         if (f && f.kind === "air" && f.phase === "launched" && f.recallAt && now >= f.recallAt) actions.push({ kind: "recall", flight: f, why: "ataki minęły — zawrót ucieczki" });
+        // v3.53.0: napastnik zawrócił (pasek misji globalnie czysty ≥60 s, zagrożenia
+        // zdjęte w refresh) → nie czekamy do martwego terminu dolotu. NIGDY dla FS
+        // nocnego (f.fs) — on jest sterowany zegarem nocy, nie atakiem, a w nocy
+        // pasek jest czysty niemal zawsze.
+        else if (f && f.kind === "air" && f.phase === "launched" && !f.fs && f.recallAt && s.hostileClear && now - (s.hostileClear.since || now) >= 60e3) actions.push({ kind: "recall", flight: f, why: "napastnik zawrócił (pasek czysty ≥60 s) — wcześniejszy zawrót ucieczki" });
         // v3.10.2: klik zawrotu bez potwierdzenia (brak wiersza powrotnego) ponawiamy
         // po 2 min — inaczej jeden nieskuteczny klik zostawiał flotę w powietrzu.
         else if (f && f.kind === "air" && f.phase === "recall_clicked" && now - (f.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: f, why: "zawrót bez potwierdzenia — ponawiam" });
@@ -2208,7 +2232,7 @@
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const sPre = Situation.load();
         sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
       Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey });
@@ -2239,7 +2263,7 @@
         // przebiegu), wiec razem z nim przeliczamy termin zawrotu — lot krotszy niz
         // ten termin po prostu wyladuje i zaden zawrot go nie dotyczy.
         if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = recallOf({ ...m, flightMs: m.flightMs }); } }
-        else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0 }];
+        else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0 }];
       }
       // v3.52.0: rejestr powrotów — wysyłka potwierdzona, wpis przestaje być `pending`.
       { const e0 = (s.expected || []).find(e => e.pending && e.fromKey === m.fromKey);
