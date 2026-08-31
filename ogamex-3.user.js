@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.48.0
+// @version      3.49.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.48.0";
+  const VERSION = "3.49.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -210,6 +210,7 @@
       discoverer40: true,   // KLASA ODKRYWCA: ekspedycje 40 min zamiast 1 h (+ obroty, + łup)
       holdingHours: 1,      // gdy opcji „40 min" nie ma (inna klasa)
       gapMinSec: 60, gapMaxSec: 90,
+      restMinMin: 5, restMaxMin: 20,   // v3.49.0: losowa przerwa MIĘDZY seriami (naturalny rytm konta)
       slotReserve: 1,       // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
       excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"],
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
@@ -378,6 +379,45 @@
           log(`[SONDA LISTY] ❌ parametr IGNOROWANY (próba ${n}/6): pytałem o [${other.key}], dostałem ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — ${inne ? "inne id, ale BEZ koordów tej kolonii" : "dokładnie to samo co bez parametru"}. Ruchy innych kolonii są dla bota niewidoczne.${done ? " To był ostatni test — temat zamykam." : ""}`, "warn");
         }
       } catch (e) { log(`[SONDA LISTY] błąd: ${e.message}`, "warn"); }
+    },
+    // v3.49.0 (zrzut ownera 31.08 12:21): panel Events na /research jest WYPEŁNIONY
+    // i pokazuje loty INNYCH kolonii ([2:223:9]→Home planet). Na stronach, po których
+    // bot chodzi, kontener jest pusty, a `?planet=` listy ruchów jest ignorowany —
+    // jeśli /research renderuje ruchy GLOBALNIE, ślepota na 13 kolonii znika jednym
+    // cichym fetchem (bez ?planet=, więc nic nie przestawia sesji). Sonda tylko
+    // LOGUJE; po 6 próbach zamyka się sama. Lekcja 3.46: licznik `n` rośnie NAPRAWDĘ.
+    async probeResearchEvents(own) {
+      const st = Store.get("re_probe", { n: 0, done: false, at: 0 }) || {};
+      if (st.done || (st.n || 0) >= 6) return;
+      if (Date.now() - (st.at || 0) < 5 * 60e3) return;
+      const n = (st.n || 0) + 1;
+      Store.set("re_probe", { ...st, n, at: Date.now() });
+      try {
+        const res = await fetchT("/research", { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+        if (!res.ok) { log(`[SONDA RESEARCH] (próba ${n}/6) HTTP ${res.status}.`, "warn"); return; }
+        const html = await res.text();
+        if (looksLoggedOut(res, html)) return;
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const cont = doc.querySelector("#fleet-movement-content, #layoutFleetMovements");
+        const trs = cont ? [...cont.querySelectorAll("tr[class*='row-mission-type-']")] : [];
+        if (!trs.length) {
+          log(`[SONDA RESEARCH] (próba ${n}/6) kontener Events na /research ${cont ? "istnieje, ale PUSTY" : "NIEZNALEZIONY"} — fetch nie dostaje tego, co widzi przeglądarka.${n >= 6 ? " Zamykam temat — bez dowodu." : ""}`, "warn");
+          if (n >= 6) Store.set("re_probe", { n, done: true, works: false, at: Date.now() });
+          return;
+        }
+        const act = PlanetBar.active();
+        const rows = trs.map(tr => this.classify(tr, own));
+        const coords = [...new Set(rows.flatMap(r => [r.src, r.dst]).filter(Boolean))];
+        const inne = rows.some(r => [r.src, r.dst].some(c => c && own.has(c) && (!act || c !== act.key)));
+        if (inne) {
+          Store.set("re_probe", { n, done: true, works: true, at: Date.now() });
+          log(`[SONDA RESEARCH] ✅ /research POKAZUJE ruchy INNYCH kolonii (${trs.length} wierszy; koordy: ${coords.join(", ")}). Ślepotę na kolonie da się załatać cichym fetchem — POKAŻ TĘ LINIĘ CLAUDE'OWI.`, "error");
+        } else {
+          const done = n >= 6;
+          Store.set("re_probe", { n, done, works: false, at: Date.now() });
+          log(`[SONDA RESEARCH] (próba ${n}/6) ${trs.length} wierszy, ale widzę tylko aktywną parę (${coords.join(", ") || "brak"}) — jeszcze nie rozstrzyga.${done ? " Zamykam temat — bez dowodu na globalność." : ""}`, "warn");
+        }
+      } catch (e) { log(`[SONDA RESEARCH] błąd: ${e.message}`, "warn"); }
     },
     async fetchList(own) {
       try {
@@ -624,6 +664,7 @@
       const evRows = Rows.readEvents(own);
       const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
       try { await Rows.probePlanetList(own); } catch {}   // v3.40.1: diagnostyka, nie wpływa na decyzje
+      try { await Rows.probeResearchEvents(own); } catch {}   // v3.49.0: czy /research pokazuje ruchy WSZYSTKICH kolonii
       Session.maybeRecover();
       const rows = [...evRows.map(r => ({ ...r, source: "events" })), ...list.rows.map(r => ({ ...r, source: "list" }))];
       // symulacja (panel): syntetyczny wrogi wiersz
@@ -1497,6 +1538,27 @@
         this.maybeReturnOperator(p.skip);
         if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info");
         return false;
+      }
+      // v3.49.0 (pytanie ownera 31.08: „czy zachowanie bota jest naturalne i admin nie
+      // zwróci uwagi?"): serie NIE ruszają jak w zegarku. Między ZAKOŃCZONĄ serią
+      // a następną losowa przerwa 5–20 min (`restMinMin`/`restMaxMin`), liczona od
+      // chwili, gdy wysyłka znów jest MOŻLIWA (sloty wolne, plan bez skipów) — nie od
+      // domknięcia serii, bo wtedy i tak nic nie może lecieć. Fale WEWNĄTRZ serii bez
+      // zmian (60–90 s). Pierwsza seria po włączeniu ekspedycji bez przerwy (brak
+      // wcześniejszego burst) — włącznik ma działać od ręki.
+      {
+        const inSeries = b && b.waves && (b.sent || 0) > 0 && (b.sent || 0) < (p.waves || 1);
+        if (!inSeries && b && (b.sent || 0) > 0) {
+          const r = Store.get("expo_rest", null);
+          if (!r) {
+            const until = now + jitter(CFG.expo.restMinMin ?? 5, CFG.expo.restMaxMin ?? 20) * 60e3;
+            Store.set("expo_rest", { until });
+            log(`[EXPO] przerwa między seriami ~${Math.max(1, Math.round((until - now) / 60000))} min — seria nie rusza jak w zegarku.`, "info");
+            return false;
+          }
+          if (now < r.until) return false;
+          Store.del("expo_rest");
+        }
       }
       // v3.48.0: pierwsza akcja SERII (jeszcze przed nauką linku i przed misją) zapamiętuje,
       // gdzie jest operator — każda późniejsza nawigacja serii (galaktyka, przełączenie,
@@ -3062,6 +3124,8 @@
         try {
           const why = Human.economyAllowed(s);
           if (why) return why.startsWith("przerwa") ? why : why.slice(0, 22);
+          const rr = Store.get("expo_rest", null);
+          if (rr && rr.until > now) return `przerwa między seriami ${Math.ceil((rr.until - now) / 60000)} min`;
           const p = expoPlan(s, CFG, now, burst);
           if (p && p.skip) {
             if (/odstęp między falami/.test(p.skip) && burst && burst.lastSendAt) {
@@ -3124,7 +3188,7 @@
   // 20:05:53 werdykt `done: true, works: true` na podstawie fałszywego alarmu (błąd
   // poprawiony w 3.42.1) — i przez ten zatrzask NIGDY BY SIĘ JUŻ NIE URUCHOMIŁA,
   // zostawiając w stanie bzdurę. Nowa wersja = czysta karta dla obu latch-y.
-  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); } }
+  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); } }
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }

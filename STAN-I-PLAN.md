@@ -6,6 +6,44 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 31.08, ~12:45 — v3.49.0: naturalny rytm konta + sonda /research (kandydat na koniec ślepoty kolonii)
+
+Odpowiedź na dwa pytania ownera (12:21): „czy bot za dużo nie klika / czy to naturalne?"
+i „jak dobierana jest wielkość floty na ekspedycję?" — plus ODKRYCIE z jego zrzutu.
+
+**1. Losowa przerwa MIĘDZY seriami ekspedycji (5–20 min, `CFG.expo.restMinMin/restMaxMin`).**
+Serie wracały jak w zegarku, gdy tylko sloty się zwolniły — najbardziej maszynowy sygnał
+w całym profilu konta. Przerwa liczona od chwili, gdy wysyłka znów jest MOŻLIWA (nie od
+domknięcia serii — wtedy i tak nic nie może lecieć); fale WEWNĄTRZ serii bez zmian (60–90 s);
+pierwsza seria po włączeniu ekspedycji bez przerwy (włącznik działa od ręki). Widoczna
+w wierszu Ekspedycje panelu („przerwa między seriami N min").
+
+**2. SONDA `/research` — zrzut ownera 12:21 pokazuje panel Events na /research WYPEŁNIONY,
+z lotami INNYCH kolonii** ([2:223:9]→Home, [2:224:7]→Home). Na stronach, po których bot chodzi,
+kontener jest pusty, a `?planet=` listy ruchów jest ignorowany (werdykt 3.44) — jeśli /research
+renderuje ruchy GLOBALNIE także w fetchu, ślepota na 13 kolonii (największa dziura obronna)
+znika jednym cichym żądaniem bez `?planet=` (nic nie przestawia sesji). Sonda `[SONDA RESEARCH]`:
+6 prób co 5 min, tylko loguje; werdykt ✅ wymaga wiersza z WŁASNĄ kolonią spoza aktywnej pary
+(lekcja fałszywego ✅ z 3.42.1); zatrzask `re_probe` umiera z wersją; licznik rośnie naprawdę
+(lekcja 3.46). **Czekamy na linię ✅ w logu ownera — wtedy wpinamy w wykrywanie ataków.**
+
+**Wielkość fal ekspedycji (wyjaśnione ownerowi, bez zmian w kodzie):** bieżący hangar minus
+wykluczenia, dzielony przez liczbę POZOSTAŁYCH fal; powroty lądujące w trakcie serii wchodzą
+do puli (stąd rosnące fale na zrzucie: 245k→904k→…→4,3M); fala domykająca zamiata wszystko.
+Athena 2.x mroziła porcje na starcie serii + miała sufit domykającej (zdjęty w 3.28). Czy
+wielka fala się opłaca — wciąż niezmierzone (trzeba parsować wiadomości powrotów; otwarte od 3.38).
+
+**Pytanie ownera „może FS przy ataku na planetę?"** — omówione, hierarchia zostaje: sąsiedni
+księżyc → drugie ciało pary → inna kolonia. Przy działającym zawrocie cel prawie nie ma
+znaczenia (flota i tak wisi w powietrzu i wraca po ataku); cel gra rolę dopiero gdy zawrót
+ZAWIEDZIE — a wtedy lądowanie na planecie ATAKOWANEJ pary to najgorsze miejsce (falanga widzi
+planety, nie księżyce; napastnik po ataku na księżyc szpieguje parę; dzisiejszy atak miał wiersz
+ACS — mógł celować w oba ciała). Planeta pary już jest wyborem nr 2, gdy nie ma sąsiedniego księżyca.
+
+**Testy:** komplet ZIELONY (decide + E2E 140/140 + panel, EXIT=0).
+
+---
+
 ## AKTUALIZACJA 31.08, ~11:15 — v3.48.0: fale ekspedycji przestają wyrywać operatorowi planetę
 
 **Zgłoszenie ownera (10:44, piąty raz): „przed chwilą znowu przeskoczył".** Tym razem log jest

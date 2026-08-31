@@ -946,6 +946,19 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   check("po domkniętej serii bot odprowadza operatora (chyba że sam kliknął)", /maybeReturnOperator\(reason\)/.test(src) && /czekam na powroty\|brak statków/.test(src) && /!== \(r\.input \|\| 0\)\) return false;/.test(src) && /powrót na stronę operatora po serii ekspedycji/.test(src) && /domyka serię\/\.test\(m\.why \|\| ""\) && Expo\.maybeReturnOperator/.test(src));
 }
 
+// ── v3.49.0: naturalny rytm konta + sonda /research ──
+{
+  // Serie ekspedycji nie wracają jak w zegarku: między zakończoną serią a następną
+  // losowa przerwa 5–20 min, liczona od chwili, gdy wysyłka znów jest możliwa.
+  // Pierwsza seria po włączeniu ekspedycji BEZ przerwy (włącznik działa od ręki).
+  check("losowa przerwa między seriami ekspedycji (nie dotyczy pierwszej serii)",
+    /restMinMin: 5, restMaxMin: 20/.test(src) && /jitter\(CFG\.expo\.restMinMin \?\? 5, CFG\.expo\.restMaxMin \?\? 20\) \* 60e3/.test(src) && /!inSeries && b && \(b\.sent \|\| 0\) > 0/.test(src) && /przerwa między seriami/.test(src));
+  // Zrzut ownera 31.08 12:21: Events na /research pokazuje loty INNYCH kolonii —
+  // sonda ma to potwierdzić cichym fetchem (bez ?planet=, nic nie przestawia sesji).
+  check("sonda /research: licznik rośnie, zatrzask umiera z wersją, werdykt wymaga OBCEJ kolonii",
+    /probeResearchEvents\(own\)/.test(src) && /re_probe/.test(src) && /Store\.del\("re_probe"\)/.test(src) && /c && own\.has\(c\) && \(!act \|\| c !== act\.key\)/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
