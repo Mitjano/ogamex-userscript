@@ -948,11 +948,10 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
 
 // ── v3.49.0: naturalny rytm konta + sonda /research ──
 {
-  // Serie ekspedycji nie wracają jak w zegarku: między zakończoną serią a następną
-  // losowa przerwa 5–20 min, liczona od chwili, gdy wysyłka znów jest możliwa.
-  // Pierwsza seria po włączeniu ekspedycji BEZ przerwy (włącznik działa od ręki).
-  check("losowa przerwa między seriami ekspedycji (nie dotyczy pierwszej serii)",
-    /restMinMin: 5, restMaxMin: 20/.test(src) && /jitter\(CFG\.expo\.restMinMin \?\? 5, CFG\.expo\.restMaxMin \?\? 20\) \* 60e3/.test(src) && /!inSeries && b && \(b\.sent \|\| 0\) > 0/.test(src) && /przerwa między seriami/.test(src));
+  // v3.49.1 (owner: „nie chcę przerw w wysyłaniu eksp"): przerwa między seriami to
+  // OPCJA domyślnie WYŁĄCZONA (restMaxMin: 0); mechanizm zostaje dla chętnych.
+  check("przerwa między seriami DOMYŚLNIE WYŁĄCZONA (0), mechanizm tylko przy restMaxMin>0",
+    /restMinMin: 0, restMaxMin: 0/.test(src) && /rMax > 0 && !inSeries && b && \(b\.sent \|\| 0\) > 0/.test(src) && /przerwa między seriami/.test(src) && /Store\.del\("expo_rest"\)/.test(src));
   // Zrzut ownera 31.08 12:21: Events na /research pokazuje loty INNYCH kolonii —
   // sonda ma to potwierdzić cichym fetchem (bez ?planet=, nic nie przestawia sesji).
   check("sonda /research: licznik rośnie, zatrzask umiera z wersją, werdykt wymaga OBCEJ kolonii",

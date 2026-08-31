@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.49.0
+// @version      3.49.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.49.0";
+  const VERSION = "3.49.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -210,7 +210,9 @@
       discoverer40: true,   // KLASA ODKRYWCA: ekspedycje 40 min zamiast 1 h (+ obroty, + łup)
       holdingHours: 1,      // gdy opcji „40 min" nie ma (inna klasa)
       gapMinSec: 60, gapMaxSec: 90,
-      restMinMin: 5, restMaxMin: 20,   // v3.49.0: losowa przerwa MIĘDZY seriami (naturalny rytm konta)
+      // v3.49.1 (owner 31.08: „nie chcę przerw w wysyłaniu eksp"): przerwa między
+      // seriami DOMYŚLNIE WYŁĄCZONA (0 = brak). Włączenie = restMaxMin > 0.
+      restMinMin: 0, restMaxMin: 0,
       slotReserve: 1,       // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
       excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"],
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
@@ -1547,11 +1549,12 @@
       // zmian (60–90 s). Pierwsza seria po włączeniu ekspedycji bez przerwy (brak
       // wcześniejszego burst) — włącznik ma działać od ręki.
       {
+        const rMax = CFG.expo.restMaxMin ?? 0;   // 0 = wyłączone (decyzja ownera 31.08)
         const inSeries = b && b.waves && (b.sent || 0) > 0 && (b.sent || 0) < (p.waves || 1);
-        if (!inSeries && b && (b.sent || 0) > 0) {
+        if (rMax > 0 && !inSeries && b && (b.sent || 0) > 0) {
           const r = Store.get("expo_rest", null);
           if (!r) {
-            const until = now + jitter(CFG.expo.restMinMin ?? 5, CFG.expo.restMaxMin ?? 20) * 60e3;
+            const until = now + jitter(Math.min(CFG.expo.restMinMin ?? 0, rMax), rMax) * 60e3;
             Store.set("expo_rest", { until });
             log(`[EXPO] przerwa między seriami ~${Math.max(1, Math.round((until - now) / 60000))} min — seria nie rusza jak w zegarku.`, "info");
             return false;
@@ -3188,7 +3191,7 @@
   // 20:05:53 werdykt `done: true, works: true` na podstawie fałszywego alarmu (błąd
   // poprawiony w 3.42.1) — i przez ten zatrzask NIGDY BY SIĘ JUŻ NIE URUCHOMIŁA,
   // zostawiając w stanie bzdurę. Nowa wersja = czysta karta dla obu latch-y.
-  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); } }
+  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); Store.del("expo_rest"); } }
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }
