@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.50.0
+// @version      3.50.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.50.0";
+  const VERSION = "3.50.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2992,7 +2992,8 @@
       { const s1 = Situation.load(); const bez = Object.entries(s1.pairs || {}).filter(([, p]) => !p.hasMoon).length;
         $("ogx3-moon-st").textContent = CFG.moon.enabled ? `planet bez księżyca: ${bez} · WYDAJE METAL` : `planet bez księżyca: ${bez} (moduł wyłączony)`; }
       $("ogx3-quiet").textContent = `Cisza nocna ${CFG.quietHours.enabled ? "ON" : "OFF"}`; $("ogx3-quiet").style.background = CFG.quietHours.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
-      $("ogx3-breaks").textContent = `Przerwy ${CFG.human.breaks ? "ON" : "OFF"}`; $("ogx3-breaks").style.background = CFG.human.breaks ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      // v3.50.1: pełna etykieta — owner szukał „przerwy kawowej" i nie kojarzył skrótu „Przerwy".
+      $("ogx3-breaks").textContent = `Przerwy kawowe ${CFG.human.breaks ? "ON" : "OFF"}`; $("ogx3-breaks").style.background = CFG.human.breaks ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-human-st").textContent = (CFG.quietHours.enabled || CFG.human.breaks)
         ? `ekonomia śpi: ${[CFG.quietHours.enabled ? `${CFG.quietHours.startHour}:00–${CFG.quietHours.endHour}:00` : null, CFG.human.breaks ? (Human.onBreak() ? `przerwa (~${Human.breakLeftMin()} min)` : "przerwy co " + CFG.human.breakEveryMinMin + "–" + CFG.human.breakEveryMaxMin + " min") : null].filter(Boolean).join(" · ")} (obrona czuwa zawsze)`
         : "ekonomia pracuje całą dobę, bez przerw";
