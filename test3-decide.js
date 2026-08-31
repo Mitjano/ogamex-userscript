@@ -483,14 +483,16 @@ console.log("\n── 19e. GOTOWOŚĆ OBRONY I PODSUMOWANIE PO PRZERWIE (v3.45.0
   // Priorytet ownera 30.08: „najważniejsze, żeby obronił flotę gdy ktoś zaatakuje".
   // Bot ma sprawdzać warunki obrony NA SUCHO, a nie dowiadywać się o brakach przy ataku.
   const body = bodyOf("function defenceReadiness(s) {");
-  const readiness = new Function("CFG", "Session", "Notifier", "Situation", "key",
+  // v3.55.0: gotowość pyta Store o puls strażnika — stub „strażnik odpowiada".
+  const readiness = new Function("CFG", "Session", "Notifier", "Situation", "key", "Store",
     `return function defenceReadiness(s) {${body}}`);
   const CFG_OK = { enabled: true, autoRescue: true, expo: { launchFrom: null } };
   const Sess = { lostRecently: () => false };
   const Notif = { enabled: () => true };
   const Sit = { fleetAt: (s, k, now) => ({ body: "moon", total: 1000, at: now }) };
   const kfn = (c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null);
-  const R = (cfg, sess, notif, sit) => readiness(cfg || CFG_OK, sess || Sess, notif || Notif, sit || Sit, kfn);
+  const StoreOk = { get: (k, d = null) => (k === "hb_ok" ? true : d) };
+  const R = (cfg, sess, notif, sit) => readiness(cfg || CFG_OK, sess || Sess, notif || Notif, sit || Sit, kfn, StoreOk);
   const stan = () => ({ active: { key: "3:272:7", body: "moon" },
     pairs: { "3:272:7": { hasMoon: true }, "3:272:2": { hasMoon: true } },
     hangars: { "3:272:7|moon": { total: 1000, at: Date.now() - 60e3 } } });
@@ -1061,6 +1063,13 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
   check("flaga fs utrwalana we wpisie lotu (FS odróżnialny od ratunku)", (src.match(/fs: !!m\.fs/g) || []).length >= 2);
   // v3.53.1 (log 19:26:59): świeżo widziany wiersz ataku NIE jest kasowany starym paskiem
   check("wiersz widziany <30 s temu przeżywa 'czysty pasek' (świeży dowód > stary pasek)", /now - \(t\.lastSeenAt \|\| 0\) < 30e3/.test(src));
+}
+
+// ── v3.55.0: puls do strażnika (watchdog) — wzorce w źródle ──
+{
+  check("puls do strażnika: localhost w @connect, throttle 60 s, ping tylko z karty-lidera (w defenceTick po TabLock)", /@connect\s+127\.0\.0\.1/.test(src) && /hb_last", 0\) \|\| 0\) < 60e3\) return;/.test(src) && /Heartbeat\.ping\(\);\s*\n\s*confirmPendingSend\(\);/.test(src));
+  check("brak strażnika = log zmiany stanu + wpis w gotowości, nigdy błąd", /hb_ok", null\) !== false/.test(src) && /strażnik \(watchdog\) nie odpowiada/.test(src));
+  check("skrypt strażnika istnieje w repo (watchdog/ogx-watchdog.py + install.sh)", fs.existsSync(path.join(__dirname, "watchdog", "ogx-watchdog.py")) && fs.existsSync(path.join(__dirname, "watchdog", "install.sh")));
 }
 
 // ── v3.52.0: wzorce w źródle — strażnik fałszywego domknięcia + rejestr w Fly ──

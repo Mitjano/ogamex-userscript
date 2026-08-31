@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.54.0
+// @version      3.55.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -12,6 +12,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      ntfy.sh
 // @connect      raw.githubusercontent.com
+// @connect      127.0.0.1
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -31,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.54.0";
+  const VERSION = "3.55.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -77,6 +78,26 @@
       Store.set("journal", j);
       Notifier.fromJournal(kind, msg);
     },
+  };
+  // v3.55.0 (owner 31.08: „karta może się zawiesić albo zamrozić — bot wtedy nie
+  // działa"): PULS DO STRAŻNIKA. Karta-lider pinguje lokalnego strażnika
+  // (watchdog/ogx-watchdog.py, LaunchAgent na Macu) co ~60 s. Gdy pulsy ustaną
+  // na >12 min, strażnik restartuje Firefoksa z kartą gry i wysyła push na ntfy —
+  // martwa karta przestaje być cichą śmiercią obrony. Brak strażnika to nie błąd
+  // (bot działa jak dotąd) — logujemy tylko ZMIANĘ stanu.
+  const Heartbeat = {
+    URL: "http://127.0.0.1:8765/hb",
+    ping() {
+      const now = Date.now();
+      if (now - (Store.get("hb_last", 0) || 0) < 60e3) return;
+      Store.set("hb_last", now);
+      try {
+        GM_xmlhttpRequest({ method: "GET", url: this.URL, timeout: 4000,
+          onload: () => { if (Store.get("hb_ok", null) !== true) { Store.set("hb_ok", true); log("[WATCHDOG] strażnik odpowiada — zawieszona karta zostanie ożywiona automatycznie (restart Firefoksa + push).", "success"); } },
+          onerror: () => this.down(), ontimeout: () => this.down() });
+      } catch { this.down(); }
+    },
+    down() { if (Store.get("hb_ok", null) !== false) { Store.set("hb_ok", false); log("[WATCHDOG] strażnik nie odpowiada (LaunchAgent wyłączony?) — po zawieszeniu karty NIE będzie auto-restartu.", "warn"); } },
   };
   const Notifier = {
     THROTTLE: { ATAK: 5 * 60e3, RATUNEK: 2 * 60e3, POWRÓT: 5 * 60e3, BŁĄD: 5 * 60e3 },
@@ -2649,6 +2670,7 @@
       }
     }
     if (Object.keys(s.pairs || {}).length < 2) braki.push("jedna kolonia — nie ma dokąd uciec");
+    if (Store.get("hb_ok", null) === false) braki.push("strażnik (watchdog) nie odpowiada — zawieszona karta nie zostanie ożywiona");
     return braki;
   }
 
@@ -2658,6 +2680,7 @@
       if (errorPageGuard()) return;
       if (!TabLock.acquire()) return;
       Store.set("last_tick", Date.now());
+      Heartbeat.ping();
       confirmPendingSend();
       Wake.ensure();
       Calib.collect();
