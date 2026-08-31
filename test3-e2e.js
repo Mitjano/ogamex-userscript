@@ -1229,6 +1229,38 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       g.navigations.some(n => /building\/resource\?planet=uuid-1:100:9/.test(String(n))), JSON.stringify(g.navigations.slice(-6)));
   }
 
+  console.log("\n── 37. REJESTR POWROTÓW (v3.52.0): fala zmapowana przy wysyłce, lądująca pod atak = ratunek ──");
+  {
+    // Owner 31.08: „bot ma mapować każdą wysłaną flotę i wiedzieć, kiedy wraca".
+    // Snajperka powrotów (ścieżka A5 z Atheny): napastnik celuje w księżyc tuż po
+    // lądowaniu fali. Przed 3.52 bot czytał pusty hangar RAZ, uznawał odczyt za świeży
+    // przez 15 min i fala lądująca w trakcie dolotu wroga stała pod uderzeniem.
+    const cfg = { autoRescue: true, recon: true, reconMs: 1, bonus: { enabled: false }, aster: { enabled: false },
+      expo: { enabled: true, waves: 1, gapMinSec: 0, gapMaxSec: 0, slotReserve: 0 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({ hangars: { "1:100:5|moon": { LIGHT_FIGHTER: 900, SMALL_CARGO: 100 } } });
+    g.slots = { fleet: { used: 0, total: 8 }, expo: { used: 0, total: 4 } };
+    await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("(warunek wstępny) ekspedycja poleciała", g.sent.some(x => /16$/.test(String(x.to || ""))), JSON.stringify(g.sent.map(x => x.to)));
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    const e = (st.expected || [])[0];
+    check("wysyłka ZMAPOWANA w rejestrze powrotów (potwierdzona, pełna liczba statków)", !!e && !e.pending && e.fromKey === "1:100:5" && e.fromBody === "moon" && e.total === 1000, JSON.stringify(st.expected));
+    check("termin powrotu = lot tam + postój + lot z powrotem (czas z FORMULARZA)", !!e && e.flightMs > 0 && Math.abs((e.returnAt - e.sentAt) - (2 * e.flightMs + (e.holdMs || 0))) < 2000, JSON.stringify(e));
+    check("ekspedycja nadal POZA flights (rejestr nie zaślepia obrony)", (st.flights || []).length === 0, JSON.stringify(st.flights));
+    // CHIRURGIA STANU: fala „wylądowała" minutę temu — statki wracają do hangaru atrapy,
+    // ale odczyt hangaru w stanie bota pochodzi SPRZED lądowania (dokładnie okno snajperki).
+    if (e) e.returnAt = Date.now() - 60e3;
+    st.hangars["1:100:5|moon"] = { total: 0, at: Date.now() - 5 * 60e3, ships: [] };
+    g.store.set(K, JSON.stringify(st));
+    g.hangars["1:100:5|moon"] = { LIGHT_FIGHTER: 900, SMALL_CARGO: 100 };
+    g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 });
+    const { logs } = await run(g, { cfg: { ...cfg, expo: { enabled: false } }, loads: 30, ticksPerLoad: 3 });
+    const rescue = g.sent.find(x => x.from === "1:100:5" && /Deploy/i.test(x.mission || ""));
+    check("bot ponownie odczytał hangar (odczyt sprzed lądowania ≠ świeży) i URATOWAŁ falę", !!rescue, JSON.stringify(g.sent) + " | " + logs.filter(m => /REKONESANS|fala|ratun/i.test(m)).slice(0, 5).join(" | "));
+    check("ratunek poszedł na sąsiedni księżyc, nie na atakowaną parę", !rescue || (rescue.to === "1:100:9" && rescue.toBody === "moon"), JSON.stringify(rescue));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

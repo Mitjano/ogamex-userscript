@@ -956,6 +956,91 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
     !/probeResearchEvents/.test(src) && !/\[SONDA RESEARCH\]/.test(src));
 }
 
+// ── v3.52.0: REJESTR POWROTÓW (owner 31.08: „bot ma mapować każdą wysłaną flotę
+// i wiedzieć, kiedy wraca") — snajperka powrotów, ścieżka A5 z Atheny ──
+console.log("\n── R1. ATAK + fala WYLĄDOWAŁA po odczycie pustego hangaru → rekonesans, nie cisza ──");
+{
+  // hangar księżyca czytany 5 min temu jako PUSTY; fala 2 mln wylądowała 2 min temu
+  const s = base({
+    hangars: { "3:272:7|moon": { total: 0, at: NOW - 5 * 60e3, ships: [] }, "3:272:7|planet": H(500) },
+    threats: [threat("3:272:7", "moon", 300)],
+    expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 2_000_000, sentAt: NOW - 40 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW - 2 * 60e3 }],
+  });
+  const { actions, alerts } = decide(s, CFG, NOW);
+  const r = actions.find(a => a.kind === "recon" && a.key === "3:272:7" && a.body === "moon");
+  check("recon atakowanego księżyca (odczyt sprzed lądowania = nieświeży)", !!r, JSON.stringify(actions));
+  check("ŻADNEGO hold „bezpieczna strona\"", !actions.some(a => a.kind === "hold"), JSON.stringify(actions));
+  check("alert mówi o lądowaniu fali", alerts.some(a => /wylądowała tam fala/.test(a.msg)), JSON.stringify(alerts.map(a => a.msg)));
+}
+
+console.log("\n── R2. po rekonesansie (hangar świeży, fala widoczna) → normalny RATUNEK ──");
+{
+  const s = base({
+    hangars: { "3:272:7|moon": { total: 2_000_000, at: NOW - 30e3, ships: [] } },
+    threats: [threat("3:272:7", "moon", 300)],
+    expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 2_000_000, sentAt: NOW - 40 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW - 2 * 60e3 }],
+  });
+  const { actions } = decide(s, CFG, NOW);
+  const a = actions.find(x => x.kind === "fly" && x.rescue);
+  check("fala z powrotu jest RATOWANA jak zwykła flota", !!a && a.fromKey === "3:272:7" && a.fromBody === "moon", JSON.stringify(actions));
+}
+
+console.log("\n── R3. ATAK + ratunek już w powietrzu + fale lądują przed uderzeniem → konkretny alarm z zegarem ──");
+{
+  const s = base({
+    hangars: { "3:272:7|moon": { total: 700, at: NOW - 30e3, ships: [] } },
+    threats: [threat("3:272:7", "moon", 600)],
+    flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 120e3, flightMs: 900e3, recallAt: NOW + 700e3, phase: "launched", tries: 0 }],
+    expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 1_500_000, sentAt: NOW - 30 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW + 200e3 }],
+  });
+  const { actions, alerts } = decide(s, CFG, NOW);
+  check("bot NIE wysyła drugiego ratunku (jeden wpis lotu na parę)", !actions.some(a => a.kind === "fly"), JSON.stringify(actions));
+  check("ale alarmuje, że fala ląduje PRZED uderzeniem", alerts.some(a => /fala ląduje przed uderzeniem|kolejne fale lądują|kolejna fala ląduje/.test(a.msg)), JSON.stringify(alerts.map(a => a.msg)));
+}
+
+console.log("\n── R4. rejestr pusty → zachowanie IDENTYCZNE jak przed 3.52 (bezpieczna strona) ──");
+{
+  const s = base({
+    hangars: { "3:272:7|moon": { total: 0, at: NOW - 5 * 60e3, ships: [] }, "3:272:7|planet": H(500) },
+    threats: [threat("3:272:7", "moon", 300)],
+  });
+  const { actions } = decide(s, CFG, NOW);
+  check("bez rejestru: hold „bezpieczna strona\" jak dotąd", actions.some(a => a.kind === "hold"), JSON.stringify(actions));
+}
+
+console.log("\n── R5. fala ląduje PO uderzeniu → bez zmiany decyzji (bezpieczna) ──");
+{
+  const s = base({
+    hangars: { "3:272:7|moon": { total: 0, at: NOW - 5 * 60e3, ships: [] }, "3:272:7|planet": H(500) },
+    threats: [threat("3:272:7", "moon", 300)],
+    expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 2_000_000, sentAt: NOW - 10 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW + 30 * 60e3 }],
+  });
+  const { actions } = decide(s, CFG, NOW);
+  check("fala lądująca po ataku nie wymusza rekonesansu", !actions.some(a => a.kind === "recon"), JSON.stringify(actions));
+  check("hold zostaje (flota na planecie = bezpieczna strona)", actions.some(a => a.kind === "hold"), JSON.stringify(actions));
+}
+
+console.log("\n── R6. cisza + fala wylądowała na nieaktywnej parze → cichy rekonesans hangaru ──");
+{
+  const s = base({
+    hangars: { "3:272:7|moon": { total: 0, at: NOW - 20 * 60e3, ships: [] } },
+    expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 2_000_000, sentAt: NOW - 40 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW - 3 * 60e3 }],
+  });
+  const { actions } = decide(s, CFG, NOW);
+  const r = actions.find(a => a.kind === "recon" && a.key === "3:272:7" && a.body === "moon");
+  check("rekonesans po lądowaniu z rejestru (nie czeka na wiersz listy)", !!r, JSON.stringify(actions));
+  check("rekonesans jest CICHY (zakaz nawigacji w ciszy)", !!r && r.quiet === true, JSON.stringify(r));
+}
+
+// ── v3.52.0: wzorce w źródle — strażnik fałszywego domknięcia + rejestr w Fly ──
+{
+  check("lądowanie z rejestru NIE domyka wpisu ratunku przed terminem zawrotu", /toEksp = f\.recallAt && h\.at < f\.recallAt/.test(src) && /wpis ratunku ZOSTAJE/.test(src));
+  check("rejestr zapisywany PRZED klikiem Send fleet, tylko z czasem lotu z formularza", /m\.flightMs\) \{\s*\n\s*const sE = Situation\.load\(\);\s*\n\s*sE\.expected/.test(src));
+  check("wpis rejestru potwierdzany po wysyłce i po przeładowaniu (confirmPendingSend)", /e0\.pending/.test(src) && /\(s\.expected \|\| \[\]\)\.find\(x => x\.pending && x\.fromKey === ls\.from/.test(src));
+  check("rejestr wygaszany: pending>10 min, godzinę po lądowaniu; korekta zegarem z listy", /e\.pending && now - \(e\.sentAt \|\| 0\) > 10 \* 60e3/.test(src) && /best\.returnAt = o\.arriveAt/.test(src));
+  check("ekspedycja nadal NIE trafia do flights (rejestr jest osobny)", /sE\.expected = \[\.\.\.\(sE\.expected \|\| \[\]\)/.test(src) && !/flights.*expedition.*push/.test(src.slice(src.indexOf("REJESTR POWROTÓW"), src.indexOf("REJESTR POWROTÓW") + 900)));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

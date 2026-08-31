@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.51.0
+// @version      3.52.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.51.0";
+  const VERSION = "3.52.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -661,6 +661,24 @@
         if (cur.slots && (!s.slots || (cur.slots.at || 0) > (s.slots.at || 0))) s.slots = cur.slots;
         // loty obronne dopisane w międzyczasie (np. przez Fly po udanej wysyłce) nie mogą zniknąć
         for (const f of (cur.flights || [])) if (!(s.flights || []).some(x => x.fromKey === f.fromKey && x.sentAt === f.sentAt)) (s.flights = s.flights || []).push(f);
+        // v3.52.0: rejestr powrotów dopisany przez Fly w trakcie tego refresha też zostaje
+        for (const e of (cur.expected || [])) if (!(s.expected || []).some(x => x.fromKey === e.fromKey && x.sentAt === e.sentAt)) (s.expected = s.expected || []).push(e);
+      }
+      // v3.52.0 (owner 31.08): REJESTR POWROTÓW — utrzymanie. Wpis `pending` starszy
+      // niż 10 min = wysyłka bez potwierdzenia (lustro reguły `flights`), wpis godzinę
+      // po lądowaniu = historia. Wiersz POWROTNY z listy ruchów niesie DOKŁADNY zegar,
+      // więc nadpisuje nasz szacunek (lot tam + postój + lot z powrotem), o ile trafia
+      // w okno ±3 min tego samego ciała startu.
+      {
+        const exp = (s.expected || []).filter(e => !(e.pending && now - (e.sentAt || 0) > 10 * 60e3) && now - (e.returnAt || 0) < 60 * 60e3);
+        for (const o of s.own) {
+          if (!o.isReturn) continue;
+          const lkKey = o.src || o.dst; if (!lkKey) continue;
+          let best = null;
+          for (const e of exp) if (e.fromKey === lkKey && !e.pending && Math.abs(e.returnAt - o.arriveAt) < 3 * 60e3 && (!best || Math.abs(e.returnAt - o.arriveAt) < Math.abs(best.returnAt - o.arriveAt))) best = e;
+          if (best) best.returnAt = o.arriveAt;
+        }
+        s.expected = exp;
       }
       // loty wysłane przez nas: zamknij te, których hangar-cel/źródło już pełny (hangar > zegar)
       // v3.9.0 (audyt): lot domykał się WYŁĄCZNIE po zapełnieniu hangaru ŹRÓDŁA.
@@ -678,7 +696,15 @@
         if (f.pending) { log(`[LOT] wpis "${f.kind}" [${f.fromKey}]→[${f.toKey}] wisi 10 min bez potwierdzenia — zdejmuję, para wraca pod pełną obronę.`, "warn"); return false; }
         const watchKey = f.recallAt ? `${f.fromKey}|${f.fromBody}` : `${f.toKey}|${f.toBody}`;
         const h = s.hangars[watchKey];
-        if (h && h.total > 0 && h.at > f.sentAt + 60e3) { log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${h.total.toLocaleString("pl-PL")}).`, "success"); return false; }
+        if (h && h.total > 0 && h.at > f.sentAt + 60e3) {
+          // v3.52.0 (audyt powrotów 31.08): przed terminem zawrotu ratunek NIE MOŻE stać
+          // w hangarze źródła — jeśli odczyt trafia w okno ±3 min lądowania fali z rejestru
+          // powrotów, to jej statki, nie powrót ratunku. Fałszywe domknięcie rozjeżdżało
+          // stan (bot myślał, że ratunek wrócił, a ten wciąż wisiał w powietrzu bez opieki).
+          const toEksp = f.recallAt && h.at < f.recallAt && (s.expected || []).some(e => !e.pending && `${e.fromKey}|${e.fromBody}` === watchKey && Math.abs(h.at - e.returnAt) < 3 * 60e3);
+          if (!toEksp) { log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${h.total.toLocaleString("pl-PL")}).`, "success"); return false; }
+          if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny, ale to lądowanie z rejestru powrotów — wpis ratunku ZOSTAJE (zawrót planowo).`, "info");
+        }
         if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis, para znów pod pełną obroną.`, "warn"); return false; }
         if (now - f.sentAt > 12 * 3600e3) return false;
         return true;
@@ -767,6 +793,16 @@
       .map(x => ({ body: x.body, total: x.h.total, at: x.h.at }));
     const neighbourMoon = (k) => { const c = pairs[k]; if (!c) return null; for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && o.hasMoon && o.galaxy === c.galaxy && o.system === c.system && attackedBodies(ok).size === 0) return ok; } return null; };
     const anyRefuge = (k) => { for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && attackedBodies(ok).size === 0) return { key: ok, body: o.hasMoon ? "moon" : "planet" }; } return null; };
+    // v3.52.0 (owner 31.08: „bot ma wiedzieć, co kiedy wraca"): REJESTR POWROTÓW.
+    // `s.expected` = loty ekonomii zapisane przy wysyłce (termin powrotu z czasu lotu
+    // odczytanego z formularza). Obrona pyta o trzy rzeczy: co wraca na tę parę,
+    // czy na danym ciele COŚ wylądowało PO ostatnim odczycie hangaru (wtedy odczyt
+    // nie jest już świeży, choćby miał minutę) i które fale wpadną pod uderzenie.
+    const returnsFrom = (k) => (s.expected || []).filter(e => e.fromKey === k && !e.pending);
+    const landedSince = (k, body, at) => returnsFrom(k).some(e => e.fromBody === body && e.returnAt <= now && e.returnAt > (at || 0))
+      || (((s.landings || {})[`${k}|${body}`] || 0) <= now && ((s.landings || {})[`${k}|${body}`] || 0) > (at || 0));
+    const incomingBefore = (k, when) => returnsFrom(k).filter(e => e.returnAt > now && e.returnAt < when).sort((a, b) => a.returnAt - b.returnAt);
+    const hhmmss = (t) => new Date(t).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
     for (const k of Object.keys(pairs)) {
       const th = threatsFor(k);
@@ -801,7 +837,13 @@
         // odczyt hangaru z naturalnych źródeł + `confirmPendingSend()` (v3.39.0), które
         // zdejmuje `pending` po przeładowaniu i to ONO usuwa 10-minutowy zastój.
         // Wracać do tego wyłącznie CICHĄ ścieżką (Hangar.scanRemote, bez nawigacji).
-        for (const [lk, at] of Object.entries(s.landings || {})) {
+        // v3.52.0: lądowania znamy z DWÓCH źródeł — listy ruchów (`s.landings`, tylko
+        // aktywna para) i rejestru powrotów (`s.expected`, każda wysyłka ekonomii).
+        // Rejestr domyka lukę: fala wraca na nieaktywną parę i bez niego hangar
+        // czekał na przypadkowy odczyt.
+        const landMap = { ...(s.landings || {}) };
+        for (const e of returnsFrom(k)) if (e.returnAt <= now && now - e.returnAt < 30 * 60e3) { const lk = `${k}|${e.fromBody}`; if (!landMap[lk] || e.returnAt > landMap[lk]) landMap[lk] = e.returnAt; }
+        for (const [lk, at] of Object.entries(landMap)) {
           const [lkey, lbody] = lk.split("|");
           if (lkey !== k || at > now || now - at > 30 * 60e3) continue;
           const lh = (s.hangars || {})[lk];
@@ -850,6 +892,10 @@
       const soonest = Math.min(...th.map(t => t.arriveAt));
       const secs = Math.round((soonest - now) / 1000);
       const firstSeen = Math.min(...th.map(t => t.seenAt));
+      // v3.52.0: fale z rejestru lądujące PRZED uderzeniem — dopisywane do alarmów,
+      // żeby operator (i push) wiedział, co konkretnie wpada pod atak.
+      const inc = incomingBefore(k, soonest);
+      const incTxt = inc.length ? ` UWAGA: ${inc.length === 1 ? "własny powrót ląduje" : inc.length + " własne powroty lądują"} PRZED uderzeniem (pierwszy ${hhmmss(inc[0].returnAt)}, ~${inc[0].total.toLocaleString("pl-PL")} szt.).` : "";
       if (!fleet) {
         // v3.39.0 (test na żywo 30.08 09:18): ta gałąź krzyczała „nie wiem, gdzie stoi
         // flota" SZEŚĆ razy pod rząd w trakcie alarmu — choć bot minutę wcześniej sam
@@ -860,14 +906,14 @@
         if (fOut) {
           const land = (fOut.sentAt || 0) + (fOut.flightMs || 0);
           alerts.push({ key: k, level: "warn", throttleMs: 5 * 60e3,
-            msg: `atak na [${k}] za ${secs}s — flota już wyleciała (${fOut.kind} → [${fOut.toKey}] ${fOut.toBody === "moon" ? "ksiezyc" : "planeta"}${fOut.flightMs ? `, ląduje ${new Date(land).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}), nie ma czego ratować` });
+            msg: `atak na [${k}] za ${secs}s — flota już wyleciała (${fOut.kind} → [${fOut.toKey}] ${fOut.toBody === "moon" ? "ksiezyc" : "planeta"}${fOut.flightMs ? `, ląduje ${new Date(land).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}), nie ma czego ratować.${incTxt}` });
         }
         // v3.9.0 (audyt): "nie wiem, gdzie flota" + "nie sprawdzę, bo alarm" = zero
         // akcji przez cały dolot. Gdy jest czas (>90 s), prosimy o rekonesans TEJ pary.
         // v3.39.0: rekonesans zostaje TAKŻE wtedy, gdy z pary trwa lot. „Coś stąd
         // wyleciało" nie znaczy „w hangarze nie ma nic" — mogły dojść nowe statki,
         // a ucieczka sprzed godzin nie jest dowodem na pusty dom.
-        else alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru)` });
+        else alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru).${incTxt}` });
         // v3.9.2 (E2E): sprawdzamy ciało, w które leci atak (a gdy nieznane — najpierw
         // księżyc, bo tam zwykle mieszka flota). Wcześniej recon zawsze celował
         // w planetę: przy flocie na księżycu bot odczytywał pusty hangar i zostawał
@@ -875,7 +921,10 @@
         // Kolejność: najpierw ciało pod atakiem, potem drugie ciało pary. Bez tego
         // drugiego kroku bot po odczytaniu pustej planety zostawał w stanie „nie wiem,
         // gdzie flota" zamiast stwierdzić „flota na księżycu = bezpieczna strona".
-        const fresh = (b) => { const h = (s.hangars || {})[`${k}|${b}`]; return h && now - (h.at || 0) < 15 * 60e3; };
+        // v3.52.0: odczyt hangaru sprzed lądowania fali NIE jest świeży — bez tego
+        // bot czytał pusty hangar raz, uznawał go za aktualny na 15 min i fala
+        // lądująca w trakcie dolotu wroga stała pod uderzeniem bez ratunku.
+        const fresh = (b) => { const h = (s.hangars || {})[`${k}|${b}`]; return h && now - (h.at || 0) < 15 * 60e3 && !landedSince(k, b, h.at); };
         const order = [...new Set([...attackedBodies(k), (pairs[k] && pairs[k].hasMoon) ? "moon" : "planet", "planet"])]
           .filter(b => (b === "moon" ? (pairs[k] && pairs[k].hasMoon) : b === "planet"));
         const want = order.find(b => !fresh(b)) || order[0] || "planet";
@@ -894,11 +943,32 @@
         // dokładnie pod uderzenie i tylko właściciel może to rozstrzygnąć.
         else if (f.phase === "recalled" || f.phase === "recall_clicked") alerts.push({ key: k, level: "error", throttleMs: 5 * 60e3, msg: `ATAK na [${k}] za ${secs}s, a flota WRACA z [${f.toKey}] — sprawdź, czy zdąży wylądować po uderzeniu; nie mam czego ratować` });
         else alerts.push({ key: k, level: "error", throttleMs: 5 * 60e3, msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa lot (${f.kind}/${f.phase}) — flota jest w powietrzu, reaguj ręcznie, jeśli wróci za wcześnie` });
+        // v3.52.0 (audyt powrotów 31.08, szczera granica): drugiego ratunku z tej samej
+        // pary bot NIE wyśle (jeden wpis lotu na parę — drugi nadpisałby zawrót
+        // pierwszego i zostawił flotę na refugium). Ale z rejestru wie, że fale
+        // ekspedycji stoją albo staną pod uderzeniem — mówi to wprost, z zegarem.
+        {
+          const landedHit = [...bodies].filter(b => b !== "unknown").filter(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
+          if (inc.length || landedHit.length) alerts.push({ key: k, level: "error", throttleMs: 60e3,
+            msg: `ATAK na [${k}] za ${secs}s: ${landedHit.length ? `fala z powrotu JUŻ stoi na atakowanym ciele (${landedHit.join("/")})` : ""}${landedHit.length && inc.length ? ", a " : ""}${inc.length ? `${inc.length === 1 ? "kolejna fala ląduje" : inc.length + " kolejne fale lądują"} przed uderzeniem (pierwsza ${hhmmss(inc[0].returnAt)}, ~${inc[0].total.toLocaleString("pl-PL")} szt.)` : ""} — trwa już lot ratunkowy, drugiego nie wyślę; zawróć fale albo rozegraj ręcznie` });
+        }
         continue;
       }
       // ratujemy z ciała, które JEST pod atakiem; przy dwóch takich — z większego
       const hitBodies = all.filter(x => bodies.has(x.body) || bodies.has("unknown")).sort((a, b) => b.total - a.total);
       if (!hitBodies.length) {
+        // v3.52.0 (audyt powrotów 31.08, snajperka powrotów — ścieżka A5 z Atheny):
+        // „bezpieczna strona" bywała wnioskiem z odczytu SPRZED lądowania fali —
+        // atakowane ciało mogło właśnie przyjąć miliony statków z powrotu ekspedycji,
+        // a bot trzymał `hold`, bo hangar czytał godzinę wcześniej pustkę. Lądowanie
+        // po odczycie = odczyt nieważny: najpierw rekonesans, decyzja w następnym
+        // przebiegu (rescue bierze wtedy CAŁY hangar, więc niczego nie pominie).
+        const landedHit = [...bodies].filter(b => b !== "unknown").find(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
+        if (landedHit) {
+          alerts.push({ key: k, level: "error", msg: `atak na [${k}] ${landedHit === "moon" ? "księżyc" : "planetę"} za ${secs}s, a PO ostatnim odczycie hangaru wylądowała tam fala z rejestru powrotów — sprawdzam, czy jest co ratować` });
+          if (secs > 90) actions.push({ kind: "recon", key: k, body: landedHit, why: `atak, a na ${landedHit === "moon" ? "księżycu" : "planecie"} [${k}] właśnie wylądowała fala — sprawdzam hangar` });
+          continue;
+        }
         // v3.29.0 (audyt O2): `fleetsAt` przyjmuje odczyty hangaru sprzed nawet 48 h,
         // więc „flota stoi na drugim ciele, jest bezpieczna" potrafiło opierać się na
         // wczorajszej wiedzy. Jeśli sam przestawiłeś flotę, bot uznawał atakowane
@@ -1980,6 +2050,7 @@
       const snap = Hangar.scan();
       if (!snap || snap.total === 0) { log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
       const loaded = [];
+      let loadedTotal = 0;   // v3.52.0: rejestr powrotów chce wiedzieć, ILE statków wraca
       const want = m.plan ? new Map(m.plan.map(p => [String(p.type).toUpperCase(), p.qty])) : null;
       for (const el of els) {
         const type = String(el.dataset.shipType || "").toUpperCase();
@@ -1988,7 +2059,7 @@
         if (qty <= 0) continue;
         const item = el.closest(".ship-item") || el.parentElement;
         const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
-        if (!input) continue; setInput(input, qty); loaded.push(`${el.dataset.shipType}×${qty.toLocaleString("pl-PL")}`);
+        if (!input) continue; setInput(input, qty); loadedTotal += qty; loaded.push(`${el.dataset.shipType}×${qty.toLocaleString("pl-PL")}`);
         if (want) await sleep(jitter(120, 380));   // człowiek wypełnia pola po kolei, nie w jednej milisekundzie
       }
       // v3.9.0 (audyt, incydent 2.x 05.08 23:22): formularz przelicza się po każdym
@@ -2100,6 +2171,9 @@
         if (m.duration.minutes > 0 && !minutesHit && !Once.said("disc40", 15 * 60e3)) log(`[ODKRYWCA] brak opcji „${m.duration.minutes} min" (dostępne: ${opts.map(txt).join(", ") || "brak"}) — klasa to nie Odkrywca? Wysyłam na ${m.duration.hours} h.`, "warn");
         if (hit) { if (sel) { sel.value = hit.value; sel.dispatchEvent(new Event("change", { bubbles: true })); } else hit.click(); log(`[EXPO] czas trwania: ${txt(hit)}`, "info"); await sleep(jitter(400, 700)); }
         else if (!Once.said("dur_dom", 15 * 60e3)) log(`[EXPO DOM] nie znalazłem wyboru czasu trwania: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
+        // v3.52.0: rejestr powrotów potrzebuje czasu postoju FAKTYCZNIE ustawionego
+        // w formularzu (40 min tylko wtedy, gdy opcja Odkrywcy naprawdę kliknięta).
+        m.holdMs = hit ? (minutesHit ? m.duration.minutes * 60e3 : m.duration.hours * 3600e3) : (m.duration.hours || 1) * 3600e3;
       }
       if (m.takeResources !== false) {
         const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
@@ -2120,6 +2194,17 @@
         if (!r || !mm.flightMs) return r;
         return (Date.now() + mm.flightMs < r) ? 0 : r;     // doleci wczesniej = wyladuje
       };
+      // v3.52.0 (owner 31.08: „bot ma mapować każdą wysłaną flotę i wiedzieć, kiedy
+      // wraca"): REJESTR POWROTÓW — loty ekonomii zapisujemy OSOBNO od `flights`
+      // (lekcja v3.2.0: ekspedycja w `flights` zaślepia obronę pary). Powrót liczymy
+      // z czasu lotu ODCZYTANEGO z formularza (lot tam + postój + lot z powrotem),
+      // nie ze wzoru; bez odczytu czasu lotu wpisu nie ma. Zapis PRZED klikiem
+      // (Send potrafi nawigować natychmiast), potwierdzenie po — jak `flights`.
+      if ((m.kind === "expedition" || m.kind === "asteroid" || m.kind === "debris") && m.flightMs) {
+        const sE = Situation.load();
+        sE.expected = [...(sE.expected || []), { kind: m.kind, fromKey: m.fromKey, fromBody: m.fromBody, total: loadedTotal, sentAt: Date.now(), flightMs: m.flightMs, holdMs: m.holdMs || 0, returnAt: Date.now() + 2 * m.flightMs + (m.holdMs || 0), pending: true }].slice(-40);
+        Situation.save(sE);
+      }
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const sPre = Situation.load();
         sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
@@ -2140,6 +2225,7 @@
         // v3.10.2: sprzatanie wpisu `pending` bylo NIEOSIAGALNE (stalo za tym returnem).
         const sBad = Situation.load();
         sBad.flights = (sBad.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending));
+        sBad.expected = (sBad.expected || []).filter(e => !(e.fromKey === m.fromKey && e.pending));   // v3.52.0: rejestr powrotów też
         Situation.save(sBad);
         return this.abort("brak potwierdzenia wysyłki");
       }
@@ -2155,6 +2241,9 @@
         if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = recallOf({ ...m, flightMs: m.flightMs }); } }
         else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0 }];
       }
+      // v3.52.0: rejestr powrotów — wysyłka potwierdzona, wpis przestaje być `pending`.
+      { const e0 = (s.expected || []).find(e => e.pending && e.fromKey === m.fromKey);
+        if (e0) { delete e0.pending; log(`[POWRÓT] zapamiętany: ${e0.total.toLocaleString("pl-PL")} szt. (${e0.kind}) wróci na [${e0.fromKey}] ${e0.fromBody === "moon" ? "księżyc" : "planetę"} ~${new Date(e0.returnAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`, "info"); } }
       Situation.save(s);
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
       // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
@@ -2480,10 +2569,17 @@
       const ls = Store.get("last_send", null); if (!ls) return;
       const s = Situation.load();
       const f = (s.flights || []).find(x => x.pending && x.fromKey === ls.from && Math.abs((x.sentAt || 0) - ls.at) < 60e3);
-      if (!f) return;
-      delete f.pending; Situation.save(s);
-      log(`[LOT] wysyłka [${f.fromKey}]→[${f.toKey}] potwierdzona przez grę po przeładowaniu — wpis nie czeka na timeout.`, "success");
-      emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu");
+      // v3.52.0: rejestr powrotów potwierdzamy tą samą drogą — wysyłka ekonomii też
+      // potrafi nawigować przed wykonaniem kodu potwierdzającego.
+      const e = (s.expected || []).find(x => x.pending && x.fromKey === ls.from && Math.abs((x.sentAt || 0) - ls.at) < 60e3);
+      if (!f && !e) return;
+      if (e) delete e.pending;
+      if (f) delete f.pending;
+      Situation.save(s);
+      if (f) {
+        log(`[LOT] wysyłka [${f.fromKey}]→[${f.toKey}] potwierdzona przez grę po przeładowaniu — wpis nie czeka na timeout.`, "success");
+        emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu");
+      }
     } catch {}
   }
 
@@ -2778,6 +2874,7 @@
           <div class="row" id="ogx3-r-def"><span class="ico">🛡</span><span class="lbl">Obrona</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-fleet"><span class="ico">🛰</span><span class="lbl">Flota</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-expo"><span class="ico">🚀</span><span class="lbl">Ekspedycje</span><span class="val">—</span></div>
+          <div class="row" id="ogx3-r-ret"><span class="ico">↩</span><span class="lbl">Powroty</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-min"><span class="ico">⛏</span><span class="lbl">Mining</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-fs"><span class="ico">🌙</span><span class="lbl">Fleet Save</span><span class="val">—</span></div>
         </div>
@@ -3071,6 +3168,13 @@
         this.setRow("ogx3-r-expo", CFG.expo.enabled ? "ok" : "dim", CFG.expo.enabled ? st : `OFF · ${st}`);
         $("ogx3-expo-st").textContent = `sloty: expo ${eSl ? eSl.used + "/" + eSl.total : "?"}, floty ${fSl ? fSl.used + "/" + fSl.total : "?"}${burst && burst.sent ? ` · seria ${burst.sent}/${burst.waves}` : ""}`;
         $("ogx3-t-expo").textContent = CFG.expo.enabled ? (CFG.expo.discoverer40 ? "ON · 40 min" : "ON") : "OFF"; }
+
+      // v3.52.0: rejestr powrotów w panelu — operator widzi to samo, co obrona.
+      { const exp = (s.expected || []).filter(e => !e.pending && e.returnAt > now).sort((a, b) => a.returnAt - b.returnAt);
+        const sum = exp.reduce((t, e) => t + (e.total || 0), 0);
+        this.setRow("ogx3-r-ret", exp.length ? "ok" : "dim", exp.length
+          ? `${exp.length} lot(y), ${sum.toLocaleString("pl-PL")} szt. · najbliższy ${new Date(exp[0].returnAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}`
+          : "nic nie wraca"); }
 
       { const txt = CFG.aster.enabled ? `zakresy ${(aster.ranges || []).length}${aster.sentTo ? ` · ost. [${aster.sentTo}]` : ""}` : "wyłączony";
         this.setRow("ogx3-r-min", CFG.aster.enabled ? "ok" : "dim", txt);
