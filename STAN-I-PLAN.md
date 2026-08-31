@@ -11,7 +11,9 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 Odpowiedź na dwa pytania ownera (12:21): „czy bot za dużo nie klika / czy to naturalne?"
 i „jak dobierana jest wielkość floty na ekspedycję?" — plus ODKRYCIE z jego zrzutu.
 
-**1. Losowa przerwa MIĘDZY seriami ekspedycji (5–20 min, `CFG.expo.restMinMin/restMaxMin`).**
+**1. Losowa przerwa MIĘDZY seriami ekspedycji — UWAGA: owner ODRZUCIŁ („nie chcę przerw
+w wysyłaniu eksp"), v3.49.1 wyłącza ją domyślnie (`restMinMin/restMaxMin = 0`), mechanizm
+zostaje jako opcja. Nowe hamulce ekonomii = najpierw pytanie do ownera, domyślnie OFF.**
 Serie wracały jak w zegarku, gdy tylko sloty się zwolniły — najbardziej maszynowy sygnał
 w całym profilu konta. Przerwa liczona od chwili, gdy wysyłka znów jest MOŻLIWA (nie od
 domknięcia serii — wtedy i tak nic nie może lecieć); fale WEWNĄTRZ serii bez zmian (60–90 s);
