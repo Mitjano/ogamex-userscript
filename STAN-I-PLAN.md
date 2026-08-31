@@ -6,6 +6,42 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 31.08, ~11:15 — v3.48.0: fale ekspedycji przestają wyrywać operatorowi planetę
+
+**Zgłoszenie ownera (10:44, piąty raz): „przed chwilą znowu przeskoczył".** Tym razem log jest
+czysty w kwestii odczytów w tle (3.47.0 działa: „odczytany w tle … bez przełączania planety") —
+winne są FALE EKSPEDYCJI, które owner sam włączył o 10:22. Formularz floty wymaga aktywnego ciała
+startowego, więc każda fala robi `[LOT] przełączam na moon [1:217:6]` — a bramka „grasz"
+przepuszczała falę już po **60 sekundach** od ostatniego kliknięcia. Owner przestał klikać
+o 10:36:01 (czytał stronę), o 10:37:22 fala zabrała mu kartę. Minuta ciszy to wciąż granie.
+
+**Zmiany:**
+1. **Próg ciszy ekonomii: 1 min → `CFG.human.ecoIdleSec` (domyślnie 300 s = 5 min).**
+   Sufit z 3.44.0 pozostaje zdjęty — ekonomia czeka tak długo, jak operator klika.
+2. **Bot odprowadza kartę tam, gdzie był operator.** Pierwsza akcja serii (jeszcze PRZED nauką
+   linku z galaktyki i przed misją) zapisuje `eco_return` = adres + UUID aktywnego ciała
+   operatora. Po fali DOMYKAJĄCEJ serię (albo gdy seria staje na „czekam na powroty"/„brak
+   statków") bot — zamiast na stronę główną — nawiguje z powrotem na zapamiętaną stronę
+   i planetę. **Tylko jeśli operator od startu serii nie kliknął** (porównanie `input_at`);
+   TTL wpisu 30 min. Ratunek i obrona bez zmian.
+
+**Harness E2E — WAŻNA LEKCJA z nieudanej stabilizacji.** Zdiagnozowałem źródło mrugania sc. 28:
+skrypt bota odpala na starcie `defenceTick()` bez await; `inst.tick()` trafia na guard `running`
+i wraca od ręki, a stałe 140 ms bywa za krótkie, żeby niedoczekany tick zdążył nawigować —
+pętla `run()` kończy scenariusz przedwcześnie. ALE trzy próby naprawy (dłuższy sleep z wczesnym
+wyjściem, busy-wait 3 s, busy-wait 30 s) każdorazowo zmieniały FAZĘ całego pakietu
+i deterministycznie psuły INNE scenariusze (17/18/21): misje-zombie porzucone w martwych oknach
+jsdom dalej mielą async-kroki i odświeżają karencje tras w WSPÓLNYM GM-storze, więc każde
+przesunięcie taktowania przestawia, które karencje żyją w którym momencie. Wszystko wycofane —
+zostały historyczne 140 ms, eksport `busy()` w `__OGX3` (nieszkodliwy, przyda się przy porządnej
+naprawie) i wniosek: **porządna naprawa = sprzątanie misji-zombie przy zamykaniu okna (pagehide
+→ przerwij pętle async), nie kręcenie czasami oczekiwania.** Do zrobienia osobno, na spokojnie.
+- sc. 36 sprawdza wprost powrót do operatora po serii (nawigacja `building/resource?planet=uuid…`).
+Suita pozostaje wrażliwa na obciążenie maszyny — sc. 28 mruga losowo pod obciążeniem (padał też
+na czystym HEAD); zielony pełny przebieg przed pushem obowiązuje.
+
+---
+
 ## AKTUALIZACJA 31.08, ~10:40 — v3.47.0: „cichy" odczyt NIE BYŁ cichy — fetch `?planet=` przestawia sesję po stronie SERWERA
 
 **Zgłoszenie ownera (czwarty raz): „ciągle przełącza bot po planetach"** + zrzut ekranu z modalem

@@ -397,7 +397,13 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     }
     const inst = load(game, { cfg });
     try { await inst.tick(ticksPerLoad); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
-    await new Promise(r => setTimeout(r, 140));   // czas na dokonczenie krokow bota (jego wlasne pauzy sa 150x krotsze)
+    // Czas na dokonczenie krokow bota (jego wlasne pauzy sa 150x krotsze).
+    // UWAGA (31.08): probowalismy tu czekac na `busy()` bota (startowy defenceTick
+    // odpala sie bez await i staly sleep bywa za krotki) — ale kazdy wariant zmienial
+    // FAZE calego pakietu i deterministycznie psul inne scenariusze (17/18/21: misje-
+    // zombie z martwych okien odswiezaly karencje tras w WSPOLNYM stanie). Wracamy do
+    // historycznych 140 ms; mruganie sc. 28 pod obciazeniem to znany koszt.
+    await new Promise(r => setTimeout(r, 140));
     try { inst.w.eval("if (typeof logEntries !== 'undefined') {}"); } catch {}
     if (process.env.DIAG2) {
       try { const st2 = inst.api.Situation.load(); console.log("      decyzja:", JSON.stringify(inst.api.decide(st2, inst.api.CFG, Date.now())).slice(0, 300), "| CFG.autoRescue:", inst.api.CFG.autoRescue, "| misja:", JSON.stringify(inst.api.Fly.mission()), "| eco:", JSON.stringify(inst.api.Human && inst.api.Human.economyAllowed(st2)), "| moonSt:", JSON.stringify(inst.api.Store.get("moon", null))); } catch (e) { console.log("      decyzja rzuciła:", e.message); }
@@ -981,11 +987,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:5", body: "moon" },
     });
     g.metal = 3_800_000_000;     // budżet 25% = 950 mln → mieści się 3000 km (900 mln), nie 4000 (1,2 mld)
-    // v3.46.0: ticksPerLoad=1 — moduł księżyców liczy KAŻDY tick na nieprzeładowanej
-    // stronie jako nawigację, więc >1 tick/load podbijał navs do sufitu 4 i próba
-    // umierała „bez efektu", zanim padł werdykt (mruganie tego scenariusza na słabszej
-    // maszynie; w realnej przeglądarce nawigacja zawsze przeładowuje stronę).
-    const { logs } = await run(g, { cfg, loads: 40, ticksPerLoad: 1 });
+    const { logs } = await run(g, { cfg, loads: 20, ticksPerLoad: 2 });
     check("bot postawił księżyc przy planecie bez księżyca", !!g.moonBuilt && g.moonBuilt.key === "1:100:9", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
     check("zmieścił się w suficie 25% metalu", !!g.moonBuilt && g.moonBuilt.cost <= 950_000_000, JSON.stringify(g.moonBuilt));
     check("wybrał NAJWIĘKSZĄ średnicę, która się mieści", !!g.moonBuilt && g.moonBuilt.km === 3000, JSON.stringify(g.moonBuilt));
@@ -999,12 +1001,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:5", body: "moon" },
     });
     g2.metal = 1_000_000;        // budżet 250 tys. — nawet 2000 km (600 mln) nie wchodzi
-    let r2 = await run(g2, { cfg, loads: 50, ticksPerLoad: 1 });   // ticksPerLoad=1 — jak wyżej (navs); ciasny budżet loadów bywał źródłem mrugania
+    let r2 = await run(g2, { cfg, loads: 35, ticksPerLoad: 3 });   // ciasny budżet loadów bywał źródłem mrugania
     // Heurystyka końca pętli run() („bot nie nawigował = koniec") potrafi uciąć przebieg
     // ZANIM bot dojdzie do werdyktu na stronie formularza (mruganie zależne od obciążenia
     // maszyny). Drugie podejście = ta sama gra i ten sam stan, po prostu więcej czasu —
     // dokładnie to, co bot dostaje w prawdziwej przeglądarce.
-    if (!r2.logs.some(m => /za drogo/.test(m))) { const r2b = await run(g2, { cfg, loads: 20, ticksPerLoad: 1 }); r2 = { logs: [...r2.logs, ...r2b.logs] }; }
+    if (!r2.logs.some(m => /za drogo/.test(m))) { const r2b = await run(g2, { cfg, loads: 20, ticksPerLoad: 3 }); r2 = { logs: [...r2.logs, ...r2b.logs] }; }
     check("przy pustej kasie NIE stawia księżyca", !g2.moonBuilt, JSON.stringify(g2.moonBuilt));
     check("i mówi wprost, że za drogo", r2.logs.some(m => /za drogo/.test(m)), r2.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
 
@@ -1220,6 +1222,11 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const fp = (g.fetches || []).filter(u => /\/fleet\?planet=/.test(u));
     check("po cichym odczycie bot PRZYWRACA planete operatora (fork trzyma wybor w sesji)",
       fp.some((u, i) => u.includes("uuid-1:100:5") && fp.slice(i + 1).some(v => v.includes("uuid-1:100:9"))), JSON.stringify(fp.slice(0, 8)));
+    // v3.48.0 (owner 31.08: „przed chwila znowu przeskoczyl"): fala ekspedycji musiala
+    // przelaczyc cialo pod formularz — po domknieciu serii bot ODPROWADZA karte na strone
+    // i planete operatora (operator w E2E nie klika, wiec warunek „nie kliknal" trzyma).
+    check("po serii ekspedycji bot wraca na strone i planete operatora",
+      g.navigations.some(n => /building\/resource\?planet=uuid-1:100:9/.test(String(n))), JSON.stringify(g.navigations.slice(-6)));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

@@ -478,10 +478,10 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
     /Flota rusza się TYLKO przy ataku/.test(src) && /CFG\.homeToMoon = !CFG\.homeToMoon/.test(src));
   // v3.43.0 (owner 20:31): każda fala ekspedycji zaczynała się od przełączenia aktywnego
   // ciała na księżyc bazowy — w środku rozbudowy kolonii. Ekonomia ma czekać, aż operator
-  // przestanie klikać, ale nie dłużej niż 6 minut.
-  check("ekonomia czeka, gdy operator gra (i nie dłużej niż 6 min)",
+  // przestanie klikać. v3.44.0 zdjęła sufit 6 min; v3.48.0 podniosła próg ciszy do 5 min.
+  check("ekonomia czeka, gdy operator gra (próg ciszy ecoIdleSec, bez sufitu 6 min)",
     /grasz — nie przełączam Ci planety, ekspedycja poczeka/.test(src) &&
-    /eco_wait_since/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src) && /ruszy minutę po ostatnim kliknięciu/.test(src) && !/6 \* 60e3/.test(src));
+    /eco_wait_since/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src) && /ruszy po \$\{idleMin\} min od ostatniego kliknięcia/.test(src) && !/6 \* 60e3/.test(src));
 }
 
 console.log("\n── 19e. GOTOWOŚĆ OBRONY I PODSUMOWANIE PO PRZERWIE (v3.45.0) ──");
@@ -935,6 +935,15 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   check("scanRemote NIE czyta, gdy nie umie przywrócić wyboru operatora", /if \(!ma\) return null;/.test(src));
   check("recon_bg czeka, gdy operator gra", /if \(!Human\.playing\(\)\) \{\s*\n\s*const bg = Store\.get\("recon_bg"/.test(src));
   check("cichy rekonesans po lądowaniu czeka, gdy operator gra", /if \(Human\.playing\(\)\) continue;/.test(src));
+}
+
+// ── v3.48.0: fale ekspedycji nie wyrywają operatorowi planety ──
+// Owner 31.08 („przed chwilą znowu przeskoczył"): minuta ciszy to nie odejście od
+// komputera — operator czyta stronę 1–2 min bez klikania, a fala wyrywała mu planetę.
+{
+  check("ekonomia rusza po ecoIdleSec (domyślnie 5 min), nie po minucie", /ecoIdleSec: 300/.test(src) && /CFG\.human\.ecoIdleSec \?\? 300/.test(src) && !/ruszy minutę po ostatnim kliknięciu/.test(src));
+  check("przełączenie pod misję ekonomii zapamiętuje stronę operatora", /Store\.set\("eco_return", \{ url: location\.pathname \+ location\.search/.test(src) && /\["expedition", "asteroid", "debris"\]\.includes\(m\.kind\)/.test(src));
+  check("po domkniętej serii bot odprowadza operatora (chyba że sam kliknął)", /maybeReturnOperator\(reason\)/.test(src) && /czekam na powroty\|brak statków/.test(src) && /!== \(r\.input \|\| 0\)\) return false;/.test(src) && /powrót na stronę operatora po serii ekspedycji/.test(src) && /domyka serię\/\.test\(m\.why \|\| ""\) && Expo\.maybeReturnOperator/.test(src));
 }
 
 console.log("");

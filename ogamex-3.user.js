@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.47.0
+// @version      3.48.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.47.0";
+  const VERSION = "3.48.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -165,7 +165,11 @@
     // Przerwy dotyczą WYŁĄCZNIE ekonomii. W 2.x przerwa kawowa usypiała cały
     // scheduler razem z keepalive (audyt A8: droga do wylogowania i 15 min
     // ślepoty). Tu obrona, rekonesans i keepalive chodzą zawsze.
-    human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: false },
+    // ecoIdleSec (v3.48.0, owner 31.08 „przed chwilą znowu przeskoczył"): minuta ciszy
+    // to nie jest odejście od komputera — operator czyta stronę 1–2 min bez klikania
+    // i fala ekspedycji wyrywała mu planetę (10:36:01 ostatni klik → 10:37:22 fala).
+    // Ekonomia rusza dopiero po PIĘCIU minutach bez zaufanego kliknięcia.
+    human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: false, ecoIdleSec: 300 },
     // ── NOCNY FLEET SAVE ──
     // Klasyczna obrona: gdy śpisz, flota nie stoi w hangarze. Używa TEJ SAMEJ
     // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
@@ -1068,15 +1072,18 @@
         // ostatnim kliknięciu. Cena jest jawna: przy długiej sesji sloty ekspedycji stoją —
         // to świadomy wybór ownera („przenosić flotę ma tylko podczas ataku", 18:04).
         // Obrona i ratunek NIE podlegają tej bramce i działają natychmiast.
+        // v3.48.0: próg podniesiony z 1 min do CFG.human.ecoIdleSec (domyślnie 5 min) —
+        // patrz komentarz przy DEFAULTS.human. Minuta bez klikania to wciąż granie.
         const now2 = Date.now();
         const klik = Store.get("input_at", 0) || 0;
         const cisza = now2 - klik;
-        if (cisza < 60e3) {
+        const idleMin = Math.max(1, Math.round((CFG.human.ecoIdleSec ?? 300) / 60));
+        if (cisza < idleMin * 60e3) {
           const since = Store.get("eco_wait_since", 0) || 0;
           if (!since) Store.set("eco_wait_since", now2);
           const czeka = Math.round((now2 - (since || now2)) / 60000);
           return czeka >= 1
-            ? `grasz — ekonomia czeka od ${czeka} min (ruszy minutę po ostatnim kliknięciu)`
+            ? `grasz — ekonomia czeka od ${czeka} min (ruszy po ${idleMin} min od ostatniego kliknięcia)`
             : "grasz — nie przełączam Ci planety, ekspedycja poczeka";
         }
         if (Store.get("eco_wait_since", 0)) Store.set("eco_wait_since", 0);
@@ -1448,6 +1455,25 @@
 
   const Expo = {
     burst() { return Store.get("burst", null); },
+    // v3.48.0 (owner 31.08: „przed chwilą znowu przeskoczył"): fale ekspedycji MUSZĄ
+    // przestawić aktywne ciało (formularz floty tego wymaga), ale po domknięciu serii
+    // operator ma zastać kartę tam, gdzie ją zostawił. Wpis `eco_return` robi Fly przy
+    // pierwszym przełączeniu; tu, gdy seria stoi (czekam na powroty / pusty hangar),
+    // bot odprowadza kartę z powrotem — TYLKO jeśli operator od tamtej pory nie kliknął.
+    maybeReturnOperator(reason) {
+      const r = Store.get("eco_return", null); if (!r) return false;
+      if (!/czekam na powroty|brak statków/.test(String(reason || ""))) return false;
+      Store.del("eco_return");
+      if (Date.now() - (r.at || 0) > 30 * 60e3) return false;
+      if ((Store.get("input_at", 0) || 0) !== (r.input || 0)) return false;   // operator już sam klika — nie mieszamy
+      let to = r.url;
+      if (r.uuid && !/[?&]planet=/.test(to)) to += (to.includes("?") ? "&" : "?") + "planet=" + r.uuid;
+      const here = location.pathname + location.search;
+      if (here === to || here === r.url) return false;
+      log(`[LOT] seria domknięta — wracam na stronę, na której byłeś (${r.url}).`, "info");
+      Nav.go(to, "powrót na stronę operatora po serii ekspedycji");
+      return true;
+    },
     async tick(s) {
       ExpoLink.learn();
       if (Fly.mission() || !CFG.expo.enabled) return false;
@@ -1468,8 +1494,18 @@
             if (got) { log(`[EXPO] dociągnąłem hangar [${hk}] ${hb} w tle (${got.total.toLocaleString("pl-PL")} szt.) — wysyłka w następnym przebiegu.`, "info"); return false; }
           }
         }
+        this.maybeReturnOperator(p.skip);
         if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info");
         return false;
+      }
+      // v3.48.0: pierwsza akcja SERII (jeszcze przed nauką linku i przed misją) zapamiętuje,
+      // gdzie jest operator — każda późniejsza nawigacja serii (galaktyka, przełączenie,
+      // formularz, powrót na /) zabiera mu kartę, więc tu jest ostatni prawdziwy adres.
+      if (!Store.get("eco_return", null)) {
+        const act0 = PlanetBar.active();
+        const ea0 = act0 && PlanetBar.anchor(act0.key, act0.body);
+        const mu0 = ea0 && ((ea0.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i));
+        Store.set("eco_return", { url: location.pathname + location.search, uuid: mu0 ? mu0[1] : null, at: Date.now(), input: Store.get("input_at", 0) || 0 });
       }
       const link = ExpoLink.get();
       if (!link || !link.mission) {
@@ -1843,6 +1879,19 @@
           if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; this.bumpNav(m); Nav.go(this.url(m), `lot: formularz [${m.fromKey}]→[${m.toKey}]`); return; }
           const el = PlanetBar.anchor(m.fromKey, m.fromBody);
           if (!el) return this.abort(`brak [${m.fromKey}] ${m.fromBody} na pasku planet`);
+          // v3.48.0 (owner 31.08: „przed chwilą znowu przeskoczył"): zanim EKONOMIA
+          // zabierze operatorowi aktywne ciało pod formularz floty, zapamiętujemy,
+          // GDZIE był — po domknięciu serii Expo.maybeReturnOperator() odprowadzi go
+          // z powrotem, o ile w międzyczasie sam nie kliknął. Ratunek tego nie robi.
+          if (["expedition", "asteroid", "debris"].includes(m.kind) && !Store.get("eco_return", null)) {
+            // Sam adres strony może nie nieść planety (menu gry daje np. /building/resource
+            // bez ?planet=) — bierzemy też UUID aktywnego ciała, żeby powrót przywrócił
+            // nie tylko stronę, ale i planetę operatora.
+            const act0 = PlanetBar.active();
+            const ea0 = act0 && PlanetBar.anchor(act0.key, act0.body);
+            const mu0 = ea0 && ((ea0.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i));
+            Store.set("eco_return", { url: location.pathname + location.search, uuid: mu0 ? mu0[1] : null, at: Date.now(), input: Store.get("input_at", 0) || 0 });
+          }
           log(`[LOT] przełączam na ${m.fromBody} [${m.fromKey}]`, "info"); m.step = "switch_wait"; this.bumpNav(m); Nav.click(el, `lot: przełączenie na ${m.fromBody} [${m.fromKey}]`); return;
         }
         if (m.step === "switch_wait") { const a = PlanetBar.active(); if (a && a.key === m.fromKey && a.body === m.fromBody) { m.step = "form"; this.bumpNav(m); Nav.go(this.url(m), `lot: formularz [${m.fromKey}]→[${m.toKey}]`); } return; }
@@ -2134,6 +2183,10 @@
       else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else if (m.kind === "asteroid") log(`[ASTER] minery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
       else Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${loaded.length} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
+      // v3.48.0: po fali DOMYKAJĄCEJ serię nie będzie kolejnej przez ~40 min — zamiast
+      // zostawiać operatora na stronie głównej, bot odprowadza kartę tam, gdzie był
+      // (o ile od startu serii sam nie kliknął).
+      if (okUrl && /domyka serię/.test(m.why || "") && Expo.maybeReturnOperator("czekam na powroty")) return;
       if (okUrl) Nav.go("/", "po wysyłce floty — powrót na stronę główną");
     },
     async applyReserve() {
@@ -3061,7 +3114,9 @@
   // Eksport do testów (node): globalThis.OGX3 gdy brak DOM.
   if (typeof document === "undefined" || typeof window === "undefined") { globalThis.OGX3 = { decide, Situation, Bar, Rows, DEFAULTS }; return; }
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon, Human }; } catch {}
+  // busy(): czy defenceTick WŁAŚNIE trwa — startowy tick odpala się bez await, więc
+  // harness E2E musi umieć poczekać, aż bot skończy krok, zamiast zgadywać stałym sleepem.
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon, Human, busy: () => running }; } catch {}
   Store.set("last_load", Date.now());
   // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
   // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.
