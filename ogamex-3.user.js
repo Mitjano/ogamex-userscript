@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.53.1
+// @version      3.54.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.53.1";
+  const VERSION = "3.54.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -936,6 +936,14 @@
         // jesteśmy ślepi — inaczej operator uczy się ignorować czerwone linie.
         const fOut = inFlightFrom(k);
         if (fOut) {
+          // v3.54.0 (war-game W12): po ratunku hangar jest PUSTY, więc dosłana druga
+          // fala ataku trafiała TUTAJ — a przedłużanie zawrotu żyło tylko w gałęzi
+          // z flotą w hangarze. Ucieczka wracała 90 s po PIERWSZEJ fali, prosto pod
+          // drugą. Extend musi działać niezależnie od stanu hangaru.
+          if (fOut.kind === "air" && fOut.phase === "launched" && fOut.recallAt) {
+            const lastArrive = Math.max(...th.map(t => t.arriveAt));
+            if (lastArrive + cfg.recallBufferSec * 1000 > fOut.recallAt) actions.push({ kind: "extend", flight: fOut, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" });
+          }
           const land = (fOut.sentAt || 0) + (fOut.flightMs || 0);
           alerts.push({ key: k, level: "warn", throttleMs: 5 * 60e3,
             msg: `atak na [${k}] za ${secs}s — flota już wyleciała (${fOut.kind} → [${fOut.toKey}] ${fOut.toBody === "moon" ? "ksiezyc" : "planeta"}${fOut.flightMs ? `, ląduje ${new Date(land).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}), nie ma czego ratować.${incTxt}` });
