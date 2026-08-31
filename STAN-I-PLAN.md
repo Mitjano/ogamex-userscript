@@ -6,6 +6,36 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 31.08, ~14:20 — v3.50.0: SONDA LISTY sama była winowajcą przeskoków — obie sondy USUNIĘTE, werdykty ostateczne
+
+**Zgłoszenie ownera (13:57): „ciągle przeskakuje planeta na [1:217:8]"** + pełny log. Dowód
+w timeline: `[SONDA LISTY]` pyta o [1:217:8] o 13:48:55 → owner otwiera /galaxy o 13:52:38 →
+galaktyka otwiera się na [1:217:8]. **Fetch `/home/fleetmovementlist?planet=` IGNORUJE parametr
+dla TREŚCI listy (to mierzyliśmy), ale — jak każdy `?planet=` w tym forku — PRZESTAWIA planetę
+w sesji (tego nie zmierzyliśmy).** Sonda pytała w kółko o [1:217:8]/[1:217:7] (kandydaci spoza
+odpowiedzi), stąd „zawsze na 1:217:8". Na dobitkę wracała jak zombie: zatrzask „zamknięte"
+umiera z każdą wersją (reguła z 3.43.1), a 3.49.0 i 3.49.1 weszły tego samego dnia.
+
+**Dwie LEKCJE do zapamiętania na stałe:**
+1. **„Parametr ignorowany dla treści" ≠ „ignorowany dla sesji".** Każdy fetch z `?planet=`
+   przestawia wybór planety operatora — musi przywracać (jak `scanRemote` od 3.47.0) albo
+   nie istnieć. Mój wpis z 3.47.0 („sonda listy poza podejrzeniem, bo parametr ignorowany")
+   był błędnym wnioskiem z poprawnego pomiaru.
+2. **Zatrzask sondy z werdyktem OSTATECZNYM nie może umierać z wersją** — reguła „latch umiera
+   z wersją" jest dla flag diagnostycznych, nie dla rozstrzygniętych pomiarów.
+
+**Drugi werdykt (z tego samego logu): `[SONDA RESEARCH]` — kontener Events na /research jest
+dla fetcha PUSTY** (4/6 prób, jednoznacznie). Fork wypełnia panel JavaScriptem z tej samej listy
+per-para; „loty innych kolonii" ze zrzutu ownera 12:21 to loty DOTYKAJĄCE aktywnej pary
+(transporty NA bazę). Hipoteza globalnego /research — obalona.
+
+**Zmiany 3.50.0:** obie sondy usunięte w całości (werdykty i lekcje w komentarzu przy `Rows`);
+jedyny fetch listy ruchów idzie bez parametru. **Stan wiedzy: NIE MA znanej drogi, by zobaczyć
+atak na kolonię spoza aktywnej pary** — jedyny globalny sygnał to licznik paska misji
+(barExcess). Opcje na przyszłość bez zmian (przyjąć ryzyko / rotacja pary — odrzucona).
+
+---
+
 ## AKTUALIZACJA 31.08, ~12:45 — v3.49.0: naturalny rytm konta + sonda /research (kandydat na koniec ślepoty kolonii)
 
 Odpowiedź na dwa pytania ownera (12:21): „czy bot za dużo nie klika / czy to naturalne?"

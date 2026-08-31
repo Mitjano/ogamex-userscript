@@ -414,19 +414,13 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
     /czysto · \$\{CFG\.autoRescue \? "auto-ratunek" : "obserwator"\}\$\{slepy \? ` · ⚠ \$\{ile\} kolonii bez nadzoru` : ""\}/.test(src));
   check("bot nie klika już w pusty panel Events (5 h prób nie dało wiersza)",
     /!content0\.children\.length/.test(src) && /Nie klikam w niego/.test(src));
-  check("sonda listy porównuje A/B i zawsze zostawia ślad w logu",
-    /PARAMETR DZIAŁA/.test(src) && /parametr IGNOROWANY/.test(src) && /nie mam rozstrzygającego kandydata/.test(src));
-  // v3.42.1 (fałszywy alarm 20:05:53): sonda ogłosiła sukces przy IDENTYCZNYCH danych,
-  // bo wylosowała parę bazową, której koordy są w każdej odpowiedzi. Kandydat musi być
-  // kolonią NIEOBECNĄ w odpowiedzi bez parametru, a werdykt wymaga OBU warunków naraz.
-  check("kandydatem może być tylko kolonia nieobecna w odpowiedzi bez parametru",
-    /!bez\.coords\.includes\(p\.key\)/.test(src));
-  check("zatrzask sondy nie przeżywa aktualizacji (fałszywy werdykt z 20:05 by ją uśpił)",
-    /Store\.del\("mv_probe"\)/.test(src));
+  // v3.50.0: sonda listy USUNIĘTA (werdykt ostateczny + jej fetch `?planet=`
+  // przestawiał operatorowi planetę w sesji) — kontrole jej wnętrza zastąpione
+  // kontrolą nieobecności; szczegóły w bloku v3.50.0 na końcu pliku.
+  check("po sondzie listy został tylko zapis werdyktów (bez kodu)",
+    /WERDYKTY OSTATECZNE/.test(src) && !/PARAMETR DZIAŁA/.test(src) && !/mv_probe", \{/.test(src));
   check("bonus online zwolniony z bramki „grasz” (jeden klik w menu, nie przełączanie planety)",
     /&& !\/grasz —\/\.test\(why\)/.test(src));
-  check("werdykt ✅ wymaga RÓŻNICY odpowiedzi ORAZ koordów pytanej kolonii",
-    /const inne = bez\.ids !== zP\.ids;/.test(src) && /if \(inne && maKolonie\)/.test(src));
   check("dławik alertów nie liczy odliczania sekund jako nowego alertu",
     /a\.msg\.replace\(\/\\d\+\/g, "#"\)\.slice\(0, 60\)/.test(src));
   check("kolonie poza rekonesansem czytane CICHO, bez nawigacji",
@@ -910,9 +904,11 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
 
 // ── v3.46.0: kontrole źródła po teście na żywo 31.08 (08:56–09:10) ──
 {
-  // Sonda listy logowała „próba 0/6" w kółko: licznik podbijany przy starcie próby
-  // był nadpisywany starą wartością przy werdykcie ❌ — sonda nigdy się nie zamykała.
-  check("sonda listy: licznik prób FAKTYCZNIE rośnie i zamyka sondę po 6", /const n = \(st\.n \|\| 0\) \+ 1;\s*\n\s*Store\.set\("mv_probe", \{ \.\.\.st, n, at: Date\.now\(\) \}\)/.test(src) && /const done = n >= 6;/.test(src) && /próba \$\{n\}\/6/.test(src));
+  // v3.50.0: sonda listy USUNIĘTA — jej fetch `?planet=` przestawiał ownerowi planetę
+  // w sesji przy każdej próbie (31.08 13:48 → /galaxy otwarta na [1:217:8]), a zatrzask
+  // umierał z wersją, więc wracała jak zombie. Werdykt był ostateczny; pilnujemy, żeby
+  // NIE wróciła i żeby jedyny fetch listy ruchów szedł BEZ parametru planet.
+  check("sonda listy USUNIĘTA (żaden fetch listy ruchów z ?planet=)", !/probePlanetList/.test(src) && !/\[SONDA LISTY\]/.test(src) && !/this\.URL\}\?planet=/.test(src) && /WERDYKTY OSTATECZNE/.test(src));
   // Komplet kalibracji szedł na telefon jako „⚠️ Obrona: BŁĄD" i fałszował dziennik
   // obrony (oraz bilans po przerwie). Raport startowy to nie awaria.
   check("raport startowy NIE udaje błędu obrony (push wprost, bez wpisu BŁĄD)", !/KOMPLET[\s\S]{0,600}?Journal\.add\("BŁĄD"/.test(src) && /Notifier\.push\("📋 Raport startowy gotowy \(Genesis\)"/.test(src));
@@ -952,10 +948,10 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   // OPCJA domyślnie WYŁĄCZONA (restMaxMin: 0); mechanizm zostaje dla chętnych.
   check("przerwa między seriami DOMYŚLNIE WYŁĄCZONA (0), mechanizm tylko przy restMaxMin>0",
     /restMinMin: 0, restMaxMin: 0/.test(src) && /rMax > 0 && !inSeries && b && \(b\.sent \|\| 0\) > 0/.test(src) && /przerwa między seriami/.test(src) && /Store\.del\("expo_rest"\)/.test(src));
-  // Zrzut ownera 31.08 12:21: Events na /research pokazuje loty INNYCH kolonii —
-  // sonda ma to potwierdzić cichym fetchem (bez ?planet=, nic nie przestawia sesji).
-  check("sonda /research: licznik rośnie, zatrzask umiera z wersją, werdykt wymaga OBCEJ kolonii",
-    /probeResearchEvents\(own\)/.test(src) && /re_probe/.test(src) && /Store\.del\("re_probe"\)/.test(src) && /c && own\.has\(c\) && \(!act \|\| c !== act\.key\)/.test(src));
+  // v3.50.0: sonda /research USUNIĘTA — werdykt: kontener Events jest dla fetcha PUSTY
+  // (fork wypełnia go JS-em z tej samej listy per-para). Pilnujemy, żeby nie wróciła.
+  check("sonda /research USUNIĘTA (kontener pusty dla fetcha — werdykt ostateczny)",
+    !/probeResearchEvents/.test(src) && !/\[SONDA RESEARCH\]/.test(src));
 }
 
 console.log("");

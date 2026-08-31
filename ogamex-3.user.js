@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.49.1
+// @version      3.50.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.49.1";
+  const VERSION = "3.50.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -323,104 +323,20 @@
         friendly: friendlyCls, hostile: hostileCls, attack, spy: isSpy && !friendlyCls, isReturn,
         html: (tr.outerHTML || "").replace(/\s+/g, " ").slice(0, 900) };
     },
-    // v3.40.1 (audyt obrony 30.08) — SONDA DIAGNOSTYCZNA, bez wpływu na decyzje.
-    // Lista ruchów pokazuje tylko aktywną parę, więc atak na pozostałe 13 kolonii jest
-    // dla bota niewidoczny inaczej niż jako liczba na pasku. Strona floty przyjmuje
-    // `?planet=UUID` (używa tego `Hangar.scanRemote`) — sprawdzamy, czy lista ruchów
-    // też. Jeśli tak, cała ślepota znika BEZ rozwijania czegokolwiek w DOM.
-    // Sonda tylko LOGUJE wynik. Po 6 próbach wyłącza się sama.
-    async probePlanetList(own) {
-      const st = Store.get("mv_probe", { n: 0, done: false, at: 0 }) || {};
-      if (st.done || (st.n || 0) >= 6) return;
-      if (Date.now() - (st.at || 0) < 5 * 60e3) return;
-      // v3.46.0 (log 31.08: trzykrotnie „próba 0/6"): licznik był tu podbijany w zapisie,
-      // ale werdykt ❌ niżej nadpisywał go STARĄ wartością z `st` — sonda nigdy nie
-      // doliczała do 6 i kręciła się co 5 minut bez końca.
-      const n = (st.n || 0) + 1;
-      Store.set("mv_probe", { ...st, n, at: Date.now() });
-      // v3.42.0: sonda ma ZAWSZE zostawić ślad — cisza po niej była nie do odróżnienia
-      // od „nie odpaliła się". I ma porównywać A/B: to samo zapytanie BEZ parametru i Z
-      // parametrem innej kolonii. Identyczny wynik = parametr ignorowany, kropka.
-      const act = PlanetBar.active();
-      const grab = async (url) => {
-        const res = await fetchT(url, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-        if (!res.ok) return { err: `HTTP ${res.status}` };
-        const html = await res.text();
-        if (looksLoggedOut(res, html)) return { err: "wylogowany" };
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const rows = [...doc.querySelectorAll("tr[class*='row-mission-type-']")].map(tr => this.classify(tr, own));
-        return { rows, ids: [...new Set(rows.map(r => r.id).filter(Boolean))].sort().join(","), coords: [...new Set(rows.flatMap(r => [r.src, r.dst]).filter(Boolean))].sort() };
-      };
-      try {
-        const bez = await grab(this.URL);
-        if (bez.err) { log(`[SONDA LISTY] nie udało się pobrać listy bez parametru (${bez.err}).`, "warn"); return; }
-        // v3.42.1 (fałszywy alarm 20:05:53): pytana kolonia MUSI być taka, której koordów
-        // NIE MA w odpowiedzi bez parametru — inaczej „widzę jej koordy" nic nie dowodzi.
-        // Poprzednia wersja wylosowała [1:217:6], czyli parę bazową, której współrzędne
-        // są w każdej odpowiedzi (cały ruch ekspedycyjny), i ogłosiła sukces przy
-        // DOSŁOWNIE IDENTYCZNYCH danych: 9 wierszy tu i 9 wierszy tam.
-        const kandydaci = PlanetBar.pairs().filter(p => (!act || p.key !== act.key) && !bez.coords.includes(p.key));
-        const other = kandydaci[0];
-        if (!other) { log(`[SONDA LISTY] każda moja kolonia występuje już w odpowiedzi bez parametru (${bez.coords.join(", ") || "brak"}) — nie mam rozstrzygającego kandydata, spróbuję później.`, "warn"); return; }
-        const el = PlanetBar.anchor(other.key, "planet");
-        const m = el && (el.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i);
-        if (!m) { log(`[SONDA LISTY] pasek planet nie daje identyfikatora kolonii [${other.key}] — nie mam jak zapytać o jej ruchy.`, "warn"); return; }
-        const zP = await grab(`${this.URL}?planet=${m[1]}`);
-        if (zP.err) { log(`[SONDA LISTY] nie udało się pobrać listy dla [${other.key}] (${zP.err}).`, "warn"); return; }
-        // Werdykt: parametr działa TYLKO gdy odpowiedź jest inna ORAZ pojawiły się w niej
-        // koordy pytanej kolonii. Sama różnica id to za mało — loty startują i lądują
-        // między pomiarami, więc dwie odpowiedzi mogą się różnić z przyczyn naturalnych.
-        const inne = bez.ids !== zP.ids;
-        const maKolonie = zP.coords.includes(other.key);
-        if (inne && maKolonie) {
-          Store.set("mv_probe", { n: 0, done: true, works: true, at: Date.now() });
-          log(`[SONDA LISTY] ✅ PARAMETR DZIAŁA. Bez parametru ${bez.rows.length} wierszy (${bez.coords.join(", ") || "brak"}), dla [${other.key}] ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — i są tam koordy pytanej kolonii, których wcześniej nie było. POKAŻ TĘ LINIĘ CLAUDE'OWI.`, "error");
-        } else {
-          const done = n >= 6;
-          Store.set("mv_probe", { n, done, works: false, at: Date.now() });
-          log(`[SONDA LISTY] ❌ parametr IGNOROWANY (próba ${n}/6): pytałem o [${other.key}], dostałem ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — ${inne ? "inne id, ale BEZ koordów tej kolonii" : "dokładnie to samo co bez parametru"}. Ruchy innych kolonii są dla bota niewidoczne.${done ? " To był ostatni test — temat zamykam." : ""}`, "warn");
-        }
-      } catch (e) { log(`[SONDA LISTY] błąd: ${e.message}`, "warn"); }
-    },
-    // v3.49.0 (zrzut ownera 31.08 12:21): panel Events na /research jest WYPEŁNIONY
-    // i pokazuje loty INNYCH kolonii ([2:223:9]→Home planet). Na stronach, po których
-    // bot chodzi, kontener jest pusty, a `?planet=` listy ruchów jest ignorowany —
-    // jeśli /research renderuje ruchy GLOBALNIE, ślepota na 13 kolonii znika jednym
-    // cichym fetchem (bez ?planet=, więc nic nie przestawia sesji). Sonda tylko
-    // LOGUJE; po 6 próbach zamyka się sama. Lekcja 3.46: licznik `n` rośnie NAPRAWDĘ.
-    async probeResearchEvents(own) {
-      const st = Store.get("re_probe", { n: 0, done: false, at: 0 }) || {};
-      if (st.done || (st.n || 0) >= 6) return;
-      if (Date.now() - (st.at || 0) < 5 * 60e3) return;
-      const n = (st.n || 0) + 1;
-      Store.set("re_probe", { ...st, n, at: Date.now() });
-      try {
-        const res = await fetchT("/research", { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
-        if (!res.ok) { log(`[SONDA RESEARCH] (próba ${n}/6) HTTP ${res.status}.`, "warn"); return; }
-        const html = await res.text();
-        if (looksLoggedOut(res, html)) return;
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const cont = doc.querySelector("#fleet-movement-content, #layoutFleetMovements");
-        const trs = cont ? [...cont.querySelectorAll("tr[class*='row-mission-type-']")] : [];
-        if (!trs.length) {
-          log(`[SONDA RESEARCH] (próba ${n}/6) kontener Events na /research ${cont ? "istnieje, ale PUSTY" : "NIEZNALEZIONY"} — fetch nie dostaje tego, co widzi przeglądarka.${n >= 6 ? " Zamykam temat — bez dowodu." : ""}`, "warn");
-          if (n >= 6) Store.set("re_probe", { n, done: true, works: false, at: Date.now() });
-          return;
-        }
-        const act = PlanetBar.active();
-        const rows = trs.map(tr => this.classify(tr, own));
-        const coords = [...new Set(rows.flatMap(r => [r.src, r.dst]).filter(Boolean))];
-        const inne = rows.some(r => [r.src, r.dst].some(c => c && own.has(c) && (!act || c !== act.key)));
-        if (inne) {
-          Store.set("re_probe", { n, done: true, works: true, at: Date.now() });
-          log(`[SONDA RESEARCH] ✅ /research POKAZUJE ruchy INNYCH kolonii (${trs.length} wierszy; koordy: ${coords.join(", ")}). Ślepotę na kolonie da się załatać cichym fetchem — POKAŻ TĘ LINIĘ CLAUDE'OWI.`, "error");
-        } else {
-          const done = n >= 6;
-          Store.set("re_probe", { n, done, works: false, at: Date.now() });
-          log(`[SONDA RESEARCH] (próba ${n}/6) ${trs.length} wierszy, ale widzę tylko aktywną parę (${coords.join(", ") || "brak"}) — jeszcze nie rozstrzyga.${done ? " Zamykam temat — bez dowodu na globalność." : ""}`, "warn");
-        }
-      } catch (e) { log(`[SONDA RESEARCH] błąd: ${e.message}`, "warn"); }
-    },
+    // ═══ WERDYKTY OSTATECZNE (sondy 3.40.1–3.49.1, USUNIĘTE w 3.50.0) ═══════
+    // 1. `/home/fleetmovementlist?planet=` IGNORUJE parametr dla TREŚCI (wielokrotny
+    //    pomiar A/B, 6/6 na dwóch wersjach) — ALE JAK KAŻDY `?planet=` PRZESTAWIA
+    //    PLANETĘ W SESJI. Sonda pytająca o [1:217:8] przestawiała ownerowi planetę
+    //    w kółko (31.08 13:48 → /galaxy otwarta na [1:217:8]), a zatrzask „zamknięte"
+    //    umierał z każdą wersją, więc wracała jak zombie. LEKCJE: (a) parametr
+    //    ignorowany dla treści ≠ ignorowany dla sesji — każdy fetch z `?planet=`
+    //    musi przywracać wybór operatora (scanRemote) albo nie istnieć; (b) zatrzask
+    //    sondy z werdyktem OSTATECZNYM nie może umierać z wersją.
+    // 2. Panel Events na /research jest dla FETCHA PUSTY (4/6 prób, jednoznacznie) —
+    //    fork wypełnia go JavaScriptem z tej samej listy per-para; wiersze „innych
+    //    kolonii" ze zrzutu ownera to loty DOTYKAJĄCE aktywnej pary (cel = baza).
+    // WNIOSEK: nie ma znanej drogi, by zobaczyć atak na kolonię spoza aktywnej pary.
+    // Jedyny globalny sygnał to licznik na pasku misji (obsługuje go barExcess).
     async fetchList(own) {
       try {
         const res = await fetchT(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
@@ -665,8 +581,8 @@
       Rows.ensureOpen();                // zwinięty pasek misji = zero współrzędnych (v3.36.0)
       const evRows = Rows.readEvents(own);
       const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
-      try { await Rows.probePlanetList(own); } catch {}   // v3.40.1: diagnostyka, nie wpływa na decyzje
-      try { await Rows.probeResearchEvents(own); } catch {}   // v3.49.0: czy /research pokazuje ruchy WSZYSTKICH kolonii
+      // v3.50.0: obie sondy diagnostyczne USUNIĘTE — werdykty ostateczne w komentarzu
+      // przy Rows (sonda listy przestawiała ownerowi planetę w sesji przy każdej próbie).
       Session.maybeRecover();
       const rows = [...evRows.map(r => ({ ...r, source: "events" })), ...list.rows.map(r => ({ ...r, source: "list" }))];
       // symulacja (panel): syntetyczny wrogi wiersz
@@ -3191,7 +3107,7 @@
   // 20:05:53 werdykt `done: true, works: true` na podstawie fałszywego alarmu (błąd
   // poprawiony w 3.42.1) — i przez ten zatrzask NIGDY BY SIĘ JUŻ NIE URUCHOMIŁA,
   // zostawiając w stanie bzdurę. Nowa wersja = czysta karta dla obu latch-y.
-  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); Store.del("expo_rest"); } }
+  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); Store.del("expo_rest"); } }   // mv/re_probe: sprzątanie po usuniętych sondach
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }
