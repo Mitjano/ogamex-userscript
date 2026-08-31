@@ -902,7 +902,27 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   check("ladowanie sprzed dwoch godzin juz nikogo nie interesuje", !decide(stare, CFG, NOW).actions.some(a => a.kind === "recon"), JSON.stringify(decide(stare, CFG, NOW).actions));
   const atak = base({ hangars: { "3:272:7|moon": H(70000) }, landings: { "3:272:7|planet": NOW - 60e3 }, threats: [threat("3:272:7", "moon", 300)] });
   check("przy ataku obrona ma pierwszenstwo (nie dreptamy po hangarach)", !decide(atak, CFG, NOW).actions.some(a => /wrocila wlasna flota|wróciła własna flota/.test(a.why || "")), JSON.stringify(decide(atak, CFG, NOW).actions));
-  check("termin powrotu trafia do stanu (Situation), nie ginie z wierszem", /s\.landings = land/.test(src) && /isReturn \|\| !o\.dst/.test(src));
+  check("termin powrotu trafia do stanu (Situation), nie ginie z wierszem", /s\.landings = land/.test(src) && /isReturn \|\| !\(o\.src \|\| o\.dst\)/.test(src));
+  // v3.46.0 (test na żywo 31.08 09:06): flota wraca do PUNKTU STARTU, a wiersz
+  // powrotny trzyma w `dst` pierwotny cel — lądowanie musi iść pod `src`.
+  check("lądowanie powrotu zapisywane pod źródłem lotu, nie pod pierwotnym celem", /const lkKey = o\.src \|\| o\.dst/.test(src) && /f\.fromKey === lkKey/.test(src));
+}
+
+// ── v3.46.0: kontrole źródła po teście na żywo 31.08 (08:56–09:10) ──
+{
+  // Sonda listy logowała „próba 0/6" w kółko: licznik podbijany przy starcie próby
+  // był nadpisywany starą wartością przy werdykcie ❌ — sonda nigdy się nie zamykała.
+  check("sonda listy: licznik prób FAKTYCZNIE rośnie i zamyka sondę po 6", /const n = \(st\.n \|\| 0\) \+ 1;\s*\n\s*Store\.set\("mv_probe", \{ \.\.\.st, n, at: Date\.now\(\) \}\)/.test(src) && /const done = n >= 6;/.test(src) && /próba \$\{n\}\/6/.test(src));
+  // Komplet kalibracji szedł na telefon jako „⚠️ Obrona: BŁĄD" i fałszował dziennik
+  // obrony (oraz bilans po przerwie). Raport startowy to nie awaria.
+  check("raport startowy NIE udaje błędu obrony (push wprost, bez wpisu BŁĄD)", !/KOMPLET[\s\S]{0,600}?Journal\.add\("BŁĄD"/.test(src) && /Notifier\.push\("📋 Raport startowy gotowy \(Genesis\)"/.test(src));
+  // [GOTOWOŚĆ] krzyczała ERROR-em „nie widzę żadnej floty", gdy flota była w powietrzu
+  // z woli BOTA (własny ratunek w toku) — to dowód działania obrony, nie braku.
+  check("gotowość obrony nie panikuje przy własnym locie ratunkowym w powietrzu", /const wLocie = \(s\.flights \|\| \[\]\)\.some\(f => \(f\.fromKey === guard \|\| f\.toKey === guard\) && f\.phase !== "done" && !flightStale\(f, now\)\)/.test(src) && /if \(!wLocie\) braki\.push/.test(src));
+  // Owner 31.08: „nie podoba mi się, że bot sam przeskakuje z planety na planetę" —
+  // rekonesans po lądowaniu własnego lotu (09:06:16 wejście na Fleet) to rutyna,
+  // nie alarm: idzie WYŁĄCZNIE cichym fetchem, bez nawigacji i przełączania planety.
+  check("rekonesans po lądowaniu jest QUIET (scanRemote w tle, zakaz nawigacji)", /quiet: true, why: `wróciła własna flota/.test(src) && /if \(a\.quiet\) \{(?:(?!Nav\.|location\.)[\s\S]){0,700}?continue;\s*\}/.test(src));
 }
 
 console.log("");

@@ -6,6 +6,51 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 31.08, ~10:15 — v3.46.0: PIERWSZY PRAWDZIWY ATAK ODPARTY + wnioski z porannego logu
+
+**PRAWDZIWY ATAK 09:44–09:54 — ratunek zadziałał bojowo, pierwszy raz na Genesis.** Dwa wrogie
+wiersze na liście: `ATTACK` (id UUID) + `ACS_ATTACK` („Players: 1/1"), oba w moon [1:217:6],
+dolot 626 s. Push urgent 09:44:18 → potwierdzenie 20 s → decyzja „sąsiedni księżyc" 09:44:37 →
+wysyłka ~11,5 mln statków potwierdzona 09:44:50 (`fleetSendSuccessfully`), bramka anty-duplikat
+zdusiła drugi wiersz („wysyłka już poszła 2 s temu"). Atak wylądował w PUSTY księżyc; 09:58 bot
+zaczął zawracać flotę. To była pierwsza okazja zobaczyć WROGI wiersz w tym forku — klasyfikacja
+budowana na symulacjach potwierdziła się na żywo (oba zrzuty markupu są w logu ownera).
+
+**Poprawki v3.46.0 — wszystkie z dzisiejszego logu na żywo (08:56–09:58):**
+1. **Sonda listy kręciła się wiecznie z „próba 0/6"** (10+ wpisów co 5 min): licznik podbijany
+   przy starcie próby był nadpisywany STARĄ wartością przy werdykcie ❌ — nigdy nie doliczała
+   do 6 i nie zamykała tematu. Teraz `n` rośnie naprawdę i po 6. próbie sonda milknie.
+2. **Lądowanie POWROTU zapisywane pod ŹRÓDŁEM lotu, nie pod pierwotnym celem.** 09:06:16 bot
+   ogłosił „wróciła własna flota na księżyc [1:217:8]" i poszedł tam sprawdzać hangar — a flota
+   z zawróconego ratunku wylądowała na [1:217:6] moon (punkt startu). Wiersz powrotny trzyma
+   w `dst` pierwotny cel; ciało lądowania bierzemy z naszego wpisu lotu (bot wie, skąd wysyłał).
+3. **Rekonesans po lądowaniu = `quiet`** (skarga ownera 31.08: „nie podoba mi się, że bot sam
+   przeskakuje z planety na planetę"): rutynowy odczyt hangaru po powrocie idzie WYŁĄCZNIE
+   cichą ścieżką (`Hangar.scanRemote`, fetch w tle) — nawigacja przy nim ZAKAZANA. Wejścia na
+   Fleet zostają tylko przy ALARMIE (limit 3 prób, jak dotąd).
+4. **Raport startowy nie udaje awarii.** Komplet kalibracji szedł wpisem `BŁĄD` do dziennika
+   obrony (fałszował bilans po przerwie) i pushem „⚠️ Obrona: BŁĄD" (09:02:36). Teraz push
+   wprost: „📋 Raport startowy gotowy", bez wpisu do dziennika.
+5. **[GOTOWOŚĆ] nie panikuje przy WŁASNYM ratunku.** 09:01:37 ERROR „nie widzę żadnej floty
+   (cała w powietrzu?)" — w środku testowej ewakuacji, którą bot sam wysłał. Pusty hangar przy
+   żywym locie obronnym z tej pary to dowód działania obrony, nie brak gotowości.
+6. **`test3-ui.js` miał ZAHARDKODOWANĄ ścieżkę z Maca** (`/Users/mch/...`) — na Windowsie zestaw
+   panelu wywalał się ENOENT-em, zanim cokolwiek sprawdził. Teraz `__dirname`.
+
+**Testy:** decide + E2E (138) + panel — komplet zielony (dwa pełne przebiegi). UWAGA — OTWARTE:
+scenariusz 28 (księżyce) i sporadycznie 31 MRUGAJĄ na obciążonej maszynie (na czystym 3.45.0
+tak samo, więc to nie regresja): heurystyka końca pętli `run()` („bot nie nawigował = koniec")
+potrafi uciąć przebieg przed werdyktem modułu. Częściowo ustabilizowane (`ticksPerLoad: 1`,
+drugie podejście w g2); pełna naprawa = deterministyczny warunek końca w harnessie. Diagnostyka:
+`DIAG2=1 node test3-e2e.js` pokazuje teraz też bramkę ekonomii i stan modułu księżyców
+(`Human` doszedł do eksportu `__OGX3`).
+
+**Dla ownera:** (1) Tampermonkey → Sprawdź aktualizacje (v3.46.0). (2) Czy 3 urgenty doszły na
+telefon? Kanał to `ogamex3-ndknvaqf0psm` — jeśli cisza, dodaj go w aplikacji ntfy. (3) Raport
+bojowy z 09:54 w wiadomościach gry — ile napastnik zastał.
+
+---
+
 ## AKTUALIZACJA 30.08, 23:15 — v3.45.0: samokontrola gotowości obrony + podsumowanie po przerwie
 
 Priorytet ownera z 22:40: **„najważniejsze, żeby obronił flotę gdy ktoś zaatakuje"**. Dwie rzeczy

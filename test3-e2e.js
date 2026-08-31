@@ -400,7 +400,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     await new Promise(r => setTimeout(r, 140));   // czas na dokonczenie krokow bota (jego wlasne pauzy sa 150x krotsze)
     try { inst.w.eval("if (typeof logEntries !== 'undefined') {}"); } catch {}
     if (process.env.DIAG2) {
-      try { const st2 = inst.api.Situation.load(); console.log("      decyzja:", JSON.stringify(inst.api.decide(st2, inst.api.CFG, Date.now())).slice(0, 300), "| CFG.autoRescue:", inst.api.CFG.autoRescue, "| misja:", JSON.stringify(inst.api.Fly.mission())); } catch (e) { console.log("      decyzja rzuciła:", e.message); }
+      try { const st2 = inst.api.Situation.load(); console.log("      decyzja:", JSON.stringify(inst.api.decide(st2, inst.api.CFG, Date.now())).slice(0, 300), "| CFG.autoRescue:", inst.api.CFG.autoRescue, "| misja:", JSON.stringify(inst.api.Fly.mission()), "| eco:", JSON.stringify(inst.api.Human && inst.api.Human.economyAllowed(st2)), "| moonSt:", JSON.stringify(inst.api.Store.get("moon", null))); } catch (e) { console.log("      decyzja rzuciła:", e.message); }
       const st = JSON.parse(game.store.get("genesis.ogamex.net:ogx3_situation") || "null");
       const lg = JSON.parse(game.store.get("genesis.ogamex.net:ogx3_log") || "[]");
       console.log(`   [load ${i}] strona=${game.page} pary=${st ? Object.keys(st.pairs || {}).length : "?"} zagr=${st ? (st.threats || []).length : "?"} hangary=${st ? Object.keys(st.hangars || {}).length : "?"} log=${lg.length} nawig=${game.navigations.length}`);
@@ -566,6 +566,21 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const st3 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("po powrocie floty wpis lotu ZDJĘTY (para znowu broniona)", (st3.flights || []).length === 0, JSON.stringify(st3.flights));
     check("bot nie wysłał floty drugi raz bez powodu", g.sent.length === 1, JSON.stringify(g.sent.map(x => x.to)));
+  }
+
+  console.log("\n── 9b. POWRÓT WŁASNEGO LOTU: lądowanie zapisane na ŹRÓDLE, nie na pierwotnym celu ──");
+  {
+    // Test na żywo 31.08 09:06: bot ogłosił „wróciła własna flota na księżyc [1:217:8]"
+    // (pierwotny CEL zawróconego ratunku) i poszedł sprawdzać hangar nie tego ciała,
+    // na którym flota faktycznie wylądowała ([1:217:6] moon — punkt startu). Wiersz
+    // powrotny trzyma w celu PIERWOTNY cel lotu, a flota wraca do punktu startu.
+    const g = new Game();
+    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:9", toBody: "moon", mission: "Deploy", ships: { LIGHT_FIGHTER: 10 }, inFlight: true, returning: true, eta: 120 });
+    await run(g, { cfg: { autoRescue: true, expo: { enabled: false }, recon: false }, loads: 2, ticksPerLoad: 2 });
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const keys = Object.keys(st.landings || {});
+    check("lądowanie powrotu zapisane pod ŹRÓDŁEM lotu", keys.some(k => k.startsWith("1:100:5|")), JSON.stringify(st.landings));
+    check("a nie pod pierwotnym celem", !keys.some(k => k.startsWith("1:100:9|")), JSON.stringify(st.landings));
   }
 
   console.log("\n── 10. ŚLEPY ALARM: pasek widzi obcych, których nie ma na liście ──");
@@ -966,7 +981,11 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:5", body: "moon" },
     });
     g.metal = 3_800_000_000;     // budżet 25% = 950 mln → mieści się 3000 km (900 mln), nie 4000 (1,2 mld)
-    const { logs } = await run(g, { cfg, loads: 20, ticksPerLoad: 2 });
+    // v3.46.0: ticksPerLoad=1 — moduł księżyców liczy KAŻDY tick na nieprzeładowanej
+    // stronie jako nawigację, więc >1 tick/load podbijał navs do sufitu 4 i próba
+    // umierała „bez efektu", zanim padł werdykt (mruganie tego scenariusza na słabszej
+    // maszynie; w realnej przeglądarce nawigacja zawsze przeładowuje stronę).
+    const { logs } = await run(g, { cfg, loads: 40, ticksPerLoad: 1 });
     check("bot postawił księżyc przy planecie bez księżyca", !!g.moonBuilt && g.moonBuilt.key === "1:100:9", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
     check("zmieścił się w suficie 25% metalu", !!g.moonBuilt && g.moonBuilt.cost <= 950_000_000, JSON.stringify(g.moonBuilt));
     check("wybrał NAJWIĘKSZĄ średnicę, która się mieści", !!g.moonBuilt && g.moonBuilt.km === 3000, JSON.stringify(g.moonBuilt));
@@ -980,7 +999,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:5", body: "moon" },
     });
     g2.metal = 1_000_000;        // budżet 250 tys. — nawet 2000 km (600 mln) nie wchodzi
-    const r2 = await run(g2, { cfg, loads: 35, ticksPerLoad: 3 });   // ciasny budżet loadów bywał źródłem mrugania
+    let r2 = await run(g2, { cfg, loads: 50, ticksPerLoad: 1 });   // ticksPerLoad=1 — jak wyżej (navs); ciasny budżet loadów bywał źródłem mrugania
+    // Heurystyka końca pętli run() („bot nie nawigował = koniec") potrafi uciąć przebieg
+    // ZANIM bot dojdzie do werdyktu na stronie formularza (mruganie zależne od obciążenia
+    // maszyny). Drugie podejście = ta sama gra i ten sam stan, po prostu więcej czasu —
+    // dokładnie to, co bot dostaje w prawdziwej przeglądarce.
+    if (!r2.logs.some(m => /za drogo/.test(m))) { const r2b = await run(g2, { cfg, loads: 20, ticksPerLoad: 1 }); r2 = { logs: [...r2.logs, ...r2b.logs] }; }
     check("przy pustej kasie NIE stawia księżyca", !g2.moonBuilt, JSON.stringify(g2.moonBuilt));
     check("i mówi wprost, że za drogo", r2.logs.some(m => /za drogo/.test(m)), r2.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
 

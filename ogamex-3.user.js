@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.45.0
+// @version      3.46.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.45.0";
+  const VERSION = "3.46.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -321,12 +321,16 @@
     // dla bota niewidoczny inaczej niż jako liczba na pasku. Strona floty przyjmuje
     // `?planet=UUID` (używa tego `Hangar.scanRemote`) — sprawdzamy, czy lista ruchów
     // też. Jeśli tak, cała ślepota znika BEZ rozwijania czegokolwiek w DOM.
-    // Sonda tylko LOGUJE wynik. Po 3 nierozstrzygniętych próbach wyłącza się sama.
+    // Sonda tylko LOGUJE wynik. Po 6 próbach wyłącza się sama.
     async probePlanetList(own) {
       const st = Store.get("mv_probe", { n: 0, done: false, at: 0 }) || {};
       if (st.done || (st.n || 0) >= 6) return;
       if (Date.now() - (st.at || 0) < 5 * 60e3) return;
-      Store.set("mv_probe", { ...st, n: (st.n || 0) + 1, at: Date.now() });
+      // v3.46.0 (log 31.08: trzykrotnie „próba 0/6"): licznik był tu podbijany w zapisie,
+      // ale werdykt ❌ niżej nadpisywał go STARĄ wartością z `st` — sonda nigdy nie
+      // doliczała do 6 i kręciła się co 5 minut bez końca.
+      const n = (st.n || 0) + 1;
+      Store.set("mv_probe", { ...st, n, at: Date.now() });
       // v3.42.0: sonda ma ZAWSZE zostawić ślad — cisza po niej była nie do odróżnienia
       // od „nie odpaliła się". I ma porównywać A/B: to samo zapytanie BEZ parametru i Z
       // parametrem innej kolonii. Identyczny wynik = parametr ignorowany, kropka.
@@ -365,9 +369,9 @@
           Store.set("mv_probe", { n: 0, done: true, works: true, at: Date.now() });
           log(`[SONDA LISTY] ✅ PARAMETR DZIAŁA. Bez parametru ${bez.rows.length} wierszy (${bez.coords.join(", ") || "brak"}), dla [${other.key}] ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — i są tam koordy pytanej kolonii, których wcześniej nie było. POKAŻ TĘ LINIĘ CLAUDE'OWI.`, "error");
         } else {
-          const done = (st.n || 0) >= 6;
-          Store.set("mv_probe", { n: st.n || 0, done, works: false, at: Date.now() });
-          log(`[SONDA LISTY] ❌ parametr IGNOROWANY (próba ${st.n || 0}/6): pytałem o [${other.key}], dostałem ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — ${inne ? "inne id, ale BEZ koordów tej kolonii" : "dokładnie to samo co bez parametru"}. Ruchy innych kolonii są dla bota niewidoczne.${done ? " To był ostatni test — temat zamykam." : ""}`, "warn");
+          const done = n >= 6;
+          Store.set("mv_probe", { n, done, works: false, at: Date.now() });
+          log(`[SONDA LISTY] ❌ parametr IGNOROWANY (próba ${n}/6): pytałem o [${other.key}], dostałem ${zP.rows.length} wierszy (${zP.coords.join(", ") || "brak"}) — ${inne ? "inne id, ale BEZ koordów tej kolonii" : "dokładnie to samo co bez parametru"}. Ruchy innych kolonii są dla bota niewidoczne.${done ? " To był ostatni test — temat zamykam." : ""}`, "warn");
         }
       } catch (e) { log(`[SONDA LISTY] błąd: ${e.message}`, "warn"); }
     },
@@ -628,7 +632,7 @@
       s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), now, CFG);
       Store.set("bar_excess", s.barExcess);
       // własne loty (z Events — globalne; z listy — aktywna para)
-      s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
+      s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, srcBody: r.srcBody, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
       // v3.35.0 (audyt floty 29.08, ścieżka A5 z Ateny: „Destroy + snajperka powrotów"):
       // `s.own` było parsowane i NIGDY nieużywane, a wiersz powrotu znika z listy w tej
       // samej sekundzie, w której flota ląduje — więc wiedza o lądowaniu ginęła razem
@@ -638,8 +642,17 @@
       {
         const land = { ...(this.load().landings || {}) };
         for (const o of s.own) {
-          if (!o.isReturn || !o.dst) continue;
-          const lk = `${o.dst}|${o.dstBody || "planet"}`;
+          // v3.46.0 (test 31.08 09:06: „wróciła własna flota na księżyc [1:217:8]",
+          // a flota wylądowała na [1:217:6] moon): wiersz POWROTNY trzyma w `dst`
+          // PIERWOTNY CEL lotu, a wracająca flota ląduje w PUNKCIE STARTU — lądowanie
+          // zapisujemy pod `src`. Ciało bierzemy z naszego wpisu lotu (bot wie, skąd
+          // wysyłał); ciało z wiersza to tylko rezerwa, bo komórka źródła nie zawsze
+          // znaczy księżyc tak czytelnie jak komórka celu.
+          if (!o.isReturn || !(o.src || o.dst)) continue;
+          const lkKey = o.src || o.dst;
+          const fl = (s.flights || []).find(f => f.fromKey === lkKey && f.phase !== "done");
+          const body = (fl && fl.fromBody) || (o.src ? o.srcBody : o.dstBody) || "planet";
+          const lk = `${lkKey}|${body}`;
           if (!land[lk] || o.arriveAt > land[lk]) land[lk] = o.arriveAt;
         }
         for (const [lk, at] of Object.entries(land)) if (now - at > 60 * 60e3) delete land[lk];
@@ -803,7 +816,11 @@
           if (lkey !== k || at > now || now - at > 30 * 60e3) continue;
           const lh = (s.hangars || {})[lk];
           if (lh && (lh.at || 0) >= at) continue;
-          actions.push({ kind: "recon", key: k, body: lbody, why: `wróciła własna flota na ${lbody === "moon" ? "księżyc" : "planetę"} [${k}] — sprawdzam hangar` });
+          // v3.46.0 (owner 31.08: „nie podoba mi się, że bot sam przeskakuje z planety
+          // na planetę" — 09:06:16 wejście na Fleet po rutynowym powrocie): to nie jest
+          // alarm, więc `quiet: true` — egzekutor czyta hangar fetchem w tle i ma ZAKAZ
+          // nawigacji. Jak cichy odczyt nie wyjdzie, hangar poczeka na naturalną wizytę.
+          actions.push({ kind: "recon", key: k, body: lbody, quiet: true, why: `wróciła własna flota na ${lbody === "moon" ? "księżyc" : "planetę"} [${k}] — sprawdzam hangar` });
           break;
         }
         const hp = (s.hangars || {})[`${k}|planet`];
@@ -2201,7 +2218,10 @@
       if (["planetBar", "bar", "events", "fleetPage"].every(k => c[k])) {
         Store.set("calib_done", true);
         log("[KALIBRACJA] KOMPLET — kliknij przycisk kopiowania raportu startowego i wyślij go do Claude'a. Do tego czasu zostaw tryb Obserwator.", "success");
-        Journal.add("BŁĄD", "Raport startowy Genesis gotowy — skopiuj z panelu i wyślij (potwierdzenie parserów).");
+        // v3.46.0 (push 31.08 09:02:36): gotowy raport to nie awaria — wpis „BŁĄD"
+        // fałszował dziennik obrony (i bilans po przerwie), a na telefonie wyglądał
+        // jak „⚠️ Obrona: BŁĄD". Push idzie wprost, bez wpisu do dziennika.
+        Notifier.push("📋 Raport startowy gotowy (Genesis)", "Skopiuj raport z panelu i wyślij Claude'owi (potwierdzenie parserów).", "default", "clipboard");
       }
     },
     collect() {
@@ -2416,7 +2436,12 @@
       const hm = (s.hangars || {})[`${guard}|moon`], hp = (s.hangars || {})[`${guard}|planet`];
       const swiezy = [hm, hp].some(h => h && now - (h.at || 0) < 30 * 60e3);
       if (!swiezy) braki.push(`hangar [${guard}] nieczytany od ponad 30 min — nie wiem, gdzie stoi flota`);
-      else if (!Situation.fleetAt(s, guard, now)) braki.push(`na [${guard}] nie widzę żadnej floty (cała w powietrzu?)`);
+      else if (!Situation.fleetAt(s, guard, now)) {
+        // v3.46.0 (test 31.08 09:01:37): pusty hangar w trakcie WŁASNEGO ratunku/zawrotu
+        // to nie brak gotowości — bot sam wysłał flotę w powietrze i wie, gdzie ona jest.
+        const wLocie = (s.flights || []).some(f => (f.fromKey === guard || f.toKey === guard) && f.phase !== "done" && !flightStale(f, now));
+        if (!wLocie) braki.push(`na [${guard}] nie widzę żadnej floty (cała w powietrzu?)`);
+      }
     }
     if (Object.keys(s.pairs || {}).length < 2) braki.push("jedna kolonia — nie ma dokąd uciec");
     return braki;
@@ -2482,6 +2507,17 @@
         if (a.kind === "recon") {
           // rekonesans nawiguje, wiec nigdy nie wolno mu wyprzedzic ratunku
           if (hasRescue && CFG.autoRescue) { continue; }
+          // v3.46.0 (owner 31.08: „bot sam przeskakuje z planety na planetę"): rekonesans
+          // po LĄDOWANIU własnego lotu to rutyna, nie alarm — wolno mu WYŁĄCZNIE cichą
+          // ścieżkę (fetch w tle, zero nawigacji i zero przełączania planety operatora).
+          if (a.quiet) {
+            const bq = a.body || "planet";
+            if (!Once.said(`qrecon|${a.key}|${bq}`, 5 * 60e3)) {
+              const got = await Hangar.scanRemote(a.key, bq);
+              log(`[OBRONA] ${a.why} — ${got ? `odczytany w tle (${got.total.toLocaleString("pl-PL")} szt.), bez przełączania planety` : "cichy odczyt nie wyszedł, poczekam na naturalny odczyt hangaru"}.`, "info");
+            }
+            continue;
+          }
           // v3.9.0: WYJĄTEK od zasady "przy alarmie nie nawigujemy" — skoro nie wiemy,
           // gdzie stoi flota, to bez tego jednego wejścia na /fleet i tak nic nie zrobimy.
           const body = a.body || "planet";
@@ -2990,7 +3026,7 @@
   // Eksport do testów (node): globalThis.OGX3 gdy brak DOM.
   if (typeof document === "undefined" || typeof window === "undefined") { globalThis.OGX3 = { decide, Situation, Bar, Rows, DEFAULTS }; return; }
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon }; } catch {}
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon, Human }; } catch {}
   Store.set("last_load", Date.now());
   // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
   // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.

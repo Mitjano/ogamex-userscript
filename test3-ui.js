@@ -8,7 +8,9 @@
 //
 //   node test3-ui.js
 const fs = require("fs"), path = require("path"), { JSDOM } = require("jsdom");
-const SRC = fs.readFileSync("/Users/mch/Documents/ogamex-userscript/ogamex-3.user.js", "utf8");
+// v3.46.0: ścieżka była ZAHARDKODOWANA na katalog z Maca — na każdej innej
+// maszynie zestaw wywalał się ENOENT-em, zanim cokolwiek sprawdził.
+const SRC = fs.readFileSync(path.join(__dirname, "ogamex-3.user.js"), "utf8");
 const store = new Map();
 const html = `<!doctype html><html><body>
  <div id="planetList">
