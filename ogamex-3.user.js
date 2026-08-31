@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.50.1
+// @version      3.51.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.50.1";
+  const VERSION = "3.51.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -165,11 +165,14 @@
     // Przerwy dotyczą WYŁĄCZNIE ekonomii. W 2.x przerwa kawowa usypiała cały
     // scheduler razem z keepalive (audyt A8: droga do wylogowania i 15 min
     // ślepoty). Tu obrona, rekonesans i keepalive chodzą zawsze.
-    // ecoIdleSec (v3.48.0, owner 31.08 „przed chwilą znowu przeskoczył"): minuta ciszy
-    // to nie jest odejście od komputera — operator czyta stronę 1–2 min bez klikania
-    // i fala ekspedycji wyrywała mu planetę (10:36:01 ostatni klik → 10:37:22 fala).
-    // Ekonomia rusza dopiero po PIĘCIU minutach bez zaufanego kliknięcia.
-    human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: false, ecoIdleSec: 300 },
+    // ecoIdleSec — lekcja z 31.08 (korekta ownera 15:20): jego „ciągle przeskakuje"
+    // ZAWSZE dotyczyło skoków na INNE kolonie (robiły to w tle fetche z `?planet=` —
+    // sondy i odczyty, naprawione u źródła w 3.47/3.50), a NIE przełączenia na własny
+    // księżyc startowy pod formularz fali. Bramka „grasz" (3.43–3.48) leczyła objaw
+    // z niewłaściwej strony: hamowała ekspedycje, które miały „wysyłać się normalnie".
+    // 0 = fale lecą od razu, także w trakcie klikania. Pole w panelu pozwala włączyć
+    // czekanie, gdyby przejmowanie karty na ~40 s przy fali jednak przeszkadzało.
+    human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: false, ecoIdleSec: 0 },
     // ── NOCNY FLEET SAVE ──
     // Klasyczna obrona: gdy śpisz, flota nie stoi w hangarze. Używa TEJ SAMEJ
     // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
@@ -1031,13 +1034,13 @@
         // ostatnim kliknięciu. Cena jest jawna: przy długiej sesji sloty ekspedycji stoją —
         // to świadomy wybór ownera („przenosić flotę ma tylko podczas ataku", 18:04).
         // Obrona i ratunek NIE podlegają tej bramce i działają natychmiast.
-        // v3.48.0: próg podniesiony z 1 min do CFG.human.ecoIdleSec (domyślnie 5 min) —
-        // patrz komentarz przy DEFAULTS.human. Minuta bez klikania to wciąż granie.
+        // v3.51.0: bramka STEROWANA przez CFG.human.ecoIdleSec; 0 (domyślne, decyzja
+        // ownera 31.08 15:07) = brak czekania — patrz komentarz przy DEFAULTS.human.
         const now2 = Date.now();
         const klik = Store.get("input_at", 0) || 0;
         const cisza = now2 - klik;
-        const idleMin = Math.max(1, Math.round((CFG.human.ecoIdleSec ?? 300) / 60));
-        if (cisza < idleMin * 60e3) {
+        const idleMin = Math.max(0, Math.round((CFG.human.ecoIdleSec ?? 0) / 60));
+        if (idleMin > 0 && cisza < idleMin * 60e3) {
           const since = Store.get("eco_wait_since", 0) || 0;
           if (!since) Store.set("eco_wait_since", now2);
           const czeka = Math.round((now2 - (since || now2)) / 60000);
@@ -2806,6 +2809,7 @@
             <div class="note" id="ogx3-aster-st"></div>
             <div class="line"><button id="ogx3-quiet" class="ogx3-btn"></button> od <input id="ogx3-quiet-a" style="width:24px" />:00 do <input id="ogx3-quiet-b" style="width:24px" />:00</div>
             <div class="line"><button id="ogx3-breaks" class="ogx3-btn"></button></div>
+            <div class="line">gdy klikasz: fala czeka <input id="ogx3-idle" style="width:26px" /> min ciszy (0 = leci od razu)</div>
             <div class="note" id="ogx3-human-st"></div>
           </div></div>
           <div class="sec" data-sec="jr"><div class="sec-t"><span><span class="arr">▸</span> Dziennik obrony</span><span class="tail" id="ogx3-t-jr"></span></div><div class="sec-b"><div id="ogx3-journal"></div></div></div>
@@ -2891,6 +2895,10 @@
       // Wyłączenie przerw kasuje także tę TRWAJĄCĄ — inaczej „OFF" zaczynałoby
       // działać dopiero po kwadransie i wyglądało jak niedziałający przycisk.
       $("ogx3-breaks").onclick = () => { CFG.human.breaks = !CFG.human.breaks; Store.set("break_until", 0); Store.set("break_next", 0); saveCfg(); log(`Przerwy „kawowe" ${CFG.human.breaks ? `ON (co ${CFG.human.breakEveryMinMin}–${CFG.human.breakEveryMaxMin} min na ${CFG.human.breakLenMinMin}–${CFG.human.breakLenMaxMin} min)` : "OFF — ekonomia bez przerw"}`, "info"); this.renderStatus(); };
+      // v3.51.0 (owner 15:07: „nie musi czekać aż przestanę klikać"): próg bramki „grasz"
+      // jest jawny w panelu — 0 = fale lecą od razu, N = czekaj N minut ciszy.
+      $("ogx3-idle").value = String(Math.round((CFG.human.ecoIdleSec ?? 0) / 60));
+      $("ogx3-idle").onchange = (e) => { const m2 = Math.max(0, Math.min(60, parseInt(e.target.value) || 0)); CFG.human.ecoIdleSec = m2 * 60; saveCfg(); log(m2 > 0 ? `Ekonomia czeka ${m2} min ciszy po Twoim kliknięciu, zanim ruszy falą.` : "Ekonomia NIE czeka, aż przestaniesz klikać — fala może przejąć kartę w trakcie gry.", "info"); this.renderStatus(); };
       $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
       $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
@@ -3108,7 +3116,11 @@
   // 20:05:53 werdykt `done: true, works: true` na podstawie fałszywego alarmu (błąd
   // poprawiony w 3.42.1) — i przez ten zatrzask NIGDY BY SIĘ JUŻ NIE URUCHOMIŁA,
   // zostawiając w stanie bzdurę. Nowa wersja = czysta karta dla obu latch-y.
-  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); Store.del("expo_rest"); } }   // mv/re_probe: sprzątanie po usuniętych sondach
+  { const pv = Store.get("ver", ""); if (pv !== VERSION) { Store.set("ver", VERSION); Store.del("events_open"); Store.del("mv_probe"); Store.del("re_probe"); Store.del("expo_rest");   // mv/re_probe: sprzątanie po usuniętych sondach
+      // v3.51.0: stare domyślne 5 min bramki „grasz" migrujemy na 0 (owner 31.08 15:07:
+      // „nie musi czekać aż przestanę klikać"); wartość ustawiona ręcznie inaczej zostaje.
+      if (CFG.human && CFG.human.ecoIdleSec === 300) { CFG.human.ecoIdleSec = 0; saveCfg(); }
+  } }
   // v3.9.0 (audyt): wyjątek w kodzie startowym oznaczał, że setInterval(defenceTick)
   // nigdy się nie zarejestruje — panel wygląda żywo, bot nie żyje. Każdy krok osobno.
   try { UI.build(); } catch (e) { console.error("[OGX3] panel:", e); }

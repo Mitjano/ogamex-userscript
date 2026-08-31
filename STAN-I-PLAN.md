@@ -6,6 +6,25 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 31.08, ~15:30 — v3.51.0: bramka „grasz" domyślnie WYŁĄCZONA — korekta intencji ownera
+
+**Owner (15:07): „dlaczego nie wysyła eksp? nie musi czekać aż przestanę klikać" + korekta
+(15:20): „miało przestać przeskakiwać na inne kolonie, a ekspy wysyłać normalnie".**
+
+To zamyka nieporozumienie ciągnące się od 3.43.0: skargi „ciągle przeskakuje" ZAWSZE dotyczyły
+skoków na INNE kolonie (fetche z `?planet=` w tle — naprawione u źródła w 3.47/3.50), a NIE
+przełączenia na własny księżyc startowy pod formularz fali. Bramka „grasz" (3.43→3.44→3.48)
+leczyła objaw z niewłaściwej strony — hamowała ekspedycje, które miały iść normalnie.
+
+**Zmiany:** `CFG.human.ecoIdleSec` domyślnie **0** (fale lecą od razu, także w trakcie
+klikania — bot przejmie kartę na ~40 s na przełączenie+formularz+wysyłkę); migracja starego
+domyślnego 300→0 przy bumpie (wartość ustawiona ręcznie inaczej zostaje); **jawne pole
+w panelu** (Ustawienia: Ekonomia): „gdy klikasz: fala czeka N min ciszy (0 = leci od razu)".
+Przy okazji 3.50.1: przycisk przerw podpisany pełniej („Przerwy kawowe") — owner nie kojarzył
+skrótu. `eco_return` (powrót karty po serii) działa bez zmian, gdy operator nie klika.
+
+---
+
 ## AKTUALIZACJA 31.08, ~14:20 — v3.50.0: SONDA LISTY sama była winowajcą przeskoków — obie sondy USUNIĘTE, werdykty ostateczne
 
 **Zgłoszenie ownera (13:57): „ciągle przeskakuje planeta na [1:217:8]"** + pełny log. Dowód

@@ -937,7 +937,9 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
 // Owner 31.08 („przed chwilą znowu przeskoczył"): minuta ciszy to nie odejście od
 // komputera — operator czyta stronę 1–2 min bez klikania, a fala wyrywała mu planetę.
 {
-  check("ekonomia rusza po ecoIdleSec (domyślnie 5 min), nie po minucie", /ecoIdleSec: 300/.test(src) && /CFG\.human\.ecoIdleSec \?\? 300/.test(src) && !/ruszy minutę po ostatnim kliknięciu/.test(src));
+  // v3.51.0 (owner 15:07: „nie musi czekać aż przestanę klikać"): bramka „grasz" jest
+  // konfigurowalna, DOMYŚLNIE 0 = fale lecą od razu; migracja starego 300→0 przy bumpie.
+  check("bramka „grasz\" konfigurowalna, domyślnie WYŁĄCZONA (0), stare 300 migrowane", /ecoIdleSec: 0 \}/.test(src) && /CFG\.human\.ecoIdleSec \?\? 0/.test(src) && /idleMin > 0 && cisza </.test(src) && /ecoIdleSec === 300\) \{ CFG\.human\.ecoIdleSec = 0; saveCfg\(\); \}/.test(src) && /ogx3-idle/.test(src) && !/ruszy minutę po ostatnim kliknięciu/.test(src));
   check("przełączenie pod misję ekonomii zapamiętuje stronę operatora", /Store\.set\("eco_return", \{ url: location\.pathname \+ location\.search/.test(src) && /\["expedition", "asteroid", "debris"\]\.includes\(m\.kind\)/.test(src));
   check("po domkniętej serii bot odprowadza operatora (chyba że sam kliknął)", /maybeReturnOperator\(reason\)/.test(src) && /czekam na powroty\|brak statków/.test(src) && /!== \(r\.input \|\| 0\)\) return false;/.test(src) && /powrót na stronę operatora po serii ekspedycji/.test(src) && /domyka serię\/\.test\(m\.why \|\| ""\) && Expo\.maybeReturnOperator/.test(src));
 }
