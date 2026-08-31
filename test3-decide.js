@@ -922,7 +922,19 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   // Owner 31.08: „nie podoba mi się, że bot sam przeskakuje z planety na planetę" —
   // rekonesans po lądowaniu własnego lotu (09:06:16 wejście na Fleet) to rutyna,
   // nie alarm: idzie WYŁĄCZNIE cichym fetchem, bez nawigacji i przełączania planety.
-  check("rekonesans po lądowaniu jest QUIET (scanRemote w tle, zakaz nawigacji)", /quiet: true, why: `wróciła własna flota/.test(src) && /if \(a\.quiet\) \{(?:(?!Nav\.|location\.)[\s\S]){0,700}?continue;\s*\}/.test(src));
+  check("rekonesans po lądowaniu jest QUIET (scanRemote w tle, zakaz nawigacji)", /quiet: true, why: `wróciła własna flota/.test(src) && /if \(a\.quiet\) \{(?:(?!Nav\.|location\.)[\s\S]){0,900}?continue;\s*\}/.test(src));
+}
+
+// ── v3.47.0: fetch `?planet=UUID` przestawia sesję po stronie serwera ──
+// Error „Planet change has been detected" 31.08 10:12: „cichy" odczyt hangaru
+// przełączał operatorowi planetę bez żadnej nawigacji. Zasady: po odczycie innego
+// ciała PRZYWRÓĆ wybór operatora drugim fetchem; nie umiesz przywrócić → nie czytaj;
+// gdy operator gra — odczyty w tle w ogóle czekają.
+{
+  check("scanRemote przywraca planetę operatora po odczycie (i przy błędzie)", /let restore = null/.test(src) && (src.match(/\/fleet\?planet=\$\{restore\}/g) || []).length >= 2);
+  check("scanRemote NIE czyta, gdy nie umie przywrócić wyboru operatora", /if \(!ma\) return null;/.test(src));
+  check("recon_bg czeka, gdy operator gra", /if \(!Human\.playing\(\)\) \{\s*\n\s*const bg = Store\.get\("recon_bg"/.test(src));
+  check("cichy rekonesans po lądowaniu czeka, gdy operator gra", /if \(Human\.playing\(\)\) continue;/.test(src));
 }
 
 console.log("");

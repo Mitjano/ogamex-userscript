@@ -6,6 +6,36 @@ Serwer: athena.ogamex.net, gracz MCH, baza **3:269:8** (planeta + księżyc).
 
 ---
 
+## AKTUALIZACJA 31.08, ~10:40 — v3.47.0: „cichy" odczyt NIE BYŁ cichy — fetch `?planet=` przestawia sesję po stronie SERWERA
+
+**Zgłoszenie ownera (czwarty raz): „ciągle przełącza bot po planetach"** + zrzut ekranu z modalem
+gry **„Error: Planet change has been detected"** o 10:12:56, gdy stał na [1:234:7].
+
+**Diagnoza — twardy dowód w zrzucie.** O 10:12 wylądował zawrót ratunku i quiet-rekonesans
+z 3.46.0 pobrał fetchem `/fleet?planet=<uuid 1:217:6 moon>` (panel: „1:217:6 moon: 11 622 084
+(10:12)"). Fork trzyma wybór aktywnej planety W SESJI, więc **każdy fetch z `?planet=` przełącza
+planetę operatorowi po stronie serwera** — bez żadnej nawigacji w karcie. To dotyczy WSZYSTKICH
+„cichych" odczytów od 3.24.0 (`Hangar.scanRemote`): recon_bg czytający kolonie co ~minutę robił
+to cały czas — stąd wrażenie ownera „ciągle przełącza", mimo że log nawigacji był czysty.
+(Sonda `fleetmovementlist?planet=` jest poza podejrzeniem: werdykt A/B pokazał identyczne
+odpowiedzi z parametrem i bez, więc ten endpoint naprawdę go ignoruje.)
+
+**Naprawa (u źródła, w samym `scanRemote` — obejmuje wszystkich wywołujących):**
+1. Przed odczytem innego ciała bot bierze UUID ciała, na którym STOI OPERATOR, a po odczycie
+   **przywraca je drugim fetchem** (także w ścieżce błędu — żądanie mogło dojść przed timeoutem).
+2. **Nie umie przywrócić (brak kotwicy aktywnego ciała) → w ogóle nie czyta.** Lepszy ślepy
+   hangar niż wyrwana operatorowi planeta.
+3. `Human.playing()` (świeże zaufane kliknięcie <90 s): **gdy operator gra, odczyty w tle czekają**
+   (recon_bg i quiet-rekonesans po lądowaniu) — nawet z przywracaniem zostaje ułamek sekundy
+   rozjazdu, więc przy żywym operatorze tło po prostu milczy. ALARM niczego nie pyta, jak dotąd.
+
+**Testy:** decide + panel + E2E 139/139 zielone. Harness rejestruje teraz fetche
+(`game.fetches`), a scenariusz 36 sprawdza wprost, że po cichym odczycie idzie fetch
+przywracający planetę operatora. Flaki sc. 28/34 bez zmian (obciążenie maszyny, także na
+czystym HEAD — patrz wpis 3.46.0).
+
+---
+
 ## AKTUALIZACJA 31.08, ~10:15 — v3.46.0: PIERWSZY PRAWDZIWY ATAK ODPARTY + wnioski z porannego logu
 
 **PRAWDZIWY ATAK 09:44–09:54 — ratunek zadziałał bojowo, pierwszy raz na Genesis.** Dwa wrogie

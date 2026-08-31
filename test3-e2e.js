@@ -198,7 +198,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   Object.defineProperty(w, "sessionStorage", { value: mkStorage(game.session), configurable: true });
   Object.defineProperty(w, "localStorage", { value: mkStorage(game.local), configurable: true });
   // fetch: lista ruchów widzi TYLKO aktywną parę (tak jak fork)
-  w.fetch = async (u) => ({ ok: true, redirected: !!game.loggedOut, url: game.loggedOut ? "/auth/login" : u, status: 200,
+  w.fetch = async (u) => ((game.fetches = game.fetches || []).push(String(u)), { ok: true, redirected: !!game.loggedOut, url: game.loggedOut ? "/auth/login" : u, status: 200,
     text: async () => game.loggedOut ? game.loginHtml()
       : u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}${game.ownRowsHtml(true)}</tbody></table>`
       : /^\/fleet\?planet=/.test(String(u)) ? (() => {
@@ -1214,6 +1214,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bot dociagnal hangar w tle, bez przelaczania planety", logs.some(m => /dociągnąłem hangar .* w tle|odczytany w tle/.test(m)), logs.filter(m => /EXPO|REKONESANS/.test(m)).slice(0, 5).join(" | "));
     check("i nie wszedl na zakladke Flota kolonii operatora", !g.navigations.some(n => /^\/fleet\?x=1&y=100&z=9/.test(String(n))), JSON.stringify(g.navigations.slice(0, 6)));
     check("ekspedycja i tak poleciala", g.sent.some(x => /16$/.test(String(x.to || ""))), JSON.stringify(g.sent.map(x => x.to)));
+    // v3.47.0 (Error „Planet change has been detected" 31.08 10:12): fetch `?planet=UUID`
+    // przestawia aktywna planete PO STRONIE SERWERA — po odczycie innego ciala bot musi
+    // drugim fetchem przywrocic cialo, na ktorym stoi operator.
+    const fp = (g.fetches || []).filter(u => /\/fleet\?planet=/.test(u));
+    check("po cichym odczycie bot PRZYWRACA planete operatora (fork trzyma wybor w sesji)",
+      fp.some((u, i) => u.includes("uuid-1:100:5") && fp.slice(i + 1).some(v => v.includes("uuid-1:100:9"))), JSON.stringify(fp.slice(0, 8)));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

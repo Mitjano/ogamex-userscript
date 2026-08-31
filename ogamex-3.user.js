@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.46.0
+// @version      3.47.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -31,7 +31,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.46.0";
+  const VERSION = "3.47.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -499,8 +499,27 @@
       const href = el && (el.getAttribute("href") || "");
       const m = href && href.match(/[?&]planet=([^&#"']+)/i);   // fork używa UUID, ale nie zakładamy formatu
       if (!m) return null;
+      // v3.47.0 (owner 31.08, trzeci raz: „ciągle przełącza bot po planetach"; Error
+      // „Planet change has been detected" o 10:12): fetch `?planet=UUID` PRZEŁĄCZA
+      // aktywną planetę PO STRONIE SERWERA — fork trzyma wybór w sesji. „Cichy" odczyt
+      // był więc cichy tylko w tej karcie; operatorowi rozjeżdżał grę bez żadnej
+      // nawigacji. Zasada: przed odczytem zapamiętujemy UUID ciała, na którym STOI
+      // OPERATOR, a po odczycie przywracamy je drugim fetchem. Nie umiemy przywrócić
+      // (brak kotwicy aktywnego ciała) → NIE czytamy wcale: lepszy ślepy hangar niż
+      // wyrwana planeta.
+      let restore = null;
+      {
+        const act = PlanetBar.active();
+        if (act && !(act.key === k && act.body === body)) {
+          const ea = PlanetBar.anchor(act.key, act.body);
+          const ma = ea && ((ea.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i));
+          if (!ma) return null;
+          if (ma[1] !== m[1]) restore = ma[1];
+        }
+      }
       try {
         const r = await fetchT(`/fleet?planet=${m[1]}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+        if (restore) { try { await fetchT(`/fleet?planet=${restore}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" }); restore = null; } catch {} }
         if (!r.ok) return null;
         const html = await r.text();
         if (looksLoggedOut(r, html)) { Session.lost(); return null; }
@@ -518,7 +537,12 @@
         if (fm || em) { const s0 = Situation.load(); s0.slots = { fleet: fm ? { used: +fm[1], total: +fm[2] } : (s0.slots?.fleet || null), expo: em ? { used: +em[1], total: +em[2] } : (s0.slots?.expo || null), at: Date.now() }; Situation.save(s0); }
         Situation.noteHangar({ key: k, body, total, ships, at: Date.now(), slots: fm ? { used: +fm[1], total: +fm[2] } : null });
         return { key: k, body, total };
-      } catch (e) { return null; }
+      } catch (e) {
+        // Główny fetch mógł dojść do serwera, zanim rzucił (timeout w drodze powrotnej)
+        // — wybór operatora i tak przywracamy.
+        if (restore) { try { await fetchT(`/fleet?planet=${restore}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" }); } catch {} }
+        return null;
+      }
     },
     scan() {
       if (page() !== "fleet") return null;
@@ -1011,6 +1035,11 @@
       log(`[PRZERWA] ekonomia pauzuje na ~${Math.round(len / 60000)} min (rytm człowieka). Obrona działa normalnie.`, "info");
       return true;
     },
+    // v3.47.0: „operator właśnie gra" (świeże zaufane kliknięcie). Używane przez
+    // odczyty W TLE (recon_bg, rekonesans po lądowaniu) — nawet z przywracaniem
+    // wyboru planety zostaje ułamek sekundy rozjazdu po stronie serwera, więc gdy
+    // grasz, tło po prostu czeka. ALARM tego nie pyta.
+    playing(ms = 90e3) { return Date.now() - (Store.get("input_at", 0) || 0) < ms; },
     // Jedyne pytanie, jakie zadaje ekonomia. Obrona NIGDY tego nie pyta.
     economyAllowed(s) {
       if (this.onBreak()) return `przerwa (~${this.breakLeftMin()} min)`;
@@ -2300,7 +2329,10 @@
       // fetch strony floty w tle, zero nawigacji, zero przełączania Twojej planety.
       // Jedno ciało na przebieg, nie częściej niż raz na minutę, każde ciało raz na 45 min.
       // To NIE jest akcja `recon` z decide() — tamta nawiguje i to ona zrobiła sztorm 09:59.
-      {
+      // v3.47.0: gdy operator gra, tło czeka — fetch `?planet=` przestawia sesję
+      // po stronie serwera (patrz scanRemote) i nawet z przywróceniem zostaje okno
+      // rozjazdu. Kolonie doczytamy, gdy odejdzie od klawiatury.
+      if (!Human.playing()) {
         const bg = Store.get("recon_bg", { at: 0, idx: 0 }) || { at: 0, idx: 0 };
         if (now - (bg.at || 0) > 60e3) {
           const covered = new Set(this.bodiesOf(s).map(([k, b]) => `${k}|${b}`));
@@ -2511,6 +2543,9 @@
           // po LĄDOWANIU własnego lotu to rutyna, nie alarm — wolno mu WYŁĄCZNIE cichą
           // ścieżkę (fetch w tle, zero nawigacji i zero przełączania planety operatora).
           if (a.quiet) {
+            // v3.47.0: gdy operator gra, nawet cichy odczyt czeka (fetch `?planet=`
+            // przestawia sesję po stronie serwera — Error „Planet change" 31.08 10:12).
+            if (Human.playing()) continue;
             const bq = a.body || "planet";
             if (!Once.said(`qrecon|${a.key}|${bq}`, 5 * 60e3)) {
               const got = await Hangar.scanRemote(a.key, bq);
