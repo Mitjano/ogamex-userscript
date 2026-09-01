@@ -68,9 +68,15 @@ def push(title, body, priority="urgent"):
         log(f"[DRYRUN] push: {title} — {body}")
         return
     try:
+        # Nagłówki HTTP są latin-1: emoji w Title wywalało cały push (incydent 23:06
+        # 31.08 — restart zadziałał, powiadomienie NIE wyszło). Nie-ASCII w tytule
+        # kodujemy po stronie ntfy (nagłówek z prefiksem =?UTF-8?B?...?=), a emoji
+        # i tak dokleja Tags.
+        import base64
+        safe = title if title.isascii() else "=?UTF-8?B?" + base64.b64encode(title.encode("utf-8")).decode("ascii") + "?="
         req = urllib.request.Request(
             f"https://ntfy.sh/{NTFY_TOPIC}", data=body.encode("utf-8"),
-            headers={"Title": title, "Priority": priority, "Tags": "rotating_light"})
+            headers={"Title": safe, "Priority": priority, "Tags": "rotating_light"})
         urllib.request.urlopen(req, timeout=10)
         log(f"push wysłany: {title}")
     except Exception as e:  # push nie może zabić strażnika
@@ -104,7 +110,7 @@ class HB(http.server.BaseHTTPRequestHandler):
                 age = (time.time() - state["last_hb"]) if state["last_hb"] else None
                 body = json.dumps({"hb_count": state["hb_count"],
                                    "last_hb_age_s": round(age) if age is not None else None,
-                                   "restarts_last_h": len(state["restarts"]),
+                                   "restarts_last_h": len([t for t in state["restarts"] if time.time() - t < 3600]),
                                    "uptime_s": round(time.time() - state["started"])})
             self.send_response(200)
             self.send_header("Content-Type", "application/json"); self.end_headers()
