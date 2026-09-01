@@ -49,6 +49,7 @@ class Game {
     this.asteroid = false;    // czy w skanowanym ukladzie jest asteroida (wiersz 17)
     this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
     this.debris = false;      // czy przy bazie lezy zlom
+    this.debris16 = false;    // czy na poz. 16 (ekspedycje) lezy PZ po piratach
     this.loggedOut = false;   // gra oddaje strone logowania
     this.cargoPerMiner = 25_000;     // ile uniesie JEDEN miner (bot ma się tego nauczyć)
     this.asteroidYield = 500_000;    // typowy urobek asteroidy w dzienniku
@@ -171,7 +172,9 @@ class Game {
         <div class="galaxy-item"><span class="planet-index">5</span>
           <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
         </div>
-        <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a></div>
+        <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a>
+          <div class="galaxy-col col-debris">${this.debris16 ? `<a href="/fleet?x=${gx}&y=${sy}&z=16&mission=8">Debris 999.000</a>` : ""}</div>
+        </div>
         <div class="galaxy-item"><span class="planet-index">17</span>
           ${this.asteroid ? `<span data-asteroid-disappear="${this.asteroidTtl}"></span><a class="btn-asteroid" href="/fleet?x=${gx}&y=${sy}&z=17&mission=12">Asteroid</a>` : "<span>Find asteroids</span>"}
         </div>`;
@@ -1300,6 +1303,40 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const st2 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     const f2 = (st2.flights || [])[0];
     check("stan lotu przeszedł w zawrót", !f2 || ["recall_clicked", "recalled"].includes(f2.phase), JSON.stringify(st2.flights));
+  }
+
+  console.log("\n── 39. ZŁOM (v3.56.0): PZ po piratach leży w układzie STARTU ekspedycji, nie aktywnej pary ──");
+  {
+    // Ekspedycje przypięte do [1:217:6], operator gra na [1:100:5] — złom po
+    // piratach leży na [1:217:16]. Do v3.55 zbieracz zaglądał do układu AKTYWNEJ
+    // pary (1:100) i PZ leżało godzinami; parytet z Atheną (HomeBase.expo):
+    // bramka ponowienia po nawigacji to 60 s — mija przez advance(), nie sen.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: true, everyMin: 20 },
+      expo: { enabled: false, launchFrom: { galaxy: 1, system: 217, position: 6 } },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:217:6", name: "Ekspo", moon: true }],
+      hangars: { "1:217:6|moon": { RECYCLER: 200, LIGHT_FIGHTER: 50 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.debris16 = true;
+    // hangar bazy ekspedycyjnej znany (w produkcji pilnuje go rekonesans v3.21.0)
+    g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({ pairs: {}, hangars: {
+      "1:217:6|moon": { total: 250, at: Date.now(), ships: [{ type: "RECYCLER", qty: 200 }, { type: "LIGHT_FIGHTER", qty: 50 }] },
+    }, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: Date.now() }));
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("bot zajrzał na galaktykę układu startu ekspedycji (1:217), nie aktywnej pary (1:100)",
+      g.navigations.some(u => /galaxy\?x=1&y=217/.test(u)) && !g.navigations.some(u => /galaxy\?x=1&y=100/.test(u)),
+      JSON.stringify(g.navigations.slice(0, 8)));
+    advance(g, 2 * 60e3);
+    const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
+    const zl = g.sent.find(s => /Collect/i.test(s.mission || ""));
+    check("recyklery poleciały misją Collect", !!zl, JSON.stringify(g.sent) + " | " + logs.filter(m => /ZŁOM|LOT/.test(m)).slice(0, 6).join(" | "));
+    check("z bazy ekspedycyjnej [1:217:6] (księżyc)", !!zl && zl.from === "1:217:6" && zl.fromBody === "moon", JSON.stringify(zl));
+    check("na poz. 16 celem typu ZŁOM", !!zl && zl.to === "1:217:16" && zl.toBody === "debris", JSON.stringify(zl));
+    check("wzięły CAŁY hangar recyklerów i nic poza nimi", !!zl && zl.ships.RECYCLER === 200 && !zl.ships.LIGHT_FIGHTER, JSON.stringify(zl && zl.ships));
+    const stZl = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("lot po złom NIE jest lotem obronnym (nie zablokuje ratunku)", (stZl.flights || []).length === 0, JSON.stringify(stZl.flights));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
