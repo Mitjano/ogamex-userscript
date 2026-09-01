@@ -173,7 +173,7 @@ class Game {
           <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a>
-          <div class="galaxy-col col-debris">${this.debris16 ? `<a href="/fleet?x=${gx}&y=${sy}&z=16&mission=8">Debris 999.000</a>` : ""}</div>
+          <div class="galaxy-col col-debris">${this.debris16 ? `<div class="tooltip_sticky" data-tooltip-content="&lt;div&gt;Debris field&lt;/div&gt;&lt;div&gt;Metal: 1.200.000.000&lt;/div&gt;&lt;div&gt;Crystal: 800.000.000&lt;/div&gt;&lt;a href=&quot;/fleet?x=${gx}&amp;y=${sy}&amp;z=16&amp;mission=8&quot;&gt;Recycle&lt;/a&gt;"></div>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">17</span>
           ${this.asteroid ? `<span data-asteroid-disappear="${this.asteroidTtl}"></span><a class="btn-asteroid" href="/fleet?x=${gx}&y=${sy}&z=17&mission=12">Asteroid</a>` : "<span>Find asteroids</span>"}
@@ -1318,13 +1318,13 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       human: { breaks: false, economyAtNight: true } };
     const g = new Game({
       pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:217:6", name: "Ekspo", moon: true }],
-      hangars: { "1:217:6|moon": { RECYCLER: 200, LIGHT_FIGHTER: 50 } },
+      hangars: { "1:217:6|moon": { RECYCLER: 200000, LIGHT_FIGHTER: 50 } },
       active: { key: "1:100:5", body: "planet" },
     });
     g.debris16 = true;
     // hangar bazy ekspedycyjnej znany (w produkcji pilnuje go rekonesans v3.21.0)
     g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({ pairs: {}, hangars: {
-      "1:217:6|moon": { total: 250, at: Date.now(), ships: [{ type: "RECYCLER", qty: 200 }, { type: "LIGHT_FIGHTER", qty: 50 }] },
+      "1:217:6|moon": { total: 200050, at: Date.now(), ships: [{ type: "RECYCLER", qty: 200000 }, { type: "LIGHT_FIGHTER", qty: 50 }] },
     }, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: Date.now() }));
     await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
     check("bot zajrzał na galaktykę układu startu ekspedycji (1:217), nie aktywnej pary (1:100)",
@@ -1336,7 +1336,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("recyklery poleciały misją Collect", !!zl, JSON.stringify(g.sent) + " | " + logs.filter(m => /ZŁOM|LOT/.test(m)).slice(0, 6).join(" | "));
     check("z bazy ekspedycyjnej [1:217:6] (księżyc)", !!zl && zl.from === "1:217:6" && zl.fromBody === "moon", JSON.stringify(zl));
     check("na poz. 16 celem typu ZŁOM", !!zl && zl.to === "1:217:16" && zl.toBody === "debris", JSON.stringify(zl));
-    check("wzięły CAŁY hangar recyklerów i nic poza nimi", !!zl && zl.ships.RECYCLER === 200 && !zl.ships.LIGHT_FIGHTER, JSON.stringify(zl && zl.ships));
+    // v3.59.0: złom 2 mld × 1,1 / 125 000 = 17 600 recyklerów — reszta (91%)
+    // zostaje w domu, żeby przy ataku było czym wywieźć surowce.
+    check("wysłały TYLE ILE TRZEBA (17 600 z 200 000), nic poza recyklerami", !!zl && zl.ships.RECYCLER === 17600 && !zl.ships.LIGHT_FIGHTER, JSON.stringify(zl && zl.ships));
+    check("lot poszedł linkiem z DYMKA (z numerem misji), nie gołym URL-em", g.navigations.some(u => /fleet\?x=1&y=217&z=16&mission=8/.test(u)), JSON.stringify(g.navigations.filter(u => /fleet\?x=/.test(u))));
     const stZl = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("lot po złom NIE jest lotem obronnym (nie zablokuje ratunku)", (stZl.flights || []).length === 0, JSON.stringify(stZl.flights));
     // v3.57.0: mimo dwóch przebiegów (drugi 2 min „później") galaktyka odwiedzona

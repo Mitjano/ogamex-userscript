@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.58.0
+// @version      3.59.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.58.0";
+  const VERSION = "3.59.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -236,7 +236,10 @@
     // v3.56.0: włączone domyślnie jak na Athenie (collectDebris: true) — piraci
     // z ekspedycji zostawiają PZ na poz. 16 układu startu ekspedycji i bez
     // zbieracza złom leży godzinami. Moduł nic nie robi bez recyklerów w hangarze.
-    debris: { enabled: true, everyMin: 20 },    // recyklery po złom (poz. 16 i pozycja bazy)
+    // cargoPerRecycler: 125 000 potwierdzone na żywo 01.09 (Empty cargo space /
+    // liczba recyklerów); unknownShare = ile hangaru leci, gdy dymek nie zdradza
+    // rozmiaru złomu (nigdy całość — reszta wywozi surowce przy ataku).
+    debris: { enabled: true, everyMin: 20, cargoPerRecycler: 125_000, unknownShare: 0.2 },
     expo: {
       enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
       waves: 1,             // podział floty na fale (start uni: 1; przy dużej flocie 8-14)
@@ -1919,15 +1922,35 @@
         if (!wanted.includes(idx)) continue;
         const cell = item.querySelector(".col-debris, .galaxy-col.col-debris");
         if (!cell || !(cell.innerHTML || "").trim()) continue;
+        // v3.59.0 (pierwszy bojowy zbiór 01.09 22:32, „Invalid mission type"):
+        // na Genesis komórka złomu NIE ma linku wprost — cały dymek (nagłówek
+        // „Debris field", ilości surowców i link Recycle z NUMEREM MISJI) siedzi
+        // w atrybucie data-tooltip-content. Misję na tym forku ustawia parametr
+        // URL-a (ekspedycje: mission=1 z linku galaktyki) — konstruowany adres
+        // bez numeru misji gra odrzuciła. Czytamy więc link i ROZMIAR złomu z dymka.
+        let amount = 0, tipHref = null;
+        for (const te of cell.querySelectorAll("[data-tooltip-content]")) {
+          const raw = te.getAttribute("data-tooltip-content") || "";
+          if (!/debris/i.test(raw)) continue;
+          try {
+            const tdoc = new DOMParser().parseFromString(raw, "text/html");
+            const ta2 = tdoc.querySelector("a[href*='/fleet']");
+            if (ta2 && !tipHref) tipHref = ta2.getAttribute("href");
+            const txt = (tdoc.body && tdoc.body.textContent) || "";
+            for (const mm of txt.matchAll(/(?:metal|crystal|kryszta|deuter)[^0-9]{0,24}([\d][\d.,\s]{2,})/gi)) amount += parseInt(String(mm[1]).replace(/[^\d]/g, ""), 10) || 0;
+            if (!ta2 && !Once.said("debris_tip", 6 * 3600e3)) log(`[ZŁOM] dymek pola złomu bez linku zbierania — pełna treść: ${raw.replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
+          } catch {}
+        }
         const a = cell.querySelector("a[href*='/fleet']");
-        if (a) return { href: a.getAttribute("href"), pos: idx };
+        if (a) return { href: a.getAttribute("href"), pos: idx, amount };
+        if (tipHref) return { href: tipHref, pos: idx, amount };
         const rel = cell.querySelector("[rel^='debris']")?.getAttribute("rel");
         const tip = rel ? document.getElementById(rel) : null;
         const ta = tip?.querySelector("a[href*='/fleet']");
-        if (ta) return { href: ta.getAttribute("href"), pos: idx };
+        if (ta) return { href: ta.getAttribute("href"), pos: idx, amount };
         if (!Once.said("debris_dom", 6 * 3600e3)) log(`[ZŁOM] pole złomu bez linku (poz. ${idx}) — markup: ${(cell.innerHTML || "").replace(/\s+/g, " ").slice(0, 500)}`, "info");
         const [g, sy] = (baseKey || "").split(":");
-        return { href: `/fleet?x=${g}&y=${sy}&z=${idx}`, pos: idx, noLink: true };
+        return { href: `/fleet?x=${g}&y=${sy}&z=${idx}`, pos: idx, noLink: true, amount };
       }
       return null;
     },
@@ -1962,10 +1985,20 @@
       const hit = this.findLink(homeKey);
       if (!hit) return false;
       if (Fly.blocked({ fromKey: homeKey, toKey: `${g}:${sy}:${hit.pos}` })) { if (!Once.said(`debblk|${hit.pos}`, 5 * 60e3)) log(`[ZŁOM] trasa [${homeKey}]→[${g}:${sy}:${hit.pos}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
-      log(`[ZŁOM] pole złomu na poz. ${hit.pos} — wysyłam ${rec.qty.toLocaleString("pl-PL")} recyklerów.`, "success");
+      // v3.59.0 (owner 01.09: bot chciał wysłać WSZYSTKIE 1,63 mln recyklerów na
+      // 30-minutowy lot — moon zostałby bez statków do wywiezienia surowców przy
+      // ataku, a paliwo kosztowałoby 35 mln deuteru): wysyłamy tyle, ile udźwignie
+      // złom (+10% marginesu), reszta pilnuje domu. Ładowność 125 000/recykler
+      // POTWIERDZONA na żywo (zrzut 22:34: 203 820 375 000 / 1 630 563). Rozmiar
+      // złomu nieznany (dymek bez liczb) = 20% hangaru, nigdy całość.
+      const cargo = CFG.debris.cargoPerRecycler || 125_000;
+      const qty = hit.amount > 0
+        ? Math.min(rec.qty, Math.max(1, Math.ceil(hit.amount * 1.1 / cargo)))
+        : Math.max(1, Math.floor(rec.qty * (CFG.debris.unknownShare ?? 0.2)));
+      log(`[ZŁOM] pole złomu na poz. ${hit.pos}${hit.amount ? ` (~${hit.amount.toLocaleString("pl-PL")} surowców)` : " (rozmiar nieznany)"} — wysyłam ${qty.toLocaleString("pl-PL")} z ${rec.qty.toLocaleString("pl-PL")} recyklerów.`, "success");
       return Fly.start({ kind: "debris", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
         toKey: `${g}:${sy}:${hit.pos}`, toBody: "debris", why: `zbieranie złomu [${g}:${sy}:${hit.pos}]`, speed: 100,
-        plan: [{ type: "RECYCLER", qty: rec.qty }], missionType: "COLLECT", takeResources: false, directUrl: hit.href });
+        plan: [{ type: "RECYCLER", qty }], missionType: "COLLECT", takeResources: false, directUrl: hit.href });
     },
   };
 
@@ -2252,7 +2285,16 @@
       const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : m.missionType === "ASTEROID" ? ["ASTEROID_MINING", "ASTEROID"] : m.missionType === "COLLECT" ? ["COLLECT", "HARVEST", "RECYCL"] : this.MISSIONS;
       let picked = null; for (const w of wanted) { picked = missions.find(x => nameOf(x).includes(w)); if (picked) break; }
       if (!picked) { log(`[LOT DOM] brak misji ${wanted[0]}. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error"); return this.abort(`brak misji ${wanted[0]}`); }
-      picked.click(); await sleep(jitter(400, 800));
+      // v3.59.0 (incydent 22:32 „Invalid mission type" — owner: „chyba zabrakło
+      // naduszenia w button Recycle"): klik w kontener misji mógł nie trafić
+      // w element z handlerem. Duszenie idzie w najbardziej klikalny element
+      // (kotwica/przycisk w środku albo nad kontenerem), z logiem CO kliknięto;
+      // przy złomie raz zrzucamy markup kafla misji na wypadek kolejnej odmowy.
+      const pickTarget = picked.matches("a, button") ? picked : (picked.querySelector("a, button, img") || picked.closest("a, button") || picked);
+      pickTarget.click();
+      log(`[LOT] misja: „${(picked.textContent || "").trim().slice(0, 24)}" (${picked.className}${pickTarget !== picked ? `, klik w <${pickTarget.tagName.toLowerCase()}>` : ""})`, "info");
+      if (m.kind === "debris" && !Once.said("collect_dom", 6 * 3600e3)) log(`[ZŁOM DOM] kafel misji: ${(picked.outerHTML || "").replace(/\s+/g, " ").slice(0, 600)}`, "info");
+      await sleep(jitter(400, 800));
       // czas trwania ekspedycji: Odkrywca = „40 min"; gdy tej opcji nie ma — godziny
       if (m.duration) {
         const sel = [...document.querySelectorAll("select")].find(x => [...x.options].some(o => /min|hour|godz|\bh\b/i.test(o.textContent || "")));

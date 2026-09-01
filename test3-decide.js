@@ -607,6 +607,11 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   // v3.57.0 (owner: „raz na 20 minut wystarczy"): stempel okresu przy nawigacji,
   // znacznik debris_go domyka odczyt — bez ponowień co 60 s.
   check("złom: jedna wizyta na okres (stempel przy nawigacji + debris_go)", /debris_go/.test(dm) && !/debris_at", now - \(CFG\.debris/.test(dm));
+  // v3.59.0 (pierwszy bojowy zbiór, „Invalid mission type" + „wysłał wszystkie"):
+  // link i rozmiar złomu z dymka data-tooltip-content; flota doszacowana do złomu.
+  check("złom: link zbierania i rozmiar czytane z dymka (data-tooltip-content)", /data-tooltip-content/.test(dm) && /tipHref/.test(dm));
+  check("złom: flota doszacowana do rozmiaru (cargo 125k, nieznany rozmiar = 20%, nigdy całość)", /cargoPerRecycler \|\| 125_000/.test(dm) && /unknownShare \?\? 0\.2/.test(dm));
+  check("krok 3: klik w klikalny element misji + log co kliknięto", /pickTarget/.test(src) && /\[ZŁOM DOM\] kafel misji/.test(src));
 }
 
 console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznanej kolonii ──");
