@@ -604,6 +604,9 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   // musi zaglądać tam (parytet z Atheną HomeBase.expo), nie do aktywnej pary.
   check("złom zagląda do układu startu ekspedycji (launchFrom), nie aktywnej pary", /\(CFG\.expo && CFG\.expo\.launchFrom\) \? key\(CFG\.expo\.launchFrom\)/.test(dm));
   check("złom: domyślnie WŁĄCZONY + migracja starego configu (v3.56.0)", /debris: \{ enabled: true/.test(src) && /migr_debris_on_v356/.test(src));
+  // v3.57.0 (owner: „raz na 20 minut wystarczy"): stempel okresu przy nawigacji,
+  // znacznik debris_go domyka odczyt — bez ponowień co 60 s.
+  check("złom: jedna wizyta na okres (stempel przy nawigacji + debris_go)", /debris_go/.test(dm) && !/debris_at", now - \(CFG\.debris/.test(dm));
 }
 
 console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznanej kolonii ──");

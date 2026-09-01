@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.56.0
+// @version      3.57.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.56.0";
+  const VERSION = "3.57.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1923,8 +1923,6 @@
       if (Human.economyAllowed(s)) return false;
       if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
       const now = Date.now();
-      const last = Store.get("debris_at", 0) || 0;
-      if (now - last < (CFG.debris.everyMin || 20) * 60e3) return false;
       // v3.56.0 (parytet z Atheną, HomeBase.expo): PZ po piratach ląduje na
       // poz. 16 układu STARTU ekspedycji, nie aktywnej pary — przy przypiętym
       // „startuj z" [1:217:6] bot zaglądał do układu aktywnego ciała i złom
@@ -1935,8 +1933,19 @@
       if (!rec || rec.qty <= 0) return false;
       const [g, sy] = homeKey.split(":");
       const onGal = page() === "galaxy" && new RegExp(`[?&]x=${g}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${sy}(?:&|$)`).test(location.search);
-      if (!onGal) { Store.set("debris_at", now - (CFG.debris.everyMin || 20) * 60e3 + 60e3); NavRate.note(); Nav.go(`/galaxy?x=${g}&y=${sy}`, "złom: sprawdzam pole szczątków"); return true; }
-      Store.set("debris_at", now);
+      // v3.57.0 (owner 01.09: „za często sprawdza PZ — raz na 20 minut wystarczy"):
+      // stempel „ponów za 60 s" kazał botowi wracać na galaktykę CO MINUTĘ, gdy
+      // operator klikał po grze i zabierał stronę zanim odczyt się dokonał
+      // (log 20:23–20:26: trzy nawigacje w 2,5 min). Teraz pełny okres stemplowany
+      // PRZY nawigacji; świeży znacznik debris_go pozwala dokończyć odczyt po
+      // przeładowaniu, a wizyta przepadła (operator zabrał kartę) NIE jest
+      // ponawiana — następna dopiero za everyMin.
+      const last = Store.get("debris_at", 0) || 0;
+      const goAt = Store.get("debris_go", 0) || 0;
+      const arrived = onGal && now - goAt < 3 * 60e3;
+      if (!arrived && now - last < (CFG.debris.everyMin || 20) * 60e3) return false;
+      if (!onGal) { Store.set("debris_at", now); Store.set("debris_go", now); NavRate.note(); Nav.go(`/galaxy?x=${g}&y=${sy}`, "złom: sprawdzam pole szczątków"); return true; }
+      Store.set("debris_at", now); Store.set("debris_go", 0);
       const hit = this.findLink(homeKey);
       if (!hit) return false;
       if (Fly.blocked({ fromKey: homeKey, toKey: `${g}:${sy}:${hit.pos}` })) { if (!Once.said(`debblk|${hit.pos}`, 5 * 60e3)) log(`[ZŁOM] trasa [${homeKey}]→[${g}:${sy}:${hit.pos}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }

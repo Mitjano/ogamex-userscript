@@ -1309,8 +1309,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
   {
     // Ekspedycje przypięte do [1:217:6], operator gra na [1:100:5] — złom po
     // piratach leży na [1:217:16]. Do v3.55 zbieracz zaglądał do układu AKTYWNEJ
-    // pary (1:100) i PZ leżało godzinami; parytet z Atheną (HomeBase.expo):
-    // bramka ponowienia po nawigacji to 60 s — mija przez advance(), nie sen.
+    // pary (1:100) i PZ leżało godzinami; parytet z Atheną (HomeBase.expo).
+    // v3.57.0: stempel okresu pada PRZY nawigacji (znacznik debris_go domyka
+    // odczyt po przeładowaniu) — bot odwiedza galaktykę RAZ na everyMin, a nie
+    // co 60 s, gdy operator zabiera stronę (log ownera 20:23–20:26).
     const cfg = { autoRescue: true, recon: false, debris: { enabled: true, everyMin: 20 },
       expo: { enabled: false, launchFrom: { galaxy: 1, system: 217, position: 6 } },
       human: { breaks: false, economyAtNight: true } };
@@ -1337,6 +1339,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("wzięły CAŁY hangar recyklerów i nic poza nimi", !!zl && zl.ships.RECYCLER === 200 && !zl.ships.LIGHT_FIGHTER, JSON.stringify(zl && zl.ships));
     const stZl = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("lot po złom NIE jest lotem obronnym (nie zablokuje ratunku)", (stZl.flights || []).length === 0, JSON.stringify(stZl.flights));
+    // v3.57.0: mimo dwóch przebiegów (drugi 2 min „później") galaktyka odwiedzona
+    // dokładnie RAZ — pełny okres everyMin stemplowany przy nawigacji.
+    check("jedna wizyta na galaktyce na okres (nie co 60 s)", g.navigations.filter(u => /galaxy\?x=1&y=217/.test(u)).length === 1, JSON.stringify(g.navigations.filter(u => /galaxy/.test(u))));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
