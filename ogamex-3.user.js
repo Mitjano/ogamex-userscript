@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.55.0
+// @version      3.56.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.55.0";
+  const VERSION = "3.56.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -227,7 +227,10 @@
     // to jedyny moduł, który BEZPOWROTNIE wydaje surowce (na Athenie 6000 km
     // kosztowało 1,8 bln metalu), więc włącza go wyłącznie operator.
     moon: { enabled: false, maxMetalShare: 0.25, minKm: 2000, maxTries24h: 3 },
-    debris: { enabled: false, everyMin: 20 },   // recyklery po złom (poz. 16 i pozycja bazy)
+    // v3.56.0: włączone domyślnie jak na Athenie (collectDebris: true) — piraci
+    // z ekspedycji zostawiają PZ na poz. 16 układu startu ekspedycji i bez
+    // zbieracza złom leży godzinami. Moduł nic nie robi bez recyklerów w hangarze.
+    debris: { enabled: true, everyMin: 20 },    // recyklery po złom (poz. 16 i pozycja bazy)
     expo: {
       enabled: false,       // włącz w panelu, gdy obrona potwierdzona na żywo
       waves: 1,             // podział floty na fale (start uni: 1; przy dużej flocie 8-14)
@@ -254,6 +257,12 @@
     return out;
   })();
   const saveCfg = () => Store.set("cfg", CFG);
+  // v3.56.0 (prośba ownera 01.09): zapisany config sprzed tej wersji ma
+  // debris.enabled:false — jednorazowo włączamy, jak migracje 2.x (RC_KEY v259).
+  if (!Store.get("migr_debris_on_v356", false)) {
+    Store.set("migr_debris_on_v356", true);
+    if (!CFG.debris.enabled) { CFG.debris.enabled = true; saveCfg(); }
+  }
 
   // ─── Pomocnicze ──────────────────────────────────────────────────────────
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1916,7 +1925,11 @@
       const now = Date.now();
       const last = Store.get("debris_at", 0) || 0;
       if (now - last < (CFG.debris.everyMin || 20) * 60e3) return false;
-      const homeKey = s.active && s.active.key; if (!homeKey) return false;
+      // v3.56.0 (parytet z Atheną, HomeBase.expo): PZ po piratach ląduje na
+      // poz. 16 układu STARTU ekspedycji, nie aktywnej pary — przy przypiętym
+      // „startuj z" [1:217:6] bot zaglądał do układu aktywnego ciała i złom
+      // leżał. Recyklery też mieszkają przy flocie ekspedycyjnej (2.x v2.84.0).
+      const homeKey = (CFG.expo && CFG.expo.launchFrom) ? key(CFG.expo.launchFrom) : (s.active && s.active.key); if (!homeKey) return false;
       const hm = s.hangars[`${homeKey}|moon`] || s.hangars[`${homeKey}|planet`];
       const rec = hm ? (hm.ships || []).find(x => String(x.type).toUpperCase() === "RECYCLER") : null;
       if (!rec || rec.qty <= 0) return false;

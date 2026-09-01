@@ -600,6 +600,10 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("księżyce: limit prób na dobę i limit nawigacji na próbę", /maxTries24h/.test(src) && /navs \|\| 0\) >= 4/.test(src));
   check("księżyce: nieznany markup = zrzut do logu, nie zgadywanie", /\[KSIĘŻYC DOM\]/.test(src));
   check("ekspedycje: pole „startuj z” przypina ciało startowe", /ogx3-expo-from/.test(src) && /CFG\.expo\.launchFrom = \{ galaxy/.test(src));
+  // v3.56.0: PZ po piratach leży na poz. 16 układu STARTU ekspedycji — zbieracz
+  // musi zaglądać tam (parytet z Atheną HomeBase.expo), nie do aktywnej pary.
+  check("złom zagląda do układu startu ekspedycji (launchFrom), nie aktywnej pary", /\(CFG\.expo && CFG\.expo\.launchFrom\) \? key\(CFG\.expo\.launchFrom\)/.test(dm));
+  check("złom: domyślnie WŁĄCZONY + migracja starego configu (v3.56.0)", /debris: \{ enabled: true/.test(src) && /migr_debris_on_v356/.test(src));
 }
 
 console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznanej kolonii ──");
