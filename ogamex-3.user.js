@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.57.0
+// @version      3.58.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.57.0";
+  const VERSION = "3.58.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -182,6 +182,12 @@
     // Alarm jest osobny i NIGDY nie podlega temu ograniczeniu: gdy atak leci w ciało,
     // którego hangaru bot nie zna, i tak tam wejdzie — inaczej obrona byłaby ślepa.
     reconMode: "fleet",
+    // v3.58.0 (owner 01.09: „jak najmniej śladów aktywności w galaktyce"): każdy
+    // cichy fetch `?planet=UUID` pali znacznik aktywności ciała jak wizyta gracza.
+    // Tryb cichy ogranicza odczyty KOLONII (baza ekspedycyjna i tak świeci od fal):
+    // zwiad kolonii raz na colonyHours zamiast co 45 min, a lądowania sprawdzane
+    // tylko na ciele startu ekspedycji albo przy trwającym locie obronnym.
+    stealth: { enabled: true, colonyHours: 8 },
     // ── HUMANIZER ──
     // Przerwy dotyczą WYŁĄCZNIE ekonomii. W 2.x przerwa kawowa usypiała cały
     // scheduler razem z keepalive (audyt A8: droga do wylogowania i 15 min
@@ -914,6 +920,13 @@
           // na planetę" — 09:06:16 wejście na Fleet po rutynowym powrocie): to nie jest
           // alarm, więc `quiet: true` — egzekutor czyta hangar fetchem w tle i ma ZAKAZ
           // nawigacji. Jak cichy odczyt nie wyjdzie, hangar poczeka na naturalną wizytę.
+          // v3.58.0 (owner 01.09: „jak najmniej śladów aktywności"): nawet cichy fetch
+          // pali znacznik aktywności kolonii. W trybie cichym lądowanie na kolonii —
+          // bez lotu obronnego, poza ciałem startu ekspedycji — NIE wymusza odczytu;
+          // hangar poczeka na rzadki zwiad kolonii (stealth.colonyHours).
+          const lf58 = cfg.expo && cfg.expo.launchFrom;
+          const guarded58 = lf58 ? `${lf58.galaxy}:${lf58.system}:${lf58.position}` : null;
+          if (cfg.stealth && cfg.stealth.enabled && !f && guarded58 && k !== guarded58) continue;
           actions.push({ kind: "recon", key: k, body: lbody, quiet: true, why: `wróciła własna flota na ${lbody === "moon" ? "księżyc" : "planetę"} [${k}] — sprawdzam hangar` });
           break;
         }
@@ -2551,7 +2564,11 @@
               const hk = `${k}|${b}`;
               if (covered.has(hk)) continue;
               const h = (s.hangars || {})[hk];
-              if (h && now - (h.at || 0) < (CFG.reconEmptyMs || 45 * 60e3)) continue;
+              // v3.58.0: w trybie cichym kolonia jest odpytywana rzadko — każdy taki
+              // fetch pali jej znacznik aktywności w galaktyce (transportery na
+              // koloniach i tak prawie się nie zmieniają).
+              const ttlBg = (CFG.stealth && CFG.stealth.enabled) ? (CFG.stealth.colonyHours || 8) * 3600e3 : (CFG.reconEmptyMs || 45 * 60e3);
+              if (h && now - (h.at || 0) < ttlBg) continue;
               rest.push([k, b]);
             }
           }
@@ -2985,6 +3002,7 @@
           </div></div>
           <div class="sec" data-sec="eco"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekonomia</span><span class="tail" id="ogx3-t-eco"></span></div><div class="sec-b">
             <div class="line"><button id="ogx3-aster" class="ogx3-btn"></button><button id="ogx3-deb" class="ogx3-btn"></button><button id="ogx3-bonus" class="ogx3-btn"></button></div>
+            <div class="line"><button id="ogx3-quiet" class="ogx3-btn"></button></div>
             <div class="note" id="ogx3-bonus-st"></div>
             <div class="line"><button id="ogx3-moon" class="ogx3-btn"></button> ≤ <input id="ogx3-moon-share" style="width:26px" />% metalu</div>
             <div class="note" id="ogx3-moon-st"></div>
@@ -3052,6 +3070,7 @@
         this.renderStatus();
       };
       $("ogx3-deb").onclick = () => { CFG.debris.enabled = !CFG.debris.enabled; saveCfg(); log(`Zbieranie złomu ${CFG.debris.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-quiet").onclick = () => { CFG.stealth.enabled = !CFG.stealth.enabled; saveCfg(); log(CFG.stealth.enabled ? `Tryb cichy ON — kolonie odpytywane raz na ${CFG.stealth.colonyHours || 8} h (mniej śladów aktywności w galaktyce).` : "Tryb cichy OFF — zwiad kolonii co 45 min (świeższe hangary, więcej śladów).", "info"); this.renderStatus(); };
       $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-bonus").onclick = () => { CFG.bonus.enabled = !CFG.bonus.enabled; saveCfg(); log(`Bonus online ${CFG.bonus.enabled ? "ON — bot odbiera antymaterię i punkty Akademii" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-moon").onclick = () => { CFG.moon.enabled = !CFG.moon.enabled; saveCfg(); log(`Stawianie księżyców ${CFG.moon.enabled ? `ON — bot WYDA do ${Math.round(CFG.moon.maxMetalShare * 100)}% metalu na księżyc` : "OFF"}`, CFG.moon.enabled ? "warn" : "info"); this.renderStatus(); };
@@ -3175,6 +3194,8 @@
       $("ogx3-push").textContent = `Push ${Notifier.enabled() ? "ON" : "OFF"}`;
       $("ogx3-voice").textContent = `Głos ${Store.get("voice_on", false) ? "ON" : "OFF"}`;
       $("ogx3-deb").textContent = `Złom ${CFG.debris.enabled ? "ON" : "OFF"}`; $("ogx3-deb").style.background = CFG.debris.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-quiet").textContent = CFG.stealth && CFG.stealth.enabled ? `Tryb cichy ON (kolonie co ${CFG.stealth.colonyHours || 8} h)` : "Tryb cichy OFF (kolonie co 45 min)";
+      $("ogx3-quiet").style.background = CFG.stealth && CFG.stealth.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-bonus").textContent = `Bonus ${CFG.bonus.enabled ? "ON" : "OFF"}`; $("ogx3-bonus").style.background = CFG.bonus.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       { const b0 = Bonus.st(); $("ogx3-bonus-st").textContent = CFG.bonus.enabled ? `bonus online: dziś ${Bonus.today(b0)}${b0.claims && b0.claims.length ? ` · ostatni ${new Date(b0.claims[b0.claims.length - 1]).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""; }

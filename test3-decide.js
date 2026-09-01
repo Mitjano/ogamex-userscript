@@ -1091,6 +1091,31 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
   check("ekspedycja nadal NIE trafia do flights (rejestr jest osobny)", /sE\.expected = \[\.\.\.\(sE\.expected \|\| \[\]\)/.test(src) && !/flights.*expedition.*push/.test(src.slice(src.indexOf("REJESTR POWROTÓW"), src.indexOf("REJESTR POWROTÓW") + 900)));
 }
 
+console.log("\n── 40. TRYB CICHY (v3.58.0): mniej śladów aktywności na koloniach ──");
+{
+  // Owner 01.09: „w galaktyce ma być jak najmniej śladów mojej aktywności" — każdy
+  // fetch ?planet= pali czerwony wykrzyknik kolonii jak wizyta gracza. W trybie
+  // cichym lądowanie na kolonii nie wymusza odczytu hangaru; baza ekspedycyjna
+  // i pary z lotem obronnym — sprawdzane jak dotąd.
+  const LF = { launchFrom: { galaxy: 3, system: 272, position: 7 } };
+  const cfgQ = { ...CFG, stealth: { enabled: true, colonyHours: 8 }, expo: LF };
+  const cfgGlosny = { ...CFG, expo: LF };   // bez stealth = stare zachowanie
+  const kolonia = base({ landings: { "3:272:2|planet": NOW - 60e3 } });
+  check("lądowanie na KOLONII w trybie cichym NIE wymusza odczytu (zero śladu)",
+    !decide(kolonia, cfgQ, NOW).actions.some(a => a.kind === "recon" && a.key === "3:272:2"),
+    JSON.stringify(decide(kolonia, cfgQ, NOW).actions));
+  check("bez trybu cichego kolonia sprawdzana jak dotąd (regresja starego zachowania)",
+    decide(kolonia, cfgGlosny, NOW).actions.some(a => a.kind === "recon" && a.key === "3:272:2"),
+    JSON.stringify(decide(kolonia, cfgGlosny, NOW).actions));
+  const baza = base({ landings: { "3:272:7|planet": NOW - 60e3 } });
+  check("lądowanie na BAZIE ekspedycyjnej sprawdzane także w trybie cichym",
+    decide(baza, cfgQ, NOW).actions.some(a => a.kind === "recon" && a.key === "3:272:7" && a.body === "planet"),
+    JSON.stringify(decide(baza, cfgQ, NOW).actions));
+  check("zwiad kolonii w tle: TTL z trybu cichego (colonyHours), nie 45 min", /stealth\.colonyHours \|\| 8\) \* 3600e3/.test(src));
+  check("tryb cichy: domyślnie WŁĄCZONY + przycisk w panelu", /stealth: \{ enabled: true, colonyHours: 8 \}/.test(src) && /ogx3-quiet/.test(src));
+  check("pary z lotem obronnym nie podlegają wyciszeniu (warunek !f)", /cfg\.stealth && cfg\.stealth\.enabled && !f && guarded58/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
