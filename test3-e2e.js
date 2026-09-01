@@ -136,7 +136,7 @@ class Game {
   step3Html() {
     return `<div id="content">
       <a class="mission-item DEPLOY">Deploy</a><a class="mission-item EXPEDITION">Expedition</a><a class="mission-item ATTACK">Attack</a>
-      <a class="mission-item ASTEROID_MINING">Asteroid mining</a><a class="mission-item COLLECT">Collect</a>
+      <a class="mission-item ASTEROID_MINING">Asteroid mining</a><a class="mission-item COLLECT" data-mission-type="13">Collect</a><a class="mission-item RECYCLE" data-mission-type="8">Recycle</a>
       <a class="btn-all-res">Wszystkie surowce</a>
       <a class="btn-res-full">max</a><a class="btn-res-full">max</a><div><a class="btn-res-full">max deuter</a><input name="deuterium" value="500000"></div>
       <a class="btn-continue" id="btn-submit-fleet">Send fleet</a>
@@ -173,7 +173,7 @@ class Game {
           <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a>
-          <div class="galaxy-col col-debris">${this.debris16 ? `<div class="tooltip_sticky" data-tooltip-content="&lt;div&gt;Debris field&lt;/div&gt;&lt;div&gt;Metal: 1.200.000.000&lt;/div&gt;&lt;div&gt;Crystal: 800.000.000&lt;/div&gt;&lt;a href=&quot;/fleet?x=${gx}&amp;y=${sy}&amp;z=16&amp;mission=8&quot;&gt;Recycle&lt;/a&gt;"></div>` : ""}</div>
+          <div class="galaxy-col col-debris">${this.debris16 ? `<div class="tooltip_sticky" data-tooltip-content="&lt;div&gt;Debris field&lt;/div&gt;&lt;span&gt;1.200.000.000&lt;/span&gt;&lt;span&gt;800.000.000&lt;/span&gt;"></div>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">17</span>
           ${this.asteroid ? `<span data-asteroid-disappear="${this.asteroidTtl}"></span><a class="btn-asteroid" href="/fleet?x=${gx}&y=${sy}&z=17&mission=12">Asteroid</a>` : "<span>Find asteroids</span>"}
@@ -1332,14 +1332,17 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       JSON.stringify(g.navigations.slice(0, 8)));
     advance(g, 2 * 60e3);
     const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
-    const zl = g.sent.find(s => /Collect/i.test(s.mission || ""));
-    check("recyklery poleciały misją Collect", !!zl, JSON.stringify(g.sent) + " | " + logs.filter(m => /ZŁOM|LOT/.test(m)).slice(0, 6).join(" | "));
+    // v3.60.0: na tym forku „Collect" (mission 13) zbiera z WŁASNEJ planety —
+    // złom zbiera misja „Recycle"; dymek bez linku i bez etykiet (ikonki+liczby).
+    const zl = g.sent.find(s => /Recycle/i.test(s.mission || ""));
+    check("recyklery poleciały misją RECYCLE (nie Collect-z-własnej-planety)", !!zl && !g.sent.some(s => s.mission === "Collect"), JSON.stringify(g.sent) + " | " + logs.filter(m => /ZŁOM|LOT/.test(m)).slice(0, 6).join(" | "));
     check("z bazy ekspedycyjnej [1:217:6] (księżyc)", !!zl && zl.from === "1:217:6" && zl.fromBody === "moon", JSON.stringify(zl));
     check("na poz. 16 celem typu ZŁOM", !!zl && zl.to === "1:217:16" && zl.toBody === "debris", JSON.stringify(zl));
     // v3.59.0: złom 2 mld × 1,1 / 125 000 = 17 600 recyklerów — reszta (91%)
     // zostaje w domu, żeby przy ataku było czym wywieźć surowce.
     check("wysłały TYLE ILE TRZEBA (17 600 z 200 000), nic poza recyklerami", !!zl && zl.ships.RECYCLER === 17600 && !zl.ships.LIGHT_FIGHTER, JSON.stringify(zl && zl.ships));
-    check("lot poszedł linkiem z DYMKA (z numerem misji), nie gołym URL-em", g.navigations.some(u => /fleet\?x=1&y=217&z=16&mission=8/.test(u)), JSON.stringify(g.navigations.filter(u => /fleet\?x=/.test(u))));
+    // toLocaleString("pl-PL") używa twardych spacji — porównujemy same cyfry.
+    check("rozmiar złomu policzony z SAMYCH LICZB dymka (ikonki zamiast etykiet)", logs.some(m => m.includes("surowców") && m.replace(/[^\d]/g, "").includes("2000000000")), logs.filter(m => /ZŁOM/.test(m)).slice(0, 4).join(" | "));
     const stZl = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("lot po złom NIE jest lotem obronnym (nie zablokuje ratunku)", (stZl.flights || []).length === 0, JSON.stringify(stZl.flights));
     // v3.57.0: mimo dwóch przebiegów (drugi 2 min „później") galaktyka odwiedzona

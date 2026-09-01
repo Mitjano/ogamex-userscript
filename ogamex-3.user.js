@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.59.0
+// @version      3.60.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.59.0";
+  const VERSION = "3.60.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1936,8 +1936,14 @@
             const tdoc = new DOMParser().parseFromString(raw, "text/html");
             const ta2 = tdoc.querySelector("a[href*='/fleet']");
             if (ta2 && !tipHref) tipHref = ta2.getAttribute("href");
+            // v3.60.0 (pełny zrzut dymka 22:53): surowce w dymku mają IKONKI
+            // zamiast etykiet (słowo „metal" siedzi tylko w ścieżce obrazka) —
+            // textContent to sam nagłówek i liczby, przy czym sąsiednie liczby
+            // SKLEJAJĄ się bez spacji. Wzorzec grupowany d.ddd.ddd tnie je
+            // poprawnie („…708.2501.646…" = 708.250 | 1.646…), a małych liczb
+            // z CSS nie łapie (wymaga separatora tysięcy).
             const txt = (tdoc.body && tdoc.body.textContent) || "";
-            for (const mm of txt.matchAll(/(?:metal|crystal|kryszta|deuter)[^0-9]{0,24}([\d][\d.,\s]{2,})/gi)) amount += parseInt(String(mm[1]).replace(/[^\d]/g, ""), 10) || 0;
+            for (const mm of txt.matchAll(/\d{1,3}(?:[.,]\d{3})+/g)) amount += parseInt(String(mm[0]).replace(/[^\d]/g, ""), 10) || 0;
             if (!ta2 && !Once.said("debris_tip", 6 * 3600e3)) log(`[ZŁOM] dymek pola złomu bez linku zbierania — pełna treść: ${raw.replace(/\s+/g, " ").slice(0, 1500)}`, "warn");
           } catch {}
         }
@@ -2282,7 +2288,13 @@
       const t1 = Date.now(); while (Date.now() - t1 < 8000 && !this.findButton("Send fleet")) await sleep(400);
       const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
       const nameOf = (el) => `${el.className || ""} ${el.textContent || ""}`.toUpperCase();
-      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : m.missionType === "ASTEROID" ? ["ASTEROID_MINING", "ASTEROID"] : m.missionType === "COLLECT" ? ["COLLECT", "HARVEST", "RECYCL"] : this.MISSIONS;
+      // v3.60.0 (drugi odrzucony zbiór 22:53, zrzut kafla ownera): na tym forku
+      // „Collect" (data-mission-type=13) to zbieranie surowców z WŁASNEJ planety
+      // („only possible for planets/moons of your own empire") — do złomu służy
+      // osobny kafel „Recycle". COLLECT był pierwszy na liście i bot dusił złą
+      // misję → „Invalid mission type". Klik w kafel DZIAŁA (klasa `selected`
+      // w zrzucie), więc wystarczy właściwa kolejność: RECYCL, nigdy COLLECT.
+      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : m.missionType === "ASTEROID" ? ["ASTEROID_MINING", "ASTEROID"] : m.missionType === "COLLECT" ? ["RECYCL", "HARVEST"] : this.MISSIONS;
       let picked = null; for (const w of wanted) { picked = missions.find(x => nameOf(x).includes(w)); if (picked) break; }
       if (!picked) { log(`[LOT DOM] brak misji ${wanted[0]}. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error"); return this.abort(`brak misji ${wanted[0]}`); }
       // v3.59.0 (incydent 22:32 „Invalid mission type" — owner: „chyba zabrakło

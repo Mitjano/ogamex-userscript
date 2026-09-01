@@ -592,7 +592,11 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("bez recyklerów nic nie robi", /RECYCLER/.test(dm));
   check("sprawdza poz. 16 (ekspedycje) i pozycję bazy (po bitwie)", /wanted = \[16, pos\]/.test(dm));
   check("cel typu ZŁOM to data-planet-type=3", /m\.toBody === "debris" \? "3"/.test(src));
-  check("misja COLLECT/HARVEST wybierana jawnie", /"COLLECT", "HARVEST", "RECYCL"/.test(src));
+  // v3.60.0 (zrzut kafla 22:53): „Collect" (mission 13) na tym forku zbiera
+  // surowce z WŁASNEJ planety — złom zbiera „Recycle". COLLECT nie może być
+  // na liście preferencji, bo dusił złą misję („Invalid mission type").
+  check("misja złomu = RECYCLE, nigdy Collect-z-własnej-planety", /\? \["RECYCL", "HARVEST"\]/.test(src) && !/"COLLECT", "HARVEST", "RECYCL"/.test(src));
+  check("rozmiar złomu z samych liczb dymka (grupowany wzorzec tnie sklejone liczby)", /\\d\{1,3\}\(\?:\[\.,\]\\d\{3\}\)\+/.test(dm));
   check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
   check("kolejność ekonomii: rekonesans → bonus → księżyce → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Moon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
   check("księżyce: domyślnie WYŁĄCZONE (moduł wydaje surowce bezpowrotnie)", /moon: \{ enabled: false/.test(src));
