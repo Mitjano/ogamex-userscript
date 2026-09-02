@@ -467,7 +467,7 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
     !(decide(stary, { ...CFG, homeToMoon: false }, NOW).actions || []).some(a => a.kind === "fly"));
 
   check("ewakuacja zostawia stempel w stanie (Fly), powrót nie",
-    /if \(!m\.home && m\.kind !== "expedition"[\s\S]{0,200}?sR\.rescues\[m\.fromKey\] = Date\.now\(\)/.test(src));
+    /if \(!m\.home && !eco\)[\s\S]{0,200}?sR\.rescues\[m\.fromKey\] = Date\.now\(\)/.test(src));
   check("panel ma przełącznik „flota rusza się tylko przy ataku”",
     /Flota rusza się TYLKO przy ataku/.test(src) && /CFG\.homeToMoon = !CFG\.homeToMoon/.test(src));
   // v3.43.0 (owner 20:31): każda fala ekspedycji zaczynała się od przełączenia aktywnego
@@ -749,7 +749,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   // sondy
   check("sondy nie blokują rekonesansu ani ekonomii", (src.match(/t\.attack && t\.arriveAt >/g) || []).length >= 4);
   // wysyłka
-  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,400}?send\.click\(\)/.test(src));
+  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,900}?Nav\.click\(send/.test(src));
   check("stempel wysyłki blokuje powtórkę po przeładowaniu", /Store\.get\("last_send"[\s\S]{0,400}?nie powtarzam/.test(src));
   // v3.10.0: wpis `pending` byl NIESMIERTELNY — kasowal go tylko kod PO send.click()
   // (ktory przy natychmiastowej nawigacji nigdy sie nie wykonuje), a filtr wygaszania
@@ -763,8 +763,14 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("ratunek na drugie ciało też jest oznaczony jako ratunek", /drugie ciało`, speed: 100, recall: false, rescue: true/.test(src));
   // v3.10.3 (E2E): reguly, ktore wyszly dopiero na symulatorze
   check("zero statkow to 'pusty hangar' TYLKO na kroku wyboru statkow", /const shipsStep = ships\.length > 0/.test(src) && /if \(!shipsStep\) \{/.test(src));
-  check("lot krotszy niz termin zawrotu = LADOWANIE (zawrot skasowany)", /const recallOf = \(mm\) =>/.test(src) && /recallAt: recallOf\(m\)/.test(src));
-  check("czas lotu poznany pozniej przelicza termin zawrotu", /f0\.flightMs = m\.flightMs; f0\.recallAt = recallOf/.test(src));
+  check("lot krotszy niz termin zawrotu = LADOWANIE (zawrot skasowany)", /recallOf\(mm\) \{/.test(src) && /recallAt: this\.recallOf\(m\)/.test(src));
+  check("czas lotu poznany pozniej przelicza termin zawrotu", /f0\.flightMs = m\.flightMs; f0\.recallAt = this\.recallOf/.test(src));
+  // v3.62.0 (log 02.09): „Send fleet" na tym forku przeładowuje stronę PRZED kodem po kliku,
+  // więc domknięcie wysyłki musi umieć iść z DOWODU po przeładowaniu — i z jednego miejsca.
+  check("wysyłka potwierdzana po przeładowaniu z adresu fleetSendSuccessfully + stempla TEJ misji", /lsOk\.at \|\| 0\) >= \(m\.startedAt \|\| 0\) && location\.href\.includes\("fleetSendSuccessfully"\)/.test(src) && /this\.confirmed\(m, \{ loaded: lsOk\.loaded/.test(src));
+  check("domknięcie wysyłki w JEDNYM miejscu (po kliku i po przeładowaniu)", /confirmed\(m, info = \{\}\) \{/.test(src) && /this\.confirmed\(m, \{ loaded: loaded\.join\(", "\) \}\)/.test(src) && !/\[EXPO\] fala wysłana: \$\{loaded\.join/.test(src));
+  check("klik Send fleet idzie przez Nav.click (linia startowa: bot, nie 'otwarte ręcznie')",/Nav\.click\(send, `wysyłka floty/.test(src) && !/\bsend\.click\(\)/.test(src));
+  check("fala domykająca mówi DLACZEGO domyka (sloty/licznik/konfiguracja)", /lastWhy = waves === 1/.test(src) && /ostatni wolny slot ekspedycji \(\$\{expo\.used\}\/\$\{expo\.total\}/.test(src) && /domyka serię — cały hangar: \$\{p\.lastWhy\}/.test(src));
   check("rekonesans ustepuje RATUNKOWI, ale nie rutynowemu FS", /a\.kind === "fly" && \(a\.rescue \|\| a\.blind\)/.test(src));
   check("FS nocny nie startuje na godzinnym odczycie hangaru", /FS nocny: odczyt hangaru/.test(src));
   check("przeterminowany lot nadal daje sie ZAWROCIC", /inFlightFrom\(k\) \|\| \(s\.flights \|\| \[\]\)\.find\(x => x\.fromKey === k && x\.kind === "air"/.test(src));

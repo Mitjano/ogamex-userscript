@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.61.0
+// @version      3.62.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.61.0";
+  const VERSION = "3.62.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -685,6 +685,14 @@
       }
       // własne loty (z Events — globalne; z listy — aktywna para)
       s.own = rows.filter(r => r.mine).map(r => ({ id: r.id, src: r.src, srcBody: r.srcBody, dst: r.dst, dstBody: r.dstBody, eta: r.eta, arriveAt: now + (r.eta || 0) * 1000, isReturn: r.isReturn, type: r.type, seenAt: now }));
+      // v3.62.0 (log 02.09: cztery „całe hangary" z rzędu z identycznym LIGHT_CARGO
+      // 1 164 208 — nie wiemy, ile statków gra NAPRAWDĘ wzięła): weryfikacja po
+      // wysyłce wymaga liczby statków z wiersza własnego lotu, a tego markupu jeszcze
+      // nie znamy. Zrzut raz na 6 h; parser dopiero z dowodu (reguła: nie zgadujemy).
+      {
+        const ex = rows.find(r => r.mine && !r.isReturn && /EXPEDITION/i.test(r.type));
+        if (ex && !Once.said("ownrow_dom", 6 * 3600e3)) log(`[LOT DOM] wiersz WŁASNEJ ekspedycji z listy ruchów (do liczenia statków po wysyłce): ${ex.html}`, "info");
+      }
       // v3.35.0 (audyt floty 29.08, ścieżka A5 z Ateny: „Destroy + snajperka powrotów"):
       // `s.own` było parsowane i NIGDY nieużywane, a wiersz powrotu znika z listy w tej
       // samej sekundzie, w której flota ląduje — więc wiedza o lądowaniu ginęła razem
@@ -1567,7 +1575,14 @@
       return { skip: `wolne sloty floty ≤ rezerwa (${e.slotReserve}) — fala zostawiłaby flotę bez slotu na ucieczkę` };
     }
     const [g, sy] = homeKey.split(":");
-    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves,
+    // v3.62.0 (log 02.09 08:55–09:04: od 2. fali każda „domyka serię", a log nie mówił
+    // DLACZEGO): powód fali domykającej i odczyt slotów idą do wpisu lotu — następny
+    // taki log rozstrzygnie, czy to sloty z gry, licznik serii czy konfiguracja.
+    const lastWhy = waves === 1 ? "seria = 1 fala"
+      : inSeries >= waves - 1 ? `ostatnia fala serii ${inSeries + 1}/${waves}`
+      : lastOfBurst ? `ostatni wolny slot ekspedycji (${expo.used}/${expo.total}, limit fal ${cap})` : "";
+    const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}` : "sloty nieznane";
+    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves, lastWhy, slotsTxt,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
   }
 
@@ -1669,7 +1684,7 @@
       // v3.10.2 (audyt regresji): licznik fali zapisywany PRZED Fly.start — odmowa
       // startu (trwa inna misja) i tak zjadala fale z serii. Najpierw start, potem licznik.
       const started = Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
-        why: `ekspedycja ${p.last ? "(domyka serię — cały hangar)" : `(fala ${sent}/${p.waves})`} — ${total.toLocaleString("pl-PL")} szt.`, speed: 100, plan: p.ships,
+        why: `ekspedycja ${p.last ? `(domyka serię — cały hangar: ${p.lastWhy})` : `(fala ${sent}/${p.waves})`} — ${total.toLocaleString("pl-PL")} szt., ${p.slotsTxt}`, speed: 100, plan: p.ships,
         missionType: "EXPEDITION", takeResources: false, duration: p.duration, missionId: link.mission });
       if (!started) return false;
       // v3.38.0: `sizes` zniknęło — rozmiar fali liczy dzielnik malejący z bieżącego
@@ -2055,6 +2070,52 @@
       bl[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3;
       Store.set("fly_block", bl);
     },
+    // Zawrót ma sens tylko dla lotu, który JESZCZE LECI w terminie zawrotu.
+    recallOf(mm) {
+      const r = mm.recallAt || 0;
+      if (!r || !mm.flightMs) return r;
+      return (Date.now() + mm.flightMs < r) ? 0 : r;     // doleci wcześniej = wyląduje
+    },
+    // v3.62.0: JEDNO miejsce domykające wysyłkę — wołane po kliku (gdy strona jeszcze
+    // stoi) ALBO po przeładowaniu z adresem fleetSendSuccessfully (na tym forku to
+    // ścieżka normalna). Idempotentne: confirmPendingSend() mógł już zdjąć `pending`
+    // z wpisów, więc niczego nie dopisujemy drugi raz; skład floty przychodzi ze
+    // stempla `last_send`, bo po przeładowaniu formularza już nie ma.
+    confirmed(m, info = {}) {
+      const eco = ["expedition", "asteroid", "debris"].includes(m.kind);
+      const s = Situation.load();
+      // TYLKO loty obronne trafiają do `flights` (v3.2.0): ekspedycja tam wpisana
+      // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek.
+      if (!eco) {
+        const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && f.pending);
+        // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
+        if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
+        else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+        }
+      }
+      // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
+      {
+        const e0 = (s.expected || []).find(e => e.pending && e.fromKey === m.fromKey)
+          || (s.expected || []).filter(e => e.fromKey === m.fromKey && (e.sentAt || 0) >= (m.startedAt || 0)).pop();
+        if (e0) {
+          delete e0.pending;
+          if (!Once.said(`powrot|${e0.fromKey}|${e0.sentAt}`, 3600e3)) log(`[POWRÓT] zapamiętany: ${(e0.total || 0).toLocaleString("pl-PL")} szt. (${e0.kind}) wróci na [${e0.fromKey}] ${e0.fromBody === "moon" ? "księżyc" : "planetę"} ~${new Date(e0.returnAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`, "info");
+        }
+      }
+      Situation.save(s);
+      if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
+      // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
+      // flotę na księżyc, nawet gdy rutynowe zwożenie jest wyłączone.
+      if (!m.home && !eco) { try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = Date.now(); Situation.save(sR); } catch {} }
+      Store.del("mission");
+      const what = info.loaded || "(skład nieznany)";
+      const types = info.loaded ? info.loaded.split(", ").length : 0;
+      if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${what} → [${m.toKey}]`, "success");
+      else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${what} → [${m.toKey}]`, "success");
+      else if (m.kind === "asteroid") log(`[ASTER] minery wysłane: ${what} → [${m.toKey}]`, "success");
+      else Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${types} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
+    },
     // v3.10.2 (audyt E2E): 3-minutowa karencja po nieudanej próbie lotu była dłuższa
     // niż typowy dolot ataku, a decide() deterministycznie wystawia tę samą trasę —
     // czyli po jednym potknięciu bot stał bezczynnie do uderzenia. Lot RATUNKOWY
@@ -2113,6 +2174,22 @@
           // fale 2..N po cichu. 2.x wypinalo z niej ekspedycje wprost. Dla ekonomii
           // zostaje waskie okno 20 s: chroni przed podwojnym klikiem po przeladowaniu,
           // ale nie zjada serii.
+          // v3.62.0 (log 02.09, każda wysyłka: „już poszła 2s temu — nie powtarzam"):
+          // na tym forku „Send fleet" ZAWSZE przeładowuje stronę, zanim wykona się kod
+          // po kliku — więc bramka czasowa poniżej była ścieżką normalną, a nie awaryjną,
+          // i wszystko, co miało się stać po wysyłce (log „fala wysłana", stempel
+          // ewakuacji, rejestr powrotów), po prostu nie działo się nigdy. Do tego okno
+          // 20 s dla ekspedycji: wolniejsze ładowanie strony sukcesu = ta sama fala
+          // wypełniona i wysłana DRUGI raz. Potwierdzenie ma iść z DOWODU: adres
+          // fleetSendSuccessfully + stempel wysyłki TEJ misji (nie starszy niż jej start).
+          {
+            const lsOk = Store.get("last_send", null);
+            if (lsOk && lsOk.toKey === m.toKey && lsOk.from === m.fromKey && lsOk.kind === m.kind && (lsOk.at || 0) >= (m.startedAt || 0) && location.href.includes("fleetSendSuccessfully")) {
+              log(`[LOT] gra potwierdziła wysyłkę [${m.fromKey}]→[${m.toKey}] (adres fleetSendSuccessfully) — „Send fleet" przeładował stronę, zanim bot zdążył to zapisać.`, "info");
+              this.confirmed(m, { loaded: lsOk.loaded || "" });
+              return;
+            }
+          }
           const ECO_KINDS = ["expedition", "asteroid", "debris"];
           // v3.61.0 (podwójna wysyłka złomu 05:19+05:20): okno 20 s jest dla FAL
           // ekspedycji (ta sama trasa co 60–90 s); złom nigdy nie powtarza trasy
@@ -2361,12 +2438,6 @@
       // może nigdy się nie wykonać. Lot obronny zapisujemy PRZED klikiem (inaczej
       // flota ucieka bez zaplanowanego zawrotu i zostaje na refugium na stałe),
       // a stempel wysyłki blokuje powtórzenie tej samej fali po przeładowaniu.
-      // Zawrot ma sens tylko dla lotu, ktory JESZCZE LECI w terminie zawrotu.
-      const recallOf = (mm) => {
-        const r = mm.recallAt || 0;
-        if (!r || !mm.flightMs) return r;
-        return (Date.now() + mm.flightMs < r) ? 0 : r;     // doleci wczesniej = wyladuje
-      };
       // v3.52.0 (owner 31.08: „bot ma mapować każdą wysłaną flotę i wiedzieć, kiedy
       // wraca"): REJESTR POWROTÓW — loty ekonomii zapisujemy OSOBNO od `flights`
       // (lekcja v3.2.0: ekspedycja w `flights` zaślepia obronę pary). Powrót liczymy
@@ -2381,12 +2452,16 @@
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const sPre = Situation.load();
         sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
-      Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey });
+      // v3.62.0: skład floty w stemplu — po przeładowaniu to jedyne źródło dla logu „fala wysłana"
+      Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey, loaded: loaded.join(", "), total: loadedTotal });
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);
-      send.click(); log("[LOT] Send fleet kliknięty.", "success");
+      // v3.62.0: klik przez Nav.click — przeładowanie po „Send fleet" ma w linii startowej
+      // powód „bot: wysyłka", a nie „otwarte ręcznie" (i nie udaje klikania operatora).
+      log("[LOT] Send fleet kliknięty.", "success");
+      Nav.click(send, `wysyłka floty [${m.fromKey}]→[${m.toKey}] (Send fleet)`);
       // potwierdzenie: URL fleetSendSuccessfully albo hangar pusty
       await sleep(jitter(3000, 4500));
       const okUrl = location.href.includes("fleetSendSuccessfully");
@@ -2402,33 +2477,8 @@
         Situation.save(sBad);
         return this.abort("brak potwierdzenia wysyłki");
       }
-      const s = Situation.load();
-      // v3.2.0: TYLKO loty obronne trafiają do `flights`. Ekspedycja tam wpisana
-      // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek
-      // — dokładnie ten rodzaj sprzężenia, przez który 2.x gubił flotę.
-      if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
-        const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && f.pending);
-        // v3.10.3: czas lotu bywa znany dopiero TERAZ (krok 2 mogl pojsc w innym
-        // przebiegu), wiec razem z nim przeliczamy termin zawrotu — lot krotszy niz
-        // ten termin po prostu wyladuje i zaden zawrot go nie dotyczy.
-        if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = recallOf({ ...m, flightMs: m.flightMs }); } }
-        else s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: recallOf(m), phase: "launched", tries: 0 }];
-      }
-      // v3.52.0: rejestr powrotów — wysyłka potwierdzona, wpis przestaje być `pending`.
-      { const e0 = (s.expected || []).find(e => e.pending && e.fromKey === m.fromKey);
-        if (e0) { delete e0.pending; log(`[POWRÓT] zapamiętany: ${e0.total.toLocaleString("pl-PL")} szt. (${e0.kind}) wróci na [${e0.fromKey}] ${e0.fromBody === "moon" ? "księżyc" : "planetę"} ~${new Date(e0.returnAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`, "info"); } }
-      Situation.save(s);
-      if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
-      // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
-      // flotę na księżyc, nawet gdy rutynowe zwożenie jest wyłączone.
-      if (!m.home && m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
-        try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = Date.now(); Situation.save(sR); } catch {}
-      }
-      Store.del("mission");
-      if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${loaded.join(", ")} → [${m.toKey}]`, "success");
-      else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
-      else if (m.kind === "asteroid") log(`[ASTER] minery wysłane: ${loaded.join(", ")} → [${m.toKey}]`, "success");
-      else Journal.add(m.home ? "POWRÓT" : "RATUNEK", `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${loaded.length} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
+      // v3.62.0: całe domknięcie wysyłki w jednym miejscu (wspólne z drogą po przeładowaniu)
+      this.confirmed(m, { loaded: loaded.join(", ") });
       // v3.48.0: po fali DOMYKAJĄCEJ serię nie będzie kolejnej przez ~40 min — zamiast
       // zostawiać operatora na stronie głównej, bot odprowadza kartę tam, gdzie był
       // (o ile od startu serii sam nie kliknął).
