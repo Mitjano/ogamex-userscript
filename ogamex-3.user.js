@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.60.0
+// @version      3.61.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.60.0";
+  const VERSION = "3.61.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1921,17 +1921,22 @@
         const idx = parseInt(item.querySelector(".planet-index")?.textContent || "0") || 0;
         if (!wanted.includes(idx)) continue;
         const cell = item.querySelector(".col-debris, .galaxy-col.col-debris");
-        if (!cell || !(cell.innerHTML || "").trim()) continue;
+        if (!cell) continue;
         // v3.59.0 (pierwszy bojowy zbiór 01.09 22:32, „Invalid mission type"):
         // na Genesis komórka złomu NIE ma linku wprost — cały dymek (nagłówek
         // „Debris field", ilości surowców i link Recycle z NUMEREM MISJI) siedzi
         // w atrybucie data-tooltip-content. Misję na tym forku ustawia parametr
         // URL-a (ekspedycje: mission=1 z linku galaktyki) — konstruowany adres
         // bez numeru misji gra odrzuciła. Czytamy więc link i ROZMIAR złomu z dymka.
-        let amount = 0, tipHref = null;
+        // v3.61.0 (noc 01/02.09, ~15 pustych lotów, raporty 0/0): komórka DF
+        // pokazuje też IKONĘ własnej floty lecącej na tę pozycję
+        // (fleetActionIcon, zrzut 04:37) — „niepusta komórka" NIE znaczy „złom
+        // jest". Dowodem złomu jest wyłącznie dymek „Debris field" albo link.
+        let amount = 0, tipHref = null, sawTip = false;
         for (const te of cell.querySelectorAll("[data-tooltip-content]")) {
           const raw = te.getAttribute("data-tooltip-content") || "";
           if (!/debris/i.test(raw)) continue;
+          sawTip = true;
           try {
             const tdoc = new DOMParser().parseFromString(raw, "text/html");
             const ta2 = tdoc.querySelector("a[href*='/fleet']");
@@ -1949,14 +1954,17 @@
         }
         const a = cell.querySelector("a[href*='/fleet']");
         if (a) return { href: a.getAttribute("href"), pos: idx, amount };
-        if (tipHref) return { href: tipHref, pos: idx, amount };
+        if (tipHref) return { href: tipHref, pos: idx, amount, viaTip: true };
         const rel = cell.querySelector("[rel^='debris']")?.getAttribute("rel");
         const tip = rel ? document.getElementById(rel) : null;
         const ta = tip?.querySelector("a[href*='/fleet']");
         if (ta) return { href: ta.getAttribute("href"), pos: idx, amount };
+        // Bez dymka „Debris field" i bez linku = w komórce jest coś innego
+        // (ikona własnej floty) — na tej pozycji ZŁOMU NIE MA.
+        if (!sawTip) continue;
         if (!Once.said("debris_dom", 6 * 3600e3)) log(`[ZŁOM] pole złomu bez linku (poz. ${idx}) — markup: ${(cell.innerHTML || "").replace(/\s+/g, " ").slice(0, 500)}`, "info");
         const [g, sy] = (baseKey || "").split(":");
-        return { href: `/fleet?x=${g}&y=${sy}&z=${idx}`, pos: idx, noLink: true, amount };
+        return { href: `/fleet?x=${g}&y=${sy}&z=${idx}`, pos: idx, noLink: true, amount, viaTip: true };
       }
       return null;
     },
@@ -1965,6 +1973,11 @@
       if (Human.economyAllowed(s)) return false;
       if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
       const now = Date.now();
+      // v3.61.0 (noc 01/02.09: ~15 wysyłek, raporty 0/0): zbieracze lecą 30 min,
+      // a kontrola chodzi co 20 — bot dosyłał kolejne floty, zanim pierwsza
+      // dotarła. Gdy zbieracze są W DRODZE (rejestr powrotów zna termin dolotu),
+      // nie ma po co ani latać, ani odwiedzać galaktyki.
+      if ((s.expected || []).some(e => e.kind === "debris" && now < (e.sentAt || 0) + (e.flightMs || 0) + 60e3)) return false;
       // v3.56.0 (parytet z Atheną, HomeBase.expo): PZ po piratach ląduje na
       // poz. 16 układu STARTU ekspedycji, nie aktywnej pary — przy przypiętym
       // „startuj z" [1:217:6] bot zaglądał do układu aktywnego ciała i złom
@@ -1997,6 +2010,13 @@
       // złom (+10% marginesu), reszta pilnuje domu. Ładowność 125 000/recykler
       // POTWIERDZONA na żywo (zrzut 22:34: 203 820 375 000 / 1 630 563). Rozmiar
       // złomu nieznany (dymek bez liczb) = 20% hangaru, nigdy całość.
+      // v3.61.0: dymek JEST, ale nie zdradza ilości (albo pokazuje zera —
+      // pole właśnie zebrane) → nie wysyłamy w ciemno; unknownShare zostaje
+      // tylko dla ścieżek bez dymka (link wprost / rel, styl Atheny).
+      if (hit.viaTip && !(hit.amount > 0)) {
+        if (!Once.said(`debempty|${hit.pos}`, 30 * 60e3)) log(`[ZŁOM] poz. ${hit.pos}: dymek pola bez ilości surowców (pole puste albo nieczytelne) — nie wysyłam w ciemno.`, "info");
+        return false;
+      }
       const cargo = CFG.debris.cargoPerRecycler || 125_000;
       const qty = hit.amount > 0
         ? Math.min(rec.qty, Math.max(1, Math.ceil(hit.amount * 1.1 / cargo)))
@@ -2094,7 +2114,10 @@
           // zostaje waskie okno 20 s: chroni przed podwojnym klikiem po przeladowaniu,
           // ale nie zjada serii.
           const ECO_KINDS = ["expedition", "asteroid", "debris"];
-          const guardMs = ECO_KINDS.includes(m.kind) ? 20e3 : 3 * 60e3;
+          // v3.61.0 (podwójna wysyłka złomu 05:19+05:20): okno 20 s jest dla FAL
+          // ekspedycji (ta sama trasa co 60–90 s); złom nigdy nie powtarza trasy
+          // w minutach — dostaje pełne 3 minuty jak loty obronne.
+          const guardMs = m.kind === "debris" ? 3 * 60e3 : ECO_KINDS.includes(m.kind) ? 20e3 : 3 * 60e3;
           const ls = Store.get("last_send", null);
           if (ls && Date.now() - ls.at < guardMs && ls.toKey === m.toKey && ls.from === m.fromKey) {
             log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");

@@ -50,6 +50,7 @@ class Game {
     this.asteroidTtl = 3600;  // ile sekund do jej zniknięcia
     this.debris = false;      // czy przy bazie lezy zlom
     this.debris16 = false;    // czy na poz. 16 (ekspedycje) lezy PZ po piratach
+    this.fleetIcon16 = false; // ikona WLASNEJ floty w kolumnie DF poz. 16 (to nie zlom!)
     this.loggedOut = false;   // gra oddaje strone logowania
     this.cargoPerMiner = 25_000;     // ile uniesie JEDEN miner (bot ma się tego nauczyć)
     this.asteroidYield = 500_000;    // typowy urobek asteroidy w dzienniku
@@ -173,7 +174,7 @@ class Game {
           <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a>
-          <div class="galaxy-col col-debris">${this.debris16 ? `<div class="tooltip_sticky" data-tooltip-content="&lt;div&gt;Debris field&lt;/div&gt;&lt;span&gt;1.200.000.000&lt;/span&gt;&lt;span&gt;800.000.000&lt;/span&gt;"></div>` : ""}</div>
+          <div class="galaxy-col col-debris">${this.fleetIcon16 ? `<div class="fleetActionIcon fleetActionFriendly"></div>` : ""}${this.debris16 ? `<div class="tooltip_sticky" data-tooltip-content="&lt;div&gt;Debris field&lt;/div&gt;&lt;span&gt;1.200.000.000&lt;/span&gt;&lt;span&gt;800.000.000&lt;/span&gt;"></div>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">17</span>
           ${this.asteroid ? `<span data-asteroid-disappear="${this.asteroidTtl}"></span><a class="btn-asteroid" href="/fleet?x=${gx}&y=${sy}&z=17&mission=12">Asteroid</a>` : "<span>Find asteroids</span>"}
@@ -1321,7 +1322,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       hangars: { "1:217:6|moon": { RECYCLER: 200000, LIGHT_FIGHTER: 50 } },
       active: { key: "1:100:5", body: "planet" },
     });
-    g.debris16 = true;
+    // v3.61.0: w kolumnie DF wisi ikona WŁASNEJ floty lecącej na 16 (ekspedycje!),
+    // a recyklery lecą 30 min — jak na żywo w nocy 01/02.09 (15 pustych lotów).
+    g.fleetIcon16 = true;
+    g.flightSec = 1826;
     // hangar bazy ekspedycyjnej znany (w produkcji pilnuje go rekonesans v3.21.0)
     g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({ pairs: {}, hangars: {
       "1:217:6|moon": { total: 200050, at: Date.now(), ships: [{ type: "RECYCLER", qty: 200000 }, { type: "LIGHT_FIGHTER", qty: 50 }] },
@@ -1330,7 +1334,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bot zajrzał na galaktykę układu startu ekspedycji (1:217), nie aktywnej pary (1:100)",
       g.navigations.some(u => /galaxy\?x=1&y=217/.test(u)) && !g.navigations.some(u => /galaxy\?x=1&y=100/.test(u)),
       JSON.stringify(g.navigations.slice(0, 8)));
-    advance(g, 2 * 60e3);
+    check("ikona WŁASNEJ floty w kolumnie DF to nie złom — zero wysyłek", g.sent.length === 0, JSON.stringify(g.sent));
+    g.debris16 = true;
+    advance(g, 21 * 60e3);
     const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
     // v3.60.0: na tym forku „Collect" (mission 13) zbiera z WŁASNEJ planety —
     // złom zbiera misja „Recycle"; dymek bez linku i bez etykiet (ikonki+liczby).
@@ -1345,9 +1351,15 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("rozmiar złomu policzony z SAMYCH LICZB dymka (ikonki zamiast etykiet)", logs.some(m => m.includes("surowców") && m.replace(/[^\d]/g, "").includes("2000000000")), logs.filter(m => /ZŁOM/.test(m)).slice(0, 4).join(" | "));
     const stZl = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("lot po złom NIE jest lotem obronnym (nie zablokuje ratunku)", (stZl.flights || []).length === 0, JSON.stringify(stZl.flights));
-    // v3.57.0: mimo dwóch przebiegów (drugi 2 min „później") galaktyka odwiedzona
-    // dokładnie RAZ — pełny okres everyMin stemplowany przy nawigacji.
-    check("jedna wizyta na galaktyce na okres (nie co 60 s)", g.navigations.filter(u => /galaxy\?x=1&y=217/.test(u)).length === 1, JSON.stringify(g.navigations.filter(u => /galaxy/.test(u))));
+    // v3.61.0: zbieracze lecą 30 min, kontrola co 20 — kolejny cykl NIE dosyła,
+    // póki pierwsza flota nie dotrze (rejestr powrotów zna termin dolotu).
+    advance(g, 21 * 60e3);
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("zbieracze W DRODZE (lot 30 min) — kolejna kontrola NIE dosyła", g.sent.filter(x => /Recycle/i.test(x.mission || "")).length === 1, JSON.stringify(g.sent.map(x => x.mission)));
+    advance(g, 15 * 60e3);
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("po DOLOCIE zbieraczy świeże pole = nowa wysyłka", g.sent.filter(x => /Recycle/i.test(x.mission || "")).length === 2, JSON.stringify(g.sent.map(x => x.mission)));
+    check("galaktyka odwiedzana tylko, gdy jest po co (2 wizyty w całym scenariuszu)", g.navigations.filter(u => /galaxy\?x=1&y=217/.test(u)).length === 2, JSON.stringify(g.navigations.filter(u => /galaxy/.test(u))));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

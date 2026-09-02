@@ -597,6 +597,11 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   // na liście preferencji, bo dusił złą misję („Invalid mission type").
   check("misja złomu = RECYCLE, nigdy Collect-z-własnej-planety", /\? \["RECYCL", "HARVEST"\]/.test(src) && !/"COLLECT", "HARVEST", "RECYCL"/.test(src));
   check("rozmiar złomu z samych liczb dymka (grupowany wzorzec tnie sklejone liczby)", /\\d\{1,3\}\(\?:\[\.,\]\\d\{3\}\)\+/.test(dm));
+  // v3.61.0 (noc 01/02.09: 15 pustych lotów, raporty 0/0, dubel 05:19+05:20):
+  check("złom: ikona własnej floty w kolumnie DF ≠ złom (dowodem tylko dymek/link)", /sawTip/.test(dm) && /if \(!sawTip\) continue/.test(dm));
+  check("złom: zbieracze w drodze blokują kolejną wysyłkę (rejestr powrotów)", /e\.kind === "debris" && now < \(e\.sentAt \|\| 0\) \+ \(e\.flightMs \|\| 0\)/.test(dm));
+  check("złom: dymek bez ilości (pole puste) = nie wysyłamy w ciemno", /hit\.viaTip && !\(hit\.amount > 0\)/.test(dm));
+  check("złom: okno anty-duplikat 3 min, nie 20 s fal ekspedycji", /m\.kind === "debris" \? 3 \* 60e3/.test(src));
   check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
   check("kolejność ekonomii: rekonesans → bonus → księżyce → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Moon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
   check("księżyce: domyślnie WYŁĄCZONE (moduł wydaje surowce bezpowrotnie)", /moon: \{ enabled: false/.test(src));
