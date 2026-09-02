@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.62.0
+// @version      3.63.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.62.0";
+  const VERSION = "3.63.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1534,7 +1534,16 @@
     if (!h || now - h.at > 15 * 60e3) return { skip: `hangar [${homeKey}] ${body} nieznany/stary — najpierw rekonesans` };
     // v3.10.2: odczyt slotów starszy niż 30 min to zgadywanie, nie wiedza.
     const slotsFresh = s.slots && now - (s.slots.at || 0) < 30 * 60e3;
-    const expo = slotsFresh ? s.slots.expo : null, fleet = slotsFresh ? s.slots.fleet : null;
+    // v3.63.0 (log 02.09 14:42: „ekspedycje 8/8 — czekam na powroty", a pasek gry
+    // „1 Missions: 1 Own" — 7 fal wylądowało 14:26–14:32, lecz odczyt slotów ze strony
+    // floty z 14:19 obowiązywał do 14:49 i bot stał pół godziny z pełnym hangarem):
+    // liczba slotów jest czytana TYLKO ze strony floty, a pasek misji jest GLOBALNY
+    // i odświeżany co przebieg. Każda ekspedycja w locie to co najmniej jeden własny
+    // lot na pasku, więc „N Own" jest GÓRNYM ograniczeniem zajętych slotów — starszy
+    // odczyt slotów nie może twierdzić więcej niż pasek.
+    const expoRaw = slotsFresh ? s.slots.expo : null, fleet = slotsFresh ? s.slots.fleet : null;
+    const barFresh = s.bar && typeof s.bar.own === "number" && now - (s.bar.at || 0) < 5 * 60e3;
+    const expo = (expoRaw && barFresh && s.bar.own < expoRaw.used) ? { ...expoRaw, used: s.bar.own, fromBar: true } : expoRaw;
     const cap = Math.max(1, Math.min(e.waves || 1, expo?.total || e.waves || 1));
     if (expo && expo.used >= cap) return { skip: `ekspedycje ${expo.used}/${expo.total} (limit fal ${cap}) — czekam na powroty` };
     if (burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000)) return { skip: "odstęp między falami" };
@@ -1581,7 +1590,7 @@
     const lastWhy = waves === 1 ? "seria = 1 fala"
       : inSeries >= waves - 1 ? `ostatnia fala serii ${inSeries + 1}/${waves}`
       : lastOfBurst ? `ostatni wolny slot ekspedycji (${expo.used}/${expo.total}, limit fal ${cap})` : "";
-    const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}` : "sloty nieznane";
+    const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}${expo.fromBar ? ` (odczyt ${expoRaw.used}/${expoRaw.total} przycięty do ${s.bar.own} własnych lotów z paska)` : ""}` : "sloty nieznane";
     return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves, lastWhy, slotsTxt,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
   }

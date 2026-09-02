@@ -304,6 +304,21 @@ console.log("\n── 17. EKSPEDYCJE: seria (dzielnik malejący, ostatnia fala d
   check("fala zamiatajaca zabiera caly hangar (nic nie zostaje w domu)", fill.last === true && fill.ships[0].qty === fillAvail, JSON.stringify(fill.ships) + " | w hangarze: " + fillAvail);
 }
 
+console.log("\n── 17c. EKSPEDYCJE: stary odczyt slotów vs pasek misji (log 02.09 14:42) ──");
+{
+  // Odczyt „Expeditions: 8/8" ze strony floty sprzed 20 min, a pasek gry (globalny,
+  // świeży) mówi „1 Own": 7 fal wylądowało, bot stał z pełnym hangarem do 30 min.
+  const stale8 = { slots: { fleet: { used: 8, total: 27 }, expo: { used: 8, total: 8 }, at: NOW - 20 * 60e3 }, bar: { total: 1, own: 1, foreign: 0, at: NOW - 10e3 } };
+  const p1 = expoPlan(ebase(stale8), { expo: { ...ECFG.expo, waves: 8, slotReserve: 0 } }, NOW, null);
+  check("pasek 1 Own przycina stary odczyt 8/8 → fala leci", !p1.skip && /przycięty do 1 własnych/.test(p1.slotsTxt || ""), JSON.stringify(p1.skip || p1.slotsTxt));
+  const p2 = expoPlan(ebase({ ...stale8, bar: { total: 9, own: 8, foreign: 1, at: NOW - 10e3 } }), { expo: { ...ECFG.expo, waves: 8, slotReserve: 0 } }, NOW, null);
+  check("pasek 8 Own niczego nie przycina → nadal czekam na powroty", /8\/8[^]*czekam na powroty/.test(p2.skip || ""), JSON.stringify(p2.skip));
+  const p3 = expoPlan(ebase({ ...stale8, bar: { total: 1, own: 1, foreign: 0, at: NOW - 6 * 60e3 } }), { expo: { ...ECFG.expo, waves: 8, slotReserve: 0 } }, NOW, null);
+  check("pasek starszy niż 5 min NIE unieważnia odczytu slotów", /czekam na powroty/.test(p3.skip || ""), JSON.stringify(p3.skip));
+  const p4 = expoPlan(ebase({ ...stale8, bar: { total: 0, own: 0, foreign: 0, at: NOW - 10e3 } }), { expo: { ...ECFG.expo, waves: 8, slotReserve: 0 } }, NOW, null);
+  check("No fleet movement (0 Own) = wszystkie sloty wolne → fala 1/8, nie domykająca", !p4.skip && p4.last !== true, JSON.stringify(p4.skip || p4.last));
+}
+
 console.log("\n── 17b. EKSPEDYCJE: powroty w środku serii (zgłoszenie 30.08) ──");
 {
   // Incydent: hangar urósł z 41 711 do 197 408 szt. w środku serii (wróciły wcześniejsze
