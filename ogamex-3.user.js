@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.65.2
+// @version      3.65.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.65.2";
+  const VERSION = "3.65.3";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -85,6 +85,17 @@
   // na >12 min, strażnik restartuje Firefoksa z kartą gry i wysyła push na ntfy —
   // martwa karta przestaje być cichą śmiercią obrony. Brak strażnika to nie błąd
   // (bot działa jak dotąd) — logujemy tylko ZMIANĘ stanu.
+  // v3.65.3 (incydent 03.09, cztery restarty Firefoksa w cztery godziny — 20:44,
+  // 21:01, 22:45, 23:02 — w tym JEDEN W TRAKCIE OSTRZAŁU): puls szedł WYŁĄCZNIE
+  // z wnętrza `defenceTick`, za bramką `if (running || !CFG.enabled) return`.
+  // Operator wyłączył bota, żeby bronić się ręcznie — i tym samym zamilkł puls,
+  // a strażnik po 12 minutach ciszy uznawał kartę za zawieszoną i UBIJAŁ
+  // przeglądarkę. Pętla nie do przerwania: restart → skrypt wstaje z zapisanym
+  // OFF → znowu cisza → znowu restart, co ~17 minut, w kółko.
+  // Strażnik mierzy JEDNO: czy karta z grą żyje. Żyje także wtedy, gdy bot jest
+  // wyłączony, gdy trwa lot, gdy blokadę karty trzyma inna zakładka i gdy gra
+  // oddała stronę błędu. Puls ma więc własny zegar, poza wszystkimi bramkami
+  // obrony, i milknie dokładnie wtedy, gdy ma milknąć: gdy karta naprawdę zamarła.
   const Heartbeat = {
     URL: "http://127.0.0.1:8765/hb",
     ping() {
@@ -3681,6 +3692,10 @@
   }
   defenceTick();
   setInterval(defenceTick, CFG.tickMs);
+  // v3.65.3: puls dla strażnika NIE zależy od tego, czy bot jest włączony —
+  // patrz komentarz przy `Heartbeat`. Własny zegar, bez bramek obrony.
+  try { Heartbeat.ping(); } catch {}
+  setInterval(() => { try { Heartbeat.ping(); } catch {} }, 30e3);
   setInterval(keepalive, 60e3);
   setInterval(watchdog, 60e3);
   // aktualizacja z repo
