@@ -1452,9 +1452,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const cfgOn = { autoRescue: true, expo: { enabled: true, waves: 1, slotReserve: 0 }, recon: false, debris: { enabled: false }, human: { breaks: false, economyAtNight: true } };
     const g = new Game();
     const KC = "genesis.ogamex.net:ogx3_cfg";
+    const KAT = "genesis.ogamex.net:ogx3_cfg_saved_at";     // v3.65.1: stempel ŻYJE OSOBNO od cfg (patrz niżej)
     const a = load(g, { cfg: cfgOn });                       // karta A: ekspedycje ON w pamięci
     // karta B tej samej przeglądarki klika „Ekspedycje OFF" — NOWSZY zapis w schowku
-    { const st = JSON.parse(g.store.get(KC) || "{}"); st.expo = { ...(st.expo || {}), enabled: false }; st.savedAt = Date.now() + 1000; g.store.set(KC, JSON.stringify(st)); }
+    { const st = JSON.parse(g.store.get(KC) || "{}"); st.expo = { ...(st.expo || {}), enabled: false }; g.store.set(KC, JSON.stringify(st)); g.store.set(KAT, JSON.stringify(Date.now() + 1000)); }
     try { await a.tick(3); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
     await new Promise(r => setTimeout(r, 200));
     const lg = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg);
@@ -1462,7 +1463,21 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("karta A NIE wysłała fali ani nie zaplanowała misji", g.sent.length === 0 && (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null", JSON.stringify(g.sent) + " misja=" + String(g.store.get("genesis.ogamex.net:ogx3_mission")).slice(0, 80));
     check("CFG w pamięci karty A = OFF (panel pokaże prawdę)", a.api.CFG.expo.enabled === false);
     a.api.saveCfg();
-    check("zapis z panelu stempluje czas (inne karty go przejmą)", (JSON.parse(g.store.get(KC) || "{}").savedAt || 0) > 0, g.store.get(KC));
+    check("zapis z panelu stempluje czas w KLUCZU OSOBNYM od cfg (inne karty go przejmą)", (JSON.parse(g.store.get(KAT) || "0")) > 0, g.store.get(KAT));
+
+    // v3.65.1 (log 03.09 13:07–14:37: „[CFG] ustawienia zmienione w innej karcie" po
+    // KAŻDYM przeładowaniu przez 90 minut, choć nikt nic nie zmieniał): stempel żył w
+    // `CFG.savedAt`, a CFG jest budowany OD ZERA z DEFAULTS przy KAŻDYM przeładowaniu
+    // strony (ten fork nawiguje = przeładowuje grę = ponownie wstrzykuje skrypt) — pętla
+    // po DEFAULTS kopiowała ze schowka tylko klucze obecne w DEFAULTS, `savedAt` nim nie
+    // jest, więc ginął co przeładowanie i syncCfg zawsze widział „nowszy" zapis. Test:
+    // wiele KOLEJNYCH „przeładowań" (osobne load()) z TYM SAMYM zapisanym configiem —
+    // ani jednego spurious wpisu w logu.
+    const g3 = new Game();
+    load(g3, { cfg: cfgOn }).api.saveCfg();                  // jeden prawdziwy zapis, jak klik w panelu
+    for (let i = 0; i < 8; i++) { const inst = load(g3, {}); try { await inst.tick(2); } catch {} }
+    const lg3 = JSON.parse(g3.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg);
+    check("8 kolejnych przeładowań BEZ zmiany ustawień → zero spurious „[CFG] zmienione”", !lg3.some(m => /\[CFG\] ustawienia zmienione w innej karcie/.test(m)), lg3.filter(m => /CFG/.test(m)).join(" | "));
     // kontrola: bez wyłączenia w schowku ta sama karta wysyła normalnie
     const g2 = new Game();
     g2.moonLinks = true;                                   // bez recon bot czyta hangar księżyca tylko cichym fetchem

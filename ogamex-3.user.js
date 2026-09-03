@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.65.0
+// @version      3.65.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.65.0";
+  const VERSION = "3.65.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -275,25 +275,36 @@
   // wchodzi do pamięci (z wpisem w logu), a stary CFG nie ma prawa go nadpisać.
   // UWAGA: schowek Tampermonkey jest per przeglądarka/urządzenie — bot na DRUGIM
   // komputerze ma własne ustawienia i własne „Ekspedycje ON".
+  //
+  // v3.65.1 (log 03.09 13:07–14:37: „[CFG] ustawienia zmienione w innej karcie"
+  // po KAŻDYM przeładowaniu, przez 90 minut, choć nikt nic nie zmieniał): pierwsza
+  // wersja trzymała stempel jako `CFG.savedAt`, a CFG jest budowany OD ZERA z
+  // DEFAULTS przy każdym przeładowaniu strony (ten fork nawiguje = przeładowuje
+  // grę = ponownie wstrzykuje skrypt) — pętla `for (k of DEFAULTS)` kopiowała ze
+  // schowka TYLKO klucze obecne w DEFAULTS, a `savedAt` nim nie jest, więc ginął
+  // co przeładowanie i syncCfg zawsze widział „nowszy" zapis. Stempel żyje teraz
+  // w OSOBNYM kluczu magazynu, poza kształtem CFG — nie ginie przy odtwarzaniu CFG.
+  let cfgSavedAt = Store.get("cfg_saved_at", 0) || 0;
   const cfgMerge = (into, from) => {
     for (const [k, v] of Object.entries(from || {})) {
-      if (k === "savedAt") continue;
       into[k] = (v && typeof v === "object" && !Array.isArray(v)) ? Object.assign({}, into[k] || {}, v) : v;
     }
   };
   // Zapis NIE scala ze schowkiem: kliknięcie operatora ma wygrać z tym, co jest w
   // schowku (synchronizacja i tak biegnie co przebieg w KAŻDEJ karcie, także tej bez
   // blokady karty — pamięć jest świeża na sekundy przed kliknięciem).
-  const saveCfg = () => { CFG.savedAt = Date.now(); Store.set("cfg", CFG); };
+  const saveCfg = () => { cfgSavedAt = Date.now(); Store.set("cfg_saved_at", cfgSavedAt); Store.set("cfg", CFG); };
   const syncCfg = () => {
     try {
+      const at = Store.get("cfg_saved_at", 0) || 0;
+      if (at <= cfgSavedAt) return false;
       const st = Store.get("cfg", null);
-      if (!st || (st.savedAt || 0) <= (CFG.savedAt || 0)) return false;
+      if (!st) { cfgSavedAt = at; return false; }
       const before = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
-      cfgMerge(CFG, st); CFG.savedAt = st.savedAt;
+      cfgMerge(CFG, st); cfgSavedAt = at;
       const after = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
       const diff = Object.keys(before).filter(k => before[k] !== after[k]).map(k => `${{ expo: "ekspedycje", aster: "minery", debris: "złom", bot: "bot", auto: "auto-ratunek" }[k]} ${after[k] ? "ON" : "OFF"}`);
-      log(`[CFG] ustawienia zmienione w innej karcie (${new Date(st.savedAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}) — przeładowane${diff.length ? ": " + diff.join(", ") : ""}.`, diff.length ? "warn" : "info");
+      log(`[CFG] ustawienia zmienione w innej karcie (${new Date(at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}) — przeładowane${diff.length ? ": " + diff.join(", ") : ""}.`, diff.length ? "warn" : "info");
       try { if (typeof UI !== "undefined" && UI && UI.renderStatus) UI.renderStatus(); } catch {}
       return true;
     } catch { return false; }
@@ -3371,7 +3382,7 @@
         // v3.16.0: włączenie modułu ręcznie kasuje trwającą przerwę kawową — operator
         // właśnie powiedział, czego chce, a przerwa i tak dotyczy tylko ekonomii.
         if (CFG.expo.enabled && Human.onBreak()) { Store.set("break_until", 0); Store.set("break_next", Date.now() + jitter(CFG.human.breakEveryMinMin, CFG.human.breakEveryMaxMin) * 60e3); log("[PRZERWA] przerwana ręcznie — włączyłeś ekspedycje.", "info"); }
-        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"} (zapisane ${new Date(CFG.savedAt || Date.now()).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}; ustawienie dotyczy TEJ przeglądarki — bot na innym komputerze ma własne)`, "info"); this.renderStatus();
+        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"} (zapisane ${new Date(cfgSavedAt || Date.now()).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}; ustawienie dotyczy TEJ przeglądarki — bot na innym komputerze ma własne)`, "info"); this.renderStatus();
       };
       $("ogx3-disc").onclick = () => { CFG.expo.discoverer40 = !CFG.expo.discoverer40; saveCfg(); log(`Odkrywca (40 min) ${CFG.expo.discoverer40 ? "ON" : "OFF — ekspedycje na " + CFG.expo.holdingHours + " h"}`, "info"); this.renderStatus(); };
       $("ogx3-waves").value = String(CFG.expo.waves); $("ogx3-waves").onchange = (e) => { CFG.expo.waves = Math.max(1, parseInt(e.target.value) || 1); saveCfg(); Store.del("burst"); log(`Fale ekspedycji: ${CFG.expo.waves} (seria liczona od nowa)`, "info"); };
