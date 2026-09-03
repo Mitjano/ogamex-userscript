@@ -61,12 +61,13 @@ class Game {
     this.bonusClaims = 0;
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
     this.errorPage = false;   // gra oddaje strone bledu
+    this.moonLinks = false;   // v3.65.0: pasek daje księżycowi własny ?planet=UUID-moon (jak fork) — cichy odczyt hangaru księżyca
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
     return this.sent.map((s, i) => ({ s, i }))
       .filter(({ s }) => s.inFlight && (!onlyActive || s.from === this.active.key || s.to === this.active.key))
-      .map(({ s, i }) => `<tr class="row-mission-type-DEPLOY${s.returning ? " row-fleet-return" : ""}" data-fleet-id="own${i}">
+      .map(({ s, i }) => `<tr class="row-mission-type-${s.type || "DEPLOY"}${s.returning ? " row-fleet-return" : ""}" data-fleet-id="own${i}">
          <td data-remaining-seconds="${s.eta || 600}">10:00</td>
          <td><span class="fleet-source-coords">[${s.from}]</span> Ja</td>
          <td><a href="#">[${s.to}]</a> ${s.toBody === "moon" ? '<img src="/img/moon-icon.png">Moon' : "Planet"}</td>
@@ -92,7 +93,7 @@ class Game {
       const pSel = sel && this.active.body === "planet" ? " selected" : "";
       const mSel = sel && this.active.body === "moon" ? " selected" : "";
       return `<li><a href="/fleet?planet=${this.uuidOf(p)}" class="planet-select${pSel}" data-key="${p.key}">${p.name} [${p.key}]</a>` +
-             (p.moon ? `<a href="#" class="moon-select${mSel}" data-key="${p.key}">Moon</a>` : "") + `</li>`;
+             (p.moon ? `<a href="${this.moonLinks ? "/fleet?planet=" + this.uuidOf(p) + "-moon" : "#"}" class="moon-select${mSel}" data-key="${p.key}">Moon</a>` : "") + `</li>`;
     }).join("") + `</ul>`;
   }
   missionBarHtml() {
@@ -206,9 +207,9 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
     text: async () => game.loggedOut ? game.loginHtml()
       : u.includes("fleetmovementlist") ? `<table><tbody>${game.rowsHtml(true)}${game.ownRowsHtml(true)}</tbody></table>`
       : /^\/fleet\?planet=/.test(String(u)) ? (() => {
-          const id = String(u).split("planet=")[1];
+          const id0 = String(u).split("planet=")[1], isMoon = /-moon$/.test(id0), id = id0.replace(/-moon$/, "");
           const p = game.pairs.find(x => (x.uuid || ("uuid-" + x.key)) === id) || game.pairs[0];
-          const prev = game.active; game.active = { key: p.key, body: "planet" };
+          const prev = game.active; game.active = { key: p.key, body: isMoon ? "moon" : "planet" };
           const html = game.fleetPageHtml(); game.active = prev; return html;
         })()
       : /^\/home(\?|$)/.test(String(u)) ? (game.bonus ? game.bonusMenu() : "<div id='overview'>Overview</div>")
@@ -371,6 +372,8 @@ function advance(game, ms) {
       if (st.bar && st.bar.at) st.bar.at -= ms;
       if (st.hostileClear && st.hostileClear.since) st.hostileClear.since -= ms;
       for (const e of st.expected || []) { if (e.sentAt) e.sentAt -= ms; if (e.returnAt) e.returnAt -= ms; }
+      for (const lk of Object.keys(st.expoLandings || {})) st.expoLandings[lk] = st.expoLandings[lk].map(t => t - ms);
+      if (st.expoHome && st.expoHome.at) st.expoHome.at -= ms;
       game.store.set(K, JSON.stringify(st));
     }
   } catch {}
@@ -1383,6 +1386,89 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("fala NIE poszła po wyłączeniu", g.sent.length === 0, JSON.stringify(g.sent));
     check("misja zdjęta (bez karencji trasy)", (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null", String(g.store.get("genesis.ogamex.net:ogx3_mission")));
     check("bot mówi wprost, że przerwał przez przełącznik", logs.some(m => /wyłączyłeś ekspedycje w trakcie misji/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 6).join(" | "));
+  }
+
+  console.log("\n── 41. Pusty księżyc po fali domykającej + OPÓŹNIONY powrót ekspedycji (v3.65.0, log 03.09 08:58) ──");
+  {
+    // Na żywo: fala domykająca zostawiła na księżycu 0, bot odświeżał odtąd PLANETĘ
+    // (0 szt.), a gdy ~50 mln statków wylądowało na księżycu, mówił „brak statków" —
+    // do ręcznego wejścia operatora na /fleet. Do tego gra opóźnia powroty o godziny,
+    // rejestr powrotów (60 min po wyliczonym terminie) już ich nie zna, a wiersz
+    // ekspedycji w liście ruchów (bez klasy „return") zna sekundę lądowania.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      expo: { enabled: true, waves: 1, slotReserve: 0, launchFrom: { galaxy: 1, system: 217, position: 6 } } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:217:6", name: "Ekspo", moon: true }],
+      hangars: { "1:217:6|moon": { LIGHT_FIGHTER: 5000 }, "1:217:6|planet": {} },   // flota WŁAŚNIE wylądowała na księżycu
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.moonLinks = true;
+    g.slots = { fleet: { used: 0, total: 20 }, expo: { used: 0, total: 10 } };
+    const K = "genesis.ogamex.net:ogx3_situation";
+    // stan jak 03.09 08:58: księżyc 0 sprzed 16 h (fala domykająca), planeta 0 świeża, rejestr powrotów pusty (karta była zamknięta)
+    g.store.set(K, JSON.stringify({ pairs: {}, hangars: {
+      "1:217:6|moon": { total: 0, at: Date.now() - 16 * 3600e3, ships: [] },
+      "1:217:6|planet": { total: 0, at: Date.now() - 60e3, ships: [] },
+    }, threats: [], own: [], flights: [], expected: [], bar: null, active: null, updatedAt: Date.now() }));
+    // run() kończy pętlę, gdy bot nie nawiguje — a cichy odczyt hangaru NIE nawiguje,
+    // więc fala rusza dopiero w kolejnym wywołaniu (jak na żywo: „wysyłka w następnym przebiegu").
+    const r1 = { logs: [] };
+    for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const rr = await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); r1.logs.push(...rr.logs); }
+    check("bot dociągnął w tle hangar KSIĘŻYCA (nie planety) i zobaczył flotę", r1.logs.some(m => /dociągnąłem hangar \[1:217:6\] moon w tle/.test(m)) && !r1.logs.some(m => /dociągnąłem hangar \[1:217:6\] planet/.test(m)), r1.logs.filter(m => /EXPO|REKONESANS|LOT/.test(m)).slice(0, 8).join(" | "));
+    const ex1 = g.sent.find(s => /Expedition/i.test(s.mission || ""));
+    check("fala poleciała z księżyca [1:217:6] bez pomocy operatora", !!ex1 && ex1.from === "1:217:6" && ex1.fromBody === "moon" && ex1.ships.LIGHT_FIGHTER === 5000, JSON.stringify(g.sent));
+    check("żadnego „brak statków do wysłania” (objaw incydentu)", !r1.logs.some(m => /brak statków do wysłania/.test(m)), r1.logs.filter(m => /brak statków/.test(m)).join(" | "));
+
+    // Część 2: ekspedycja wraca Z OPÓŹNIENIEM — rejestr powrotów pusty (jak po zamkniętej
+    // karcie), w liście ruchów wiersz EXPEDITION bez klasy „return", odliczanie 5 s.
+    if (ex1) { ex1.type = "EXPEDITION"; ex1.eta = 5; ex1.to = "1:217:16"; }
+    { const st = JSON.parse(g.store.get(K) || "{}"); st.expected = []; g.store.set(K, JSON.stringify(st)); }
+    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });     // bot widzi wiersz i zapisuje termin lądowania
+    const stA = JSON.parse(g.store.get(K) || "{}");
+    check("termin lądowania z wiersza ekspedycji trafił do stanu pod KSIĘŻYC startu", Array.isArray((stA.expoLandings || {})["1:217:6|moon"]) && stA.expoLandings["1:217:6|moon"].length === 1, JSON.stringify(stA.expoLandings) + " own=" + JSON.stringify(stA.own));
+    // 2 min później: flota wylądowała (wiersz zniknął), na księżycu stoi 3000 myśliwców,
+    // a ostatni odczyt księżyca (po wysyłce: 0) jest sprzed lądowania.
+    advance(g, 120e3);
+    if (ex1) ex1.inFlight = false;
+    g.hangars["1:217:6|moon"] = { LIGHT_FIGHTER: 3000 };
+    {
+      const st = JSON.parse(g.store.get(K) || "{}");
+      st.hangars["1:217:6|moon"] = { total: 0, ships: [], at: Date.now() - 120e3 };
+      st.hangars["1:217:6|planet"] = { total: 0, ships: [], at: Date.now() - 120e3 };
+      g.store.set(K, JSON.stringify(st));
+    }
+    const r2 = { logs: [] };
+    for (let i = 0; i < 5 && g.sent.filter(x => /Expedition/i.test(x.mission || "")).length < 2; i++) { const rr = await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
+    check("po lądowaniu bot CICHO odczytał hangar księżyca (fetch w tle, zero nawigacji operatora)", r2.logs.some(m => /wróciła własna flota na księżyc \[1:217:6\].*odczytany w tle/.test(m)), r2.logs.filter(m => /OBRONA|EXPO|REKONESANS/.test(m)).slice(0, 8).join(" | "));
+    const exps = g.sent.filter(s => /Expedition/i.test(s.mission || ""));
+    check("i od razu poszła kolejna fala z powrotów (3000 myśliwców z księżyca)", exps.length === 2 && exps[1].ships.LIGHT_FIGHTER === 3000 && exps[1].fromBody === "moon", JSON.stringify(g.sent.map(s => [s.mission, s.from, s.fromBody, s.ships])));
+  }
+
+  console.log("\n── 42. „Ekspedycje OFF” kliknięte w INNEJ karcie gasi falę w tej (v3.65.0, owner 03.09 12:18) ──");
+  {
+    // Owner: „ekspedycje miałem wyłączone, a bot wysłał całą serię". CFG żyje w pamięci
+    // każdej karty osobno; karta ze starym stanem (ON) tykała dalej, a jej zapis z panelu
+    // nadpisywał wyłączenie. Teraz każdy przebieg zaczyna od stempla zapisu w schowku.
+    const cfgOn = { autoRescue: true, expo: { enabled: true, waves: 1, slotReserve: 0 }, recon: false, debris: { enabled: false }, human: { breaks: false, economyAtNight: true } };
+    const g = new Game();
+    const KC = "genesis.ogamex.net:ogx3_cfg";
+    const a = load(g, { cfg: cfgOn });                       // karta A: ekspedycje ON w pamięci
+    // karta B tej samej przeglądarki klika „Ekspedycje OFF" — NOWSZY zapis w schowku
+    { const st = JSON.parse(g.store.get(KC) || "{}"); st.expo = { ...(st.expo || {}), enabled: false }; st.savedAt = Date.now() + 1000; g.store.set(KC, JSON.stringify(st)); }
+    try { await a.tick(3); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
+    await new Promise(r => setTimeout(r, 200));
+    const lg = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg);
+    check("karta A przejęła wyłączenie z karty B (wpis w logu)", lg.some(m => /\[CFG\] ustawienia zmienione w innej karcie.*ekspedycje OFF/.test(m)), lg.slice(0, 6).join(" | "));
+    check("karta A NIE wysłała fali ani nie zaplanowała misji", g.sent.length === 0 && (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null", JSON.stringify(g.sent) + " misja=" + String(g.store.get("genesis.ogamex.net:ogx3_mission")).slice(0, 80));
+    check("CFG w pamięci karty A = OFF (panel pokaże prawdę)", a.api.CFG.expo.enabled === false);
+    a.api.saveCfg();
+    check("zapis z panelu stempluje czas (inne karty go przejmą)", (JSON.parse(g.store.get(KC) || "{}").savedAt || 0) > 0, g.store.get(KC));
+    // kontrola: bez wyłączenia w schowku ta sama karta wysyła normalnie
+    const g2 = new Game();
+    g2.moonLinks = true;                                   // bez recon bot czyta hangar księżyca tylko cichym fetchem
+    const r2 = { logs: [] };
+    for (let i = 0; i < 5 && !g2.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const rr = await run(g2, { cfg: cfgOn, loads: 10, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
+    check("(kontrola) bez wyłączenia fala idzie jak dotąd", g2.sent.some(x => /Expedition/i.test(x.mission || "")), JSON.stringify(g2.sent) + " | " + r2.logs.filter(m => /EXPO|CFG/.test(m)).slice(0, 5).join(" | "));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

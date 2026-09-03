@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.64.0
+// @version      3.65.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.64.0";
+  const VERSION = "3.65.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -265,7 +265,39 @@
     }
     return out;
   })();
-  const saveCfg = () => Store.set("cfg", CFG);
+  // v3.65.0 (owner 03.09 12:18: „ekspedycje miałem wyłączone, a bot wysłał całą serię"):
+  // CFG żyje w pamięci KAŻDEJ karty osobno i jest czytany raz, przy starcie strony.
+  // Zapis z panelu (`saveCfg`) wypycha CAŁY obiekt tej karty — więc karta ze starym
+  // stanem (np. ekspedycje ON) przy pierwszym kliknięciu czegokolwiek w panelu
+  // NADPISYWAŁA wyłączenie zrobione w innej karcie, a do przeładowania i tak
+  // tykała ze starym CFG. Teraz: każdy zapis ma stempel czasu, a każdy przebieg
+  // zaczyna się od porównania stempla ze schowkiem — nowszy zapis z innej karty
+  // wchodzi do pamięci (z wpisem w logu), a stary CFG nie ma prawa go nadpisać.
+  // UWAGA: schowek Tampermonkey jest per przeglądarka/urządzenie — bot na DRUGIM
+  // komputerze ma własne ustawienia i własne „Ekspedycje ON".
+  const cfgMerge = (into, from) => {
+    for (const [k, v] of Object.entries(from || {})) {
+      if (k === "savedAt") continue;
+      into[k] = (v && typeof v === "object" && !Array.isArray(v)) ? Object.assign({}, into[k] || {}, v) : v;
+    }
+  };
+  // Zapis NIE scala ze schowkiem: kliknięcie operatora ma wygrać z tym, co jest w
+  // schowku (synchronizacja i tak biegnie co przebieg w KAŻDEJ karcie, także tej bez
+  // blokady karty — pamięć jest świeża na sekundy przed kliknięciem).
+  const saveCfg = () => { CFG.savedAt = Date.now(); Store.set("cfg", CFG); };
+  const syncCfg = () => {
+    try {
+      const st = Store.get("cfg", null);
+      if (!st || (st.savedAt || 0) <= (CFG.savedAt || 0)) return false;
+      const before = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
+      cfgMerge(CFG, st); CFG.savedAt = st.savedAt;
+      const after = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
+      const diff = Object.keys(before).filter(k => before[k] !== after[k]).map(k => `${{ expo: "ekspedycje", aster: "minery", debris: "złom", bot: "bot", auto: "auto-ratunek" }[k]} ${after[k] ? "ON" : "OFF"}`);
+      log(`[CFG] ustawienia zmienione w innej karcie (${new Date(st.savedAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}) — przeładowane${diff.length ? ": " + diff.join(", ") : ""}.`, diff.length ? "warn" : "info");
+      try { if (typeof UI !== "undefined" && UI && UI.renderStatus) UI.renderStatus(); } catch {}
+      return true;
+    } catch { return false; }
+  };
   // v3.56.0 (prośba ownera 01.09): zapisany config sprzed tej wersji ma
   // debris.enabled:false — jednorazowo włączamy, jak migracje 2.x (RC_KEY v259).
   if (!Store.get("migr_debris_on_v356", false)) {
@@ -750,6 +782,36 @@
         }
         s.expected = exp;
       }
+      // v3.65.0 (log 03.09 08:58): wiersz WŁASNEJ ekspedycji z listy ruchów — BEZ klasy
+      // „return" — miał data-remaining-seconds=874 z dolotem 09:13:02, a o 09:13 sloty
+      // spadły z 8 do 5: koniec odliczania takiego wiersza to LĄDOWANIE na ciele startu.
+      // Gra OPÓŹNIA powroty ekspedycji (wynik „flota opóźniona") o godziny; rejestr
+      // powrotów zna tylko termin WYLICZONY i żyje 60 min po nim, więc opóźnionych fal
+      // nie widzi — lista ruchów je widzi. Kandydat liczy się tylko, gdy nie przypada
+      // wcześniej niż najwcześniejszy wyliczony powrót tej pary (odliczanie na odcinku
+      // „tam" i w czasie postoju kończy się przed nim). Bez wpisu w rejestrze (karta
+      // była zamknięta) przyjmujemy każdy koniec odliczania — koszt pomyłki to jeden
+      // cichy odczyt hangaru. Lista czasów per ciało (nie max): pierwsze lądowanie nie
+      // może zniknąć za późniejszym.
+      {
+        const cur2 = this.load();
+        if (cur2.expoHome) s.expoHome = cur2.expoHome;
+        const el = { ...(cur2.expoLandings || {}) };
+        for (const o of s.own) {
+          if (o.isReturn || !/EXPEDITION/i.test(o.type || "") || !(o.src || o.dst) || !o.eta) continue;
+          const k = o.src || o.dst;
+          const regs = (s.expected || []).filter(e => e.fromKey === k && e.kind === "expedition");
+          const earliest = regs.length ? Math.min(...regs.map(e => e.returnAt || 0)) : 0;
+          if (earliest && o.arriveAt < earliest - 3 * 60e3) continue;
+          const body = (regs.length ? regs[regs.length - 1].fromBody : null) || (s.expoHome && s.expoHome.key === k ? s.expoHome.body : null) || o.srcBody || "planet";
+          const lk = `${k}|${body}`;
+          const list = el[lk] || [];
+          if (!list.some(t => Math.abs(t - o.arriveAt) < 20e3)) list.push(o.arriveAt);
+          el[lk] = list;
+        }
+        for (const lk of Object.keys(el)) { el[lk] = el[lk].filter(t => now - t < 60 * 60e3).sort((a, b) => a - b).slice(-20); if (!el[lk].length) delete el[lk]; }
+        s.expoLandings = el;
+      }
       // loty wysłane przez nas: zamknij te, których hangar-cel/źródło już pełny (hangar > zegar)
       // v3.9.0 (audyt): lot domykał się WYŁĄCZNIE po zapełnieniu hangaru ŹRÓDŁA.
       // Dla lotu planeta→księżyc ("dom = księżyc") źródło zostaje puste na zawsze,
@@ -874,7 +936,8 @@
     // nie jest już świeży, choćby miał minutę) i które fale wpadną pod uderzenie.
     const returnsFrom = (k) => (s.expected || []).filter(e => e.fromKey === k && !e.pending);
     const landedSince = (k, body, at) => returnsFrom(k).some(e => e.fromBody === body && e.returnAt <= now && e.returnAt > (at || 0))
-      || (((s.landings || {})[`${k}|${body}`] || 0) <= now && ((s.landings || {})[`${k}|${body}`] || 0) > (at || 0));
+      || (((s.landings || {})[`${k}|${body}`] || 0) <= now && ((s.landings || {})[`${k}|${body}`] || 0) > (at || 0))
+      || ((s.expoLandings || {})[`${k}|${body}`] || []).some(t => t <= now && t > (at || 0));   // v3.65.0: lądowania z wierszy ekspedycji
     const incomingBefore = (k, when) => returnsFrom(k).filter(e => e.returnAt > now && e.returnAt < when).sort((a, b) => a.returnAt - b.returnAt);
     const hhmmss = (t) => new Date(t).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
@@ -922,7 +985,16 @@
         // czekał na przypadkowy odczyt.
         const landMap = { ...(s.landings || {}) };
         for (const e of returnsFrom(k)) if (e.returnAt <= now && now - e.returnAt < 30 * 60e3) { const lk = `${k}|${e.fromBody}`; if (!landMap[lk] || e.returnAt > landMap[lk]) landMap[lk] = e.returnAt; }
-        for (const [lk, at] of Object.entries(landMap)) {
+        // v3.65.0: lista lądowań z wierszy WŁASNYCH ekspedycji (opóźnione powroty) —
+        // bierzemy OSTATNIE minione lądowanie per ciało, osobno od mapy (mapa trzyma
+        // max, więc przyszłe lądowanie zasłaniało w niej to, które właśnie było).
+        const landCands = Object.entries(landMap);
+        for (const [lk, list] of Object.entries(s.expoLandings || {})) {
+          if (!lk.startsWith(k + "|")) continue;
+          const past = (list || []).filter(t => t <= now && now - t < 30 * 60e3).pop();
+          if (past) landCands.push([lk, past]);
+        }
+        for (const [lk, at] of landCands) {
           const [lkey, lbody] = lk.split("|");
           if (lkey !== k || at > now || now - at > 30 * 60e3) continue;
           const lh = (s.hangars || {})[lk];
@@ -1520,6 +1592,30 @@
   // 41 711). Dzielnik malejący daje fale równe TAK SAMO jak zamrażanie, gdy nic nie
   // wraca (600/3 = 200 = zamrożone 200), a gdy wraca — rozkłada to natychmiast.
   // Fala domykająca serię albo ostatni wolny slot nadal zabiera CAŁY hangar.
+  //
+  // v3.65.0 (log 03.09 08:58–09:13): ciało startu ekspedycji było „księżyc TYLKO, gdy
+  // jego ostatni odczyt ma >0 statków". Fala domykająca zostawia 0, więc od tej chwili
+  // bot odświeżał hangar PLANETY („dociągnąłem hangar planet w tle (0 szt.)" 16:49 i
+  // 08:58), a gdy ~50 mln statków wylądowało na księżycu (sloty 10/10 → 5/10 między
+  // 09:02 a 09:13), mówił „brak statków do wysłania" — flotę znalazł dopiero, gdy
+  // operator SAM otworzył /fleet na księżycu (09:13:25). Reguła: świeży odczyt Z FLOTĄ
+  // (poza wykluczeniami) wygrywa, księżyc przed planetą; bez takiego odczytu odświeżamy
+  // ciało, którego odczyt jest STARSZY (a przy remisie księżyc — dom floty). Dzięki
+  // temu oba ciała pary są sprawdzane na przemian co ~15 min i pusty księżyc nie
+  // wypada z obiegu na zawsze. Funkcja czysta (dzieli ją expoPlan i cichy odczyt).
+  function expoHomeBody(s, homeKey, pair, excl, now) {
+    if (!pair || !pair.hasMoon) return "planet";
+    const hm = (s.hangars || {})[`${homeKey}|moon`], hp = (s.hangars || {})[`${homeKey}|planet`];
+    const fresh = (h) => !!h && now - (h.at || 0) <= 15 * 60e3;
+    const cnt = (h) => Array.isArray(h?.ships)
+      ? h.ships.filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase())).reduce((n, x) => n + x.qty, 0)
+      : (h?.total || 0);
+    if (fresh(hm) && cnt(hm) > 0) return "moon";
+    if (fresh(hp) && cnt(hp) > 0) return "planet";
+    if (!fresh(hm)) return "moon";
+    if (!fresh(hp)) return "planet";
+    return (hm.at || 0) <= (hp.at || 0) ? "moon" : "planet";
+  }
   function expoPlan(s, cfg, now, burst) {
     const e = cfg.expo || {};
     if (!e.enabled) return { skip: "wyłączone" };
@@ -1529,7 +1625,8 @@
     if (!homeKey) return { skip: "nie wiem, skąd startować" };
     const pair = (s.pairs || {})[homeKey];
     if (!pair) return { skip: `[${homeKey}] nie ma na pasku planet` };
-    const body = (s.hangars[`${homeKey}|moon`]?.total > 0 && pair.hasMoon) ? "moon" : "planet";
+    const excl = (e.excludeTypes || []).map(t => String(t).toUpperCase());
+    const body = expoHomeBody(s, homeKey, pair, excl, now);
     const h = s.hangars[`${homeKey}|${body}`];
     if (!h || now - h.at > 15 * 60e3) return { skip: `hangar [${homeKey}] ${body} nieznany/stary — najpierw rekonesans` };
     // v3.10.2: odczyt slotów starszy niż 30 min to zgadywanie, nie wiedza.
@@ -1547,12 +1644,17 @@
     const cap = Math.max(1, Math.min(e.waves || 1, expo?.total || e.waves || 1));
     if (expo && expo.used >= cap) return { skip: `ekspedycje ${expo.used}/${expo.total} (limit fal ${cap}) — czekam na powroty` };
     if (burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000)) return { skip: "odstęp między falami" };
-    const excl = (e.excludeTypes || []).map(t => String(t).toUpperCase());
     const avail = (h.ships || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
     if (!avail.length) return { skip: "brak statków do wysłania (poza wykluczeniami)" };
     const waves = Math.max(1, e.waves || 1);
     const inSeries = (burst && burst.waves === waves && (burst.sent || 0) < waves) ? (burst.sent || 0) : 0;
-    const left = Math.max(1, waves - inSeries);   // ile fal serii jeszcze zostało
+    // v3.65.0 (log 03.09 09:13–09:16): przy 5/8 zajętych slotach dzielnik brał 8 fal
+    // serii, więc poszło 6,2 / 6,5 / 38,9 mln — trzecia (ostatni wolny slot) zgarnęła
+    // resztę. Wartość oczekiwana ta sama, ale jedno „flota utracona" trafiało w 39 mln.
+    // Dzielnik = min(fale, które zostały w serii; WOLNE sloty ekspedycji do limitu).
+    const freeSlots = (expo && expo.total) ? Math.max(1, cap - expo.used) : Infinity;
+    const left = Math.max(1, Math.min(waves - inSeries, freeSlots));   // ile fal jeszcze poleci
+    const slotBound = freeSlots < waves - inSeries;
     const lastOfBurst = waves === 1 || inSeries >= waves - 1 || (expo && expo.total && expo.used >= cap - 1);
     const share = (qty) => Math.floor(qty / left);
     // ── OSTATNIA fala serii zabiera CAŁY hangar ──
@@ -1591,7 +1693,7 @@
       : inSeries >= waves - 1 ? `ostatnia fala serii ${inSeries + 1}/${waves}`
       : lastOfBurst ? `ostatni wolny slot ekspedycji (${expo.used}/${expo.total}, limit fal ${cap})` : "";
     const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}${expo.fromBar ? ` (odczyt ${expoRaw.used}/${expoRaw.total} przycięty do ${s.bar.own} własnych lotów z paska)` : ""}` : "sloty nieznane";
-    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves, lastWhy, slotsTxt,
+    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves, left, slotBound, lastWhy, slotsTxt,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
   }
 
@@ -1619,6 +1721,9 @@
     async tick(s) {
       ExpoLink.learn();
       if (Fly.mission() || !CFG.expo.enabled) return false;
+      // v3.65.0: ostatnia bramka tuż przed startem misji czyta SCHOWEK — stary CFG w
+      // pamięci tej karty nie może wysłać fali, którą operator wyłączył gdzie indziej.
+      { const st = Store.get("cfg", null); if (st && st.expo && st.expo.enabled === false) { syncCfg(); if (!CFG.expo.enabled) return false; } }
       const why = Human.economyAllowed(s);
       if (why) { if (!Once.said("human|" + why.slice(0, 12), 10 * 60e3)) log(`[EXPO] wstrzymane: ${why}`, "info"); return false; }
       const now = Date.now();
@@ -1630,7 +1735,7 @@
         if (/hangar .* nieznany\/stary/.test(p.skip) && !Once.said("expo_pull", 60e3)) {
           const hk = CFG.expo.launchFrom ? key(CFG.expo.launchFrom) : (s.active && s.active.key);
           const pr = hk ? (s.pairs || {})[hk] : null;
-          const hb = (pr && pr.hasMoon && (s.hangars[`${hk}|moon`]?.total > 0)) ? "moon" : "planet";
+          const hb = expoHomeBody(s, hk, pr, (CFG.expo.excludeTypes || []).map(t => String(t).toUpperCase()), now);   // v3.65.0: to samo ciało, które wybierze expoPlan
           if (hk) {
             const got = await Hangar.scanRemote(hk, hb);
             if (got) { log(`[EXPO] dociągnąłem hangar [${hk}] ${hb} w tle (${got.total.toLocaleString("pl-PL")} szt.) — wysyłka w następnym przebiegu.`, "info"); return false; }
@@ -1693,7 +1798,7 @@
       // v3.10.2 (audyt regresji): licznik fali zapisywany PRZED Fly.start — odmowa
       // startu (trwa inna misja) i tak zjadala fale z serii. Najpierw start, potem licznik.
       const started = Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
-        why: `ekspedycja ${p.last ? `(domyka serię — cały hangar: ${p.lastWhy})` : `(fala ${sent}/${p.waves})`} — ${total.toLocaleString("pl-PL")} szt., ${p.slotsTxt}`, speed: 100, plan: p.ships,
+        why: `ekspedycja ${p.last ? `(domyka serię — cały hangar: ${p.lastWhy})` : `(fala ${sent}/${p.waves}${p.slotBound ? `, udział 1/${p.left} z wolnych slotów` : ""})`} — ${total.toLocaleString("pl-PL")} szt., ${p.slotsTxt}`, speed: 100, plan: p.ships,
         missionType: "EXPEDITION", takeResources: false, duration: p.duration, missionId: link.mission });
       if (!started) return false;
       // v3.38.0: `sizes` zniknęło — rozmiar fali liczy dzielnik malejący z bieżącego
@@ -2473,6 +2578,7 @@
       if ((m.kind === "expedition" || m.kind === "asteroid" || m.kind === "debris") && m.flightMs) {
         const sE = Situation.load();
         sE.expected = [...(sE.expected || []), { kind: m.kind, fromKey: m.fromKey, fromBody: m.fromBody, total: loadedTotal, sentAt: Date.now(), flightMs: m.flightMs, holdMs: m.holdMs || 0, returnAt: Date.now() + 2 * m.flightMs + (m.holdMs || 0), pending: true }].slice(-40);
+        if (m.kind === "expedition") sE.expoHome = { key: m.fromKey, body: m.fromBody, at: Date.now() };   // v3.65.0: tu wróci flota
         Situation.save(sE);
       }
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
@@ -2688,8 +2794,11 @@
       // wyłącznie jego. Kolonie z paroma transporterami nie są warte przełączania planety.
       // (Alarm to osobna ścieżka: przy ataku bot i tak wejdzie na atakowane ciało.)
       if (lf) return all.filter(([k]) => k === lf);
-      // Bez przypiętego ciała startowego: tylko te, na których bot WIDZIAŁ flotę.
-      return all.filter(([k, b]) => { const h = (s.hangars || {})[`${k}|${b}`]; return !!(h && h.total > 0); });
+      // Bez przypiętego ciała startowego: tylko te, na których bot WIDZIAŁ flotę —
+      // v3.65.0: plus ciało, z którego poleciała OSTATNIA ekspedycja (do 7 dni), bo po
+      // fali domykającej ma 0 statków, a to właśnie tam flota wróci.
+      const eh = (s.expoHome && Date.now() - (s.expoHome.at || 0) < 7 * 24 * 3600e3) ? `${s.expoHome.key}|${s.expoHome.body}` : null;
+      return all.filter(([k, b]) => { const h = (s.hangars || {})[`${k}|${b}`]; return `${k}|${b}` === eh || !!(h && h.total > 0); });
     },
     async tick(s) {
       if (!CFG.recon || Fly.mission()) return false;
@@ -2867,6 +2976,7 @@
   }
 
   async function defenceTick() {
+    if (!running) syncCfg();   // v3.65.0: nowszy zapis ustawień z innej karty wchodzi przed decyzją
     if (running || !CFG.enabled) return; running = true;
     try {
       if (errorPageGuard()) return;
@@ -3261,7 +3371,7 @@
         // v3.16.0: włączenie modułu ręcznie kasuje trwającą przerwę kawową — operator
         // właśnie powiedział, czego chce, a przerwa i tak dotyczy tylko ekonomii.
         if (CFG.expo.enabled && Human.onBreak()) { Store.set("break_until", 0); Store.set("break_next", Date.now() + jitter(CFG.human.breakEveryMinMin, CFG.human.breakEveryMaxMin) * 60e3); log("[PRZERWA] przerwana ręcznie — włączyłeś ekspedycje.", "info"); }
-        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus();
+        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"} (zapisane ${new Date(CFG.savedAt || Date.now()).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}; ustawienie dotyczy TEJ przeglądarki — bot na innym komputerze ma własne)`, "info"); this.renderStatus();
       };
       $("ogx3-disc").onclick = () => { CFG.expo.discoverer40 = !CFG.expo.discoverer40; saveCfg(); log(`Odkrywca (40 min) ${CFG.expo.discoverer40 ? "ON" : "OFF — ekspedycje na " + CFG.expo.holdingHours + " h"}`, "info"); this.renderStatus(); };
       $("ogx3-waves").value = String(CFG.expo.waves); $("ogx3-waves").onchange = (e) => { CFG.expo.waves = Math.max(1, parseInt(e.target.value) || 1); saveCfg(); Store.del("burst"); log(`Fale ekspedycji: ${CFG.expo.waves} (seria liczona od nowa)`, "info"); };
@@ -3471,7 +3581,7 @@
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
   // busy(): czy defenceTick WŁAŚNIE trwa — startowy tick odpala się bez await, więc
   // harness E2E musi umieć poczekać, aż bot skończy krok, zamiast zgadywać stałym sleepem.
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, barExcessState, PlanetBar, Hangar, UI, Recon, Human, busy: () => running }; } catch {}
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, expoHomeBody, syncCfg, saveCfg, barExcessState, PlanetBar, Hangar, UI, Recon, Human, busy: () => running }; } catch {}
   Store.set("last_load", Date.now());
   // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
   // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.

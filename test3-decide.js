@@ -250,7 +250,9 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
 //  EKSPEDYCJE (v3.2.0) — czysta funkcja expoPlan(); klasa ODKRYWCA
 // ═════════════════════════════════════════════════════════════════════════
 const expoBody = bodyOf("function expoPlan(s, cfg, now, burst) {");
-const expoPlan = new Function("key", "flightsBlocking", `return function expoPlan(s, cfg, now, burst) {${expoBody}}`)((c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null), flightsBlocking);
+const expoHomeBodySrc = bodyOf("function expoHomeBody(s, homeKey, pair, excl, now) {");
+const expoHomeBody = new Function("s", "homeKey", "pair", "excl", "now", expoHomeBodySrc);
+const expoPlan = new Function("key", "flightsBlocking", "expoHomeBody", `return function expoPlan(s, cfg, now, burst) {${expoBody}}`)((c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null), flightsBlocking, expoHomeBody);
 const ECFG = { expo: { enabled: true, waves: 4, discoverer40: true, holdingHours: 1, gapMinSec: 60, gapMaxSec: 90, slotReserve: 1, excludeTypes: ["ASTEROID_MINER", "RECYCLER"], launchFrom: null } };
 function ebase(over = {}) {
   return Object.assign({
@@ -317,6 +319,52 @@ console.log("\n── 17c. EKSPEDYCJE: stary odczyt slotów vs pasek misji (log 
   check("pasek starszy niż 5 min NIE unieważnia odczytu slotów", /czekam na powroty/.test(p3.skip || ""), JSON.stringify(p3.skip));
   const p4 = expoPlan(ebase({ ...stale8, bar: { total: 0, own: 0, foreign: 0, at: NOW - 10e3 } }), { expo: { ...ECFG.expo, waves: 8, slotReserve: 0 } }, NOW, null);
   check("No fleet movement (0 Own) = wszystkie sloty wolne → fala 1/8, nie domykająca", !p4.skip && p4.last !== true, JSON.stringify(p4.skip || p4.last));
+}
+
+console.log("\n── 17d. EKSPEDYCJE: ciało startu — pusty księżyc nie wypada z obiegu (v3.65.0, log 03.09 08:58) ──");
+{
+  // Incydent: fala domykająca zostawiła na księżycu 0, bot odświeżał odtąd PLANETĘ
+  // („dociągnąłem hangar planet w tle (0 szt.)"), ~50 mln statków wylądowało na
+  // księżycu, a bot mówił „brak statków" — do ręcznego wejścia operatora na /fleet.
+  const pairM = { "1:100:5": { hasMoon: true, galaxy: 1, system: 100, position: 5 } };
+  const hM = (ships, ago) => ({ total: ships.reduce((n, x) => n + x.qty, 0), at: NOW - ago, ships });
+  const LF = (q) => [{ type: "LIGHT_FIGHTER", qty: q }];
+  const REC = (q) => [{ type: "RECYCLER", qty: q }];
+  const mk = (moon, planet) => ebase({ pairs: pairM, hangars: { ...(moon ? { "1:100:5|moon": moon } : {}), ...(planet ? { "1:100:5|planet": planet } : {}) } });
+  const p1 = expoPlan(mk(hM([], 16 * 3600e3), hM([], 60e3)), ECFG, NOW, null);
+  check("księżyc 0 sprzed 16 h + planeta świeża 0 → rekonesans KSIĘŻYCA, nie „brak statków”", /moon nieznany\/stary/.test(p1.skip || ""), JSON.stringify(p1.skip));
+  const p2 = expoPlan(mk(hM([], 60e3), hM([], 20 * 60e3)), ECFG, NOW, null);
+  check("księżyc świeży 0, planeta stara → odświeżamy planetę (na przemian)", /planet nieznany\/stary/.test(p2.skip || ""), JSON.stringify(p2.skip));
+  const p3 = expoPlan(mk(hM([], 60e3), hM([], 60e3)), ECFG, NOW, null);
+  check("oba świeże i puste → „brak statków” (prawda), bez pętli odczytów", /brak statków/.test(p3.skip || ""), JSON.stringify(p3.skip));
+  const p4 = expoPlan(mk(hM(REC(3000), 60e3), hM(LF(800), 60e3)), ECFG, NOW, null);
+  check("na księżycu same recyklery (wykluczone), na planecie myśliwce → fala z PLANETY", !p4.skip && p4.fromBody === "planet", JSON.stringify(p4.skip || p4.fromBody));
+  const p5 = expoPlan(mk(hM(LF(800), 60e3), hM(LF(800), 10e3)), ECFG, NOW, null);
+  check("flota na obu ciałach → księżyc ma pierwszeństwo (dom floty)", !p5.skip && p5.fromBody === "moon", JSON.stringify(p5.skip || p5.fromBody));
+  const p6 = expoPlan(mk(hM([], 16 * 3600e3), null), ECFG, NOW, null);
+  check("planeta nigdy nie czytana, księżyc stary → księżyc pierwszy", /moon nieznany\/stary/.test(p6.skip || ""), JSON.stringify(p6.skip));
+  const p7 = expoPlan(mk(null, hM(LF(800), 60e3)), ECFG, NOW, null);
+  check("księżyc nigdy nie czytany, planeta świeża z flotą → fala z planety (nie czekamy na księżyc)", !p7.skip && p7.fromBody === "planet", JSON.stringify(p7.skip || p7.fromBody));
+  check("bez księżyca zawsze planeta", expoHomeBody({ hangars: {} }, "1:100:5", { hasMoon: false }, [], NOW) === "planet");
+  check("expoHomeBody jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoHomeBodySrc));
+  check("cichy odczyt w Expo.tick pyta o TO SAMO ciało (expoHomeBody), nie o „księżyc>0”", src.includes("const hb = expoHomeBody(s, hk, pr") && !src.includes('?.total > 0)) ? "moon" : "planet"') && !src.includes("?.total > 0 && pair.hasMoon) ?"));
+}
+
+console.log("\n── 17e. EKSPEDYCJE: dzielnik z WOLNYCH slotów (v3.65.0, log 03.09 09:13: 6,2 / 6,5 / 38,9 mln) ──");
+{
+  const C8 = { expo: { ...ECFG.expo, waves: 8, slotReserve: 0 } };
+  const hang = (q) => ({ "1:100:5|planet": { total: q, at: NOW - 60000, ships: [{ type: "LIGHT_FIGHTER", qty: q }] } });
+  const sl = (used) => ({ fleet: { used, total: 20 }, expo: { used, total: 10 }, at: NOW });
+  const w1 = expoPlan(ebase({ hangars: hang(4800), slots: sl(5) }), C8, NOW, null);
+  check("5/8 zajętych, 8 fal → 1. fala = 1/3 hangaru (1600), nie 1/8 (600)", !w1.skip && w1.ships[0].qty === 1600 && w1.slotBound === true && w1.left === 3, JSON.stringify(w1.skip || w1.ships));
+  const w2 = expoPlan(ebase({ hangars: hang(3200), slots: sl(6) }), C8, NOW, { waves: 8, sent: 1, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("2. fala przy 6/8 → połowa reszty (1600), jeszcze nie domyka", !w2.skip && w2.ships[0].qty === 1600 && w2.last !== true, JSON.stringify(w2.skip || w2.ships));
+  const w3 = expoPlan(ebase({ hangars: hang(1600), slots: sl(7) }), C8, NOW, { waves: 8, sent: 2, lastSendAt: NOW - 120000, gapMs: 60000 });
+  check("3. fala przy 7/8 = ostatni wolny slot → cała reszta (1600): fale RÓWNE", !w3.skip && w3.ships[0].qty === 1600 && w3.last === true, JSON.stringify(w3.skip || w3.ships));
+  const free = expoPlan(ebase({ hangars: hang(800) }), ECFG, NOW, null);
+  check("wszystkie sloty wolne → dzielnik = liczba fal (bez zmian: 800/4 = 200)", free.ships[0].qty === 200 && !free.slotBound, JSON.stringify(free.ships));
+  const noSl = expoPlan(ebase({ hangars: hang(800), slots: { fleet: { used: 0, total: 10 }, expo: { used: 0, total: 6 }, at: NOW - 40 * 60e3 } }), ECFG, NOW, null);
+  check("sloty nieznane (odczyt >30 min) → dzielnik z liczby fal", noSl.ships[0].qty === 200 && !noSl.slotBound, JSON.stringify(noSl.skip || noSl.ships));
 }
 
 console.log("\n── 17b. EKSPEDYCJE: powroty w środku serii (zgłoszenie 30.08) ──");
@@ -941,6 +989,21 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   const atak = base({ hangars: { "3:272:7|moon": H(70000) }, landings: { "3:272:7|planet": NOW - 60e3 }, threats: [threat("3:272:7", "moon", 300)] });
   check("przy ataku obrona ma pierwszenstwo (nie dreptamy po hangarach)", !decide(atak, CFG, NOW).actions.some(a => /wrocila wlasna flota|wróciła własna flota/.test(a.why || "")), JSON.stringify(decide(atak, CFG, NOW).actions));
   check("termin powrotu trafia do stanu (Situation), nie ginie z wierszem", /s\.landings = land/.test(src) && /isReturn \|\| !\(o\.src \|\| o\.dst\)/.test(src));
+  // v3.65.0 (log 03.09 08:58): gra OPÓŹNIA powroty ekspedycji o godziny; wiersz własnej
+  // ekspedycji (bez klasy „return") niesie prawdziwy czas lądowania. Lista per ciało.
+  const exL = base({ hangars: { "3:272:7|moon": H(70000, "moon", 10 * 60e3) }, expoLandings: { "3:272:7|moon": [NOW - 60e3, NOW + 3 * 3600e3] } });
+  const rL = decide(exL, CFG, NOW);
+  check("ekspedycja wylądowała minutę temu (wiersz bez „return”), hangar sprzed 10 min → CICHY odczyt księżyca", rL.actions.some(a => a.kind === "recon" && a.quiet && a.key === "3:272:7" && a.body === "moon"), JSON.stringify(rL.actions));
+  const exFut = base({ hangars: { "3:272:7|moon": H(70000, "moon", 10 * 60e3) }, expoLandings: { "3:272:7|moon": [NOW + 3 * 3600e3] } });
+  check("lądowanie dopiero za 3 h → nic", !decide(exFut, CFG, NOW).actions.some(a => a.kind === "recon"), JSON.stringify(decide(exFut, CFG, NOW).actions));
+  const exRead = base({ hangars: { "3:272:7|moon": H(70000, "moon", 30e3) }, expoLandings: { "3:272:7|moon": [NOW - 60e3] } });
+  check("hangar czytany PO lądowaniu → bez rekonesansu", !decide(exRead, CFG, NOW).actions.some(a => a.kind === "recon"), JSON.stringify(decide(exRead, CFG, NOW).actions));
+  const exHidden = base({ hangars: { "3:272:7|moon": H(70000, "moon", 10 * 60e3) }, landings: { "3:272:7|moon": NOW + 3600e3 }, expoLandings: { "3:272:7|moon": [NOW - 60e3] } });
+  check("przyszłe lądowanie w mapie NIE zasłania tego, które właśnie było", decide(exHidden, CFG, NOW).actions.some(a => a.kind === "recon" && a.body === "moon"), JSON.stringify(decide(exHidden, CFG, NOW).actions));
+  const exOld = base({ hangars: { "3:272:7|moon": H(70000, "moon", 50 * 60e3) }, expoLandings: { "3:272:7|moon": [NOW - 45 * 60e3] } });
+  check("lądowanie sprzed 45 min — okno 30 min minęło, zwykły rekonesans to załatwi", !decide(exOld, CFG, NOW).actions.some(a => a.kind === "recon" && a.quiet), JSON.stringify(decide(exOld, CFG, NOW).actions));
+  check("refresh() zapisuje lądowania z wierszy ekspedycji (filtr: nie przed wyliczonym powrotem)", /s\.expoLandings = el/.test(src) && /EXPEDITION\/i\.test\(o\.type/.test(src) && /o\.arriveAt < earliest - 3 \* 60e3/.test(src));
+  check("Fly stempluje ciało startu ekspedycji (expoHome) — tam wróci flota", /sE\.expoHome = \{ key: m\.fromKey, body: m\.fromBody/.test(src) && /=== eh \|\| !!\(h && h\.total > 0\)/.test(src));
   // v3.46.0 (test na żywo 31.08 09:06): flota wraca do PUNKTU STARTU, a wiersz
   // powrotny trzyma w `dst` pierwotny cel — lądowanie musi iść pod `src`.
   check("lądowanie powrotu zapisywane pod źródłem lotu, nie pod pierwotnym celem", /const lkKey = o\.src \|\| o\.dst/.test(src) && /f\.fromKey === lkKey/.test(src));
