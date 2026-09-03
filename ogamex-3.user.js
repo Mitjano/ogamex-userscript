@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.65.1
+// @version      3.65.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.65.1";
+  const VERSION = "3.65.2";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2399,7 +2399,7 @@
           if (saidWait) log(`[LOT] przycisk „${text}" ożył po ${((Date.now() - t0) / 1000).toFixed(1)}s — klikam.`, "info");
           b.click();
           log(`[LOT] klik „${text}" (<${b.tagName.toLowerCase()}${b.id ? " id=" + b.id : ""}>)`, "info");
-          return true;
+          return b;
         }
         if (b && !saidWait) { saidWait = true; log(`[LOT] przycisk „${text}" jest wyłączony — czekam, zamiast klikać w martwy element.`, "info"); }
         await sleep(400);
@@ -2415,7 +2415,7 @@
         ? `[LOT] przycisk „${text}" BYŁ na stronie, ale przez ${maxMs / 1000}s pozostał WYŁĄCZONY — gra nie przyjmuje tej floty. KANDYDACI: ${cands}`
         : `[LOT] przycisku „${text}" NIE MA na stronie (${maxMs / 1000}s). KANDYDACI: ${cands}`, "error");
       log(`[LOT] tekst formularza: …${txt.slice(-300)}`, "error");
-      return false;
+      return null;
     },
     async form(m) {
       const a = PlanetBar.active();
@@ -2480,7 +2480,17 @@
       log(`[LOT] załadowano: ${loaded.join(", ")}`, "info");
       await sleep(jitter(400, 800));
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);
-      if (!(await this.clickWhenEnabled("Next"))) return this.abort("Next (krok 1) martwy");
+      // v3.65.2 (log 03.09 15:49/16:48: krok 2→3 klikał przycisk o TYM SAMYM id co
+      // krok 1→2 — cztery razy dziś ten sam objaw: pusta lista czasu trwania i brak
+      // Send fleet, jakby strona nie zdążyła przejść do kroku 3. `findButton` szuka
+      // po WIDOCZNYM TEKŚCIE „Next", nie po id — jeśli fork na chwilę zostawia stary
+      // przycisk kroku 1 widocznym i włączonym, zanim podmieni go na przycisk kroku 2,
+      // klik trafi w niego zamiast czekać. Zamiast zgadywać poprawkę bez dowodu z
+      // żywej gry (zasada projektu), zapamiętujemy przycisk z kroku 1 i przy kroku 2
+      // porównujemy — pierwsze trafienie w tę samą tożsamość dostanie pełny zrzut
+      // markupu obu kliknięć, żeby rozstrzygnąć, co naprawdę tu się dzieje.
+      const nextBtn1 = await this.clickWhenEnabled("Next");
+      if (!nextBtn1) return this.abort("Next (krok 1) martwy");
       // krok 2: cel (koordy, ciało), prędkość
       const t0 = Date.now(); while (Date.now() - t0 < 8000 && !document.getElementById("fleet2_target_x")) await sleep(400);
       const [g, sy, po] = m.toKey.split(":");
@@ -2525,7 +2535,11 @@
         }
       }
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);
-      if (!(await this.clickWhenEnabled("Next"))) return this.abort("Next (krok 2) martwy");
+      const nextBtn2 = await this.clickWhenEnabled("Next");
+      if (!nextBtn2) return this.abort("Next (krok 2) martwy");
+      if ((nextBtn2 === nextBtn1 || (nextBtn1.id && nextBtn2.id === nextBtn1.id)) && !Once.said("samebtn23", 10 * 60e3)) {
+        log(`[LOT DOM] podejrzenie: krok 2→3 kliknął ${nextBtn2 === nextBtn1 ? "DOKŁADNIE TEN SAM element" : "przycisk o tym samym id"} co krok 1→2 (id=${nextBtn1.id || "(brak)"}) — strona mogła nie zdążyć przejść do kroku 2. Krok1: ${(nextBtn1.outerHTML || "").slice(0, 300)} | Krok2 (w chwili klikania): ${(nextBtn2.outerHTML || "").slice(0, 300)} | #content teraz: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1200)}`, "error");
+      }
       // krok 3: misja Deploy, surowce − rezerwa
       const t1 = Date.now(); while (Date.now() - t1 < 8000 && !this.findButton("Send fleet")) await sleep(400);
       const missions = [...document.querySelectorAll(".mission-item, [class*='mission-item']")];
