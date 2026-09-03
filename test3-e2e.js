@@ -1362,6 +1362,29 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("galaktyka odwiedzana tylko, gdy jest po co (2 wizyty w całym scenariuszu)", g.navigations.filter(u => /galaxy\?x=1&y=217/.test(u)).length === 2, JSON.stringify(g.navigations.filter(u => /galaxy/.test(u))));
   }
 
+  console.log("\n── 40. „Ekspedycje OFF” W TRAKCIE misji gasi zaplanowaną falę (v3.64.0, incydent 03.09 06:56) ──");
+  {
+    // Na żywo: fala zaplanowana 06:53:46, operator kliknął „Ekspedycje OFF" 06:56:05,
+    // a maszyna lotu i tak dokończyła wysyłkę 06:56:38 (BATTLESHIP×344 994) — bo
+    // Fly.tick nigdzie nie sprawdzał przełącznika po starcie misji.
+    const cfgOn = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true } };
+    const g = new Game();
+    // faza 1: pojedyncze załadowania, aż misja ekspedycji stoi w store, ale NIC nie poszło
+    let planned = false;
+    for (let i = 0; i < 12 && !planned && g.sent.length === 0; i++) {
+      const inst = load(g, { cfg: cfgOn });
+      try { await inst.tick(1); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
+      await new Promise(r => setTimeout(r, 140));
+      planned = (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
+    }
+    check("(warunek wstępny) misja zaplanowana, fala JESZCZE nie wysłana", planned && g.sent.length === 0, `misja=${String(g.store.get("genesis.ogamex.net:ogx3_mission")).slice(0, 120)}, wysyłek=${g.sent.length}`);
+    // faza 2: operator klika „Ekspedycje OFF" — kolejne przeładowania NIE dosyłają fali
+    const { logs } = await run(g, { cfg: { expo: { enabled: false } }, loads: 8, ticksPerLoad: 2 });
+    check("fala NIE poszła po wyłączeniu", g.sent.length === 0, JSON.stringify(g.sent));
+    check("misja zdjęta (bez karencji trasy)", (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null", String(g.store.get("genesis.ogamex.net:ogx3_mission")));
+    check("bot mówi wprost, że przerwał przez przełącznik", logs.some(m => /wyłączyłeś ekspedycje w trakcie misji/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 6).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

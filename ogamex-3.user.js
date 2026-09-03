@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.63.0
+// @version      3.64.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.63.0";
+  const VERSION = "3.64.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2152,6 +2152,23 @@
       if (Date.now() - m.startedAt > 15 * 60e3) { Store.del("mission"); log(`[LOT] porzucona misja sprzed ${Math.round((Date.now() - m.startedAt) / 60000)} min (bot był wyłączony) — sprzątam bez karencji.`, "warn"); return; }
       if (Date.now() - m.startedAt > 5 * 60e3) return this.abort("5 min bez potwierdzenia wysyłki");
       if ((m.navs || 0) >= this.NAV_MAX) return this.abort(`${this.NAV_MAX} nawigacji bez otwarcia formularza — pętla przełączania ciał (krok „${m.step}", cel ${this.url(m)})`);
+      // v3.64.0 (log 03.09 06:56): „Ekspedycje OFF" kliknięte W TRAKCIE misji nie gasiło
+      // jej — maszyna lotu dokończyła zaplanowaną falę 33 s po wyłączeniu (BATTLESHIP
+      // ×344 994). Przełącznik ekonomii gasi też misję w locie, bez karencji (to decyzja
+      // operatora, nie porażka trasy). Wyjątek: wysyłka już POSZŁA (stempel `last_send`
+      // tej misji) — wtedy normalna ścieżka musi ją zaksięgować w rejestrze powrotów.
+      {
+        const ecoOn = { expedition: () => CFG.expo.enabled, asteroid: () => CFG.aster.enabled, debris: () => CFG.debris.enabled }[m.kind];
+        if (ecoOn && !ecoOn()) {
+          const ls0 = Store.get("last_send", null);
+          const sent = ls0 && ls0.toKey === m.toKey && ls0.from === m.fromKey && ls0.kind === m.kind && (ls0.at || 0) >= (m.startedAt || 0);
+          if (!sent) {
+            Store.del("mission");
+            log(`[LOT] przerwany bez karencji: wyłączyłeś ${m.kind === "expedition" ? "ekspedycje" : m.kind === "asteroid" ? "minery" : "zbieranie złomu"} w trakcie misji (krok „${m.step}").`, "warn");
+            return;
+          }
+        }
+      }
       try {
         if (m.step === "switch") {
           const a = PlanetBar.active();
