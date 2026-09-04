@@ -26,6 +26,7 @@ Szerokość **232 px**, więc kończy się przed menu gry (Overview, Resources�
 - **Atak rozwija zwinięty panel** i maluje go na czerwono — obrony nie da się przegapić przez schowany panel.
 - **RATUJ FLOTĘ TERAZ / WRÓĆ NA BAZĘ** są zawsze widoczne (nie chowają się w sekcji).
 - **Dziennik obrony** — ostatnie 25 zdarzeń (ATAK / RATUNEK / POWRÓT / BŁĄD) w panelu, nie tylko w pushu.
+- **Zegar dolotu** (v3.66.0) — wiersz `⏱ Dolot` pokazuje się sam, gdy leci obca flota, i podaje **GODZINĘ uderzenia**, nie odliczanie. Sekcja rozwija się sama na 10 minut przed. Szczegóły niżej.
 
 ## Moduły (wszystko sterowane z panelu)
 | moduł | co robi | warunki, których pilnuje sam |
@@ -39,7 +40,8 @@ Szerokość **232 px**, więc kończy się przed menu gry (Overview, Resources�
 | **Bonus online** | odbiera zielony „Online bonus" z menu = antymateria + **punkty Akademii** (przeniesione z 2.x, domyślnie ON) | nie rusza flotą · nigdy przy alarmie ani w trakcie misji · odliczanie/wyszarzony przycisk = nie klika · odbiór potwierdzany po przeładowaniu |
 | **Księżyce** | stawia księżyc przy planecie bez księżyca (`/home/moonformation`) — **domyślnie OFF, bo WYDAJE metal bezpowrotnie** | sufit udziału metalu (domyślnie 25%) · średnica dobierana w dół · 3 próby na planetę na dobę · nieznany markup = zrzut do logu |
 | **Humanizer** | przerwy 5–15 min co 35–65 min, noc bez ekonomii | **dotyczy wyłącznie ekonomii** — obrona, rekonesans i keepalive chodzą zawsze |
-| **Karta przy życiu** | Wake Lock + cichy dźwięk | bez tego pętla w tle chodzi ~1/min zamiast co 20 s |
+| **Zegar dolotu** | zamienia odliczanie gry na **godzinę uderzenia** i **godzinę wysyłki recyklerów**; alarm (push + głos + dźwięk) minutę przed pierwszą falą i sygnał „recki teraz” po ostatniej | dokładność ±1 s · zawyżony odczyt nigdy nie wygrywa · fala ACS = jeden alarm, nie cztery · „złom ↗” otwiera galaktykę w NOWEJ karcie, żeby nie zabrać botu strony |
+| **Karta przy życiu** | Wake Lock + cichy dźwięk; **puls dla strażnika co 30 s, niezależny od tego, czy bot jest włączony** (v3.65.3) | bez tego pętla w tle chodzi ~1/min zamiast co 20 s · puls milknie tylko wtedy, gdy karta naprawdę zamarła |
 
 ## Zasady, które 3.x egzekwuje z definicji (lekcje 27.08 z Atheny)
 | Incydent 2.x | Reguła 3.x |
@@ -78,6 +80,24 @@ Czego [TEMPO] **nie** robi: nie krzyczy na Twoje klikanie. Każde kliknięcie w 
 Nadzorca (przeładowanie po 3 min ciszy pętli) **nie działa przy bocie OFF** — wyłączony bot ma prawo milczeć; wcześniej co 10 min przeładowywał grę i słał push „BŁĄD".
 
 Incydent źródłowy: 28.08 22:17–22:22 — ~30 przeładowań w 5 minut, w logu SAME linie startowe, koniec dopiero na limicie czasu misji (push „BŁĄD"). Powody ginęły, bo log zapisywał się do GM storage z opóźnieniem 800 ms, a każda nawigacja następuje natychmiast po wpisie.
+
+## Zegar dolotu — po co i jak dokładny (v3.66.0)
+Gra pokazuje **wyłącznie odliczanie** („00:54”), i to na stronie, którą bot przeładowuje co kilkanaście sekund. Nie da się z tego zaplanować niczego na sekundy — a właśnie tego wymaga zbieranie złomu: recyklery mają wystartować **zaraz po ostatniej fali**, zanim zrobi to ktoś inny.
+
+Skąd bierze się godzina:
+1. każdy odczyt wiersza niesie własny stempel czasu, więc kandydatem na dolot jest `stempel + pozostało`;
+2. z wielu odczytów wygrywa **najwcześniejszy** — licznik zastygły na starej stronie może dolot tylko *zawyżyć*, a zawyżony zegar to cudzy złom;
+3. gdy wiersz jest na ekranie, próbnik chodzący **4× na sekundę** łapie moment przeskoku licznika i kotwiczy dolot z dokładnością ~0,25 s. W panelu taki wpis nie ma znaczka `~`.
+
+Godziny są w czasie gry (offset czytany z nagłówka, tylko ze świeżo wczytanej albo tykającej strony). **Dokładność ±1 s** — tyle ma ziarno licznika gry.
+
+Co robi sam:
+- minutę przed **pierwszą** falą: push + głos + dźwięk („wróć do gry”);
+- po **ostatniej** fali (domyślnie +2 s): sygnał „RECKI TERAZ”. Fala ACS to kilka flot w odstępie sekund (03.09: 00:54, 00:56, 01:04, 01:12) — dlatego jeden alarm i jeden sygnał, a nie cztery;
+- tytuł karty zamienia się w zegar (`⚔ 00:54 [1:217:6]`), więc widać go z paska przeglądarki, gdy gra jest w tle;
+- `złom ↗` otwiera galaktykę celu w **nowej karcie** — karta bota zostaje nietknięta, żeby nawigacja nie zabiła trwającego ratunku.
+
+Dlaczego domyślnie **+2 s**, a nie +1 s, o które prosił owner: przy ziarnie jednej sekundy „+1” trafiałoby co drugi raz w niezakończoną bitwę. Pole jest w panelu — można zejść do 1 s.
 
 ## Czego świadomie nie ma
 Farmienia nieaktywnych, bramy skokowej, kolejki budynków/badań, kolonizacji, czytania raportów przez Gemini, czarnej listy farmy. Wejdą, gdy będą potrzebne — brama i księżyce dopiero, gdy je postawisz.

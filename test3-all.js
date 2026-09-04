@@ -9,6 +9,7 @@ const SUITES = [
   ["war-game: wszystkie wektory ataku (audyt 31.08)", "test3-wargame.js"],
   ["E2E: prawdziwy bot na sztucznej grze (jsdom)", "test3-e2e.js"],
   ["panel: budowa, pasek stanu, zwijanie (jsdom)", "test3-ui.js"],
+  ["zegar dolotu: godzina uderzenia i recki (jsdom)", "test3-zegar.js"],
 ];
 let failed = [];
 for (const [name, file] of SUITES) {

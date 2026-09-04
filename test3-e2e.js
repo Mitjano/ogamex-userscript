@@ -188,7 +188,15 @@ class Game {
 }
 
 // ─── URUCHOMIENIE BOTA NA ATRAPIE (jedno "załadowanie strony") ───────────
+// v3.66.0: KAŻDE `load()` to nowe okno jsdom, a stare nigdy nie było zamykane —
+// jego `setInterval`y żyły do końca procesu. Przy zegarach 20-sekundowych nikt
+// tego nie zauważył; zegar dolotu chodzi 4× na sekundę i przy kilkudziesięciu
+// martwych oknach zestaw zwalniał tak, że przestawał się kończyć (a martwe okna
+// pisały do tego samego magazynu, co żywy scenariusz). W przeglądarce robi to
+// sama gra — przeładowanie strony zabija timery. Tutaj musimy to zrobić ręcznie.
+let poprzednieOkno = null;
 function load(game, { cfg = {}, ticks = 1 } = {}) {
+  if (poprzednieOkno) { try { poprzednieOkno.close(); } catch {} poprzednieOkno = null; }
   const url = `https://genesis.ogamex.net/${game.page}${game.query}`;
   const dom = new JSDOM(`<!doctype html><html><body>${game.bodyHtml()}</body></html>`, { url, pretendToBeVisual: true, runScripts: "outside-only" });
   const w = dom.window;
@@ -355,6 +363,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   const api = w.__OGX3;
   if (!api) { console.log("DIAG: __OGX3 brak; panel:", !!w.document.getElementById("ogx3-panel"), "| klucze store:", [...game.store.keys()].slice(0,5)); }
   if (api && Object.keys(cfg).length) { for (const [k, v] of Object.entries(cfg)) { if (v && typeof v === "object" && !Array.isArray(v)) Object.assign(api.CFG[k], v); else api.CFG[k] = v; } api.Store.set("cfg", api.CFG); }
+  poprzednieOkno = w;
   return { w, api, dom, async tick(n = ticks) { for (let i = 0; i < n; i++) await api.defenceTick(); } };
 }
 

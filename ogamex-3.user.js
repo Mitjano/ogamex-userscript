@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.65.3
+// @version      3.66.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.65.3";
+  const VERSION = "3.66.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -159,6 +159,13 @@
     tooLateSec: 40,         // dolot krótszy = nie zdążymy z formularzem (tylko alarm)
     recallBufferSec: 90,    // zawrót: ostatni dolot + bufor
     tickMs: 20000,
+    // ── ZEGAR DOLOTU (v3.66.0) ──
+    // leadSec — ostrzeżenie „wróć do gry", tyle sekund przed PIERWSZĄ falą.
+    // recyclerOffsetSec — o ile po OSTATNIEJ fali pada sygnał „recki teraz".
+    //   Owner prosił o „sekundę po ataku"; domyślne 2 s, bo licznik gry ma ziarno
+    //   jednej sekundy — przy +1 s co druga wysyłka trafiałaby w niezakończoną
+    //   bitwę. Pole jest w panelu, można zejść do 1 s albo podnieść.
+    impact: { enabled: true, leadSec: 60, recyclerOffsetSec: 2, beep: true, title: true },
     // ── ŚLEPY ALARM (pasek misji jako trzecie źródło prawdy) ──
     // Fork nie pokazuje na liście ruchów ataków z WŁASNEGO układu (2.x: katastrofa
     // 12.08 13:10 i atak 25.08 16:22 — pasek widział, lista nie). Pasek podaje samą
@@ -340,6 +347,29 @@
   const page = () => { const p = location.pathname; if (p.includes("/fleet")) return "fleet"; if (p.includes("/galaxy")) return "galaxy"; return p.replace(/^\//, "") || "home"; };
   const setInput = (input, v) => { const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; if (s) s.call(input, v); else input.value = v; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); };
   const looksLoggedOut = (res, html) => { try { if (res && res.redirected && /login|auth|password/i.test(String(res.url || ""))) return true; return /name=["']password["']|type=["']password["']|<form[^>]*login/i.test(String(html || "").slice(0, 1500)); } catch { return false; } };
+  const mmss = (sec) => { const s = Math.max(0, Math.round(sec)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m).padStart(2, "0")) + ":" + String(x).padStart(2, "0"); };
+  // v3.66.0: odliczanie w wierszu ruchu jest w DWÓCH miejscach — w atrybucie
+  // `data-remaining-seconds` i w tekście komórki („03:33" to te same 213 s;
+  // zrzut z 02.08). Atrybut wpisuje fork przy RENDERZE strony, a bot potrafi
+  // siedzieć na tej samej stronie kilkanaście minut — wtedy atrybut zastyga,
+  // a napis tyka dalej (albo odwrotnie, zależnie od tego, co przerysuje gra).
+  // Prawdą jest ZAWSZE MNIEJSZA z dwóch wartości: zawyżone „pozostało" to
+  // spóźniony alarm i spóźnione recki, czyli dokładnie te dwie rzeczy, których
+  // ten bot ma nie robić.
+  const parseCd = (t) => { const m = String(t || "").trim().match(/^(?:(\d{1,3}):)?(\d{1,2}):(\d{2})$/); if (!m) return null; const mi = +m[2], s = +m[3]; if (mi > 59 || s > 59) return null; return (+(m[1] || 0)) * 3600 + mi * 60 + s; };
+  const etaOf = (el) => {
+    if (!el) return 0;
+    const a = parseInt(el.getAttribute("data-remaining-seconds") || "0") || 0;
+    const t = parseCd(el.textContent);
+    // Rozjazd większy niż dwie minuty na stronie, którą bot i tak przeładowuje co
+    // kilkanaście sekund, znaczy, że napis to prawdopodobnie NIE odliczanie.
+    // Bierzemy dalej mniejszą wartość (bezpieczniej), ale zostawiamy ślad w logu —
+    // zasada domu: nieznany markup to zrzut, nie zgadywanie.
+    if (t != null && a > 0 && Math.abs(a - t) > 120) {
+      try { if (!Once.said("cdgap", 6 * 3600e3)) log(`[ZEGAR] licznik i atrybut rozjeżdżają się o ${Math.abs(a - t)} s (atrybut ${a} s, napis „${String(el.textContent || "").trim().slice(0, 20)}”). Biorę mniejszą. Jeśli ten napis to nie odliczanie, pokaż tę linię Claude'owi.`, "warn"); } catch {}
+    }
+    return (t != null && a > 0) ? Math.min(a, t) : (a || t || 0);
+  };
 
   // ═══ PARSERY (z 2.x) ════════════════════════════════════════════════════
   // Pasek planet: pary, księżyce, ciało aktywne. Markup: a.planet-select / a.moon-select (+.selected),
@@ -406,7 +436,7 @@
       const srcExplicit = (String(srcEl?.textContent || "").match(/(\d+:\d+:\d+)/) || [])[1] || null;
       const src = srcExplicit || (coords.length >= 2 ? coords[0] : null);
       const dst = (!srcExplicit && coords.length === 1) ? coords[0] : (coords.filter(c => c !== src).pop() || null);   // ACS: „Players: 1/2" + tylko cel
-      const eta = parseInt(tr.querySelector("[data-remaining-seconds]")?.getAttribute("data-remaining-seconds") || "0") || 0;
+      const eta = etaOf(tr.querySelector("[data-remaining-seconds]"));
       const isSpy = this.SPY.test(type);
       const hostileCls = /row-hostile-mission/i.test(String(tr.className));
       const friendlyCls = /row-friendly-mission/i.test(String(tr.className));
@@ -414,7 +444,10 @@
       const tdOf = (c) => { if (!c) return null; const a = [...tr.querySelectorAll("a")].find(x => (x.textContent || "").includes(`[${c}]`)); return a ? a.closest("td") : null; };
       const bodyOf = (td) => !td ? null : ((td.querySelector("img[src*='moon']") || /\bMoon\b/i.test(td.textContent || "")) ? "moon" : "planet");
       const isReturn = /return/i.test(String(tr.className)) || tr.dataset.returnFlight === "true";
-      return { id: tr.getAttribute("data-fleet-id") || "", type, src, dst, eta, srcBody: bodyOf((srcEl && srcEl.closest("td")) || tdOf(src)), dstBody: bodyOf(tdOf(dst)),
+      // readAt: stempel TEGO odczytu. Wiersz z listy AJAX i wiersz z DOM-u
+      // powstają w różnych chwilach, a zegar dolotu liczy się od chwili odczytu,
+      // nie od chwili, w której przebieg obrony się zaczął (fetch trwa do 8 s).
+      return { id: tr.getAttribute("data-fleet-id") || "", type, src, dst, eta, readAt: Date.now(), srcBody: bodyOf((srcEl && srcEl.closest("td")) || tdOf(src)), dstBody: bodyOf(tdOf(dst)),
         mine: !!(src && own.size && own.has(src)) || (!hostileCls && !friendlyCls && !!dst && own.has(dst) && !!src && own.has(src)),
         friendly: friendlyCls, hostile: hostileCls, attack, spy: isSpy && !friendlyCls, isReturn,
         html: (tr.outerHTML || "").replace(/\s+/g, " ").slice(0, 900) };
@@ -702,13 +735,17 @@
           continue;
         }
         if (!r.attack && !r.spy) continue;
-        const arriveAt = now + (r.eta || 0) * 1000;
+        const arriveAt = (r.readAt || now) + (r.eta || 0) * 1000;
         const k = r.id || `${r.dst}|${r.attack ? "A" : "S"}|${Math.round(arriveAt / 20000)}`;
         const prev = seen.get(k);
         seen.set(k, { id: r.id || null, dst: r.dst, dstBody: r.dstBody || prev?.dstBody || null, arriveAt, attack: !!r.attack, spy: !!r.spy, src: r.src || prev?.src || null, srcBody: r.srcBody, type: r.type, seenAt: prev?.seenAt || now, lastSeenAt: now, source: r.source, html: r.html });
         if (!prev && r.attack) log(`[ATAK DOM] wrogi wiersz (${r.type}, ${r.source}): ${r.html}`, r.source === "sim" ? "warn" : "error");
       }
       s.threats = [...seen.values()];
+      // v3.66.0: zegar dolotu ma WŁASNĄ pamięć, kotwiczoną po id floty — stan
+      // obrony zapomina zagrożenie 60 s po dolocie, a operator potrzebuje
+      // godziny uderzenia jeszcze długo po nim (recki, raport, rozmowa z sojuszem).
+      try { Impact.note(rows); } catch {}
       // v3.9.1 (audyt): PASEK JAKO TRZECIE ŹRÓDŁO PRAWDY. Fork gubi na liście ataki
       // z własnego układu — pasek widzi je jako goły licznik. Nadwyżka „pasek minus
       // rozpoznane wiersze" utrzymująca się dłużej niż próg = atak, którego nie widzimy.
@@ -3207,6 +3244,215 @@
   // wpadał tylko wtedy, gdy właściciel sam klikał po grze. Parkujemy na /home.
   function keepalive() { const last = Store.get("last_load", 0) || 0; if (!Fly.mission() && last && Date.now() - last > 10 * 60e3) { log("[KEEPALIVE] przeładowanie (10 min bez nawigacji).", "info"); Nav.go("/home", "keepalive: 10 min bez nawigacji"); } }
 
+  // ═══ ZEGAR DOLOTU ═══════════════════════════════════════════════════════
+  // v3.66.0 (prośba ownera 03.09 23:00, w trakcie ostrzału ACS z [1:217:3] na
+  // księżyc [1:217:6]: „brakuje mi dodatku z dokładną godziną dolotu jego floty,
+  // żebym mógł punktualnie wysłać recki np. sekundę po ataku").
+  //
+  // Gra pokazuje WYŁĄCZNIE odliczanie („00:54") i tylko na stronie, którą bot co
+  // kilkanaście sekund przeładowuje — z takiego źródła nie da się zaplanować
+  // niczego co do sekundy. Ten moduł zamienia odliczanie na stały ZEGAR:
+  //   1. każdy odczyt wiersza niesie własny stempel `readAt`, więc kandydatem na
+  //      dolot jest `readAt + pozostało`;
+  //   2. z wielu odczytów wygrywa NAJWCZEŚNIEJSZY — zastygły licznik na starej
+  //      stronie może dolot tylko ZAWYŻYĆ, a zawyżony zegar to cudzy złom;
+  //   3. gdy wiersz jest na ekranie, próbnik 250 ms łapie MOMENT przeskoku
+  //      sekundy na liczniku i kotwiczy dolot z dokładnością ~0,25 s.
+  // Zegar mieszka w magazynie i to jest cała jego wartość: godzina zostaje na
+  // ekranie, choć wiersz dawno zniknął razem z przeładowaną stroną.
+  //
+  // Uczciwie o dokładności: licznik gry ma ziarno jednej sekundy, więc godzina
+  // uderzenia jest pewna do ±1 s. Dlatego domyślne „recki" to +2 s po dolocie,
+  // a nie +1 s — sekunda za późno kosztuje kilka procent złomu, sekunda za
+  // wcześnie kosztuje całą wyprawę (zbieracze wchodzą w niezakończoną bitwę).
+  const Clock = {
+    RE: /(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/,
+    _el: null, _txt: null,
+    el() {
+      if (this._el && this._el.isConnected) return this._el;
+      this._el = null;
+      try {
+        for (const e of document.querySelectorAll("span,div,td,b,p,li,strong")) {
+          if (e.children.length) continue;
+          const t = (e.textContent || "").trim();
+          if (t.length <= 32 && this.RE.test(t)) { this._el = e; break; }
+        }
+      } catch {}
+      return this._el;
+    },
+    // Napis z nagłówka gry bierzemy tylko ze strony ŚWIEŻO wczytanej albo takiej,
+    // na której napis tyka. Zastygły zegar na karcie otwartej pół godziny temu
+    // dałby offset równy wiekowi karty i przesunąłby WSZYSTKIE godziny.
+    sample() {
+      const el = this.el(); if (!el) return;
+      const txt = (el.textContent || "").trim();
+      const m = txt.match(this.RE); if (!m) return;
+      const tyka = this._txt !== null && txt !== this._txt;
+      const swieza = (typeof performance !== "undefined" && performance.now) ? performance.now() < 8000 : false;
+      this._txt = txt;
+      if (!tyka && !swieza) return;
+      const t = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +m[6]).getTime();
+      if (!Number.isFinite(t)) return;
+      const off = t - Date.now();
+      if (Math.abs(off) > 6 * 3600e3) return;          // inna strefa czasowa — nie zgadujemy
+      const a = (Store.get("clock_off", []) || []).slice(-6); a.push(Math.round(off));
+      Store.set("clock_off", a);
+    },
+    offset() { const a = (Store.get("clock_off", []) || []).slice().sort((x, y) => x - y); return a.length ? a[Math.floor(a.length / 2)] : 0; },
+    hms(ms) { try { return new Date(ms + this.offset()).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); } catch { return "—"; } },
+  };
+
+  const Impact = {
+    live: new Map(),      // id → ostatnio widziane „pozostało" (do wykrycia przeskoku sekundy)
+    obce: new Set(),      // id sprawdzone i nieinteresujące — nie klasyfikujemy ich w kółko
+    _armed: new Set(),
+    all() { return Store.get("impacts", {}) || {}; },
+    save(m) { Store.set("impacts", m); },
+    trs() { try { return [...document.querySelectorAll("#fleet-movement-content tr[class*='row-mission-type-'], #layoutFleetMovements tr[class*='row-mission-type-']")]; } catch { return []; } },
+    left(tr) { const cd = tr.querySelector("[data-remaining-seconds]"); const v = cd ? etaOf(cd) : 0; return v > 0 ? v : null; },
+    // Kotwica precyzyjna (przeskok sekundy na ekranie) bije każdą inną; zwykły
+    // odczyt liczy się tylko wtedy, gdy przesuwa dolot WCZEŚNIEJ — punkt 2 wyżej.
+    anchor(id, at, precyzja, meta) {
+      if (!id || !Number.isFinite(at)) return;
+      // Puste pola z uboższego odczytu nie mają prawa skasować tego, co już wiemy
+      // (wiersz ACS nie zdradza źródła, wiersz z listy zdradza — i odwrotnie).
+      const nowe = {}; for (const [k, v] of Object.entries(meta || {})) if (v !== null && v !== undefined) nowe[k] = v;
+      const m = this.all(); const p = m[id];
+      if (!p) { m[id] = { at, precise: !!precyzja, first: Date.now(), seen: Date.now(), ...nowe }; this.save(m); return; }
+      const lepsza = precyzja ? (!p.precise || Math.abs(at - p.at) > 1200) : (!p.precise && at < p.at - 400);
+      const cosNowego = Object.entries(nowe).some(([k, v]) => p[k] !== v);
+      // Próbnik chodzi 4× na sekundę — bez tej bramki każdy jego przebieg pisałby
+      // do magazynu Tampermonkey. Zapisujemy tylko, gdy coś naprawdę się zmieniło.
+      if (!lepsza && !cosNowego && Date.now() - (p.seen || 0) < 30e3) return;
+      m[id] = { ...p, ...nowe, at: lepsza ? at : p.at, precise: p.precise || !!precyzja, seen: Date.now() };
+      this.save(m);
+    },
+    note(rows) {
+      let n = 0;
+      for (const r of rows || []) {
+        if (!r || r.mine || r.friendly || r.isReturn) continue;
+        if (!(r.attack || r.spy)) continue;
+        if (!r.id || !r.eta) continue;
+        this.anchor(r.id, (r.readAt || Date.now()) + r.eta * 1000, false,
+          { dst: r.dst || null, dstBody: r.dstBody || null, type: r.type || "?", attack: !!r.attack, spy: !!r.spy, src: r.src || null });
+        n++;
+      }
+      if (n) this.prune();
+      return n;
+    },
+    prune() {
+      const m = this.all(); const now = Date.now(); let zm = false;
+      for (const [k, v] of Object.entries(m)) if (!v || !v.at || now - v.at > 30 * 60e3) { delete m[k]; zm = true; }
+      if (zm) this.save(m);
+    },
+    list() { return Object.entries(this.all()).map(([id, v]) => ({ id, ...v })).sort((a, b) => a.at - b.at); },
+    ataki() { return this.list().filter(x => x.attack); },
+    // Najbliższe uderzenie przed nami; gdy wszystko już spadło — to, które spadło
+    // ostatnie, jeszcze przez 2 minuty. To są dokładnie te dwie minuty, w których
+    // operator wysyła recyklery, więc pasek stanu nie ma prawa wtedy zgasnąć.
+    next() {
+      const now = Date.now(); const a = this.ataki();
+      return a.find(x => x.at > now) || a.filter(x => x.at > now - 120e3).pop() || null;
+    },
+    // Fala ACS to kilka flot w odstępie kilku sekund (03.09: 00:54, 00:56, 01:04,
+    // 01:12). Ostrzeżenie „za minutę" ma sens tylko przed PIERWSZĄ, a „recki teraz"
+    // dopiero po OSTATNIEJ — inaczej operator dostaje cztery alarmy i wysyła
+    // zbieracze w środek trwającej bitwy.
+    pierwsza(v) { return !!v && !this.ataki().some(x => x.dst === v.dst && x.at < v.at && v.at - x.at <= 180e3); },
+    ostatnia(v) { return !!v && !this.ataki().some(x => x.dst === v.dst && x.at > v.at && x.at - v.at <= 180e3); },
+    // Próbnik na ekranie: kotwiczy tylko przy przeskoku o DOKŁADNIE jedną sekundę.
+    // Skok o więcej to przerysowanie tabeli przez grę, nie upływ czasu.
+    sample() {
+      const trs = this.trs();
+      if (!trs.length) { this.live.clear(); return; }
+      const znane = this.all();
+      for (const tr of trs) {
+        const id = tr.getAttribute("data-fleet-id"); if (!id) continue;
+        if (!znane[id]) {
+          if (this.obce.has(id)) continue;
+          this.obce.add(id);
+          let dodane = false;
+          try {
+            const r = Rows.classify(tr, PlanetBar.ownKeys());
+            if (r && r.id && r.eta && (r.attack || r.spy) && !r.mine && !r.friendly && !r.isReturn) dodane = !!this.note([r]);
+          } catch {}
+          if (!dodane) continue;
+        }
+        const teraz = this.left(tr); if (teraz == null) continue;
+        const bylo = this.live.get(id);
+        this.live.set(id, teraz);
+        if (bylo != null && teraz === bylo - 1) this.anchor(id, Date.now() + teraz * 1000, true, {});
+      }
+    },
+    beep(ile = 3) {
+      if (!(CFG.impact && CFG.impact.beep)) return;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+        const ctx = this._ac || (this._ac = new AC());
+        if (ctx.state === "suspended") { try { ctx.resume(); } catch {} }
+        for (let i = 0; i < ile; i++) {
+          const o = ctx.createOscillator(), g = ctx.createGain(), t0 = ctx.currentTime + i * 0.22;
+          o.type = "square"; o.frequency.value = 1180;
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.012);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.17);
+          o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + 0.19);
+        }
+      } catch {}
+    },
+    // Alarmy chodzą z zegara 1 s, ale moment „recki teraz" dostaje dodatkowo
+    // własny setTimeout co do milisekundy: przy złomie sekunda spóźnienia to
+    // cudza wyprawa. Zapalone flagi (`lead`, `go`) żyją w magazynie, więc
+    // przeładowanie strony w chwili uderzenia nie zdubluje alarmu.
+    alarms() {
+      const cfg = CFG.impact || {}; if (cfg.enabled === false) return;
+      const now = Date.now(); const m = this.all(); let zm = false;
+      for (const [id, v] of Object.entries(m)) {
+        if (!v || !v.attack || !v.at) continue;
+        const lead = Math.max(0, cfg.leadSec ?? 60) * 1000;
+        const goAt = v.at + (cfg.recyclerOffsetSec ?? 2) * 1000;
+        if (lead && !v.lead && now >= v.at - lead && now < v.at && this.pierwsza(v)) {
+          v.lead = true; zm = true;
+          const s = Math.max(0, Math.round((v.at - now) / 1000));
+          const gdzie = `[${v.dst}] ${v.dstBody === "moon" ? "☾" : "◍"}`;
+          log(`[ZEGAR] uderzenie w ${gdzie} o ${Clock.hms(v.at)} — za ${s} s. Recki o ${Clock.hms(goAt)}.`, "error");
+          Notifier.push("⏱ Uderzenie za chwilę", `${gdzie} o ${Clock.hms(v.at)} (za ${s} s). Recki o ${Clock.hms(goAt)}.`, "urgent", "alarm_clock");
+          Notifier.speak(`Uderzenie za ${s} sekund`, 1);
+          this.beep(3);
+        }
+        if (!v.go && now >= goAt && this.ostatnia(v)) {
+          v.go = true; zm = true;
+          log(`[ZEGAR] UDERZENIE w [${v.dst}] o ${Clock.hms(v.at)} — RECKI TERAZ (złom leży w [${v.dst}]).`, "success");
+          Notifier.push("🛰 RECKI TERAZ", `Uderzenie w [${v.dst}] o ${Clock.hms(v.at)} — wysyłaj recyklery na pole złomu.`, "urgent", "recycle");
+          Notifier.speak("Recki teraz", 2);
+          this.beep(5);
+        } else if (!v.go && !this._armed.has(id) && goAt > now && goAt - now < 3000 && this.ostatnia(v)) {
+          this._armed.add(id);
+          setTimeout(() => { try { this.alarms(); } catch {} }, Math.max(0, goAt - Date.now()));
+        }
+      }
+      if (zm) this.save(m);
+    },
+    // Tytuł karty = zegar widoczny na pasku przeglądarki, gdy gra jest w tle.
+    _tyt: null,
+    title() {
+      if (CFG.impact && CFG.impact.title === false) return;
+      const n = this.next();
+      const zostalo = n ? Math.round((n.at - Date.now()) / 1000) : null;
+      if (!n || zostalo > 30 * 60) { if (this._tyt !== null) { try { document.title = this._tyt; } catch {} this._tyt = null; } return; }
+      if (this._tyt === null) this._tyt = document.title;
+      try { document.title = zostalo >= 0 ? `⚔ ${mmss(zostalo)} [${n.dst}]` : `⚔ UDERZENIE [${n.dst}]`; } catch {}
+    },
+    // Jeden przebieg zegara (1 s). Próbnik ekranu chodzi osobno, 4× szybciej —
+    // to on łapie przeskok sekundy, a bez tego godzina jest pewna tylko do sekundy.
+    tick() {
+      try { Clock.sample(); } catch {}
+      try { this.alarms(); } catch {}
+      try { this.title(); } catch {}
+      try { UI.renderImpact(); } catch {}
+    },
+  };
+
   // ═══ PANEL ══════════════════════════════════════════════════════════════
   // v3.11.0 (UX): powrót do wyglądu panelu z Ateny (2.x) — właściciel: „stary był
   // ładny i nie przesłaniał". Trzy grzechy panelu 3.0, które to naprawia:
@@ -3264,6 +3510,14 @@
           #ogx3-panel .jr b{color:#5dade2;font-weight:600}
           #ogx3-panel .jr.ATAK b,#ogx3-panel .jr.BŁĄD b{color:#ff6b6b}
           #ogx3-panel .jr.RATUNEK b,#ogx3-panel .jr.POWRÓT b{color:#6fcf97}
+          #ogx3-panel .imp{margin:5px 0;padding:4px 6px;background:rgba(231,76,60,.13);border-left:2px solid #e74c3c;border-radius:3px}
+          #ogx3-panel .imp.spy{background:rgba(241,196,15,.10);border-left-color:#f1c40f}
+          #ogx3-panel .imp .h{font-size:13px;font-weight:700;color:#ff9b9b;font-variant-numeric:tabular-nums;display:flex;justify-content:space-between;gap:6px}
+          #ogx3-panel .imp .h .cd{color:#ffd56b}
+          #ogx3-panel .imp .sub{color:#9fb3c2;font-size:10px;margin-top:1px}
+          #ogx3-panel .imp .sub.rk{color:#7bff9b}
+          #ogx3-panel .imp a{color:#5dade2;text-decoration:none;cursor:pointer}
+          #ogx3-panel .imp a:hover{text-decoration:underline}
           #ogx3-panel #ogx3-status{white-space:pre-wrap;font-size:10px;line-height:1.4;color:#b7c4cd}
           #ogx3-panel #ogx3-log{max-height:180px;overflow-y:auto;font:10px/1.35 ui-monospace,monospace;background:rgba(0,0,0,.3);padding:5px;border-radius:4px;margin-top:4px}
         </style>
@@ -3272,6 +3526,7 @@
           <span style="display:flex;gap:6px;align-items:center"><button id="ogx3-on"></button><span class="min" id="ogx3-min" title="Zwiń / rozwiń panel">_</span></span>
         </div>
         <div class="strip" id="ogx3-strip">
+          <div class="row alert" id="ogx3-r-imp" style="display:none"><span class="ico">⏱</span><span class="lbl">Dolot</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-def"><span class="ico">🛡</span><span class="lbl">Obrona</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-fleet"><span class="ico">🛰</span><span class="lbl">Flota</span><span class="val">—</span></div>
           <div class="row" id="ogx3-r-expo"><span class="ico">🚀</span><span class="lbl">Ekspedycje</span><span class="val">—</span></div>
@@ -3310,6 +3565,12 @@
             <div class="line"><button id="ogx3-breaks" class="ogx3-btn"></button></div>
             <div class="line">gdy klikasz: fala czeka <input id="ogx3-idle" style="width:26px" /> min ciszy (0 = leci od razu)</div>
             <div class="note" id="ogx3-human-st"></div>
+          </div></div>
+          <div class="sec" data-sec="imp"><div class="sec-t"><span><span class="arr">▸</span> Zegar dolotu</span><span class="tail" id="ogx3-t-imp"></span></div><div class="sec-b">
+            <div id="ogx3-imp-list"></div>
+            <div class="line">recki <input id="ogx3-imp-off" style="width:26px" /> s po uderzeniu · alarm <input id="ogx3-imp-lead" style="width:26px" /> s przed</div>
+            <div class="line"><button id="ogx3-imp-beep" class="ogx3-btn"></button><button id="ogx3-imp-copy" class="ogx3-btn">Kopiuj godziny</button></div>
+            <div class="note" id="ogx3-imp-note"></div>
           </div></div>
           <div class="sec" data-sec="jr"><div class="sec-t"><span><span class="arr">▸</span> Dziennik obrony</span><span class="tail" id="ogx3-t-jr"></span></div><div class="sec-b"><div id="ogx3-journal"></div></div></div>
           <div class="sec" data-sec="det"><div class="sec-t"><span><span class="arr">▸</span> Szczegóły stanu</span></div><div class="sec-b"><div id="ogx3-status"></div></div></div>
@@ -3450,9 +3711,88 @@
         }
         alert("Nie widzę lotu do zawrócenia ani floty na planecie pary z księżycem. Sprawdź panel — „Szczegóły stanu”, pole „Loty”.");
       };
+      // ── zegar dolotu ────────────────────────────────────────────────────
+      $("ogx3-imp-off").value = String(CFG.impact.recyclerOffsetSec ?? 2);
+      $("ogx3-imp-off").onchange = (e) => {
+        CFG.impact.recyclerOffsetSec = Math.max(0, Math.min(600, parseInt(e.target.value) || 0)); saveCfg();
+        log(`[ZEGAR] sygnał „recki teraz" ${CFG.impact.recyclerOffsetSec} s po uderzeniu. Pamiętaj: licznik gry ma ziarno 1 s, więc poniżej 2 s zdarzy się trafić w niezakończoną bitwę.`, "info");
+        this.renderImpact();
+      };
+      $("ogx3-imp-lead").value = String(CFG.impact.leadSec ?? 60);
+      $("ogx3-imp-lead").onchange = (e) => {
+        CFG.impact.leadSec = Math.max(0, Math.min(3600, parseInt(e.target.value) || 0)); saveCfg();
+        log(CFG.impact.leadSec ? `[ZEGAR] ostrzeżenie ${CFG.impact.leadSec} s przed pierwszą falą.` : "[ZEGAR] ostrzeżenie przed uderzeniem WYŁĄCZONE — zostaje sam sygnał „recki teraz”.", "info");
+      };
+      $("ogx3-imp-beep").onclick = () => { CFG.impact.beep = !CFG.impact.beep; saveCfg(); this.renderStatus(); if (CFG.impact.beep) Impact.beep(2); };
+      $("ogx3-imp-copy").onclick = () => {
+        const off = (CFG.impact.recyclerOffsetSec ?? 2) * 1000;
+        const t = Impact.list().map(v => `${Clock.hms(v.at)} ${v.attack ? "ATAK" : "sonda"} [${v.dst}]${v.dstBody === "moon" ? " ☾" : ""} ← [${v.src || "?"}]${v.attack && Impact.ostatnia(v) ? ` · recki ${Clock.hms(v.at + off)}` : ""}`).join("\n") || "(brak obcych flot w drodze)";
+        navigator.clipboard?.writeText(t).then(() => log("[ZEGAR] godziny skopiowane do schowka.", "success"), () => log(t, "info"));
+      };
       $("ogx3-copy").onclick = () => { const t = logEntries.map(e => `[${e.time}] [${e.type.toUpperCase()}] ${e.msg}`).join("\n"); navigator.clipboard?.writeText(t); };
       $("ogx3-clear").onclick = () => { logEntries = []; Store.set("log", []); this.renderLog(); };
-      this.renderStatus(); this.renderLog();
+      this.renderStatus(); this.renderLog(); this.renderImpact();
+    },
+    // Zegar dolotu: GODZINA uderzenia i godzina wysyłki recyklerów. Rysowany co
+    // sekundę, więc trzyma się samego zegara — nie czeka na przebieg obrony (20 s).
+    _impAuto: false,
+    renderImpact() {
+      if (!this.el) return;
+      const $ = (id) => document.getElementById(id);
+      const cfg = CFG.impact || {};
+      const now = Date.now();
+      const lista = Impact.list();
+      const nx = Impact.next();
+
+      const row = $("ogx3-r-imp");
+      if (row) {
+        if (nx) {
+          const l = Math.round((nx.at - now) / 1000);
+          row.style.display = "";
+          row.querySelector(".val").textContent = l >= 0
+            ? `${Clock.hms(nx.at)} · za ${mmss(l)}`
+            : (Impact.ostatnia(nx) ? `RECKI TERAZ · ${Clock.hms(nx.at + (cfg.recyclerOffsetSec ?? 2) * 1000)}` : `UDERZYŁO ${Clock.hms(nx.at)}`);
+        } else { row.style.display = "none"; row.querySelector(".val").textContent = "—"; }
+      }
+      const tail = $("ogx3-t-imp");
+      if (tail) tail.textContent = nx ? mmss(Math.max(0, (nx.at - now) / 1000)) : (lista.length ? `${lista.length} w pamięci` : "cicho");
+
+      // Atak bliżej niż 10 minut sam rozwija sekcję — o tej porze nikt nie szuka
+      // godziny po klikaniu. Zamknięcie ręką zostaje uszanowane do końca ataku.
+      const sec = this.el.querySelector('.sec[data-sec="imp"]');
+      if (nx && nx.at - now < 10 * 60e3) {
+        if (sec && !this._impAuto) { this._impAuto = true; if (!sec.classList.contains("open")) { sec.classList.add("open"); const a = sec.querySelector(".arr"); if (a) a.textContent = "▾"; } }
+      } else this._impAuto = false;
+
+      const box = $("ogx3-imp-list");
+      if (!box) return;
+      if (!lista.length) {
+        box.innerHTML = `<div class="note">Cicho — żadnej obcej floty w drodze. Gdy jakaś nadleci, będzie tu GODZINA uderzenia (gra pokazuje samo odliczanie) i godzina wysyłki recków.</div>`;
+      } else {
+        const off = (cfg.recyclerOffsetSec ?? 2) * 1000;
+        box.innerHTML = lista.map(v => {
+          const l = Math.round((v.at - now) / 1000);
+          const g = parseKey(v.dst);
+          const ost = v.attack && Impact.ostatnia(v);
+          return `<div class="imp${v.attack ? "" : " spy"}">`
+            + `<div class="h"><span>${Clock.hms(v.at)}</span><span class="cd">${l >= 0 ? "za " + mmss(l) : (l >= -120 ? "TERAZ" : "było")}</span></div>`
+            + `<div class="sub">${v.attack ? "atak" : "sonda"} → [${v.dst}] ${v.dstBody === "moon" ? "☾" : "◍"} ← [${v.src || "?"}]${v.precise ? "" : " ~"}</div>`
+            + (ost ? `<div class="sub rk">recki ${Clock.hms(v.at + off)}${g ? ` · <a data-gal="${g.galaxy}:${g.system}">złom ↗</a>` : ""}</div>` : "")
+            + `</div>`;
+        }).join("");
+        // Galaktyka celu w NOWEJ karcie — bot zostaje na swojej stronie i nie
+        // gubi przez to lotu ratunkowego (nawigacja w jego karcie potrafi zabić misję).
+        box.onclick = (e) => {
+          const a = e.target.closest("a[data-gal]"); if (!a) return;
+          const [g, s] = String(a.dataset.gal || "").split(":");
+          if (g && s) { try { window.open(`/galaxy?x=${g}&y=${s}`, "_blank"); } catch {} }
+        };
+      }
+      const note = $("ogx3-imp-note");
+      if (note) {
+        const o = Clock.offset();
+        note.textContent = `Godziny w czasie gry${Math.abs(o) >= 5000 ? ` (Twój zegar ${o > 0 ? "spóźnia się" : "śpieszy się"} o ${Math.round(Math.abs(o) / 1000)} s)` : ""} · dokładność ±1 s — tyle ma ziarno licznika gry. „~” = odczyt zgrubny, bez złapanego przeskoku sekundy.`;
+      }
     },
     // Zwinięty panel = sam nagłówek (pasek stanu też znika — właściciel chciał
     // móc go zupełnie usunąć z drogi). Alarm rozwija panel z powrotem.
@@ -3511,6 +3851,8 @@
       $("ogx3-expo").textContent = `Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"}`; $("ogx3-expo").style.background = CFG.expo.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-disc").textContent = `Odkrywca 40 min ${CFG.expo.discoverer40 ? "ON" : "OFF"}`;
       $("ogx3-topic").textContent = Notifier.topic();
+      $("ogx3-imp-beep").textContent = `Dźwięk ${CFG.impact.beep ? "ON" : "OFF"}`;
+      $("ogx3-imp-beep").style.background = CFG.impact.beep ? "#1e6b3a" : "rgba(255,255,255,.1)";
 
       // ── PASEK STANU: pięć linii = pięć odpowiedzi bez klikania ───────────
       const night = nightWindow(CFG.fs, new Date());
@@ -3617,7 +3959,7 @@
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
   // busy(): czy defenceTick WŁAŚNIE trwa — startowy tick odpala się bez await, więc
   // harness E2E musi umieć poczekać, aż bot skończy krok, zamiast zgadywać stałym sleepem.
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, expoHomeBody, syncCfg, saveCfg, barExcessState, PlanetBar, Hangar, UI, Recon, Human, busy: () => running }; } catch {}
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, expoHomeBody, syncCfg, saveCfg, barExcessState, PlanetBar, Hangar, UI, Recon, Human, Impact, Clock, busy: () => running }; } catch {}
   Store.set("last_load", Date.now());
   // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
   // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.
@@ -3696,6 +4038,18 @@
   // patrz komentarz przy `Heartbeat`. Własny zegar, bez bramek obrony.
   try { Heartbeat.ping(); } catch {}
   setInterval(() => { try { Heartbeat.ping(); } catch {} }, 30e3);
+  // v3.66.0 — zegar dolotu. Dwa tempa: próbnik ekranu 4×/s (łapie przeskok
+  // sekundy na liczniku gry, stąd bierze się dokładność poniżej sekundy) i sam
+  // zegar raz na sekundę (alarmy, tytuł karty, panel). Oba są NIEZALEŻNE od
+  // przebiegu obrony — ten chodzi co 20 s i nigdy nie trafiłby w moment uderzenia.
+  // Bramki po czasie RZECZYWISTYM: timer przyspieszony przez środowisko (albo
+  // spiętrzony po długim uśpieniu karty) nie ma prawa zrobić więcej pracy, niż
+  // wynika z zegara. Bez tego zestaw E2E — który tworzy dziesiątki okien —
+  // przestawał się kończyć.
+  let sampleAt = 0, tickAt = 0;
+  try { Impact.tick(); } catch {}
+  setInterval(() => { const n = Date.now(); if (n - sampleAt < 200) return; sampleAt = n; try { Impact.sample(); } catch {} }, 250);
+  setInterval(() => { const n = Date.now(); if (n - tickAt < 900) return; tickAt = n; try { Impact.tick(); } catch {} }, 1000);
   setInterval(keepalive, 60e3);
   setInterval(watchdog, 60e3);
   // aktualizacja z repo
