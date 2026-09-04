@@ -667,8 +667,8 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("złom: okno anty-duplikat 3 min, nie 20 s fal ekspedycji", /m\.kind === "debris" \? 3 \* 60e3/.test(src));
   check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
   check("kolejność ekonomii: rekonesans → bonus → księżyce → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Moon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
-  check("księżyce: domyślnie WYŁĄCZONE (moduł wydaje surowce bezpowrotnie)", /moon: \{ enabled: false/.test(src));
-  check("księżyce: sufit udziału metalu i średnica dobierana w dół", /maxMetalShare/.test(src) && /KM: \[8944/.test(src) && /c <= budget/.test(src));
+  check("księżyce: domyślnie WŁĄCZONE, cel NAJMNIEJSZA średnica (v3.67.0: koszt pomijalny, nie inwestycja)", /moon: \{ enabled: true, maxMetalShare: 0\.25, minKm: 1000/.test(src));
+  check("księżyce: sufit udziału metalu, średnica NAJMNIEJSZA najpierw (rosnąco, nie w dół od największej)", /maxMetalShare/.test(src) && /KM: \[8944/.test(src) && /\.sort\(\(a, b\) => a - b\)/.test(src) && /c <= budget/.test(src));
   check("księżyce: limit prób na dobę i limit nawigacji na próbę", /maxTries24h/.test(src) && /navs \|\| 0\) >= 4/.test(src));
   check("księżyce: nieznany markup = zrzut do logu, nie zgadywanie", /\[KSIĘŻYC DOM\]/.test(src));
   check("ekspedycje: pole „startuj z” przypina ciało startowe", /ogx3-expo-from/.test(src) && /CFG\.expo\.launchFrom = \{ galaxy/.test(src));
@@ -767,7 +767,7 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("rekonesans rzadziej odwiedza ciala BEZ floty", /reconEmptyMs/.test(src));
   check("rekonesans ma tryb TYLKO-FLOTA i jest on domyslny", /reconMode: "fleet"/.test(src) && /CFG\.reconMode \|\| "fleet"/.test(src));
   check("alarm nadal moze wejsc na kazde cialo (osobna sciezka)", /wchodzę na Fleet/.test(src) && /alarm_scan/.test(src));
-  check("rekonesans przypiety do ciala startowego, gdy jest ustawione", /if \(lf\) return all\.filter\(\(\[k\]\) => k === lf\);/.test(src));
+  check("rekonesans przypiety do ciala startowego, gdy jest ustawione", /if \(lf\) return dedupe\(\[\.\.\.all\.filter\(\(\[k\]\) => k === lf\), \.\.\.lostPlanets\]\);/.test(src));
   check("rekonesans nie otwiera Fleet dla ciala spoza listy (poza rozruchem)", /allowed\.size === 0 \|\| allowed\.has/.test(src));
   // NAUCZKA 29.08: trzy wersje pod rzad poszly na main z NIEPODBITYM @version
   // (patch podmieniajacy numer zostal wyciety przy edycji skryptu lataczego),
@@ -823,7 +823,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("osierocony pending wygasa po 10 min (nie blokuje pary na zawsze)", /f\.pending && now - f\.sentAt < 10 \* 60e3\) return true/.test(src));
   check("jedna definicja 'wpis lotu nic nie znaczy' (decide + ekonomia + rekonesans)", /function flightStale\(f, now\)/.test(src) && /flightsBlocking\(s, now\)\) return \{ skip/.test(src));
   check("ratunek ma skróconą karencję po potknięciu (nie 3 min)", /a\.air \|\| a\.rescue\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
-  check("ratunek na drugie ciało też jest oznaczony jako ratunek", /drugie ciało`, speed: 100, recall: false, rescue: true/.test(src));
+  check("ratunek na drugie ciało też jest oznaczony jako ratunek", /toBody: other,[\s\S]{0,300}?recall: false, rescue: true \}\);/.test(src));
   // v3.10.3 (E2E): reguly, ktore wyszly dopiero na symulatorze
   check("zero statkow to 'pusty hangar' TYLKO na kroku wyboru statkow", /const shipsStep = ships\.length > 0/.test(src) && /if \(!shipsStep\) \{/.test(src));
   check("lot krotszy niz termin zawrotu = LADOWANIE (zawrot skasowany)", /recallOf\(mm\) \{/.test(src) && /recallAt: this\.recallOf\(m\)/.test(src));
@@ -1212,6 +1212,138 @@ console.log("\n── 40. TRYB CICHY (v3.58.0): mniej śladów aktywności na ko
   check("zwiad kolonii w tle: TTL z trybu cichego (colonyHours), nie 45 min", /stealth\.colonyHours \|\| 8\) \* 3600e3/.test(src));
   check("tryb cichy: domyślnie WŁĄCZONY + przycisk w panelu", /stealth: \{ enabled: true, colonyHours: 8 \}/.test(src) && /ogx3-quiet/.test(src));
   check("pary z lotem obronnym nie podlegają wyciszeniu (warunek !f)", /cfg\.stealth && cfg\.stealth\.enabled && !f && guarded58/.test(src));
+}
+
+console.log("\n── 41. KSIĘŻYC ZNISZCZONY: flota na gołej planecie ewakuowana OD RAZU, bez czekania na atak (v3.67.0) ──");
+{
+  const s = base({
+    pairs: {
+      "3:272:7": { hasMoon: false, galaxy: 3, system: 272, position: 7 },   // stracił księżyc
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },    // sąsiedni księżyc w układzie
+      "5:100:4": { hasMoon: false, galaxy: 5, system: 100, position: 4 },
+    },
+    hangars: { "3:272:7|planet": H(2_812_000) },
+    moonLost: { "3:272:7": NOW - 5 * 60e3 },
+    active: { key: "3:272:7", body: "planet" },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  const a = actions[0];
+  check("jedna akcja: lot", actions.length === 1 && a.kind === "fly", JSON.stringify(actions));
+  check("z GOŁEJ planety [3:272:7] na sąsiedni KSIĘŻYC [3:272:2]", a && a.fromKey === "3:272:7" && a.fromBody === "planet" && a.toKey === "3:272:2" && a.toBody === "moon", JSON.stringify(a));
+  check("jednorazowe przesiedlenie (home, bez zawrotu) — nie ucieczka z powrotem jak przy ataku", a && a.home === true && a.recall === false, JSON.stringify(a));
+  check("bierze surowce (nie ustawia takeResources:false — deuter potrzebny na dalszy lot)", a && a.takeResources !== false, JSON.stringify(a));
+}
+
+console.log("\n── 42. KSIĘŻYC ZNISZCZONY, brak sąsiada w układzie → NAJBLIŻSZE bezpieczne refugium, nie pierwsze z kolei (v3.67.0, audyt K3) ──");
+{
+  const s = base({
+    pairs: {
+      "3:272:7": { hasMoon: false, galaxy: 3, system: 272, position: 7 },
+      "9:900:1": { hasMoon: true, galaxy: 9, system: 900, position: 1 },     // ma księżyc, ale BARDZO daleko
+      "3:280:2": { hasMoon: false, galaxy: 3, system: 280, position: 2 },    // bez księżyca, ale ta sama galaktyka = blisko
+    },
+    hangars: { "3:272:7|planet": H(500_000) },
+    moonLost: { "3:272:7": NOW - 5 * 60e3 },
+    active: { key: "3:272:7", body: "planet" },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  const a = actions[0];
+  check("wybrał BLIŻSZE refugium [3:280:2] (ta sama galaktyka), nie [9:900:1] mimo kolejności zapisu", a && a.kind === "fly" && a.toKey === "3:280:2" && a.toBody === "planet", JSON.stringify(a));
+}
+
+console.log("\n── 43. Para BEZ KSIĘŻYCA OD ZAWSZE (nigdy go nie miała) → BEZ automatycznej ewakuacji — moonLost pilnuje TYLKO świeżej utraty ──");
+{
+  const s = base({
+    pairs: {
+      "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+      "5:100:4": { hasMoon: false, galaxy: 5, system: 100, position: 4 },   // nigdy nie miała księżyca, brak wpisu w moonLost
+    },
+    hangars: { "5:100:4|planet": H(9_000) },
+    active: { key: "5:100:4", body: "planet" },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  check("cisza — kolonia bez księżyca od zawsze nie jest w trybie awaryjnym (nie zaśmieca floty ciągłą ewakuacją)", actions.length === 0, JSON.stringify(actions));
+}
+
+console.log("\n── 44. RATUNEK moon→moon 2× nieudany (deuter?) → decide() schodzi na drugie ciało pary, wolniej (v3.67.0) ──");
+{
+  const s = base({
+    threats: [threat("3:272:7", "moon", 300)],
+    rescueFail: { "3:272:7>3:272:2": { count: 2, at: NOW - 60e3 } },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  const a = actions[0];
+  check("jedna akcja: lot", actions.length === 1 && a.kind === "fly", JSON.stringify(actions));
+  check("NIE leci na sąsiedni księżyc (2× nieudane) — schodzi na drugie ciało TEJ SAMEJ pary", a && a.toKey === "3:272:7" && a.toBody === "planet", JSON.stringify(a));
+  check("wolniej (airSpeedPct), nie pełna prędkość — oszczędza deuter", a && a.speed === CFG.airSpeedPct, JSON.stringify(a));
+  check("bez zawrotu (jednorazowe zejście, nie ucieczka w powietrze)", a && a.recall === false && !a.air, JSON.stringify(a));
+}
+
+console.log("\n── 45. RATUNEK moon→moon: JEDNA nieudana próba to za mało, żeby zboczyć z trasy ──");
+{
+  const s = base({
+    threats: [threat("3:272:7", "moon", 300)],
+    rescueFail: { "3:272:7>3:272:2": { count: 1, at: NOW - 60e3 } },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  check("nadal leci na sąsiedni KSIĘŻYC (próg to 2 nieudane próby)", actions[0] && actions[0].toKey === "3:272:2" && actions[0].toBody === "moon", JSON.stringify(actions));
+}
+
+console.log("\n── 46. RATUNEK moon→moon: stare niepowodzenia (>10 min) NIE blokują trasy ──");
+{
+  const s = base({
+    threats: [threat("3:272:7", "moon", 300)],
+    rescueFail: { "3:272:7>3:272:2": { count: 5, at: NOW - 15 * 60e3 } },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  check("okno 10 min minęło — próbuje sąsiedniego księżyca jak dotąd", actions[0] && actions[0].toKey === "3:272:2" && actions[0].toBody === "moon", JSON.stringify(actions));
+}
+
+console.log("\n── 47. AUDYT PRZED PUSH: atak na OBA ciała + sąsiedni księżyc zablokowany (fuel-fallback) → anyRefuge NIE wraca na tę samą trasę, szuka DALEJ ──");
+{
+  const s = base({
+    pairs: {
+      "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },   // sąsiedni księżyc — ZABLOKOWANY (2x nieudane)
+      "3:280:5": { hasMoon: false, galaxy: 3, system: 280, position: 5 }, // dalsza, ale bezpieczna kolonia
+    },
+    threats: [threat("3:272:7", "moon", 300), threat("3:272:7", "planet", 300)],
+    hangars: { "3:272:7|planet": H(500_000) },
+    rescueFail: { "3:272:7>3:272:2": { count: 2, at: NOW - 60e3 } },
+    active: { key: "3:272:7", body: "planet" },
+  });
+  const { actions } = decide(s, CFG, NOW);
+  const a = actions[0];
+  check("jedna akcja: lot", actions.length === 1 && a.kind === "fly", JSON.stringify(actions));
+  check("NIE wraca na zablokowany sąsiedni księżyc [3:272:2]", a && a.toKey !== "3:272:2", JSON.stringify(a));
+  check("leci do DALSZEJ, ale bezpiecznej kolonii [3:280:5]", a && a.toKey === "3:280:5", JSON.stringify(a));
+}
+
+console.log("\n── 48. AUDYT PRZED PUSH: jak wyżej, ale BRAK innej kolonii poza zablokowaną → alarm 'brak refugium', NIE ponawia zablokowanej trasy ──");
+{
+  const s = base({
+    pairs: {
+      "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },
+    },
+    threats: [threat("3:272:7", "moon", 300), threat("3:272:7", "planet", 300)],
+    hangars: { "3:272:7|planet": H(500_000) },
+    rescueFail: { "3:272:7>3:272:2": { count: 2, at: NOW - 60e3 } },
+    active: { key: "3:272:7", body: "planet" },
+  });
+  const { actions, alerts } = decide(s, CFG, NOW);
+  check("ŻADNEGO lotu na zablokowaną trasę", !actions.some(a => a.kind === "fly"), JSON.stringify(actions));
+  check("alarm: brak jakiegokolwiek refugium (nie ślepe ponowienie)", alerts.some(al => /brak jakiegokolwiek refugium/.test(al.msg)), JSON.stringify(alerts));
+}
+
+console.log("\n── 49. AUDYT PRZED PUSH: regresyjne strażniki dla poprawek spoza decide() (CFG.moon migracja, Moon navs, s.landings, Recon moonLost) ──");
+{
+  check("migracja CFG.moon dla starego zapisu istnieje (jak migr_debris_on_v356)", /migr_moon_on_v367/.test(src) && /CFG\.moon\.minKm === 2000/.test(src));
+  check("krok 3 Moon.tick (klik „Form a moon”) inkrementuje navs — bez tego ponowiony klik nie ma limitu", /cur\.m = \{ key: key0, at: Date\.now\(\), navs: \(\(cur\.m \|\| \{\}\)\.navs \|\| 0\) \+ 1, km: picked\.km/.test(src));
+  check("s.landings (rejestr własnych lotów) normalizuje fromBody tak samo jak s.expected/s.expoLandings", /rawBody2 === "moon" && !\(s\.pairs\[lkKey\]/.test(src));
+  check("Recon.bodiesOf pilnuje AKTYWNIE par ze świeżo utraconym księżycem (s.moonLost), nie czeka na wolny obieg w tle", /lostPlanets = Object\.keys\(s\.moonLost \|\| \{\}\)/.test(src) && /dedupe\(\[\.\.\.all, \.\.\.lostPlanets\]\)/.test(src));
+  check("rescueFail NIE liczy ręcznego Abort operatora jako dowodu na brak deuteru", /m\.rescue && m\.air && m\.toBody === "moon" && why !== "operator"/.test(src));
+  check("anyRefuge przyjmuje wykluczenie konkretnej pary (drugi parametr)", /const anyRefuge = \(k, exclude\) => \{/.test(src) && /ok === exclude/.test(src));
 }
 
 console.log("");

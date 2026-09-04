@@ -903,7 +903,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // widział „to nie moja planeta", wracał do kroku „switch", klikał kolonię,
     // znowu wchodził na formularz… ~30 przeładowań gry, w logu SAME linie startowe
     // (powody ginęły w 800-ms debounce zapisu logu), koniec dopiero na limicie 5 min.
-    const cfg = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true } };
+    // moon:{enabled:false} — v3.67.0 zmieniło domyślne WŁĄCZONE; ten scenariusz testuje
+    // PĘTLĘ NAWIGACJI ekspedycji, a "Kolonia" bez księżyca w fixture jest tu przypadkowa
+    // (nie przedmiotem testu) — bez wyłączenia moduł Moon wchodziłby jej w drogę.
+    const cfg = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, moon: { enabled: false }, human: { breaks: false, economyAtNight: true } };
     const g = new Game({
       pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: false }],
       hangars: { "1:100:9|planet": { LARGE_CARGO: 40 } },
@@ -1008,7 +1011,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const { logs } = await run(g, { cfg, loads: 20, ticksPerLoad: 2 });
     check("bot postawił księżyc przy planecie bez księżyca", !!g.moonBuilt && g.moonBuilt.key === "1:100:9", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
     check("zmieścił się w suficie 25% metalu", !!g.moonBuilt && g.moonBuilt.cost <= 950_000_000, JSON.stringify(g.moonBuilt));
-    check("wybrał NAJWIĘKSZĄ średnicę, która się mieści", !!g.moonBuilt && g.moonBuilt.km === 3000, JSON.stringify(g.moonBuilt));
+    // v3.67.0: NAJMNIEJSZA średnica spełniająca minKm (tu 2000, jawnie skonfigurowane w
+    // cfg tego testu), nie największa przystępna — cena nie jest już kryterium wyboru.
+    check("wybrał NAJMNIEJSZĄ średnicę (minKm=2000), nie największą przystępną (3000)", !!g.moonBuilt && g.moonBuilt.km === 2000, JSON.stringify(g.moonBuilt));
     check("gra nigdy nie odmówiła (bot nie klikał ponad stan)", !g.moonRefused, "odmów: " + (g.moonRefused || 0));
     check("i zameldował sukces", logs.some(m => /\[KSIĘŻYC\] ✅/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
 
@@ -1219,7 +1224,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // Athena nie miala cyklicznego rekonesansu: FleetRecon.scan() odpalal sie tylko,
     // gdy bot i tak byl na stronie floty. 3.0 dorobilo objazd planet i to on wkurzal
     // operatora. Patrol jest teraz domyslnie OFF, a ekspedycja dociaga hangar fetchem.
-    const cfg = { autoRescue: true, recon: false, bonus: { enabled: false }, aster: { enabled: false },
+    // moon:{enabled:false} — v3.67.0 zmieniło domyślne WŁĄCZONE; oba ciała fixture są tu
+    // bez księżyca PRZYPADKOWO (test dotyczy cichego dociągania hangaru ekspedycji, nie
+    // Moon), bez wyłączenia moduł Moon zjadłby tick ekonomii, zanim doszłoby do Expo.
+    const cfg = { autoRescue: true, recon: false, bonus: { enabled: false }, aster: { enabled: false }, moon: { enabled: false },
       expo: { enabled: true, waves: 1, launchFrom: { galaxy: 1, system: 100, position: 5 } },
       human: { breaks: false, economyAtNight: true } };
     const g = new Game({
@@ -1493,6 +1501,36 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const r2 = { logs: [] };
     for (let i = 0; i < 5 && !g2.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const rr = await run(g2, { cfg: cfgOn, loads: 10, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
     check("(kontrola) bez wyłączenia fala idzie jak dotąd", g2.sent.some(x => /Expedition/i.test(x.mission || "")), JSON.stringify(g2.sent) + " | " + r2.logs.filter(m => /EXPO|CFG/.test(m)).slice(0, 5).join(" | "));
+  }
+
+  console.log("\n── 43. KSIĘŻYCE v3.67.0: domyślnie WŁĄCZONE+NAJMNIEJSZA (1000 km), E7 pomija zablokowaną parę, auto-powrót floty po odbudowie ──");
+  {
+    // moon celowo NIE nadpisany w cfg → wystawia PRAWDZIWE DEFAULTS (enabled:true, minKm:1000).
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false }, aster: { enabled: false }, debris: { enabled: false }, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },
+        { key: "1:100:9", name: "Zablokowana", moon: false },   // E7: już przy limicie prób — target() ma ją pominąć
+        { key: "1:100:8", name: "Kolonia", moon: false },        // ma dostać księżyc PIERWSZA
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 10 }, "1:100:8|planet": { BATTLESHIP: 500 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.metal = 2_000_000_000;   // budżet 25% = 500 mln — 1000 km (300 mln) starcza z zapasem
+    g.store.set("genesis.ogamex.net:ogx3_moon", JSON.stringify({ tries: { "1:100:9": { n: 3, at: Date.now() } }, m: null }));
+    // Skrót testowy: bot "wie" o flocie na [1:100:8] planet ze świeżego odczytu (normalnie
+    // przyszłoby ze skanu /fleet) — bez tego auto-powrót nie miałby czego sprawdzić, bo
+    // moduł Moon nigdy sam nie odwiedza zakładki Flota.
+    g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({
+      pairs: {}, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: Date.now(),
+      hangars: { "1:100:8|planet": { total: 500, ships: [{ type: "BATTLESHIP", qty: 500 }], at: Date.now() } },
+    }));
+    const { logs } = await run(g, { cfg, loads: 30, ticksPerLoad: 2 });
+    check("E7: pominął zablokowaną parę [1:100:9] i postawił księżyc przy [1:100:8]", !!g.moonBuilt && g.moonBuilt.key === "1:100:8", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 6).join(" | "));
+    check("domyślnie NAJMNIEJSZA średnica (1000 km) bez nadpisania w cfg", !!g.moonBuilt && g.moonBuilt.km === 1000, JSON.stringify(g.moonBuilt));
+    check("po odbudowie bot JEDNORAZOWO zwiózł flotę z planety na nowy księżyc (Deploy)",
+      g.sent.some(x => x.to === "1:100:8" && x.toBody === "moon" && x.mission === "Deploy"),
+      JSON.stringify(g.sent.map(x => ({ to: x.to, toBody: x.toBody, mission: x.mission }))) + " | " + logs.filter(m => /KSIĘŻYC|zwożę/.test(m)).slice(0, 4).join(" | "));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

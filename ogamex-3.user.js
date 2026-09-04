@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.66.0
+// @version      3.67.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.66.0";
+  const VERSION = "3.67.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -247,10 +247,14 @@
     // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
     // potwierdził 28.08, że na Genesis działa tak samo). Nie rusza flotą, więc domyślnie ON.
     bonus: { enabled: true, gapMin: 2, retryMin: 15 },
-    // v3.14.0: stawianie księżyców (/home/moonformation). Domyślnie WYŁĄCZONE —
-    // to jedyny moduł, który BEZPOWROTNIE wydaje surowce (na Athenie 6000 km
-    // kosztowało 1,8 bln metalu), więc włącza go wyłącznie operator.
-    moon: { enabled: false, maxMetalShare: 0.25, minKm: 2000, maxTries24h: 3 },
+    // v3.14.0: stawianie księżyców (/home/moonformation).
+    // v3.67.0 (owner 04.09, po utracie dwóch księżyców w nocy: „koszt metalu na
+    // moona 1000 km jest bardzo mały, spokojnie sam może go stawiać"): domyślnie
+    // WŁĄCZONE i celuje w NAJMNIEJSZĄ średnicę (1000 km) — to nie jest ekonomiczna
+    // inwestycja, tylko szybkie przywrócenie „drugiego ciała pary" dla reguły
+    // dom=księżyc i ucieczki na sąsiedni księżyc. maxMetalShare zostaje jako
+    // ostatnia siatka bezpieczeństwa (odczyt metalu zawiódł / konto bardzo biedne).
+    moon: { enabled: true, maxMetalShare: 0.25, minKm: 1000, maxTries24h: 3 },
     // v3.56.0: włączone domyślnie jak na Athenie (collectDebris: true) — piraci
     // z ekspedycji zostawiają PZ na poz. 16 układu startu ekspedycji i bez
     // zbieracza złom leży godzinami. Moduł nic nie robi bez recyklerów w hangarze.
@@ -332,6 +336,22 @@
   if (!Store.get("migr_debris_on_v356", false)) {
     Store.set("migr_debris_on_v356", true);
     if (!CFG.debris.enabled) { CFG.debris.enabled = true; saveCfg(); }
+  }
+  // v3.67.0 (audyt przed push, krytyczne P0): CFG bootstrap (linia ~286) scala PER
+  // POLE, więc zapisany `saved.moon` (KAŻDY zapis z panelu zapisuje CAŁY CFG —
+  // saveCfg linia 318) wygrywał z nowym defaultem i po cichu gasił całą tę zmianę:
+  // enabled zostawałoby false, minKm zostawałoby 2000, bez śladu w logu. Sam owner
+  // klikał panel wielokrotnie przed tą sesją, więc `saved.moon` prawie na pewno
+  // istnieje. Ta sama migracja co dla debris.enabled v3.56.0 — jednorazowo wymuszamy
+  // nowe domyślne. minKm porównujemy do STAREJ wartości domyślnej (2000): panel nie
+  // ma kontrolki do ręcznej zmiany minKm (grep potwierdza), więc każdy zapisany stan
+  // z minKm===2000 jest z definicji nietknięty ręcznie operatora.
+  if (!Store.get("migr_moon_on_v367", false)) {
+    Store.set("migr_moon_on_v367", true);
+    let migMoon = false;
+    if (!CFG.moon.enabled) { CFG.moon.enabled = true; migMoon = true; }
+    if (CFG.moon.minKm === 2000) { CFG.moon.minKm = 1000; migMoon = true; }
+    if (migMoon) { saveCfg(); log("[KSIĘŻYC] migracja v3.67.0: włączam moduł domyślnie i celuję w najmniejszą średnicę (stary zapis by to zablokował).", "warn"); }
   }
 
   // ─── Pomocnicze ──────────────────────────────────────────────────────────
@@ -702,7 +722,25 @@
     async refresh() {
       const s = this.load();
       const now = Date.now();
-      for (const p of PlanetBar.pairs()) s.pairs[p.key] = { hasMoon: p.hasMoon, name: p.name, galaxy: p.galaxy, system: p.system, position: p.position };
+      // v3.67.0 (owner 04.09, po nocy z powtarzanymi próbami zniszczenia dwóch
+      // księżyców): wykryj PRZEJŚCIE hasMoon true→false (księżyc właśnie zniknął) —
+      // głośny alert (push na telefon) i `s.moonLost[key]` jako znacznik trybu
+      // awaryjnego dla tej pary (czyta go decide(), żeby ewakuować flotę wracającą
+      // na gołą planetę bez czekania na wykryty atak — falanga widzi planety, nie
+      // księżyce). Odwrotne przejście (moduł Moon albo naturalny wynik bitwy
+      // odtworzył księżyc) kończy tryb awaryjny.
+      s.moonLost = s.moonLost || {};
+      for (const p of PlanetBar.pairs()) {
+        const had = s.pairs[p.key] && s.pairs[p.key].hasMoon;
+        if (had && !p.hasMoon && !s.moonLost[p.key]) {
+          s.moonLost[p.key] = now;
+          Journal.add("BŁĄD", `KSIĘŻYC ZNISZCZONY: [${p.key}] ${p.name || ""} — flota wracająca na tę parę wyląduje na gołej planecie (widoczna dla falangi). Ewakuuję automatycznie.`);
+        } else if (!had && p.hasMoon && s.moonLost[p.key]) {
+          delete s.moonLost[p.key];
+          log(`[KSIĘŻYC] [${p.key}] ${p.name || ""} znów ma księżyc — kończę tryb awaryjny (ewakuacja z gołej planety) dla tej pary.`, "success");
+        }
+        s.pairs[p.key] = { hasMoon: p.hasMoon, name: p.name, galaxy: p.galaxy, system: p.system, position: p.position };
+      }
       const active = PlanetBar.active(); if (active) s.active = active;
       const own = PlanetBar.ownKeys();
       const bar = Bar.read(); if (bar) s.bar = { ...bar, at: now };
@@ -802,7 +840,12 @@
           if (!o.isReturn || !(o.src || o.dst)) continue;
           const lkKey = o.src || o.dst;
           const fl = (s.flights || []).find(f => f.fromKey === lkKey && f.phase !== "done");
-          const body = (fl && fl.fromBody) || (o.src ? o.srcBody : o.dstBody) || "planet";
+          const rawBody2 = (fl && fl.fromBody) || (o.src ? o.srcBody : o.dstBody) || "planet";
+          // v3.67.0 (audyt przed push): trzeci rejestr z tym samym ryzykiem co
+          // s.expected/s.expoLandings — fromBody zapisane RAZ przy wysyłce lotu
+          // obronnego (np. FS nocny z księżyca) kłamie, gdy księżyc źródła zniknie
+          // w trakcie lotu; flota i tak ląduje na jedynym istniejącym ciele.
+          const body = (rawBody2 === "moon" && !(s.pairs[lkKey] && s.pairs[lkKey].hasMoon)) ? "planet" : rawBody2;
           const lk = `${lkKey}|${body}`;
           if (!land[lk] || o.arriveAt > land[lk]) land[lk] = o.arriveAt;
         }
@@ -862,7 +905,13 @@
           const regs = (s.expected || []).filter(e => e.fromKey === k && e.kind === "expedition");
           const earliest = regs.length ? Math.min(...regs.map(e => e.returnAt || 0)) : 0;
           if (earliest && o.arriveAt < earliest - 3 * 60e3) continue;
-          const body = (regs.length ? regs[regs.length - 1].fromBody : null) || (s.expoHome && s.expoHome.key === k ? s.expoHome.body : null) || o.srcBody || "planet";
+          const rawBody = (regs.length ? regs[regs.length - 1].fromBody : null) || (s.expoHome && s.expoHome.key === k ? s.expoHome.body : null) || o.srcBody || "planet";
+          // v3.67.0: fromBody jest zapisywane RAZ, przy wysyłce. Gdy księżyc źródła
+          // zniknął w trakcie lotu, fala i tak ląduje na WSPÓŁRZĘDNEJ — na jedynym
+          // istniejącym ciele, czyli planecie — a stary zapis "moon" kłamie. Bez tej
+          // poprawki decide() sprawdzał hangar nieistniejącego księżyca (cicho pusty
+          // wynik) i nigdy nie widział floty faktycznie stojącej na planecie.
+          const body = (rawBody === "moon" && !(s.pairs[k] && s.pairs[k].hasMoon)) ? "planet" : rawBody;
           const lk = `${k}|${body}`;
           const list = el[lk] || [];
           if (!list.some(t => Math.abs(t - o.arriveAt) < 20e3)) list.push(o.arriveAt);
@@ -987,14 +1036,43 @@
       .filter(x => x.h && (x.h.total || 0) > 0 && now - (x.h.at || 0) < 48 * 3600e3)
       .map(x => ({ body: x.body, total: x.h.total, at: x.h.at }));
     const neighbourMoon = (k) => { const c = pairs[k]; if (!c) return null; for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && o.hasMoon && o.galaxy === c.galaxy && o.system === c.system && attackedBodies(ok).size === 0) return ok; } return null; };
-    const anyRefuge = (k) => { for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && attackedBodies(ok).size === 0) return { key: ok, body: o.hasMoon ? "moon" : "planet" }; } return null; };
+    // v3.67.0 (audyt 29.08, K3: „zero księżyców łamie hierarchię ucieczki — każdy
+    // ratunek spada do PIERWSZEJ nieatakowanej kolonii z listy, bez sprawdzenia
+    // odległości"): ranking po przybliżonej odległości (galaktyka dominuje nad
+    // układem, układ nad pozycją) zamiast kolejności zapisu w obiekcie. To nie jest
+    // dokładny wzór paliwa forka (nieznany, nie zgadujemy) — to tania, bezpieczna
+    // proxy „bliżej = mniej deuteru", która akurat dla NAJBLIŻSZEJ pary jest niemal
+    // zawsze trafna niezależnie od dokładnych stałych zużycia.
+    const dist = (a, b) => Math.abs(a.galaxy - b.galaxy) * 1e6 + Math.abs(a.system - b.system) * 1e3 + Math.abs((a.position || 0) - (b.position || 0));
+    // v3.67.0 (audyt przed push, P0): `exclude` odrzuca konkretną parę — bez tego
+    // anyRefuge() (świadomie nieświadoma s.rescueFail) prawie zawsze odnajdywała
+    // PONOWNIE dokładnie tego samego sąsiedniego księżyca, którego krok wyżej
+    // (nbBlocked) właśnie odrzucił jako niewysyłalny (najbliższa para = najmniejszy
+    // dystans w rankingu). Cały mechanizm fuel-fallback był przez to omijany
+    // dokładnie w najgorszym przypadku: ataku na oba ciała jedynej sensownej pary.
+    const anyRefuge = (k, exclude) => {
+      const c = pairs[k]; if (!c) return null;
+      let best = null, bestD = Infinity;
+      for (const [ok, o] of Object.entries(pairs)) {
+        if (ok === k || ok === exclude || attackedBodies(ok).size !== 0) continue;
+        const d = dist(c, o);
+        if (d < bestD) { bestD = d; best = { key: ok, body: o.hasMoon ? "moon" : "planet" }; }
+      }
+      return best;
+    };
     // v3.52.0 (owner 31.08: „bot ma wiedzieć, co kiedy wraca"): REJESTR POWROTÓW.
     // `s.expected` = loty ekonomii zapisane przy wysyłce (termin powrotu z czasu lotu
     // odczytanego z formularza). Obrona pyta o trzy rzeczy: co wraca na tę parę,
     // czy na danym ciele COŚ wylądowało PO ostatnim odczycie hangaru (wtedy odczyt
     // nie jest już świeży, choćby miał minutę) i które fale wpadną pod uderzenie.
     const returnsFrom = (k) => (s.expected || []).filter(e => e.fromKey === k && !e.pending);
-    const landedSince = (k, body, at) => returnsFrom(k).some(e => e.fromBody === body && e.returnAt <= now && e.returnAt > (at || 0))
+    // v3.67.0: `e.fromBody` jest zapisywane RAZ, przy wysyłce — gdy księżyc źródła
+    // zniknął w trakcie lotu, fala i tak ląduje na jedynym istniejącym ciele (planecie).
+    // Poprawka na żywym `pairs[k].hasMoon`, ta sama zasada co w Situation.refresh()
+    // dla s.expoLandings (tam poprawione u źródła — tu trzeba osobno, bo s.expected
+    // powstaje w module Fly, w chwili wysyłki, kiedy przyszłość jest nieznana).
+    const liveFromBody = (k, raw) => (raw === "moon" && !(pairs[k] && pairs[k].hasMoon)) ? "planet" : raw;
+    const landedSince = (k, body, at) => returnsFrom(k).some(e => liveFromBody(k, e.fromBody) === body && e.returnAt <= now && e.returnAt > (at || 0))
       || (((s.landings || {})[`${k}|${body}`] || 0) <= now && ((s.landings || {})[`${k}|${body}`] || 0) > (at || 0))
       || ((s.expoLandings || {})[`${k}|${body}`] || []).some(t => t <= now && t > (at || 0));   // v3.65.0: lądowania z wierszy ekspedycji
     const incomingBefore = (k, when) => returnsFrom(k).filter(e => e.returnAt > now && e.returnAt < when).sort((a, b) => a.returnAt - b.returnAt);
@@ -1080,6 +1158,30 @@
         const backFromRescue = rescuedAt > 0 && now - rescuedAt < 6 * 3600e3;
         if (!f && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (cfg.homeToMoon || backFromRescue)) {
           actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: backFromRescue ? "powrót po ratunku: planeta → księżyc" : "dom = księżyc", speed: 100, recall: false, home: true, backHome: backFromRescue });
+          continue;
+        }
+        // v3.67.0 (owner 04.09, po nocy z dwoma zniszczonymi księżycami: „ewakuuj od
+        // razu po lądowaniu ze wszystkimi surowcami, bo musimy mieć deuter żeby lecieć"):
+        // ODWROTNOŚĆ „dom = księżyc" — para BEZ księżyca (właśnie go straciła, patrz
+        // s.moonLost budowane w Situation.refresh), a na planecie stoi flota (np. fale
+        // ekspedycji, które i tak lecą na WSPÓŁRZĘDNĄ, więc lądują na jedynym istniejącym
+        // ciele). Falanga widzi planety, nie księżyce — nie czekamy na wykryty atak.
+        // Cel jak przy realnej ucieczce: najbliższy księżyc sąsiada w układzie, inaczej
+        // najbliższa bezpieczna kolonia (anyRefuge, teraz ranking po odległości — v3.67.0
+        // K3). `home:true, recall:false` = jednorazowe przesiedlenie, nie „ucieczka z
+        // zawrotem": nie ma dokąd wracać, dopóki Moon nie odbuduje księżyca tej pary
+        // (a wtedy odbudowa SAMA zwiezie flotę, jeśli ta wciąż stoi na tej planecie).
+        // Domyślny typ misji (Deploy/„stacjonuj") i domyślne branie surowców (nie
+        // ustawiamy takeResources:false) — najtańsza fizycznie opcja, z deuterem na
+        // pokładzie na wypadek kolejnego skoku.
+        if (!f && !pairs[k].hasMoon && (s.moonLost || {})[k] && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) {
+          const nbLost = neighbourMoon(k);
+          const refLost = nbLost ? { key: nbLost, body: "moon" } : anyRefuge(k);
+          if (refLost) {
+            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, home: true });
+          } else {
+            alerts.push({ key: k, level: "error", throttleMs: 15 * 60e3, msg: `księżyc [${k}] zniszczony, flota stoi na planecie (widoczna dla falangi), a nie mam dokąd jej ewakuować — reaguj ręcznie` });
+          }
           continue;
         }
         // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
@@ -1214,11 +1316,25 @@
       if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }
       // wybór ucieczki: sąsiedni księżyc w układzie → drugie ciało pary (nieatakowane) → inna kolonia
       const nb = neighbourMoon(k);
-      if (nb) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      // v3.67.0 (owner 04.09: „gdy zabraknie deuteru na skok do innego księżyca, bot ma
+      // zejść na planetę pod spodem, na mniejszej prędkości"): nie zgadujemy DLACZEGO
+      // gra nie wysłała lotu (nieznany markup forka — nie ma jak sprawdzić, czy to
+      // akurat brak deuteru) — zamiast tego liczymy PONAWIANE NIEUDANE próby na TĘ SAMĄ
+      // trasę (Fly.abort zlicza je dla ratunku moon→moon). Po 2 nieudanych próbach w
+      // ciągu 10 min uznajemy trasę za nie do wysłania i schodzimy o jeden poziom niżej
+      // — drugie ciało TEJ SAMEJ pary jest zawsze najtańszą opcją (prawie zerowy dystans).
+      const rf = ((s.rescueFail || {})[`${k}>${nb}`]) || null;
+      const nbBlocked = !!nb && !!rf && rf.count >= 2 && now - (rf.at || 0) < 10 * 60e3;
+      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       const other = fleet.body === "moon" ? "planet" : "moon";
-      if ((other === "planet" || pairs[k].hasMoon) && !bodies.has(other) && !bodies.has("unknown")) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: k, toBody: other, why: `atak w ${fleet.body} [${k}] → drugie ciało`, speed: 100, recall: false, rescue: true }); continue; }
-      const ref = anyRefuge(k);
-      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if ((other === "planet" || pairs[k].hasMoon) && !bodies.has(other) && !bodies.has("unknown")) {
+        actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: k, toBody: other,
+          why: nbBlocked ? `sąsiedni księżyc [${nb}] nie chce wystartować (${rf.count}× nieudane, pewnie deuter) → drugie ciało pary, wolniej` : `atak w ${fleet.body} [${k}] → drugie ciało`,
+          speed: nbBlocked ? cfg.airSpeedPct : 100, recall: false, rescue: true });
+        continue;
+      }
+      const ref = anyRefuge(k, nbBlocked ? nb : null);
+      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
     }
     for (const f of (s.flights || [])) {
@@ -1368,10 +1484,20 @@
   // Fork MA własne „Form a moon" za metal (potwierdzone na Athenie 26.08:
   // [2:21:4] 6000 km za 1,8 bln). Dla 3.0 to nie kaprys: reguła „dom = księżyc",
   // Fleet Save i ucieczka na sąsiedni księżyc są tyle warte, ile masz księżyców.
-  // Trzy bezpieczniki, bo moduł WYDAJE surowce bezpowrotnie:
-  //   • domyślnie OFF — włącza operator,
-  //   • sufit udziału metalu (domyślnie 25%) i średnica dobierana W DÓŁ,
-  //   • 3 próby na planetę na dobę i twardy limit nawigacji na próbę.
+  // v3.67.0 (owner 04.09, po nocy z powtarzanymi próbami zniszczenia dwóch
+  // księżyców): moduł domyślnie WŁĄCZONY, celuje w NAJMNIEJSZĄ średnicę (koszt
+  // 1000 km jest pomijalny — to przywrócenie drugiego ciała pary, nie inwestycja),
+  // a po udanej odbudowie JEDNORAZOWO zwozi flotę z planety na nowy księżyc
+  // (ten sam mechanizm co ręczny przycisk „powrót na księżyc" — kind:"home" —
+  // NIE dotyka ogólnej reguły homeToMoon, która zostaje OFF zgodnie z decyzją
+  // ownera z 30.08: „nie chcę, żeby bot sam przenosił flotę, tylko podczas ataku").
+  // Bezpieczniki, bo moduł WYDAJE surowce bezpowrotnie:
+  //   • sufit udziału metalu (domyślnie 25%),
+  //   • 3 próby na planetę na dobę i twardy limit nawigacji na próbę,
+  //   • v3.67.0 (audyt 29.08, E7): `target()` wcześniej próbował TYLKO pierwszej
+  //     napotkanej pary bez księżyca — jedna za droga/zablokowana limitem prób
+  //     wstrzymywała WSZYSTKIE pozostałe. Teraz pomija zablokowane i bierze
+  //     pierwszą UPRAWNIONĄ (2.x iterowało tak samo po całej liście).
   const Moon = {
     KM: [8944, 8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000],
     st() { const d = { tries: {}, m: null }; return { ...d, ...(Store.get("moon", d) || d) }; },
@@ -1416,8 +1542,15 @@
       input.blur();
       await sleep(jitter(500, 900));
     },
-    target(s) {
-      for (const [k, p] of Object.entries(s.pairs || {})) if (!p.hasMoon) return k;
+    target(s, st) {
+      // v3.67.0 (E7): pomiń pary, których nie wolno teraz próbować (limit 3/24h
+      // albo karencja 10 min po nieudanej próbie) — inaczej pierwsza zablokowana
+      // para wstrzymywała odbudowę WSZYSTKICH pozostałych bezksiężycowych par.
+      for (const [k, p] of Object.entries(s.pairs || {})) {
+        if (p.hasMoon) continue;
+        if (st && !this.canTry(st, k)) continue;
+        return k;
+      }
       return null;
     },
     async tick(s) {
@@ -1432,14 +1565,34 @@
           st.m = null; this.save(st);
           log(`[KSIĘŻYC] ✅ [${m.key}] ma księżyc (${m.km} km za ${(m.cost || 0).toLocaleString("pl-PL")} metalu).`, "success");
           Journal.add("POWRÓT", `Postawiony księżyc przy [${m.key}] — ${m.km} km.`);
+          // v3.67.0 (owner 04.09: „bot ma automatycznie odesłać flotę na nowy księżyc,
+          // a później standardowo wracamy do stałej pętli"): JEDNORAZOWY zwóz floty
+          // z planety, wywołany bezpośrednio przez odbudowę — NIE dotyka ogólnej
+          // reguły homeToMoon (zostaje OFF, decyzja ownera 30.08). Ten sam wzorzec co
+          // ręczny przycisk „powrót na księżyc": kind:"home" (Deploy, bierze surowce).
+          try {
+            const hp2 = (s.hangars || {})[`${m.key}|planet`];
+            if (hp2 && (hp2.total || 0) > 0 && now - (hp2.at || 0) < 30 * 60e3 && !Fly.mission()) {
+              log(`[KSIĘŻYC] księżyc świeżo odbudowany, na planecie [${m.key}] stoi flota (${hp2.total.toLocaleString("pl-PL")} szt.) — zwożę na nowy księżyc.`, "warn");
+              Fly.start({ kind: "home", fromKey: m.key, fromBody: "planet", toKey: m.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true });
+            }
+          } catch (e) { log(`[KSIĘŻYC] zwóz po odbudowie nie wyszedł: ${e.message}`, "warn"); }
           return false;
         }
         if ((m.navs || 0) >= 4) { st.m = null; this.save(st); log(`[KSIĘŻYC] 4 nawigacje bez efektu przy [${m.key}] — odpuszczam do następnej próby.`, "warn"); return false; }
       } else if (m) { st.m = null; this.save(st); }
       if (Human.economyAllowed(s)) return false;
       const cur = this.st();
-      const key0 = cur.m ? cur.m.key : this.target(s);
-      if (!key0) { if (!Once.said("moon_none", 6 * 3600e3)) log("[KSIĘŻYC] każda planeta ma już księżyc — nie ma co stawiać.", "info"); return false; }
+      const key0 = cur.m ? cur.m.key : this.target(s, cur);
+      if (!key0) {
+        // v3.67.0 (E7): rozróżnij „nie ma czego stawiać" od „jest co, ale wszystko
+        // w karencji" — inaczej operator czytał mylący log podczas realnej blokady.
+        const anyMoonless = Object.values(s.pairs || {}).some(p => !p.hasMoon);
+        if (!Once.said("moon_none", 6 * 3600e3)) log(anyMoonless
+          ? "[KSIĘŻYC] wszystkie bezksiężycowe pary są w karencji (limit 3 prób/24h albo 10 min po nieudanej) — czekam."
+          : "[KSIĘŻYC] każda planeta ma już księżyc — nie ma co stawiać.", "info");
+        return false;
+      }
       if (!cur.m && !this.canTry(cur, key0)) return false;
       const act = s.active;
       // krok 1: stanąć na planecie, przy której stawiamy księżyc
@@ -1466,18 +1619,23 @@
       }
       const metal = this.metal();
       // v3.22.0 (audyt): przy nieodczytanym metalu budzet byl null, a warunek
-      // "budget == null || c <= budget" przepuszczal PIERWSZA srednice z listy (8944 km).
+      // "budget == null || c <= budget" przepuszczal PIERWSZA srednice z listy.
       // Nieznany stan konta nie moze znaczyc "wydaj ile chcesz" — wtedy nie budujemy.
       if (metal == null) {
         const curX = this.st(); this.noteTry(curX, key0); curX.m = null; this.save(curX);
-        log("[KSIEZYC] nie odczytalem stanu metalu — nie ryzykuje zakupu najwiekszej srednicy.", "error");
+        log("[KSIEZYC] nie odczytalem stanu metalu — nie ryzykuje zakupu bez znanego budzetu.", "error");
         log("[KSIEZYC DOM] pasek surowcow: " + ((document.querySelector(".resource-item-metal, #resources_metal, [class*='metal']") || document.body).outerHTML || "").replace(/\s+/g, " ").slice(0, 300), "warn");
         return false;
       }
       const budget = Math.floor(metal * Math.min(1, Math.max(0.01, CFG.moon.maxMetalShare ?? 0.25)));
+      // v3.67.0: NAJMNIEJSZA średnica najpierw (rosnąco), nie największa przystępna —
+      // to nie inwestycja, tylko szybkie, tanie przywrócenie drugiego ciała pary.
+      // Sufit budżetu (maxMetalShare) zostaje jako siatka bezpieczeństwa: jeśli nawet
+      // najmniejsza nie mieści się (skrajnie biedne konto), próbujemy większe — inaczej
+      // pojedynczy zły odczyt kosztu blokowałby budowę na zawsze.
       let picked = null;
-      for (const km of this.KM) {
-        if (km < (CFG.moon.minKm || 1000)) break;
+      const order = [...this.KM].filter(km => km >= (CFG.moon.minKm || 1000)).sort((a, b) => a - b);
+      for (const km of order) {
         await this.setKm(input, km);
         const c = this.cost();
         if (c == null) continue;
@@ -1490,7 +1648,12 @@
         return false;
       }
       const n = this.noteTry(cur, key0);
-      cur.m = { key: key0, at: Date.now(), navs: (cur.m || {}).navs || 0, km: picked.km, cost: picked.cost }; this.save(cur);
+      // v3.67.0 (audyt przed push, P0): navs NIE rosło tutaj (w odróżnieniu od kroków
+      // 1 i 2), więc odrzucony/nieudany submit „Form a moon" (strona zostaje na tym
+      // samym URL-u) wracał w to samo miejsce w KÓŁKO — bez limitu. Moon.tick() zwraca
+      // wtedy `true` bezterminowo, a kolejność ekonomii (Recon→Bonus→Moon→Expo→Aster→
+      // Debris) oznacza, że ekspedycje/mining/złom stoją NA STAŁE, nie przejściowo.
+      cur.m = { key: key0, at: Date.now(), navs: ((cur.m || {}).navs || 0) + 1, km: picked.km, cost: picked.cost }; this.save(cur);
       log(`[KSIĘŻYC] [${key0}]: ${picked.km} km za ${picked.cost.toLocaleString("pl-PL")} metalu (mam ${metal == null ? "?" : metal.toLocaleString("pl-PL")}, sufit ${Math.round((CFG.moon.maxMetalShare || .25) * 100)}%) — próba ${n}. Klikam „Form a moon".`, "success");
       Journal.add("RATUNEK", `Stawiam księżyc przy [${key0}]: ${picked.km} km za ${picked.cost.toLocaleString("pl-PL")} metalu.`);
       Nav.click(btn, `księżyc: formowanie ${picked.km} km przy [${key0}]`);
@@ -2237,6 +2400,23 @@
       if (opts.quiet) { log(`[LOT] przerwany: ${why}`, "warn"); const blq = Store.get("fly_block", {}) || {}; blq[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3; Store.set("fly_block", blq); return; }
       log(`[LOT] przerwany: ${why}`, "error");
       Journal.add("BŁĄD", `Lot [${m.fromKey}]→[${m.toKey}] przerwany: ${why}`);
+      // v3.67.0 (owner 04.09): zliczamy nieudane próby KONKRETNIE dla ratunku
+      // moon→moon (rescue+air+toBody:moon) — nie zgadujemy, czy powodem jest deuter
+      // (nieznany markup forka), ale po 2 nieudanych próbach na tę samą trasę w 10 min
+      // decide() sam przestawi się na tańszą opcję (drugie ciało tej samej pary).
+      // v3.67.0 (audyt przed push): RĘCZNY klik „Abort" operatora (why==="operator")
+      // NIE jest dowodem na brak deuteru — to jego świadoma decyzja, nie odmowa gry.
+      // Liczenie by go wliczało tak samo jak realną odmowę, mogąc dwoma kliknięciami
+      // przestawić automat na gorszą trasę bez żadnego związku z paliwem.
+      if (m.rescue && m.air && m.toBody === "moon" && why !== "operator") {
+        try {
+          const sR = Situation.load(); sR.rescueFail = sR.rescueFail || {};
+          const rk = `${m.fromKey}>${m.toKey}`;
+          const prev = sR.rescueFail[rk];
+          sR.rescueFail[rk] = { count: (prev && Date.now() - prev.at < 10 * 60e3 ? prev.count : 0) + 1, at: Date.now() };
+          Situation.save(sR);
+        } catch {}
+      }
       // v3.9.0 (audyt): bez karencji decide() wystawiał tę samą akcję w następnym
       // ticku i całość leciała w kółko co 5 min. Ta trasa odpoczywa 3 min.
       const bl = Store.get("fly_block", {}) || {};
@@ -2859,19 +3039,27 @@
     bodiesOf(s) {
       const all = [];
       for (const [k, p] of Object.entries(s.pairs || {})) { all.push([k, "planet"]); if (p.hasMoon) all.push([k, "moon"]); }
-      if ((CFG.reconMode || "fleet") === "all") return all;
+      // v3.67.0 (audyt przed push, P0: „ewakuuj od razu" dotyczyło dotąd TYLKO ciała
+      // startowego ekspedycji — każda inna kolonia bez księżyca czekała na wolny obieg
+      // w tle, do 45 min bez trybu cichego, do 8 h w trybie cichym): para ze świeżo
+      // utraconym księżycem (s.moonLost) wchodzi do listy AKTYWNIE pilnowanej (90 s
+      // cadence niżej) niezależnie od reconMode/launchFrom — inaczej flota wracająca
+      // na gołą planetę stoi widoczna dla falangi znacznie dłużej niż „od razu".
+      const lostPlanets = Object.keys(s.moonLost || {}).map(k => [k, "planet"]);
+      const dedupe = (list) => [...new Map(list.map(e => [`${e[0]}|${e[1]}`, e])).values()];
+      if ((CFG.reconMode || "fleet") === "all") return dedupe([...all, ...lostPlanets]);
       const lf = CFG.expo && CFG.expo.launchFrom ? key(CFG.expo.launchFrom) : null;
       // v3.21.0 (właściciel 29.08): „flota jest zawsze tam, skąd wysyłane są ekspedycje,
       // na innych planetach najwyżej są transportery". Skoro tak, rekonesans nie ma po
       // co przeklikiwać się po koloniach — gdy ciało startowe jest USTAWIONE, pilnuje
       // wyłącznie jego. Kolonie z paroma transporterami nie są warte przełączania planety.
       // (Alarm to osobna ścieżka: przy ataku bot i tak wejdzie na atakowane ciało.)
-      if (lf) return all.filter(([k]) => k === lf);
+      if (lf) return dedupe([...all.filter(([k]) => k === lf), ...lostPlanets]);
       // Bez przypiętego ciała startowego: tylko te, na których bot WIDZIAŁ flotę —
       // v3.65.0: plus ciało, z którego poleciała OSTATNIA ekspedycja (do 7 dni), bo po
       // fali domykającej ma 0 statków, a to właśnie tam flota wróci.
       const eh = (s.expoHome && Date.now() - (s.expoHome.at || 0) < 7 * 24 * 3600e3) ? `${s.expoHome.key}|${s.expoHome.body}` : null;
-      return all.filter(([k, b]) => { const h = (s.hangars || {})[`${k}|${b}`]; return `${k}|${b}` === eh || !!(h && h.total > 0); });
+      return dedupe([...all.filter(([k, b]) => { const h = (s.hangars || {})[`${k}|${b}`]; return `${k}|${b}` === eh || !!(h && h.total > 0); }), ...lostPlanets]);
     },
     async tick(s) {
       if (!CFG.recon || Fly.mission()) return false;
