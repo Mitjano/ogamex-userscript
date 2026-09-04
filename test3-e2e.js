@@ -693,12 +693,14 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("i nie zmyśla wysyłki z pary, której nie zna", !g.sent.some(x => x.from === "1:100:9"), JSON.stringify(g.sent));
   }
 
-  console.log("\n── 15. FS NOCNY: wyjście floty wieczorem i zawrót o świcie ──");
+  console.log("\n── 15. FLEET SAVE (v3.68.0, port z Atheny): wyjście OD RAZU, zawrót na skonfigurowaną godzinę ──");
   {
+    // v3.68.0: FS nie ma już okna — leci natychmiast, o DOWOLNEJ porze. returnHour parę
+    // godzin w przyszłości wystarcza za dowód, że to NIE jest okno startowe.
     const H = new Date().getHours();
     const cfg = {
       autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
-      fs: { enabled: true, startHour: H, endHour: (H + 1) % 24, speedPct: 10 },
+      fs: { enabled: true, returnHour: (H + 2) % 24, returnMinute: 0, speedPct: 10 },
       human: { breaks: false, economyAtNight: true },
     };
     const g = new Game({
@@ -712,18 +714,41 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g.flightSec = 4 * 3600;                     // FS na 10% do innej galaktyki = godziny
     const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
     const fs = g.sent[0];
-    check("FS wyprowadził flotę na noc", g.sent.length === 1, JSON.stringify(g.sent));
-    check("na NAJDALSZĄ kolonię (najdłuższy lot = najtrudniej trafić)", !!fs && fs.to === "5:200:3", JSON.stringify(fs));
-    check("powoli (10%) — żeby zużyć minimum deuteru", g.formSpeed === 10, String(g.formSpeed));
+    check("FS wyprowadził flotę OD RAZU, bez czekania na okno", g.sent.length === 1, JSON.stringify(g.sent));
+    check("na NAJDALSZĄ kolonię (najdłuższy lot = najtrudniej trafić), gdy brak stałego celu", !!fs && fs.to === "5:200:3", JSON.stringify(fs));
+    check("powoli (10%) — im wolniej, tym dłużej flota poza domem", g.formSpeed === 10, String(g.formSpeed));
     check("misja to stacjonowanie, nie atak", !!fs && /Deploy/i.test(fs.mission || ""), fs && fs.mission);
     const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     const f = (st.flights || [])[0];
-    check("z zaplanowanym zawrotem o świcie", !!f && f.recallAt > Date.now(), f && new Date(f.recallAt).toISOString());
-    // Świt: termin zawrotu minął
+    check("z zaplanowanym zawrotem na skonfigurowaną godzinę (nie koniec okna)", !!f && f.recallAt > Date.now(), f && new Date(f.recallAt).toISOString());
+    // Godzina powrotu minęła: termin zawrotu minął
     advance(g, 3 * 3600e3);
     const r2 = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
-    check("o świcie bot ZAWRACA flotę sam", !!(g.sent[0] && g.sent[0].returning), JSON.stringify(g.sent[0]));
+    check("o skonfigurowanej godzinie bot ZAWRACA flotę sam", !!(g.sent[0] && g.sent[0].returning), JSON.stringify(g.sent[0]));
     check("i mówi o tym w dzienniku", r2.logs.some(m => /ZAWRÓT/.test(m)), r2.logs.slice(0, 5).join(" | "));
+  }
+
+  console.log("\n── 15b. FLEET SAVE (v3.68.0, port z Atheny): miner zostaje w domu, gdy mining pracuje; cel stały ──");
+  {
+    const H = new Date().getHours();
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      aster: { enabled: true }, debris: { enabled: false },
+      fs: { enabled: true, returnHour: (H + 2) % 24, returnMinute: 0, speedPct: 10, target: "1:100:9" },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },
+        { key: "1:100:9", name: "Cel", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700, ASTEROID_MINER: 50 } },
+    });
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const fs = g.sent[0];
+    check("FS poleciał na STAŁY skonfigurowany cel, nie najdalszą kolonię", !!fs && fs.to === "1:100:9", JSON.stringify(fs));
+    check("wziął pancerniki", !!fs && fs.ships && fs.ships.BATTLESHIP === 700, JSON.stringify(fs && fs.ships));
+    check("miner ZOSTAŁ w domu (mining pracuje — port z Atheny)", !!fs && fs.ships && !fs.ships.ASTEROID_MINER, JSON.stringify(fs && fs.ships));
   }
 
   console.log("\n── 16. STRONA BŁĘDU GRY: bot wraca do gry zamiast zamierać ──");

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.67.0
+// @version      3.68.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.67.0";
+  const VERSION = "3.68.0";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -218,10 +218,16 @@
     // 0 = fale lecą od razu, także w trakcie klikania. Pole w panelu pozwala włączyć
     // czekanie, gdyby przejmowanie karty na ~40 s przy fali jednak przeszkadzało.
     human: { breaks: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15, economyAtNight: false, ecoIdleSec: 0 },
-    // ── NOCNY FLEET SAVE ──
-    // Klasyczna obrona: gdy śpisz, flota nie stoi w hangarze. Używa TEJ SAMEJ
-    // maszyny lotu co ratunek (lot + zawrót), więc nie ma drugiego stanu.
-    fs: { enabled: false, startHour: 23, endHour: 7, speedPct: 10, target: null },
+    // ── FLEET SAVE ──
+    // v3.68.0 (owner 04.09, port z Atheny: „bardzo dobrze działało, chcę to samo"):
+    // Athena NIE miała okna nocnego start-koniec — miała JEDNĄ godzinę powrotu.
+    // Flota wylatuje OD RAZU, gdy tylko stoi bezczynnie na księżycu (o dowolnej porze
+    // dnia, nie tylko w nocy), na stały skonfigurowany cel, wolno (niski speedPct —
+    // stąd domyślne 10%, im wolniej tym dłuższy lot = dłuższe okno poza domem).
+    // Zawrót jest liczony wstecz od returnHour na podstawie PRAWDZIWEGO czasu lotu
+    // z formularza (nigdy ze wzoru) — może wypaść W TRAKCIE lotu (flota jeszcze nie
+    // doleciała do celu), to normalne i zamierzone przy bardzo wolnych lotach.
+    fs: { enabled: false, returnHour: 7, returnMinute: 0, speedPct: 10, target: null },
     // ── EKONOMIA (etap 2) ──
     // v3.15.0: system minerów przeniesiony z Atheny. 3.0 wysyłał WSZYSTKIE minery
     // na jedną asteroidę i czekał na powrót — a gra ogranicza urobek pojemnością
@@ -352,6 +358,18 @@
     if (!CFG.moon.enabled) { CFG.moon.enabled = true; migMoon = true; }
     if (CFG.moon.minKm === 2000) { CFG.moon.minKm = 1000; migMoon = true; }
     if (migMoon) { saveCfg(); log("[KSIĘŻYC] migracja v3.67.0: włączam moduł domyślnie i celuję w najmniejszą średnicę (stary zapis by to zablokował).", "warn"); }
+  }
+  // v3.68.0: CFG.fs miało startHour/endHour (okno nocne) — zastąpione returnHour
+  // (jedna godzina powrotu, port z Atheny). Stary zapis z endHour istnieje pod tym
+  // kluczem u każdego, kto kiedykolwiek dotknął panelu FS — przenosimy wartość raz,
+  // żeby „7 rano" ustawione wcześniej jako endHour nie zniknęło po cichu.
+  if (!Store.get("migr_fs_returnhour_v368", false)) {
+    Store.set("migr_fs_returnhour_v368", true);
+    const savedFs = (Store.get("cfg", {}) || {}).fs;
+    if (savedFs && typeof savedFs.endHour === "number" && typeof savedFs.returnHour !== "number") {
+      CFG.fs.returnHour = savedFs.endHour; saveCfg();
+      log(`[FS] migracja v3.68.0: dawne okno „do ${savedFs.endHour}:00" staje się godziną powrotu ${savedFs.endHour}:00.`, "warn");
+    }
   }
 
   // ─── Pomocnicze ──────────────────────────────────────────────────────────
@@ -744,7 +762,12 @@
       const active = PlanetBar.active(); if (active) s.active = active;
       const own = PlanetBar.ownKeys();
       const bar = Bar.read(); if (bar) s.bar = { ...bar, at: now };
-      s.night = nightWindow(CFG.fs, new Date(now));
+      // v3.68.0: FS stracił własne okno (Athena: JEDNA godzina powrotu, wylatuje o
+      // dowolnej porze niezależnie od zegara, nie tylko nocą) — s.night zniknęło,
+      // zastąpione przez fsReturnAt (NASTĘPNE wystąpienie skonfigurowanej godziny
+      // powrotu) i przez REALNY stan floty w Human.economyAllowed (s.flights, fs:true)
+      // zamiast zgadywania po zegarze.
+      s.fsReturnAt = fsReturnAt(CFG.fs, new Date(now));
       Rows.ensureOpen();                // zwinięty pasek misji = zero współrzędnych (v3.36.0)
       const evRows = Rows.readEvents(own);
       const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
@@ -979,6 +1002,16 @@
     return { active: inWin, endsAt: endD.getTime(), startHour: start, endHour: end, nowHM: `${h}:${String(m).padStart(2, "0")}` };
   }
 
+  // v3.68.0 (port z Atheny): NASTĘPNE wystąpienie skonfigurowanej godziny powrotu FS —
+  // dziś, jeśli jeszcze nie minęła, inaczej jutro. Liczone POZA decide() z tego samego
+  // powodu co nightWindow (strefa czasowa maszyny nie może wejść do czystej funkcji).
+  function fsReturnAt(fs, d) {
+    if (!fs || !fs.enabled) return 0;
+    const target = new Date(d); target.setHours(fs.returnHour ?? 7, fs.returnMinute ?? 0, 0, 0);
+    if (target.getTime() <= d.getTime()) target.setDate(target.getDate() + 1);
+    return target.getTime();
+  }
+
   // CZYSTA funkcja: ile obcych lotów widzi pasek ponad to, co rozpoznaliśmy, i jak
   // długo to trwa. Reguła z 2.x: liczby same nie rozstrzygają — rozstrzyga TRWAŁOŚĆ
   // nadwyżki (sondy wracają w minuty, atak wisi), a „Type: Spy" wydłuża próg.
@@ -1017,6 +1050,14 @@
   function decide(s, cfg, now) {
     const actions = [], alerts = [];
     const pairs = s.pairs || {};
+    // v3.68.0 (owner 04.09, port z Atheny: FS + ucieczka w ataku "działały tam bardzo
+    // dobrze, chcę to samo"): na Athenie miner był wykluczany z FS/ucieczki TYLKO gdy
+    // mining faktycznie pracował (bezczynny miner to zwykły cel, więc leciał ze wszystkimi)
+    // — recykler analogicznie względem złomu. Warunkowe, nie stałe wykluczenie.
+    const evacExclude = [
+      ...(cfg.aster && cfg.aster.enabled ? ["ASTEROID_MINER"] : []),
+      ...(cfg.debris && cfg.debris.enabled ? ["RECYCLER"] : []),
+    ];
     const threatsFor = (k) => (s.threats || []).filter(t => t.dst === k && t.attack && t.arriveAt > now);
     const attackedBodies = (k) => { const b = new Set(); for (const t of threatsFor(k)) b.add(t.dstBody || "unknown"); return b; };
     // v3.10.2 (audyt E2E): wpis lotu z zawrotem domyka się TYLKO zapełnieniem
@@ -1184,27 +1225,46 @@
           }
           continue;
         }
-        // NOCNY FLEET SAVE: w oknie nocnym flota nie stoi w hangarze. Ten sam lot
-        // co ucieczka (powolny Deploy + zawrót), tylko wyzwalany zegarem, nie atakiem.
-        if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0 && now - (fleet.at || 0) > 60 * 60e3) {
+        // FLEET SAVE (v3.68.0, port z Atheny): flota wylatuje OD RAZU, gdy tylko stoi
+        // bezczynnie na księżycu — NIE czeka na żadne okno (Athena: "start natychmiast,
+        // flota na księżycu = cel"; flota w locie jest bezpieczniejsza niż w domu, o
+        // każdej porze dnia). Start TYLKO z księżyca, nigdy z planety (Athena: "z
+        // planety nigdy — falanga widzi planety") — jeśli flota stoi tylko na planecie,
+        // czekamy i ostrzegamy zamiast wysłać ją z niebezpiecznego miejsca.
+        if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && now - (fleet.at || 0) > 60 * 60e3) {
           // v3.10.3: FS na godzinnym odczycie to wysylka floty, ktorej tam moze juz nie byc.
-          actions.push({ kind: "recon", key: k, body: fleet.body, why: `FS nocny: odczyt hangaru [${k}] za stary — sprawdzam, zanim wysle flote` });
+          actions.push({ kind: "recon", key: k, body: fleet.body, why: `FS: odczyt hangaru [${k}] za stary — sprawdzam, zanim wyślę flotę` });
           continue;
         }
-        if (!f && fleet && cfg.fs && cfg.fs.enabled && s.night && s.night.active && fleet.total > 0) {
-          const want = cfg.fs.target && cfg.fs.target !== k ? cfg.fs.target : null;
+        if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body !== "moon") {
+          // v3.68.0: decide() musi zostać CZYSTA (bez Once/Store) — dławik idzie przez
+          // throttleMs, tak jak każdy inny alert w tej funkcji, nie przez własny Once.said.
+          alerts.push({ key: k, level: "warn", throttleMs: 10 * 60e3, msg: `FS: flota [${k}] stoi na planecie — nie wysyłam stamtąd (falanga), czekam aż będzie na księżycu` });
+        }
+        if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body === "moon") {
+          // v3.68.0 (owner 04.09, port z Atheny): cel skonfigurowany (cfg.fs.target) jest
+          // JEDYNYM wyborem — Athena nie podstawiała cicho innej kolonii, gdy stały cel był
+          // z jakiegoś powodu niedostępny (brak/zły cel = twardy błąd operatora do naprawy,
+          // nie zgadywanie zastępcze). Misja zawsze celuje w KSIĘŻYC ("misja zawsze moon→moon").
+          // Bez skonfigurowanego celu zostaje stare zachowanie 3.x: najdalsza bezpieczna kolonia.
           let dest = null;
-          if (want && pairs[want] && attackedBodies(want).size === 0) dest = { key: want, body: pairs[want].hasMoon ? "moon" : "planet" };
-          else {
+          if (cfg.fs.target) {
+            const want = cfg.fs.target;
+            if (want === k) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] to ta sama para — ustaw inny księżyc` });
+            else if (!pairs[want]) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] nieznany (brak na pasku planet)` });
+            else if (!pairs[want].hasMoon) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] nie ma księżyca` });
+            else if (attackedBodies(want).size) alerts.push({ key: k, level: "warn", msg: `FS: skonfigurowany cel [${want}] jest pod atakiem — czekam` });
+            else dest = { key: want, body: "moon" };
+          } else {
             const home = pairs[k]; let best = -1;
             for (const [ok, o] of Object.entries(pairs)) {
               if (ok === k || attackedBodies(ok).size) continue;
               const d = Math.abs(o.galaxy - home.galaxy) * 1000 + Math.abs(o.system - home.system);   // najdalsza = najdłuższy lot
               if (d > best) { best = d; dest = { key: ok, body: o.hasMoon ? "moon" : "planet" }; }
             }
+            if (!dest) alerts.push({ key: k, level: "warn", msg: `FS: brak celu (jedyna kolonia albo wszystkie atakowane)` });
           }
-          if (dest) actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE nocny (${cfg.fs.startHour}:00–${cfg.fs.endHour}:00) → [${dest.key}]`, speed: cfg.fs.speedPct || 10, recall: true, air: true, fs: true, recallAt: s.night.endsAt });
-          else alerts.push({ key: k, level: "warn", msg: `FS nocny: brak celu (jedyna kolonia albo wszystkie atakowane)` });
+          if (dest) actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE → [${dest.key}], zawrót ~${new Date(s.fsReturnAt || 0).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}`, speed: cfg.fs.speedPct || 10, recall: true, air: true, fs: true, excludeTypes: evacExclude, recallAt: s.fsReturnAt });
         }
         continue;
       }
@@ -1325,7 +1385,7 @@
       // — drugie ciało TEJ SAMEJ pary jest zawsze najtańszą opcją (prawie zerowy dystans).
       const rf = ((s.rescueFail || {})[`${k}>${nb}`]) || null;
       const nbBlocked = !!nb && !!rf && rf.count >= 2 && now - (rf.at || 0) < 10 * 60e3;
-      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, excludeTypes: evacExclude, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       const other = fleet.body === "moon" ? "planet" : "moon";
       if ((other === "planet" || pairs[k].hasMoon) && !bodies.has(other) && !bodies.has("unknown")) {
         actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: k, toBody: other,
@@ -1334,7 +1394,7 @@
         continue;
       }
       const ref = anyRefuge(k, nbBlocked ? nb : null);
-      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, excludeTypes: evacExclude, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
     }
     for (const f of (s.flights || [])) {
@@ -1421,7 +1481,10 @@
     economyAllowed(s) {
       if (this.onBreak()) return `przerwa (~${this.breakLeftMin()} min)`;
       if (this.maybeStart()) return "przerwa właśnie się zaczęła";
-      if (!CFG.human.economyAtNight && s && s.night && s.night.active) return "okno nocne — ekonomia śpi, flota jest na FS";
+      // v3.68.0: FS stracił okno nocne (Athena: leci o dowolnej porze) — ekonomia
+      // pauzuje, gdy flota NAPRAWDĘ jest na FS (s.flights, fs:true, w locie), nie
+      // gdy zegar akurat mieści się w jakimś przedziale godzin.
+      if (!CFG.human.economyAtNight && s && (s.flights || []).some(f => f.fs && f.phase !== "done")) return "flota jest na Fleet Save";
       // v3.9.1 (audyt): okno nocne było podpięte pod Fleet Save — przy FS OFF
       // (domyślnie!) ekonomia chodziła 24/7, co jest głośniejsze niż cokolwiek
       // w arytmetyce floty. Cisza ma własne, niezależne okno z jitterem granic.
@@ -2457,7 +2520,11 @@
         }
       }
       Situation.save(s);
-      if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
+      // v3.68.0: gdy lot zostawił statki celowo w domu (excludeTypes — miner/recykler
+      // w trakcie pracy), hangar NIE jest pusty — zerowanie skłamałoby "nic tu nie ma"
+      // aż do następnego realnego odczytu, a to akurat wtedy, gdyby przyszedł atak,
+      // ukryłoby zostawioną flotę przed obroną zamiast jej bronić.
+      if (!eco && !(m.excludeTypes && m.excludeTypes.length)) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
       // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
       // flotę na księżyc, nawet gdy rutynowe zwożenie jest wyłączone.
       if (!m.home && !eco) { try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = Date.now(); Situation.save(sR); } catch {} }
@@ -2657,10 +2724,16 @@
       const loaded = [];
       let loadedTotal = 0;   // v3.52.0: rejestr powrotów chce wiedzieć, ILE statków wraca
       const want = m.plan ? new Map(m.plan.map(p => [String(p.type).toUpperCase(), p.qty])) : null;
+      // v3.68.0 (owner 04.09, port z Atheny): FS i ucieczka w ataku nie mają `plan`
+      // (biorą "wszystko"), ale "wszystko" nie może już oznaczać dosłownie każdego
+      // typu — miner/recykler, który akurat PRACUJE (mining/złom włączone), zostaje
+      // w domu. Athena: wykluczenie WARUNKOWE, nie stałe (decide() liczy `evacExclude`
+      // z aktualnego stanu CFG.aster/CFG.debris przy KAŻDYM przebiegu).
+      const excl = new Set((m.excludeTypes || []).map(t => String(t).toUpperCase()));
       for (const el of els) {
         const type = String(el.dataset.shipType || "").toUpperCase();
         const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
-        const qty = want ? Math.min(want.get(type) || 0, have) : have;
+        const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : have);
         if (qty <= 0) continue;
         const item = el.closest(".ship-item") || el.parentElement;
         const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
@@ -2676,7 +2749,7 @@
           for (const el of els) {
             const type = String(el.dataset.shipType || "").toUpperCase();
             const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
-            const qty = want ? Math.min(want.get(type) || 0, have) : have;
+            const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : have);
             if (qty <= 0) continue;
             const item = el.closest(".ship-item") || el.parentElement;
             const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
@@ -2701,6 +2774,16 @@
         if (stale) {
           log(`[LOT] plan nieaktualny — w hangarze ${m.fromBody} [${m.fromKey}] zostały tylko statki spoza planu (${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")}). Odpuszczam falę.`, "warn");
           return this.abort("plan nieaktualny — w hangarze tylko statki spoza planu", { quiet: true });
+        }
+        // v3.68.0: FS/ucieczka bez `plan` (want=null) — gdy w hangarze zostały
+        // WYŁĄCZNIE wykluczone typy (miner/recykler w trakcie pracy), to nie jest
+        // nieznany markup, tylko "nic tu nie ma do ewakuowania". Ten sam wzorzec co
+        // wyżej dla `stale`, tylko dla ścieżki exclude zamiast planu.
+        const onlyExcluded = !want && excl.size > 0 && els.length > 0 && els.every(el =>
+          (parseInt(el.dataset.shipQuantity || "0") || 0) === 0 || excl.has(String(el.dataset.shipType || "").toUpperCase()));
+        if (onlyExcluded) {
+          log(`[LOT] w hangarze ${m.fromBody} [${m.fromKey}] zostały tylko wykluczone typy (${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")}) — nic do ewakuacji, zostają na robocie.`, "info");
+          return this.abort("tylko wykluczone typy w hangarze (miner/recykler w trakcie pracy)", { quiet: true });
         }
         log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error");
         return this.abort("brak pól statków");
@@ -3739,7 +3822,8 @@
             <div class="note" id="ogx3-expo-st"></div>
           </div></div>
           <div class="sec" data-sec="fs"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Fleet Save</span><span class="tail" id="ogx3-t-fs"></span></div><div class="sec-b">
-            <div class="line"><button id="ogx3-fs" class="ogx3-btn"></button> od <input id="ogx3-fs-a" style="width:24px" />:00 do <input id="ogx3-fs-b" style="width:24px" />:00</div>
+            <div class="line"><button id="ogx3-fs" class="ogx3-btn"></button> wróć o <input id="ogx3-fs-a" style="width:24px" />:00</div>
+            <div class="line">cel (księżyc) <input id="ogx3-fs-target" style="width:70px" placeholder="g:s:p = najdalsza" /> · prędkość <input id="ogx3-fs-speed" style="width:26px" />%</div>
             <div class="note" id="ogx3-fs-st"></div>
           </div></div>
           <div class="sec" data-sec="eco"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekonomia</span><span class="tail" id="ogx3-t-eco"></span></div><div class="sec-b">
@@ -3848,9 +3932,22 @@
       // jest jawny w panelu — 0 = fale lecą od razu, N = czekaj N minut ciszy.
       $("ogx3-idle").value = String(Math.round((CFG.human.ecoIdleSec ?? 0) / 60));
       $("ogx3-idle").onchange = (e) => { const m2 = Math.max(0, Math.min(60, parseInt(e.target.value) || 0)); CFG.human.ecoIdleSec = m2 * 60; saveCfg(); log(m2 > 0 ? `Ekonomia czeka ${m2} min ciszy po Twoim kliknięciu, zanim ruszy falą.` : "Ekonomia NIE czeka, aż przestaniesz klikać — fala może przejąć kartę w trakcie gry.", "info"); this.renderStatus(); };
-      $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save nocny ${CFG.fs.enabled ? `ON (${CFG.fs.startHour}:00–${CFG.fs.endHour}:00)` : "OFF"}`, "info"); this.renderStatus(); };
-      $("ogx3-fs-a").value = String(CFG.fs.startHour); $("ogx3-fs-a").onchange = (e) => { CFG.fs.startHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 23)); saveCfg(); this.renderStatus(); };
-      $("ogx3-fs-b").value = String(CFG.fs.endHour); $("ogx3-fs-b").onchange = (e) => { CFG.fs.endHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 7)); saveCfg(); this.renderStatus(); };
+      $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save ${CFG.fs.enabled ? `ON (wraca o ${String(CFG.fs.returnHour).padStart(2, "0")}:00)` : "OFF"}`, "info"); this.renderStatus(); };
+      $("ogx3-fs-a").value = String(CFG.fs.returnHour ?? 7); $("ogx3-fs-a").onchange = (e) => { CFG.fs.returnHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 0)); saveCfg(); log(`FS: wraca o ${String(CFG.fs.returnHour).padStart(2, "0")}:00.`, "info"); this.renderStatus(); };
+      // v3.68.0 (port z Atheny): cel = STAŁY księżyc (puste pole = stare zachowanie,
+      // najdalsza bezpieczna kolonia), prędkość ręczna (niższa = dłuższy lot = flota
+      // dłużej poza domem, zanim w ogóle trzeba ją zawracać).
+      $("ogx3-fs-target").value = CFG.fs.target || "";
+      $("ogx3-fs-target").onchange = (e) => {
+        const v = String(e.target.value || "").trim();
+        if (!v) { CFG.fs.target = null; saveCfg(); log("FS: brak stałego celu — wraca do najdalszej bezpiecznej kolonii.", "info"); this.renderStatus(); return; }
+        const mm = v.match(/^(\d+)\s*[:.]\s*(\d+)\s*[:.]\s*(\d+)$/);
+        if (!mm) { alert("Wpisz koordynaty księżyca w formacie g:s:p, np. 3:272:2"); e.target.value = CFG.fs.target || ""; return; }
+        CFG.fs.target = `${+mm[1]}:${+mm[2]}:${+mm[3]}`; saveCfg();
+        log(`FS: stały cel [${CFG.fs.target}].`, "info"); this.renderStatus();
+      };
+      $("ogx3-fs-speed").value = String(CFG.fs.speedPct ?? 10);
+      $("ogx3-fs-speed").onchange = (e) => { CFG.fs.speedPct = Math.max(1, Math.min(100, parseInt(e.target.value) || 10)); saveCfg(); log(`FS: prędkość ${CFG.fs.speedPct}%.`, "info"); this.renderStatus(); };
       $("ogx3-expo").onclick = () => {
         CFG.expo.enabled = !CFG.expo.enabled; saveCfg();
         // v3.16.0: włączenie modułu ręcznie kasuje trwającą przerwę kawową — operator
@@ -4043,7 +4140,6 @@
       $("ogx3-imp-beep").style.background = CFG.impact.beep ? "#1e6b3a" : "rgba(255,255,255,.1)";
 
       // ── PASEK STANU: pięć linii = pięć odpowiedzi bez klikania ───────────
-      const night = nightWindow(CFG.fs, new Date());
       const aster = Store.get("aster", {}) || {};
       const burst = Store.get("burst", null);
       const eSl = s.slots?.expo, fSl = s.slots?.fleet;
@@ -4116,10 +4212,16 @@
         $("ogx3-aster-st").textContent = CFG.aster.enabled ? `zakresy: ${(aster.ranges || []).length}${aster.sentTo ? ` · ostatnio: [${aster.sentTo}]` : ""}` : "";
         $("ogx3-t-eco").textContent = `${CFG.aster.enabled ? "M ON" : "M OFF"} · ${CFG.debris.enabled ? "Z ON" : "Z OFF"}`; }
 
-      { const fsTxt = !CFG.fs.enabled ? "wyłączony" : (night.active ? `NOC — zawrót ${new Date(night.endsAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : `dzień (${night.nowHM}) · ${CFG.fs.startHour}:00–${CFG.fs.endHour}:00`);
-        this.setRow("ogx3-r-fs", !CFG.fs.enabled ? "dim" : (night.active ? "busy" : "ok"), fsTxt);
+      // v3.68.0: FS nie ma już okna — status pyta o REALNY stan floty (w drodze na
+      // FS, czy w domu czeka na wysyłkę), nie o zegar.
+      { const rh = `${String(CFG.fs.returnHour ?? 7).padStart(2, "0")}:${String(CFG.fs.returnMinute || 0).padStart(2, "0")}`;
+        const fsFlight = flights.find(f => f.fs && f.phase !== "done");
+        const fsTxt = !CFG.fs.enabled ? "wyłączony"
+          : fsFlight ? `w drodze — zawrót ~${new Date(fsFlight.recallAt || 0).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}`
+          : `w domu · wraca o ${rh}${CFG.fs.target ? ` · cel [${CFG.fs.target}]` : " · cel: najdalsza kolonia"}`;
+        this.setRow("ogx3-r-fs", !CFG.fs.enabled ? "dim" : (fsFlight ? "busy" : "ok"), fsTxt);
         $("ogx3-fs-st").textContent = fsTxt;
-        $("ogx3-t-fs").textContent = CFG.fs.enabled ? `${CFG.fs.startHour}–${CFG.fs.endHour}` : "OFF"; }
+        $("ogx3-t-fs").textContent = CFG.fs.enabled ? `→${rh}` : "OFF"; }
 
       $("ogx3-t-def").textContent = CFG.autoRescue ? "auto-ratunek" : "obserwator";
       { const j = (Store.get("journal", []) || [])[0];

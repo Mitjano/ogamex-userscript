@@ -584,25 +584,55 @@ console.log("\n── 19e. GOTOWOŚĆ OBRONY I PODSUMOWANIE PO PRZERWIE (v3.45.0
     /nie znaczy „spokojnie" — znaczy „nie patrzyłem"/.test(src));
 }
 
-console.log("── 20. NOCNY FLEET SAVE (v3.3.0) ──");
+console.log("── 20. FLEET SAVE (v3.68.0: port z Atheny — jedna godzina powrotu, bez okna) ──");
 {
-  const FSCFG = Object.assign({}, CFG, { fs: { enabled: true, startHour: 23, endHour: 7, speedPct: 10, target: null } });
-  const night = { active: true, endsAt: NOW + 6 * 3600e3, startHour: 23, endHour: 7 };
-  const s = base({ night, hangars: { "3:272:7|moon": H(1e6) } });
+  const FSCFG = Object.assign({}, CFG, { fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: null }, fsReturnAt: undefined });
+  const fsReturnAt = NOW + 6 * 3600e3;
+  const s = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } });
   const a = decide(s, FSCFG, NOW).actions.find(x => x.fs);
-  check("w oknie nocnym flota wychodzi z hangaru", !!a, JSON.stringify(decide(s, FSCFG, NOW).actions));
-  check("FS leci poza parę, powoli, z zawrotem o świcie", a && a.toKey !== "3:272:7" && a.speed === 10 && a.recall === true && a.recallAt === night.endsAt, JSON.stringify(a));
-  check("FS wybiera NAJDALSZĄ nieatakowaną kolonię (najdłuższy lot)", a && a.toKey === "5:100:4", JSON.stringify(a));
-  const s2 = base({ night, hangars: { "3:272:7|moon": H(1e6) }, threats: [threat("5:100:4", "planet", 600)] });
+  check("flota wychodzi z hangaru OD RAZU — bez żadnego okna godzinowego", !!a, JSON.stringify(decide(s, FSCFG, NOW).actions));
+  check("FS leci poza parę, powoli, z zawrotem liczonym z fsReturnAt (nie z zegara okna)", a && a.toKey !== "3:272:7" && a.speed === 10 && a.recall === true && a.recallAt === fsReturnAt, JSON.stringify(a));
+  check("FS wybiera NAJDALSZĄ nieatakowaną kolonię, gdy brak stałego celu", a && a.toKey === "5:100:4", JSON.stringify(a));
+  check("FS niesie excludeTypes (miner/recykler wykluczani WARUNKOWO w Fly.form)", a && Array.isArray(a.excludeTypes), JSON.stringify(a));
+
+  const s2 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, threats: [threat("5:100:4", "planet", 600)] });
   const a2 = decide(s2, FSCFG, NOW).actions.find(x => x.fs);
   check("atakowana kolonia nie jest celem FS", a2 && a2.toKey === "3:272:2", JSON.stringify(a2));
-  check("poza oknem nocnym FS nie rusza", !decide(base({ night: { active: false, endsAt: 0 } , hangars: { "3:272:7|moon": H(1e6) } }), FSCFG, NOW).actions.some(x => x.fs));
+
   check("FS wyłączony w configu → nic", !decide(s, CFG, NOW).actions.some(x => x.fs));
-  const s3 = base({ night, hangars: { "3:272:7|moon": H(1e6) }, flights: [{ kind: "air", fromKey: "3:272:7", phase: "launched", recallAt: NOW + 3600e3 }] });
+
+  const s3 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, flights: [{ kind: "air", fromKey: "3:272:7", phase: "launched", recallAt: NOW + 3600e3 }] });
   check("FS nie dubluje lotu, gdy flota już w powietrzu", !decide(s3, FSCFG, NOW).actions.some(x => x.fs));
-  const s4 = base({ night, threats: [threat("3:272:7", "moon", 300)], hangars: { "3:272:7|moon": H(1e6) } });
+
+  const s4 = base({ fsReturnAt, threats: [threat("3:272:7", "moon", 300)], hangars: { "3:272:7|moon": H(1e6) } });
   const a4 = decide(s4, FSCFG, NOW).actions[0];
-  check("atak w nocy → normalny ratunek, nie FS", a4 && a4.kind === "fly" && !a4.fs, JSON.stringify(a4));
+  check("atak (o dowolnej porze) → normalny ratunek, nie FS", a4 && a4.kind === "fly" && !a4.fs, JSON.stringify(a4));
+
+  // v3.68.0: Athena "z planety nigdy — falanga" — FS startuje TYLKO z księżyca.
+  const s5 = base({ fsReturnAt, hangars: { "3:272:7|planet": H(1e6) } });
+  const r5 = decide(s5, FSCFG, NOW);
+  check("flota TYLKO na planecie → FS NIE wysyła stamtąd (falanga)", !r5.actions.some(x => x.fs), JSON.stringify(r5.actions));
+  check("...i ostrzega, że czeka na księżyc", r5.alerts.some(al => /nie wysyłam stamtąd \(falanga\)/.test(al.msg)), JSON.stringify(r5.alerts));
+
+  // v3.68.0: stały cel (Athena) jest JEDYNYM wyborem — bez cichego podstawiania innej kolonii.
+  const FSCFG_T = Object.assign({}, CFG, { fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: "3:272:2" } });
+  const s6 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } });
+  const a6 = decide(s6, FSCFG_T, NOW).actions.find(x => x.fs);
+  check("stały cel: leci TYLKO tam, zawsze na księżyc", a6 && a6.toKey === "3:272:2" && a6.toBody === "moon", JSON.stringify(a6));
+  const s7 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, threats: [threat("3:272:2", "moon", 600)] });
+  const r7 = decide(s7, FSCFG_T, NOW);
+  check("stały cel pod atakiem → NIE podstawia innej kolonii, tylko czeka + alarmuje", !r7.actions.some(x => x.fs) && r7.alerts.some(al => /jest pod atakiem/.test(al.msg)), JSON.stringify(r7));
+  const FSCFG_TBAD = Object.assign({}, CFG, { fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: "9:9:9" } });
+  const r8 = decide(base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } }), FSCFG_TBAD, NOW);
+  check("stały cel nieznany (nie na pasku planet) → alarm, żadnego lotu w ciemno", !r8.actions.some(x => x.fs) && r8.alerts.some(al => /nieznany/.test(al.msg)), JSON.stringify(r8));
+
+  // v3.68.0 (port z Atheny): wykluczenie WARUNKOWE — miner tylko gdy mining pracuje,
+  // recykler tylko gdy złom pracuje (bezczynny miner/recykler to zwykły cel, leci).
+  const s9 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } });
+  const a9off = decide(s9, Object.assign({}, FSCFG, { aster: { enabled: false }, debris: { enabled: false } }), NOW).actions.find(x => x.fs);
+  check("mining i złom OFF → nic nie wykluczone (miner/recykler bezczynny leci z FS)", a9off && a9off.excludeTypes.length === 0, JSON.stringify(a9off));
+  const a9on = decide(s9, Object.assign({}, FSCFG, { aster: { enabled: true }, debris: { enabled: true } }), NOW).actions.find(x => x.fs);
+  check("mining i złom ON → miner i recykler wykluczeni (pracują, zostają w domu)", a9on && a9on.excludeTypes.includes("ASTEROID_MINER") && a9on.excludeTypes.includes("RECYCLER"), JSON.stringify(a9on));
 }
 
 console.log("── 21. OKNO NOCNE (czysta funkcja nightWindow) ──");
@@ -624,7 +654,9 @@ console.log("── 22. HUMANIZER: przerwy tylko dla ekonomii (lekcja A8 z 2.x) 
   check("keepalive/rekonesans/obrona poza przerwą", !/Human\.onBreak\(\)/.test(loop.slice(0, loop.indexOf("Expo.tick"))));
   check("ekspedycje pytają o przerwę i noc", /Human\.economyAllowed\(s\)/.test(src));
   const hum = src.slice(src.indexOf("const Human = {"));
-  check("noc wyłącza ekonomię (flota i tak na FS)", /economyAtNight[\s\S]{0,120}?night[\s\S]{0,60}?active/.test(hum));
+  // v3.68.0: FS stracił okno — ekonomia pyta o REALNY stan floty (w locie na FS),
+  // nie o zegar (Athena nie miała okna, więc "noc" przestała być właściwym pytaniem).
+  check("flota na FS wyłącza ekonomię (realny stan floty, nie zegar)", /economyAtNight[\s\S]{0,120}?flights[\s\S]{0,60}?f\.fs/.test(hum));
 }
 
 console.log("── 23. MINING ASTEROID (v3.5.0) ──");
@@ -835,7 +867,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("klik Send fleet idzie przez Nav.click (linia startowa: bot, nie 'otwarte ręcznie')",/Nav\.click\(send, `wysyłka floty/.test(src) && !/\bsend\.click\(\)/.test(src));
   check("fala domykająca mówi DLACZEGO domyka (sloty/licznik/konfiguracja)", /lastWhy = waves === 1/.test(src) && /ostatni wolny slot ekspedycji \(\$\{expo\.used\}\/\$\{expo\.total\}/.test(src) && /domyka serię — cały hangar: \$\{p\.lastWhy\}/.test(src));
   check("rekonesans ustepuje RATUNKOWI, ale nie rutynowemu FS", /a\.kind === "fly" && \(a\.rescue \|\| a\.blind\)/.test(src));
-  check("FS nocny nie startuje na godzinnym odczycie hangaru", /FS nocny: odczyt hangaru/.test(src));
+  check("FS nie startuje na godzinnym odczycie hangaru", /FS: odczyt hangaru/.test(src));
   check("przeterminowany lot nadal daje sie ZAWROCIC", /inFlightFrom\(k\) \|\| \(s\.flights \|\| \[\]\)\.find\(x => x\.fromKey === k && x\.kind === "air"/.test(src));
   check("strona bledu rozpoznaje takze zwykle 50x", /Internal Server Error\|Service Unavailable/.test(src));
   check("akcje sortowane: ratunek przed rekonesansem", /const RANK = \{ fly: 0, recall: 1/.test(src) && /actions\.sort\(/.test(src));
