@@ -336,17 +336,27 @@ console.log("\n── 17d. EKSPEDYCJE: ciało startu — pusty księżyc nie wyp
   const p1 = expoPlan(mk(hM([], 16 * 3600e3), hM([], 60e3)), ECFG, NOW, null);
   check("księżyc 0 sprzed 16 h + planeta świeża 0 → rekonesans KSIĘŻYCA, nie „brak statków”", /moon nieznany\/stary/.test(p1.skip || ""), JSON.stringify(p1.skip));
   const p2 = expoPlan(mk(hM([], 60e3), hM([], 20 * 60e3)), ECFG, NOW, null);
-  check("księżyc świeży 0, planeta stara → odświeżamy planetę (na przemian)", /planet nieznany\/stary/.test(p2.skip || ""), JSON.stringify(p2.skip));
+  // v3.68.2 (owner 04.09 na żywo): ekspedycje startują WYŁĄCZNIE z księżyca, gdy para go
+  // ma. Świeży, pusty księżyc to prawda o flocie („nie ma czym lecieć"), a nie powód, żeby
+  // sięgnąć po planetę — bot nie ma podmieniać ciała startowego pod nieobecność operatora.
+  check("księżyc świeży 0 → „brak statków”, NIE podmiana ciała na planetę", /brak statków/.test(p2.skip || ""), JSON.stringify(p2.skip));
   const p3 = expoPlan(mk(hM([], 60e3), hM([], 60e3)), ECFG, NOW, null);
   check("oba świeże i puste → „brak statków” (prawda), bez pętli odczytów", /brak statków/.test(p3.skip || ""), JSON.stringify(p3.skip));
   const p4 = expoPlan(mk(hM(REC(3000), 60e3), hM(LF(800), 60e3)), ECFG, NOW, null);
-  check("na księżycu same recyklery (wykluczone), na planecie myśliwce → fala z PLANETY", !p4.skip && p4.fromBody === "planet", JSON.stringify(p4.skip || p4.fromBody));
+  // Owner 04.09: „powinien wysyłać ekspy tylko z moona". Myśliwce stojące na planecie nie
+  // są powodem do startu z ciała widocznego dla falangi — bot ma o tym zamilczeć i czekać.
+  check("na księżycu same wykluczone typy, na planecie myśliwce → BRAK fali (nie startuje z planety)", /brak statków/.test(p4.skip || ""), JSON.stringify(p4.skip || p4.fromBody));
   const p5 = expoPlan(mk(hM(LF(800), 60e3), hM(LF(800), 10e3)), ECFG, NOW, null);
   check("flota na obu ciałach → księżyc ma pierwszeństwo (dom floty)", !p5.skip && p5.fromBody === "moon", JSON.stringify(p5.skip || p5.fromBody));
   const p6 = expoPlan(mk(hM([], 16 * 3600e3), null), ECFG, NOW, null);
   check("planeta nigdy nie czytana, księżyc stary → księżyc pierwszy", /moon nieznany\/stary/.test(p6.skip || ""), JSON.stringify(p6.skip));
   const p7 = expoPlan(mk(null, hM(LF(800), 60e3)), ECFG, NOW, null);
-  check("księżyc nigdy nie czytany, planeta świeża z flotą → fala z planety (nie czekamy na księżyc)", !p7.skip && p7.fromBody === "planet", JSON.stringify(p7.skip || p7.fromBody));
+  // TO JEST DOKŁADNIE INCYDENT 04.09 18:40 (zrzut ownera): odczyt księżyca się zestarzał,
+  // odczyt planety był świeży (4 szt.) — i bot wysłał ekspedycję Z PLANETY, zabierając to,
+  // co akurat tam stało, zamiast 4 mln statków z księżyca. Ma czekać na rekonesans księżyca.
+  check("księżyc nieczytany, planeta świeża z flotą → REKONESANS księżyca, nie fala z planety", /moon nieznany\/stary/.test(p7.skip || ""), JSON.stringify(p7.skip || p7.fromBody));
+  check("para Z księżycem → ciało startowe to ZAWSZE księżyc, niezależnie od świeżości odczytów",
+    expoHomeBody({ hangars: { "1:100:5|planet": { total: 999, at: NOW, ships: [{ type: "LIGHT_FIGHTER", qty: 999 }] } } }, "1:100:5", { hasMoon: true }, [], NOW) === "moon");
   check("bez księżyca zawsze planeta", expoHomeBody({ hangars: {} }, "1:100:5", { hasMoon: false }, [], NOW) === "planet");
   check("expoHomeBody jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoHomeBodySrc));
   check("cichy odczyt w Expo.tick pyta o TO SAMO ciało (expoHomeBody), nie o „księżyc>0”", src.includes("const hb = expoHomeBody(s, hk, pr") && !src.includes('?.total > 0)) ? "moon" : "planet"') && !src.includes("?.total > 0 && pair.hasMoon) ?"));

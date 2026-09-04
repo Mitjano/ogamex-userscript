@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.1
+// @version      3.68.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.1";
+  const VERSION = "3.68.2";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1924,18 +1924,16 @@
   // ciało, którego odczyt jest STARSZY (a przy remisie księżyc — dom floty). Dzięki
   // temu oba ciała pary są sprawdzane na przemian co ~15 min i pusty księżyc nie
   // wypada z obiegu na zawsze. Funkcja czysta (dzieli ją expoPlan i cichy odczyt).
+  // v3.68.2 (owner 04.09 na żywo, zrzut z gry: „wysłał ekspę z planety samymi minerami,
+  // powinien wysyłać ekspy tylko z moona"): gdy para MA księżyc, ciałem startowym jest
+  // księżyc — bez wyjątków. Stara wersja wybierała ciało po ŚWIEŻOŚCI odczytu: wystarczyło,
+  // że odczyt księżyca zdążył przekroczyć 15 min, a odczyt planety był świeży, i bot po
+  // cichu startował z PLANETY — czyli z ciała widocznego dla falangi — zabierając to, co
+  // akurat tam stało (u ownera: 4 statki z hangaru planety zamiast 4 mln z księżyca).
+  // Stary odczyt księżyca ma prowadzić do REKONESANSU (wywołujący pomija falę i prosi
+  // o odczyt), nigdy do podmiany ciała startowego.
   function expoHomeBody(s, homeKey, pair, excl, now) {
-    if (!pair || !pair.hasMoon) return "planet";
-    const hm = (s.hangars || {})[`${homeKey}|moon`], hp = (s.hangars || {})[`${homeKey}|planet`];
-    const fresh = (h) => !!h && now - (h.at || 0) <= 15 * 60e3;
-    const cnt = (h) => Array.isArray(h?.ships)
-      ? h.ships.filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase())).reduce((n, x) => n + x.qty, 0)
-      : (h?.total || 0);
-    if (fresh(hm) && cnt(hm) > 0) return "moon";
-    if (fresh(hp) && cnt(hp) > 0) return "planet";
-    if (!fresh(hm)) return "moon";
-    if (!fresh(hp)) return "planet";
-    return (hm.at || 0) <= (hp.at || 0) ? "moon" : "planet";
+    return pair && pair.hasMoon ? "moon" : "planet";
   }
   function expoPlan(s, cfg, now, burst) {
     const e = cfg.expo || {};
@@ -2294,7 +2292,15 @@
       if (now - (st.lastScanAt || 0) < (CFG.aster.scanGapSec ?? 6) * 1000) return false;   // ?? nie ||: 0 znaczy „bez odstępu"
       // minery muszą być w hangarze bazy
       const homeKey = CFG.aster.launchFrom ? key(CFG.aster.launchFrom) : (s.active && s.active.key);
-      const hm = homeKey ? (s.hangars[`${homeKey}|moon`] || s.hangars[`${homeKey}|planet`]) : null;
+      // v3.68.2 (owner 04.09): ekonomia startuje z KSIĘŻYCA bazy, gdy para go ma —
+      // ta sama reguła co dla ekspedycji (expoHomeBody). Dotąd liczenie minerów brało
+      // „księżyc ALBO planeta", a ciało startowe „księżyc, jeśli total>0" — dwa różne
+      // pytania, więc bot potrafił policzyć minery na planecie i zadeklarować start
+      // z księżyca (albo odwrotnie: cicho wystartować z widocznej dla falangi planety).
+      const homePair = homeKey ? (s.pairs || {})[homeKey] : null;
+      if (homeKey && !homePair) { if (!Once.said("aster|nopair", 30 * 60e3)) log(`[ASTER] [${homeKey}] nie ma na pasku planet — nie zgaduję ciała startowego.`, "info"); return false; }
+      const homeBody = homePair && homePair.hasMoon ? "moon" : "planet";
+      const hm = homeKey ? s.hangars[`${homeKey}|${homeBody}`] : null;
       const miners = hm ? (hm.ships || []).find(x => String(x.type).toUpperCase() === "ASTEROID_MINER") : null;
       if (!miners || miners.qty <= 0) { if (!Once.said("aster|nominers", 15 * 60e3)) log("[ASTER] brak minerów w hangarze bazy (albo są w locie) — nie skanuję.", "info"); return false; }
       if (this.freeSlots(s) <= 0) { if (!Once.said("aster|slots", 10 * 60e3)) log(`[ASTER] wszystkie sloty floty zajęte (rezerwa ${CFG.aster.slotReserve}) — czekam na powroty.`, "info"); return false; }
@@ -2345,7 +2351,7 @@
           this.save(this.lock({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` }, `${target.galaxy}:${target.system}`));
           const astKey = `${target.galaxy}:${target.system}:17`;
           if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
-          return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
+          return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: homeBody,
             toKey: `${target.galaxy}:${target.system}:17`, toBody: "planet", why: `mining asteroidy [${target.galaxy}:${target.system}:17]`,
             speed: 100, plan: [{ type: "ASTEROID_MINER", qty: plan.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
             ttl: hit.ttl || 0, ttlAt: now });
@@ -2433,7 +2439,12 @@
       // „startuj z" [1:217:6] bot zaglądał do układu aktywnego ciała i złom
       // leżał. Recyklery też mieszkają przy flocie ekspedycyjnej (2.x v2.84.0).
       const homeKey = (CFG.expo && CFG.expo.launchFrom) ? key(CFG.expo.launchFrom) : (s.active && s.active.key); if (!homeKey) return false;
-      const hm = s.hangars[`${homeKey}|moon`] || s.hangars[`${homeKey}|planet`];
+      // v3.68.2 (owner 04.09): jak wyżej — złom też wylatuje z księżyca bazy, gdy para
+      // go ma, a recyklery liczymy w TYM SAMYM hangarze, z którego deklarujemy start.
+      const homePair = (s.pairs || {})[homeKey];
+      if (!homePair) { if (!Once.said("debris|nopair", 30 * 60e3)) log(`[ZŁOM] [${homeKey}] nie ma na pasku planet — nie zgaduję ciała startowego.`, "info"); return false; }
+      const homeBody = homePair.hasMoon ? "moon" : "planet";
+      const hm = s.hangars[`${homeKey}|${homeBody}`];
       const rec = hm ? (hm.ships || []).find(x => String(x.type).toUpperCase() === "RECYCLER") : null;
       if (!rec || rec.qty <= 0) return false;
       const [g, sy] = homeKey.split(":");
@@ -2472,7 +2483,7 @@
         ? Math.min(rec.qty, Math.max(1, Math.ceil(hit.amount * 1.1 / cargo)))
         : Math.max(1, Math.floor(rec.qty * (CFG.debris.unknownShare ?? 0.2)));
       log(`[ZŁOM] pole złomu na poz. ${hit.pos}${hit.amount ? ` (~${hit.amount.toLocaleString("pl-PL")} surowców)` : " (rozmiar nieznany)"} — wysyłam ${qty.toLocaleString("pl-PL")} z ${rec.qty.toLocaleString("pl-PL")} recyklerów.`, "success");
-      return Fly.start({ kind: "debris", fromKey: homeKey, fromBody: (s.hangars[`${homeKey}|moon`]?.total > 0 ? "moon" : "planet"),
+      return Fly.start({ kind: "debris", fromKey: homeKey, fromBody: homeBody,
         toKey: `${g}:${sy}:${hit.pos}`, toBody: "debris", why: `zbieranie złomu [${g}:${sy}:${hit.pos}]`, speed: 100,
         plan: [{ type: "RECYCLER", qty }], missionType: "COLLECT", takeResources: false, directUrl: hit.href });
     },
@@ -2891,7 +2902,10 @@
           if (m.flightMs < half) {
             const mins = (ms) => Math.round(ms / 60e3);
             if (!Once.said(`fsshort|${m.fromKey}`, 60 * 60e3)) Journal.add("BŁĄD", `Fleet Save odwołany: lot [${m.fromKey}]→[${m.toKey}] trwa ${mins(m.flightMs)} min, a do powrotu o ${hh(homeAt)} zostało ${mins(homeAt - t0)} min. Flota doleciałaby i WYLĄDOWAŁA zamiast wisieć w powietrzu. Zmniejsz prędkość FS albo ustaw dalszy cel.`);
-            return this.abort(`FS: lot ${mins(m.flightMs)} min jest za krótki na powrót o ${hh(homeAt)} — flota by wylądowała; zmniejsz prędkość albo wybierz dalszy cel`);
+            // cicho, bo `abort` sam dopisuje ogólne „BŁĄD: lot przerwany" — a przy trzech
+            // próbach na godzinę dziennik dostawałby trzy bezużyteczne wpisy zamiast
+            // jednego, który mówi operatorowi, co konkretnie ma zmienić.
+            return this.abort(`FS: lot ${mins(m.flightMs)} min jest za krótki na powrót o ${hh(homeAt)} — flota by wylądowała; zmniejsz prędkość albo wybierz dalszy cel`, { quiet: true });
           }
           m.recallAt = t0 + half;
           Store.set("mission", m);
