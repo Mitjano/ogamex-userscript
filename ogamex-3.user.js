@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.0
+// @version      3.68.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.0";
+  const VERSION = "3.68.1";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -363,11 +363,20 @@
   // (jedna godzina powrotu, port z Atheny). Stary zapis z endHour istnieje pod tym
   // kluczem u każdego, kto kiedykolwiek dotknął panelu FS — przenosimy wartość raz,
   // żeby „7 rano" ustawione wcześniej jako endHour nie zniknęło po cichu.
+  // v3.68.1 (audyt przed merge, P0): warunek „nie ma jeszcze returnHour" czytał magazyn
+  // PO tym, jak migracje debris/moon wywołały `saveCfg()` — a ten zapisuje CAŁY CFG,
+  // czyli także świeżo dołożony domyślny `returnHour: 7`. Instalacja skacząca z ≤3.66
+  // prosto na 3.68 (drugi komputer, wyłączony autoupdate) traciła więc ustawioną
+  // godzinę BEZ ŚLADU W LOGU — dokładnie ta klasa błędu, którą migracja miała naprawić.
+  // Rozstrzyga STARY kształt (`endHour`), a nie brak nowego pola.
   if (!Store.get("migr_fs_returnhour_v368", false)) {
     Store.set("migr_fs_returnhour_v368", true);
     const savedFs = (Store.get("cfg", {}) || {}).fs;
-    if (savedFs && typeof savedFs.endHour === "number" && typeof savedFs.returnHour !== "number") {
-      CFG.fs.returnHour = savedFs.endHour; saveCfg();
+    if (savedFs && typeof savedFs.endHour === "number" && typeof savedFs.startHour === "number") {
+      CFG.fs.returnHour = savedFs.endHour;
+      // stary kształt znika z zapisu, żeby nie wracał przy każdym saveCfg jako śmieć
+      delete CFG.fs.startHour; delete CFG.fs.endHour;
+      saveCfg();
       log(`[FS] migracja v3.68.0: dawne okno „do ${savedFs.endHour}:00" staje się godziną powrotu ${savedFs.endHour}:00.`, "warn");
     }
   }
@@ -1007,7 +1016,12 @@
   // powodu co nightWindow (strefa czasowa maszyny nie może wejść do czystej funkcji).
   function fsReturnAt(fs, d) {
     if (!fs || !fs.enabled) return 0;
-    const target = new Date(d); target.setHours(fs.returnHour ?? 7, fs.returnMinute ?? 0, 0, 0);
+    // v3.68.1 (audyt przed merge): `??` łapie tylko null/undefined, więc NaN w zapisie
+    // dawał `setHours(NaN)` → Invalid Date → `recallAt: NaN`. `recallOf` zamienia to na
+    // 0, czyli lot BEZ zawrotu — flota zostaje na obcym księżycu, i to bez jednej linii
+    // w logu. Zepsuta wartość ma wracać do domyślnej, nie wysadzać arytmetyki.
+    const num = (v, dflt, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.trunc(n))) : dflt; };
+    const target = new Date(d); target.setHours(num(fs.returnHour, 7, 23), num(fs.returnMinute, 0, 59), 0, 0);
     if (target.getTime() <= d.getTime()) target.setDate(target.getDate() + 1);
     return target.getTime();
   }
@@ -1050,10 +1064,16 @@
   function decide(s, cfg, now) {
     const actions = [], alerts = [];
     const pairs = s.pairs || {};
-    // v3.68.0 (owner 04.09, port z Atheny: FS + ucieczka w ataku "działały tam bardzo
-    // dobrze, chcę to samo"): na Athenie miner był wykluczany z FS/ucieczki TYLKO gdy
-    // mining faktycznie pracował (bezczynny miner to zwykły cel, więc leciał ze wszystkimi)
-    // — recykler analogicznie względem złomu. Warunkowe, nie stałe wykluczenie.
+    // v3.68.1 (audyt przed merge, P0): wykluczenia zostają WYŁĄCZNIE przy Fleet Save.
+    // Pierwotnie szły też do obu ścieżek ucieczki przed atakiem — a że `debris.enabled`
+    // jest domyślnie true, każda ewakuacja zostawiałaby WSZYSTKIE recyklery (zrzut z
+    // żywej gry: 20 983 szt.) pod uderzeniem, i to bez pytania operatora. To odwraca
+    // regułę z CLAUDE.md „obrona floty ma bezwzględny priorytet nad ekonomią" i jest
+    // regresem względem 3.67, która ewakuowała wszystko. Athena wykluczała miner/recykler
+    // tylko gdy FAKTYCZNIE pracowały — a pracujący statek jest w locie, więc w ogóle nie
+    // ma go w formularzu; wykluczenie po fladze configu trafia w statki BEZCZYNNE, czyli
+    // dokładnie te, które Athena zabierała. Przy FS (dobrowolnym, planowanym) zostawienie
+    // ich w domu ma sens ekonomiczny; przy ataku nie ma żadnego.
     const evacExclude = [
       ...(cfg.aster && cfg.aster.enabled ? ["ASTEROID_MINER"] : []),
       ...(cfg.debris && cfg.debris.enabled ? ["RECYCLER"] : []),
@@ -1233,7 +1253,10 @@
         // czekamy i ostrzegamy zamiast wysłać ją z niebezpiecznego miejsca.
         if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && now - (fleet.at || 0) > 60 * 60e3) {
           // v3.10.3: FS na godzinnym odczycie to wysylka floty, ktorej tam moze juz nie byc.
-          actions.push({ kind: "recon", key: k, body: fleet.body, why: `FS: odczyt hangaru [${k}] za stary — sprawdzam, zanim wyślę flotę` });
+          // v3.68.1 (audyt przed merge): `quiet` — FS lata teraz o KAŻDEJ porze, więc bez
+          // tego rutynowy odczyt przestawiałby operatorowi planetę w środku gry (owner
+          // zgłaszał to dwukrotnie: v3.43.0, v3.46.0). Odczyt w tle, zero nawigacji.
+          actions.push({ kind: "recon", key: k, body: fleet.body, quiet: true, why: `FS: odczyt hangaru [${k}] za stary — sprawdzam, zanim wyślę flotę` });
           continue;
         }
         if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body !== "moon") {
@@ -1253,18 +1276,27 @@
             if (want === k) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] to ta sama para — ustaw inny księżyc` });
             else if (!pairs[want]) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] nieznany (brak na pasku planet)` });
             else if (!pairs[want].hasMoon) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] nie ma księżyca` });
-            else if (attackedBodies(want).size) alerts.push({ key: k, level: "warn", msg: `FS: skonfigurowany cel [${want}] jest pod atakiem — czekam` });
+            else if (attackedBodies(want).size) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: `FS: skonfigurowany cel [${want}] jest pod atakiem — czekam` });
             else dest = { key: want, body: "moon" };
           } else {
-            const home = pairs[k]; let best = -1;
+            // v3.68.1 (audyt przed merge, P0): cel bez księżyca dawał `body:"planet"` —
+            // bot startował z bezpiecznego księżyca (bo „z planety nigdy, falanga widzi
+            // planety") i sam odstawiał całą flotę na WIDOCZNĄ planetę obcej kolonii.
+            // Przy domyślnym `target:null` to była ścieżka z pudełka. Reguła 3.x brzmi
+            // „misja zawsze moon→moon”, więc kolonie bez księżyca po prostu odpadają.
+            const home = pairs[k]; let best = -1; let skippedNoMoon = 0;
             for (const [ok, o] of Object.entries(pairs)) {
               if (ok === k || attackedBodies(ok).size) continue;
+              if (!o.hasMoon) { skippedNoMoon++; continue; }
               const d = Math.abs(o.galaxy - home.galaxy) * 1000 + Math.abs(o.system - home.system);   // najdalsza = najdłuższy lot
-              if (d > best) { best = d; dest = { key: ok, body: o.hasMoon ? "moon" : "planet" }; }
+              if (d > best) { best = d; dest = { key: ok, body: "moon" }; }
             }
-            if (!dest) alerts.push({ key: k, level: "warn", msg: `FS: brak celu (jedyna kolonia albo wszystkie atakowane)` });
+            if (!dest) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3, msg: skippedNoMoon ? `FS: żadna wolna kolonia nie ma księżyca (${skippedNoMoon} bez księżyca) — ustaw stały cel albo postaw księżyc` : `FS: brak celu (jedyna kolonia albo wszystkie atakowane)` });
           }
-          if (dest) actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE → [${dest.key}], zawrót ~${new Date(s.fsReturnAt || 0).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}`, speed: cfg.fs.speedPct || 10, recall: true, air: true, fs: true, excludeTypes: evacExclude, recallAt: s.fsReturnAt });
+          // `homeAt` = godzina, o której flota ma BYĆ W DOMU. `recallAt` dostaje na razie
+          // tę samą wartość, ale Fly przelicza ją na moment KLIKNIĘCIA zawrotu, gdy pozna
+          // prawdziwy czas lotu z formularza (v3.68.1 — patrz Fly, „połowa drogi”).
+          if (dest) actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE → [${dest.key}], w domu ~${new Date(s.fsReturnAt || 0).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}`, speed: cfg.fs.speedPct || 10, recall: true, air: true, fs: true, excludeTypes: evacExclude, homeAt: s.fsReturnAt, recallAt: s.fsReturnAt });
         }
         continue;
       }
@@ -1385,7 +1417,7 @@
       // — drugie ciało TEJ SAMEJ pary jest zawsze najtańszą opcją (prawie zerowy dystans).
       const rf = ((s.rescueFail || {})[`${k}>${nb}`]) || null;
       const nbBlocked = !!nb && !!rf && rf.count >= 2 && now - (rf.at || 0) < 10 * 60e3;
-      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, excludeTypes: evacExclude, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       const other = fleet.body === "moon" ? "planet" : "moon";
       if ((other === "planet" || pairs[k].hasMoon) && !bodies.has(other) && !bodies.has("unknown")) {
         actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: k, toBody: other,
@@ -1394,7 +1426,7 @@
         continue;
       }
       const ref = anyRefuge(k, nbBlocked ? nb : null);
-      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, excludeTypes: evacExclude, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
     }
     for (const f of (s.flights || [])) {
@@ -1484,7 +1516,11 @@
       // v3.68.0: FS stracił okno nocne (Athena: leci o dowolnej porze) — ekonomia
       // pauzuje, gdy flota NAPRAWDĘ jest na FS (s.flights, fs:true, w locie), nie
       // gdy zegar akurat mieści się w jakimś przedziale godzin.
-      if (!CFG.human.economyAtNight && s && (s.flights || []).some(f => f.fs && f.phase !== "done")) return "flota jest na Fleet Save";
+      // v3.68.1 (audyt przed merge, P1): bez `flightStale()` wpis po nieudanym zawrocie
+      // (`recall_failed`) żył do twardego sufitu 12 h — obrona zwalniała parę, a ekonomia
+      // stała dalej z flotą już w domu. To jedyny konsument `s.flights`, który o to nie
+      // pytał; wszystkie pozostałe (flightsBlocking, inFlightFrom, strażnik) pytają.
+      if (!CFG.human.economyAtNight && s && (s.flights || []).some(f => f.fs && f.phase !== "done" && !flightStale(f, Date.now()))) return "flota jest na Fleet Save";
       // v3.9.1 (audyt): okno nocne było podpięte pod Fleet Save — przy FS OFF
       // (domyślnie!) ekonomia chodziła 24/7, co jest głośniejsze niż cokolwiek
       // w arytmetyce floty. Cisza ma własne, niezależne okno z jitterem granic.
@@ -2507,7 +2543,7 @@
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
         if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
-          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
         }
       }
       // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
@@ -2524,7 +2560,9 @@
       // w trakcie pracy), hangar NIE jest pusty — zerowanie skłamałoby "nic tu nie ma"
       // aż do następnego realnego odczytu, a to akurat wtedy, gdyby przyszedł atak,
       // ukryłoby zostawioną flotę przed obroną zamiast jej bronić.
-      if (!eco && !(m.excludeTypes && m.excludeTypes.length)) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona");
+      if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona", m.excludeTypes);
+      // v3.68.1: udana wysyłka zwalnia budżet prób FS — sufit 3/h dotyczy PORAŻEK.
+      if (m.fs) { try { const ft = Store.get("fs_try", {}) || {}; delete ft[`${m.fromKey}>${m.toKey}`]; Store.set("fs_try", ft); } catch {} }
       // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
       // flotę na księżyc, nawet gdy rutynowe zwożenie jest wyłączone.
       if (!m.home && !eco) { try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = Date.now(); Situation.save(sR); } catch {} }
@@ -2649,7 +2687,7 @@
             // TYLKO dla lotów obronnych: fale ekspedycji lecą tą samą trasą co 60–90 s,
             // więc karencja zjadłaby serię (złapane przez E2E „fala 2 też wyszła").
             if (!ECO_KINDS.includes(m.kind)) {
-              emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat");
+              emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat", m.excludeTypes);
               try { const blG = Store.get("fly_block", {}) || {}; blG[`${m.fromKey}>${m.toKey}`] = ls.at + guardMs; Store.set("fly_block", blG); } catch {}
             }
             Store.del("mission"); return;
@@ -2839,7 +2877,26 @@
             return this.abort("asteroida zniknie przed dolotem", { quiet: true });
           }
         }
-        if (m.recallAt && Date.now() + m.flightMs < m.recallAt) {
+        // v3.68.1 (audyt przed merge, P0): dla Fleet Save `recallAt` z decide() to godzina,
+        // o której flota ma BYĆ W DOMU — nie moment kliknięcia zawrotu. Zawrócona flota
+        // wraca dokładnie tyle, ile już leciała, więc żeby wylądować w domu o T, zawrót
+        // trzeba kliknąć w POŁOWIE drogi między startem a T. Poprzednia wersja podstawiała
+        // T wprost i wpadała w gałąź niżej („doleci przed terminem") — flota lądowała na
+        // obcym księżycu, wpis znikał po 30 min i Fleet Save kończył się na stałe (ze
+        // stałym celem) albo zamieniał w codzienne wahadło (bez celu).
+        if (m.fs && m.recallAt) {
+          const t0 = Date.now(), homeAt = m.homeAt || m.recallAt, half = (homeAt - t0) / 2;
+          const hh = (t) => new Date(t).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+          if (!(half > 0)) return this.abort(`FS: godzina powrotu (${hh(homeAt)}) nie jest w przyszłości`, { quiet: true });
+          if (m.flightMs < half) {
+            const mins = (ms) => Math.round(ms / 60e3);
+            if (!Once.said(`fsshort|${m.fromKey}`, 60 * 60e3)) Journal.add("BŁĄD", `Fleet Save odwołany: lot [${m.fromKey}]→[${m.toKey}] trwa ${mins(m.flightMs)} min, a do powrotu o ${hh(homeAt)} zostało ${mins(homeAt - t0)} min. Flota doleciałaby i WYLĄDOWAŁA zamiast wisieć w powietrzu. Zmniejsz prędkość FS albo ustaw dalszy cel.`);
+            return this.abort(`FS: lot ${mins(m.flightMs)} min jest za krótki na powrót o ${hh(homeAt)} — flota by wylądowała; zmniejsz prędkość albo wybierz dalszy cel`);
+          }
+          m.recallAt = t0 + half;
+          Store.set("mission", m);
+          log(`[FS] lot ${Math.round(m.flightMs / 60e3)} min, zawrót o ${hh(m.recallAt)} — flota ma być w domu o ${hh(homeAt)}.`, "info");
+        } else if (m.recallAt && Date.now() + m.flightMs < m.recallAt) {
           log(`[LOT] lot trwa ${Math.round(m.flightMs / 1000)} s i doleci przed terminem zawrotu — flota WYLĄDUJE na [${m.toKey}] ${m.toBody}; zawrotu nie planuję.`, "warn");
           m.landing = true; m.recallAt = 0;
           Store.set("mission", m);
@@ -2920,7 +2977,7 @@
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const sPre = Situation.load();
         sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
       // v3.62.0: skład floty w stemplu — po przeładowaniu to jedyne źródło dla logu „fala wysłana"
@@ -3257,15 +3314,29 @@
   // nie po 10 min), decide() natychmiast wystawiał TEN SAM lot jeszcze raz, bramka
   // anty-duplikat go blokowała, misja znikała — i całość od nowa, przy czym każda
   // iteracja to jedna nawigacja. Skoro wiemy, że flota wyleciała, źródło jest puste.
-  function emptySourceHangar(fromKey, fromBody, why) {
+  // v3.68.1 (audyt przed merge, P1): `keepTypes` = typy CELOWO zostawione w domu
+  // (miner/recykler przy Fleet Save). Pierwotna poprawka pomijała zerowanie w całości,
+  // gdy lot niósł wykluczenia — a że `debris.enabled` jest domyślnie true, hangar
+  // źródła nie zerowałby się już NIGDY i przez 48 h udawał pełną flotę, której tam nie
+  // ma („flota-duch": bot wysyła drugi Fleet Save z pustego księżyca, a przy ataku
+  // ratuje flotę, której nie ma, zamiast alarmować). Do tego pomijane były tylko 1 z 3
+  // wywołań, więc na ścieżce normalnej (fork przeładowuje stronę po „Send fleet")
+  // i tak zerował `confirmPendingSend`. Teraz zerujemy ZAWSZE, ale zostawiamy to,
+  // co naprawdę zostało — hangar nie kłamie w żadną stronę.
+  function emptySourceHangar(fromKey, fromBody, why, keepTypes) {
     try {
       const s = Situation.load();
       const hk = `${fromKey}|${fromBody}`;
       const h = s.hangars[hk];
       if (!h || (h.total || 0) === 0) return;
-      s.hangars[hk] = { total: 0, ships: [], at: Date.now() };
+      const keep = new Set((keepTypes || []).map(t => String(t).toUpperCase()));
+      const left = keep.size ? (h.ships || []).filter(x => keep.has(String(x.type).toUpperCase()) && (x.qty || 0) > 0) : [];
+      const total = left.reduce((x, sh) => x + (sh.qty || 0), 0);
+      s.hangars[hk] = { total, ships: left, at: Date.now() };
       Situation.save(s);
-      log(`[LOT] hangar ${fromBody} [${fromKey}] wyzerowany — flota z niego wyleciała (${why}).`, "info");
+      log(total
+        ? `[LOT] hangar ${fromBody} [${fromKey}]: flota wyleciała, w domu zostaje ${total.toLocaleString("pl-PL")} szt. celowo pominiętych (${left.map(x => x.type).join(", ")}) — ${why}.`
+        : `[LOT] hangar ${fromBody} [${fromKey}] wyzerowany — flota z niego wyleciała (${why}).`, "info");
     } catch {}
   }
 
@@ -3284,7 +3355,7 @@
       Situation.save(s);
       if (f) {
         log(`[LOT] wysyłka [${f.fromKey}]→[${f.toKey}] potwierdzona przez grę po przeładowaniu — wpis nie czeka na timeout.`, "success");
-        emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu");
+        emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu", f.excludeTypes);
       }
     } catch {}
   }
@@ -3365,8 +3436,11 @@
       const ECO = ["expedition", "asteroid", "debris"];
       const mNow = Fly.mission();
       if (mNow && ECO.includes(mNow.kind)) {
+        // v3.68.1: Fleet Save NIE jest powodem do przerwania ekspedycji — to lot
+        // dobrowolny, a nie ratunek. Bez tego wyjątku FS (od 3.68 aktywny o każdej
+        // porze) kasowałby każdą trwającą falę ekonomii.
         const urgent = (s.threats || []).some(t => t.attack && t.arriveAt > Date.now())
-          || actions.some(a => a.kind === "fly" || a.kind === "recall");
+          || actions.some(a => (a.kind === "fly" && !a.fs) || a.kind === "recall");
         if (urgent) Fly.abort("ALARM — obrona ma pierwszeństwo przed ekonomią", { quiet: true });
       }
       await Fly.tick();
@@ -3375,7 +3449,14 @@
       // a `recon` konczy przebieg nawigacja. Para atakowana za 70 s czekala na
       // rekonesans pary atakowanej za 400 s. Ratunek ma bezwzgledne pierwszenstwo.
       const RANK = { fly: 0, recall: 1, extend: 2, hold: 3, recon: 4 };
-      actions.sort((x, y) => (RANK[x.kind] ?? 9) - (RANK[y.kind] ?? 9));
+      // v3.68.1 (audyt przed merge, P0): RANK nie odróżniał lotu RATUNKOWEGO od Fleet
+      // Save, a pętla niżej robi `break` po PIERWSZYM `fly` — o kolejności decydowała
+      // kolejność par na pasku. Cicha para z FS przed parą pod ostrzałem = bot wydawał
+      // swój jedyny lot na Fleet Save i zostawiał atakowaną flotę. Do 3.67 kolizja
+      // istniała tylko w oknie nocnym; odkąd FS startuje o każdej porze, okno to 24/7.
+      // FS idzie ZAWSZE na koniec — obrona ma bezwzględny priorytet (CLAUDE.md).
+      const prio = (a) => (a.kind === "fly" && a.fs ? 0.5 : 0);
+      actions.sort((x, y) => ((RANK[x.kind] ?? 9) + prio(x)) - ((RANK[y.kind] ?? 9) + prio(y)));
       const hasRescue = actions.some(a => (a.kind === "fly" && (a.rescue || a.blind)) || a.kind === "recall");
       for (const a of actions) {
         if (a.kind === "recon") {
@@ -3433,12 +3514,33 @@
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") {
           if (Fly.blocked(a)) { if (!Once.said(`blk|${a.fromKey}${a.toKey}`, 60e3)) log(`[LOT] trasa [${a.fromKey}]→[${a.toKey}] w karencji po nieudanej próbie — czekam.`, "warn"); continue; }
+          // v3.68.1 (audyt przed merge, P0): Fleet Save nie miał ŻADNEGO sufitu prób.
+          // `decide()` jest deterministyczna, a warunek „flota stoi bezczynnie na
+          // księżycu" po nieudanej wysyłce pozostaje prawdziwy — przy braku deuteru albo
+          // martwym formularzu bot ponawiał w kółko (karencja dla lotów `air` to raptem
+          // 45 s, bo pisano ją dla ratunku pod ostrzałem), robiąc do kilkuset przeładowań
+          // gry na godzinę. Ratunek zostaje bez sufitu — FS dostaje trzy próby na godzinę.
+          if (a.fs) {
+            const fk = `${a.fromKey}>${a.toKey}`;
+            const ft = Store.get("fs_try", {}) || {};
+            const r3 = ft[fk] && Date.now() - ft[fk].at < 60 * 60e3 ? ft[fk] : { n: 0, at: 0 };
+            if (r3.n >= 3) {
+              if (!Once.said(`fstry|${fk}`, 60 * 60e3)) log(`[FS] trzecia nieudana próba wysyłki [${a.fromKey}]→[${a.toKey}] w ciągu godziny — przestaję ponawiać do końca godziny. Sprawdź deuter i cel Fleet Save.`, "error");
+              continue;
+            }
+            ft[fk] = { n: r3.n + 1, at: Date.now() }; Store.set("fs_try", ft);
+          }
           if (Fly.start(a)) { await Fly.tick(); } break;
         }
       }
       // v3.7.3 (audyt): ekonomia w WŁASNYM try — błąd w ekspedycjach/miningu/złomie
       // nie może przerwać przebiegu obrony ani wywalić pętli.
-      if (!actions.some(a => a.kind === "fly" || a.kind === "recall")) {
+      // v3.68.1 (audyt przed merge, P0): akcja FS wisi w `actions` przy KAŻDYM przebiegu,
+      // dopóki flota stoi bezczynnie na księżycu — także wtedy, gdy jej start jest właśnie
+      // zablokowany karencją albo dławikiem. Stara bramka gasiła wtedy całą ekonomię
+      // (Expo/Aster/Debris/Moon/Recon) bezterminowo. FS nie blokuje ekonomii; blokuje ją
+      // dopiero FAKTYCZNIE trwająca misja (`Fly.mission()`), czyli lot, który wystartował.
+      if (!Fly.mission() && !actions.some(a => (a.kind === "fly" && !a.fs) || a.kind === "recall")) {
         try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Moon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
         catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
       }
@@ -3947,7 +4049,17 @@
         log(`FS: stały cel [${CFG.fs.target}].`, "info"); this.renderStatus();
       };
       $("ogx3-fs-speed").value = String(CFG.fs.speedPct ?? 10);
-      $("ogx3-fs-speed").onchange = (e) => { CFG.fs.speedPct = Math.max(1, Math.min(100, parseInt(e.target.value) || 10)); saveCfg(); log(`FS: prędkość ${CFG.fs.speedPct}%.`, "info"); this.renderStatus(); };
+      // v3.68.1 (audyt przed merge, P1): gra ma WYŁĄCZNIE wielokrotności 10 (suwak
+      // 10…100), a `Fly.form` szuka elementu o tekście dokładnie równym `m.speed`.
+      // Wpisane „3%" nie trafiało w nic: log „prędkość NIE USTAWIONA", lot z domyślną
+      // setką i LĄDOWANIE zamiast wiszenia w powietrzu — czyli odwrotność sensu FS,
+      // i to na dźwigni, o którą owner prosił wprost. Zaokrąglamy do kroku 10.
+      $("ogx3-fs-speed").onchange = (e) => {
+        const raw = parseInt(e.target.value); const v = Number.isFinite(raw) ? raw : 10;
+        CFG.fs.speedPct = Math.max(10, Math.min(100, Math.round(v / 10) * 10));
+        e.target.value = String(CFG.fs.speedPct); saveCfg();
+        log(`FS: prędkość ${CFG.fs.speedPct}%${CFG.fs.speedPct !== v ? ` (gra zna tylko wielokrotności 10 — wpisane ${v} zaokrąglone)` : ""}.`, "info"); this.renderStatus();
+      };
       $("ogx3-expo").onclick = () => {
         CFG.expo.enabled = !CFG.expo.enabled; saveCfg();
         // v3.16.0: włączenie modułu ręcznie kasuje trwającą przerwę kawową — operator
@@ -3977,7 +4089,13 @@
         const virt = JSON.parse(JSON.stringify(s0));
         virt.threats = [{ id: "manual", dst: a0.key, dstBody: f.body, arriveAt: Date.now() + 5 * 60e3, attack: true, spy: false, seenAt: 0, source: "operator", type: "ATTACK" }];
         const { actions } = decide(virt, CFG, Date.now());
-        const act = actions.find(x => x.kind === "fly");
+        // v3.68.1 (audyt przed merge, P0): `find(kind === "fly")` brał PIERWSZĄ akcję lotu
+        // z całej listy — a odkąd Fleet Save startuje o każdej porze, pierwsza bywała
+        // akcją FS z zupełnie innej, cichej pary. Operator klikał „RATUJ FLOTĘ TERAZ",
+        // a bot wysyłał powolny Fleet Save skądinąd. Ratunek dotyczy pary, na której
+        // operator stoi, i nigdy nie jest lotem FS.
+        const act = actions.find(x => x.kind === "fly" && x.fromKey === a0.key && !x.fs)
+          || actions.find(x => x.kind === "fly" && !x.fs);
         if (!act) return alert("Nie mam dokąd uciec (jedyna kolonia albo wszystko atakowane). Zobacz log.");
         log(`[OPERATOR] ręczny ratunek: ${act.why}`, "warn");
         if (Fly.start({ ...act, why: "RĘCZNY ratunek operatora" })) { await Fly.tick(); }

@@ -1,151 +1,138 @@
-# HANDOFF: Fleet Save v3.68.0 (port z Atheny) — 2026-09-04
+# HANDOFF: Fleet Save — v3.68.0 (port z Atheny) + v3.68.1 (audyt przed merge)
 
-**Do Claude Code na macOS: przeczytaj to PRZED jakąkolwiek pracą nad tym branchem.**
-Kontynuacja sesji z Windows (michal). Owner: "muszę wychodzić z pracy, dokończymy na
-macbooku w domu, ale claude code w domu musi wiedzieć co zrobiłeś i co ma dalej do
-wdrożenia" — stąd ten plik zamiast tylko commit message.
+**Status: gałąź `fs-atheny-port-v368` przeszła audyt i pełną baterię testów na Macu.**
+Sesja Windows (04.09, v3.68.0) → sesja macOS (04.09, v3.68.1). Poniżej: co było, co audyt
+znalazł, co naprawione i co ZOSTAJE do decyzji ownera.
 
-## Gdzie to jest
+---
 
-Branch: `fs-atheny-port-v368` (NIE main — świadomie, patrz "Co NIE jest zrobione" niżej).
-Pierwsza rzecz do zrobienia na Macu: `git fetch && git checkout fs-atheny-port-v368`.
+## CZĘŚĆ I — v3.68.0 (sesja Windows, port mechanizmu)
 
-## Kontekst tej sesji (skrót — pełny dziennik decyzji jest w historii rozmowy Windows)
+Owner poprosił o odtworzenie na Genesis mechanizmu Fleet Save z Atheny („bardzo dobrze
+działała, chcę dokładnie tak samo”). Ustalenia z tamtej rozmowy, wciąż obowiązujące:
 
-1. Ta sama sesja WCZEŚNIEJ zrobiła i już **wypchnęła na main** (v3.67.0, PRZED tym
-   handoffem, więc to JEST już live): auto-odbudowa księżyca po zniszczeniu, ewakuacja
-   floty z gołej planety, fuel-fallback dla ratunku moon→moon, naprawa E7/expoLandings.
-   To przeszło pełny audyt (5 agentów + weryfikacja adwersarialna) i jest bezpieczne.
-2. Owner poprosił o odtworzenie na Genesis funkcji **Fleet Save (FS)** z Atheny (2.x,
-   `ogamex-bot.user.js`, zamrożony plik) — "bardzo dobrze działała, chcę dokładnie tak
-   samo". Zbadałem kod Atheny (agent workflow, w pełni) i porównałem z Genesis.
-3. **KLUCZOWE odkrycie z badania**: na Athenie "FS" i "ucieczka w powietrzu przy ataku
-   na oba ciała" (AirSave) to były DWA osobne, kopiowane mechanizmy zawracania. Na
-   Genesis mechanizm zawrotu już jest JEDEN, generyczny (`kind:"recall"` → `Fly.recall()`,
-   działa dla FS i dla ratunku w ataku identycznie) — **to NIE wymagało portu, już jest
-   lepsze niż na Athenie**. Prawdziwe braki (potwierdzone też przez audyt AUDYT-FLOTA-
-   2026-08-29.md, punkty R3 i Z8) to: (a) FS domyślnie wyłączony, (b) FS/ucieczka biorą
-   CAŁY hangar razem z minerami/recyklerami.
-4. Owner doprecyzował PRZEZ ROZMOWĘ (ważne, bo zmieniło się w trakcie — patrz niżej),
-   że mechanizm FS na Athenie to: **jedna godzina powrotu** (nie okno start-koniec),
-   **start natychmiast** gdy flota stoi bezczynnie na księżycu (o dowolnej porze dnia,
-   nie tylko nocą), zawrót liczony WSTECZ od tej godziny na podstawie PRAWDZIWEGO czasu
-   lotu z formularza. Trik na "cały czas w locie": bardzo niska prędkość (np. 3%) robi
-   z jednego lotu tam-i-z-powrotem naturalnie długi wyjazd — NIE trzeba wielu pełnych
-   rund (to była moja wcześniejsza nadinterpretacja audytu Atheny, owner to sprostował).
+1. Mechanizm FS: **jedna godzina powrotu** (nie okno start–koniec), **start natychmiast**,
+   gdy flota stoi bezczynnie na księżycu, o dowolnej porze doby. Trik na „cały czas
+   w locie” to **bardzo niska prędkość**, a nie wiele rund.
+   *(Owner NAJPIERW odpowiedział w AskUserQuestion, że chce zostawić okno nocne, a POTEM
+   sprostował na mechanizm Atheny. Obowiązuje sprostowanie.)*
+2. Start **tylko z księżyca**, nigdy z planety (falanga widzi planety).
+3. Skonfigurowany cel (`cfg.fs.target`) jest **jedynym** wyborem — brak cichego
+   podstawiania innej kolonii.
+4. Mechanizm zawracania na Genesis jest JEDEN i generyczny (`kind:"recall"` → `Fly.recall()`)
+   — w przeciwieństwie do Atheny, gdzie FS i AirSave miały osobne, kopiowane kopie.
+   Tego NIE portowano, bo Genesis ma już lepiej.
+5. Zakres wykluczania minerów/recyklerów ustalony przez ownera jako „FS + ucieczka
+   w ataku”. **Część dotycząca ucieczki w ataku została w v3.68.1 cofnięta — patrz II.1.**
 
-   **UWAGA**: w trakcie tej sesji owner NAJPIERW odpowiedział w AskUserQuestion, że chce
-   ZOSTAWIĆ obecne okno nocne Genesis (start-koniec) — a POTEM, widząc że to nie to, o co
-   mu chodziło, sprostował na "jedna godzina powrotu, start natychmiast" (mechanizm
-   Atheny). **Ostateczna, obowiązująca decyzja to ta druga** — kod w tym branchu
-   implementuje mechanizm Atheny (returnHour), NIE okno.
+## CZĘŚĆ II — v3.68.1 (sesja macOS: audyt + naprawy)
 
-## Co ZROBIONE w tym branchu (ogamex-3.user.js, test3-decide.js, test3-e2e.js)
+Audyt: 4 równoległych audytorów adwersarialnych (`Fly.form`/wykluczenia, reguła FS
+w `decide()`, CFG/migracja/panel, jakość samych testów z testem mutacyjnym). Znaleźli
+**6 defektów klasy P0** i kilkanaście niższych. Wszystkie poniższe są NAPRAWIONE.
 
-Wszystkie zmiany oznaczone komentarzem `v3.68.0` w kodzie — `grep -n "v3.68.0" ogamex-3.user.js` pokaże wszystko naraz.
+### 1. FS wywłaszczał RATUNEK (P0, potwierdzone uruchomieniem)
+`RANK` nie odróżniał lotu FS od ratunku, a pętla robi `break` po pierwszym `fly` —
+o wszystkim decydowała kolejność par na pasku. Cicha para z FS potrafiła zabrać jedyny
+lot obrony i zostawić atakowaną flotę pod uderzeniem. Do 3.67 kolizja istniała tylko
+w oknie nocnym; odkąd FS lata o każdej porze, okno to 24/7.
+**Naprawa:** `prio()` spycha akcje FS na koniec kolejki; przycisk „RATUJ FLOTĘ TERAZ”
+nigdy nie wybiera lotu FS; FS nie jest już powodem do przerwania ekspedycji.
 
-1. **CFG.fs przeprojektowane**: `{enabled, startHour, endHour, speedPct, target}` →
-   `{enabled, returnHour, returnMinute, speedPct, target}`. Migracja jednorazowa
-   (`migr_fs_returnhour_v368`) przenosi stare `endHour` na `returnHour`, żeby "godzina 7"
-   ustawiona wcześniej nie zniknęła po cichu (ten sam wzorzec co migracja `CFG.moon`
-   z v3.67.0).
-2. **Nowa funkcja `fsReturnAt(fs, d)`** (obok istniejącej `nightWindow`) — liczy NASTĘPNE
-   wystąpienie skonfigurowanej godziny powrotu. Wołana w `Situation.refresh()` (POZA
-   `decide()`, ten sam powód co `nightWindow` — strefa czasowa maszyny nie może wejść do
-   czystej funkcji), wynik w `s.fsReturnAt`.
-3. **`s.night` przestało być liczone z `CFG.fs`** — FS nie ma już okna, więc nic nie woła
-   `nightWindow(CFG.fs, ...)`. `s.night`/`nightWindow()` jako FUNKCJA zostały (test
-   "21. OKNO NOCNE" nadal je testuje bezpośrednio, niezmienione), po prostu nic
-   produkcyjnego już ich nie woła — jeśli w przyszłości nikt tego nie potrzebuje, można
-   je usunąć, ale zostawiłem jako martwy, nieszkodliwy kod (mniejsze ryzyko niż usuwanie
-   pod presją czasu).
-4. **`Human.economyAllowed()`** — pauza ekonomii "bo flota jest na FS" teraz sprawdza
-   REALNY stan floty (`s.flights` z `fs:true` i `phase!=="done"`), nie zgaduje po zegarze
-   okna (które i tak już nie istnieje).
-5. **Reguła FS w `decide()`** (gałąź ciszy, szukaj "FLEET SAVE"):
-   - Wyzwala się OD RAZU (bez `s.night.active`), gdy flota stoi bezczynnie **na
-     księżycu**. Jeśli flota jest TYLKO na planecie — nowy alert "nie wysyłam stamtąd
-     (falanga), czekam aż będzie na księżycu" (port zasady Atheny "z planety nigdy").
-   - Cel: jeśli `cfg.fs.target` ustawiony — jest JEDYNYM wyborem (Athena: brak
-     cichego podstawiania innej kolonii; jeśli cel nieznany/bez księżyca/atakowany →
-     alert, nie zgadywanie zastępcze). Bez ustawionego celu: stare zachowanie Genesis
-     (najdalsza bezpieczna kolonia).
-   - `recallAt: s.fsReturnAt` (nie okno).
-   - Niesie `excludeTypes: evacExclude` (patrz punkt 6).
-6. **`evacExclude`** — nowa stała liczona na starcie `decide()`: `["ASTEROID_MINER"]`
-   gdy `cfg.aster.enabled`, `["RECYCLER"]` gdy `cfg.debris.enabled` (WARUNKOWE, jak na
-   Athenie — bezczynny miner/recykler leci normalnie). Dodane też do DWÓCH istniejących
-   akcji ratunku w ataku (`neighbourMoon` i `anyRefuge` — to były "AirSave" Atheny) —
-   **decyzja ownera z AskUserQuestion: zakres = FS + ucieczka w ataku, NIE ślepy alarm**
-   (ten ostatni świadomie pominięty, można dorobić później jeśli owner zapyta).
-7. **`Fly.form()`** — nowy tryb ładowania statków: gdy brak `m.plan` ALE jest
-   `m.excludeTypes`, bierze WSZYSTKO oprócz wykluczonych typów (zamiast dosłownie
-   wszystkiego). Dwa miejsca (ładowanie + runda weryfikacji pól) zmienione spójnie.
-   Nowa gałąź "tylko wykluczone typy w hangarze" (quiet abort, nie error) — inaczej
-   hangar z samymi minerami dawałby fałszywy `[LOT DOM] nie znalazłem pól statków` ERROR.
-8. **`emptySourceHangar`** (wołane po `Fly.confirmed()`) — POMIJANE, gdy `m.excludeTypes`
-   niepuste, bo zerowanie całego hangaru skłamałoby "nic tu nie ma", gdy w rzeczywistości
-   miner/recykler zostały w domu (ryzyko: obrona nie widziałaby zostawionej floty przy
-   ataku, dopóki nie przyjdzie świeższy odczyt).
-9. **Panel UI**: pole "od X do Y" zmienione na "wróć o HH", dodane pola "cel (księżyc)
-   g:s:p" i "prędkość %" (na Athenie prędkość i cel NIE były w panelu — teraz są, bo
-   owner aktywnie o nich mówił jako o dźwigniach). Status FS w pasku pokazuje realny
-   stan (w drodze / w domu), nie okno.
-10. **Testy**: `test3-decide.js` sekcja "20. FLEET SAVE" przepisana od zera (start od
-    razu, cel stały z walidacją, cel automatyczny, excludeTypes warunkowe, start tylko z
-    księżyca, brak duplikatu przy ataku). Sekcja "22. HUMANIZER" zaktualizowana pod nowy
-    warunek. `test3-e2e.js` sekcja "15. FLEET SAVE" przepisana (start od razu zamiast
-    okna) + NOWA sekcja "15b" — pełny test end-to-end na PRAWDZIWYM hangarze mieszanym
-    (BATTLESHIP + ASTEROID_MINER), potwierdza że miner FAKTYCZNIE zostaje w formularzu
-    gry, nie tylko w akcji decide().
+### 2. Wykluczenia ekonomii w ścieżkach RATUNKU (P0)
+`debris.enabled` jest **domyślnie true**, więc każda ucieczka przed atakiem zostawiałaby
+wszystkie recyklery (zrzut z żywej gry: 20 983 szt.) pod uderzeniem. To odwraca regułę
+z CLAUDE.md „obrona ma bezwzględny priorytet nad ekonomią” i jest regresem względem 3.67.
+Dodatkowo logika była odwrócona: statek, który FAKTYCZNIE pracuje, jest w locie i w ogóle
+nie ma go w formularzu — wykluczenie po fladze configu trafiało wyłącznie w statki
+BEZCZYNNE, czyli dokładnie te, które Athena zabierała.
+**Naprawa:** `excludeTypes` zostaje wyłącznie przy Fleet Save. *To jest świadome odstępstwo
+od wcześniejszej odpowiedzi ownera („zakres = FS + ucieczka w ataku”) — cofnięcie to jedna
+linia, jeśli owner zdecyduje inaczej.*
 
-## Co ZWERYFIKOWANE
+### 3. FS bez celu wysyłał flotę na PLANETĘ obcej kolonii (P0)
+`body: o.hasMoon ? "moon" : "planet"` — przy domyślnym `target:null` to była ścieżka
+z pudełka: bot startował z bezpiecznego księżyca i sam odstawiał flotę na widoczną planetę.
+**Naprawa:** kolonie bez księżyca odpadają z wyboru; brak kandydata = alarm.
 
-- `node test3-decide.js` — **100% zielono** (szybkie, deterministyczne, bez prawdziwych
-  timerów — ufaj temu wynikowi bez zastrzeżeń).
-- `node test3-e2e.js` — uruchomione 4× pod rząd na Windows. Za KAŻDYM razem realny czas
-  ~3-4 min przy `user`+`sys` bliskim zeru (`time node test3-e2e.js`) — to znaczy, że
-  proces Node stał zawieszony przez system, nie liczył — Windows w tej sesji ma
-  nawracający problem z usypianiem procesów w tle (obserwowane też WCZEŚNIEJ w tej samej
-  sesji, przed tym branchem, niezwiązane z FS). Efekt: w KAŻDYM z 4 przebiegów padały
-  INNE, losowe, niezwiązane z FS scenariusze (ekspedycje, dubel ataku, formularz) —
-  klasyczny objaw zegara realnego skaczącego do przodu w trakcie zawieszenia. **Moje
-  nowe scenariusze FS (15, 15b) przeszły czysto we WSZYSTKICH 4 przebiegach** — to
-  mocny, ale nie 100%-pewny dowód poprawności (nie ma ani jednego w pełni czystego
-  przebiegu CAŁEGO pliku e2e w tym branchu).
+### 4. Zawrót liczony o godzinę za późno — FS był jednorazówką (P0)
+`recallAt` dostawał wprost godzinę powrotu. Zawrócona flota wraca dokładnie tyle, ile już
+leciała, więc żeby być w domu o T, zawrót musi paść **w połowie drogi** między startem a T.
+Stara wersja wpadała w gałąź „doleci przed terminem” → flota lądowała na obcym księżycu,
+wpis znikał po 30 min i FS kończył się na stałe (ze stałym celem) albo zamieniał w codzienne
+wahadło (bez celu).
+**Naprawa:** akcja niesie `homeAt` (godzina bycia w domu), a `Fly` przelicza to na moment
+kliknięcia zawrotu, gdy pozna prawdziwy czas lotu z formularza. Lot za krótki, żeby wisieć
+do godziny powrotu → **odmowa z instrukcją** („zmniejsz prędkość albo wybierz dalszy cel”),
+nie ciche lądowanie.
 
-## Co NIE jest zrobione — DOKŁADNIE to jest do zrobienia na Macu
+### 5. Brak dławika — pętla ponawiania bez końca (P0)
+Karencja dla lotów `air` to 45 s (pisana dla ratunku pod ostrzałem), a `decide()` jest
+deterministyczna: przy braku deuteru albo martwym formularzu bot ponawiał FS w kółko,
+do kilkuset przeładowań gry na godzinę.
+**Naprawa:** własny sufit `fs_try` — 3 nieudane próby na godzinę na trasę, potem cisza
+z jedną linią w logu. Udana wysyłka zwalnia budżet. Ratunek zostaje bez sufitu.
 
-1. **Uruchom `node test3-e2e.js` (i `node test3-all.js`) na czysto na Macu.** Inne
-   środowisko może nie mieć problemu z zawieszaniem procesów, jakiego doświadczał
-   Windows — jeśli dostaniesz jeden w pełni czysty przebieg (0 FAIL), to wystarczający
-   dowód. Jeśli macOS ma TEN SAM objaw (`time node test3-e2e.js` pokazuje duży `real`
-   przy znikomym `user`+`sys`), traktuj FAIL-e jako artefakt środowiska, NIE jako
-   dowód błędu w kodzie — ale spróbuj kilka razy i sprawdź, czy błędy pojawiają się w
-   RÓŻNYCH miejscach za każdym razem (flaki) czy zawsze w TYCH SAMYCH (prawdziwy bug).
-2. **Rozważ audyt przed push**, tak jak przy v3.67.0 (owner poprosił o to explicite przy
-   poprzedniej dużej zmianie i było warto — audyt znalazł 19 prawdziwych błędów). Ten
-   branch jest mniejszy niż v3.67.0, ale dotyka `Fly.form()` — funkcji używanej przez
-   WSZYSTKIE typy lotów (ekspedycje, ratunek, złom, minery), nie tylko FS — warto
-   sprawdzić, czy zmiana w ładowaniu statków (`want`/`excl`) nie ma efektów ubocznych
-   dla ścieżek, które NIE ustawiają `excludeTypes` (powinno być bezpieczne — `excl` jest
-   pustym Setem, gdy `m.excludeTypes` nie istnieje — ale to jest DOKŁADNIE ten rodzaj
-   rzeczy, którą adwersarialny audyt łapie, a ja mogę przeoczyć).
-3. **Merge do main i push, TYLKO po powyższym.** Branch: `fs-atheny-port-v368`.
-   `git checkout main && git merge fs-atheny-port-v368 && git push origin main`
-   (albo PR, jeśli owner wtedy tak zechce).
-4. **Po pushu**: przypomnij ownerowi, żeby ustawił `cfg.fs.target` (stały księżyc) i
-   `cfg.fs.returnHour` w panelu — bez tego FS poleci z domyślnym `returnHour=7,
-   target=null` (najdalsza kolonia), co MOŻE nie być tym, czego chce.
-5. **Nierozstrzygnięte podczas tej sesji** (jeśli owner zapyta, nie zgaduj — dopytaj):
-   czy wykluczenie minerów/recyklerów (`excludeTypes`) ma objąć też ślepy alarm
-   (`blind:true` w kodzie) — świadomie pominięte w tej sesji, zakres był "FS + ucieczka
-   w ataku" tylko.
+### 6. Migracja mogła cicho nie zadziałać (P0)
+Warunek czytał magazyn PO tym, jak migracje debris/moon wywołały `saveCfg()` — a ten
+zapisuje cały CFG, w tym świeżo dołożony domyślny `returnHour: 7`. Instalacja skacząca
+z ≤3.66 prosto na 3.68 traciłaby ustawioną godzinę bez śladu w logu.
+**Naprawa:** rozstrzyga STARY kształt (`endHour` + `startHour`), a stare klucze są usuwane.
 
-## Ważne przypomnienia z CLAUDE.md (nie zapomnij)
+### Niższe, też naprawione
+- `emptySourceHangar` było **pomijane w całości** przy wykluczeniach → hangar udawał pełną
+  flotę przez 48 h („flota-duch”: drugi FS z pustego księżyca, a przy ataku ratunek floty,
+  której nie ma). Teraz zeruje ZAWSZE, ale zostawia to, co naprawdę zostało — na wszystkich
+  trzech ścieżkach domknięcia wysyłki.
+- `Human.economyAllowed()` nie pytało `flightStale()` → wpis po nieudanym zawrocie gasił
+  ekonomię do twardego sufitu 12 h.
+- Panel pozwalał wpisać prędkość spoza kroku 10, a gra zna tylko wielokrotności 10 —
+  „3%” oznaczało lot 100% i LĄDOWANIE, czyli odwrotność sensu FS.
+- `fsReturnAt` z NaN dawało Invalid Date → lot bez zawrotu, bez linii w logu.
+- Alerty FS bez `throttleMs` spamowały co 60 s; rekonesans przed FS przestawiał
+  operatorowi planetę w środku gry (teraz cichy, w tle).
 
-- `ogamex-3.user.js` = Genesis, AKTYWNY rozwój. `ogamex-bot.user.js` = Athena,
-  ZAMROŻONY, tylko do odczytu jako źródło wzorców — NIE edytuj.
-- Bump `@version` przy KAŻDEJ zmianie (już zrobione: 3.68.0).
-- Push na `main` = auto-deploy na żywego bota w ataku — stąd branch, nie bezpośredni push.
-- `node test3-all.js` PRZED każdym pushem na main.
+### Testy (było 164+77, jest znacznie więcej — i mierzą realny kod)
+- `test3-ui.js` był **CZERWONY**: lista ID wymagała `ogx3-fs-b`, którego panel już nie ma.
+- `test3-decide.js` asertował, że FS leci na `5:100:4` — parę **bez księżyca**. Test
+  wykonywał więc blocker z punktu 3 i świecił na zielono. Poprawione + `toBody === "moon"`.
+- `test3-wargame.js` W22 („obrona wygrywa z FS”) karmił decide polami, których od 3.68 nie
+  ma (`startHour`/`night`), więc gałąź FS nie mogła się odpalić — **fałszywie zielony**
+  jedyny strażnik tej reguły. Przepisany, plus W22b/W22c.
+- Nowe sekcje 50–52 w `test3-decide.js` (ratunek bez wykluczeń, cel zawsze księżyc, dławik,
+  arytmetyka `fsReturnAt` **wykonywana**, kolejka akcji **wykonywana**) i 15b/15c w e2e.
+- **Testy mutacyjne**: potwierdzone, że nowe asercje PADAJĄ przy cofnięciu poprawek
+  (priorytet FS, zawrót w połowie drogi, zerowanie hangaru). Dwie pierwsze wersje asercji
+  były puste — zostały wzmocnione dopiero po tym, jak mutacja przez nie przeszła.
+
+### Weryfikacja na macOS
+`node test3-all.js` — **zielone**, komplet zestawów (decide, wargame, e2e 190 sprawdzeń,
+panel, zegar, składnia). E2E ma realny czas ~2:15 przy ~45 s CPU (czeka na timery) —
+to normalne, nie objaw zawieszenia. Uwaga: audyt potwierdził, że **flaki występują też na
+macOS** (~1 na 4 przebiegi, sekcja 39/złom), więc teza z v3.68.0, że to problem Windows,
+była fałszywa.
+
+---
+
+## CO ZOSTAJE DO DECYZJI OWNERA (nie zgadywać — zapytać)
+
+1. **FS 24/7 wyklucza się z ekonomią.** Skoro flota ma być stale w powietrzu, a ekspedycje
+   potrzebują tej samej floty, przy `fs.enabled` + domyślnym `economyAtNight:false`
+   ekspedycje/mining/złom praktycznie nie ruszą. To nie jest błąd, to konsekwencja
+   mechanizmu — ale owner powinien wybrać świadomie (np. FS tylko w oknie nocnym, albo
+   `economyAtNight:true`).
+2. **FS jest nadal `enabled: false`** i nie ma migracji włączającej. Handoff v3.68.0
+   sugerował, że po pushu FS „poleci z domyślnymi ustawieniami” — **nie poleci**, dopóki
+   owner nie kliknie w panelu.
+3. **Wykluczenia przy ucieczce w ataku** — cofnięte wbrew wcześniejszej odpowiedzi ownera
+   (uzasadnienie w II.2). Do potwierdzenia albo odwrócenia.
+4. **Ślepy alarm** (`blind:true`) nadal bez wykluczeń — świadomie, zakres tego nie obejmował.
+5. **`returnMinute`** istnieje w CFG i działa, ale panel ma zaszyte `:00` — nie ma jak
+   ustawić minut z interfejsu.
+6. **Cel wpisany błędnie** (literówka, cudzy księżyc) = FS trwale martwy, a pasek stanu
+   nadal świeci na zielono. Walidacja celu względem paska planet nie została dorobiona.
+
+## Przypomnienia z CLAUDE.md
+- `ogamex-3.user.js` = Genesis, aktywny rozwój. `ogamex-bot.user.js` = Athena, ZAMROŻONY.
+- Push na `main` = auto-deploy na żywego bota. `node test3-all.js` PRZED każdym pushem,
+  kod wyjścia sprawdzać **bez pipe’a**.

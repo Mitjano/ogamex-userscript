@@ -227,13 +227,29 @@ console.log("\n── W21. Flota na OBU ciałach, atak w planetę → ratunek Z 
   check("W21: lot startuje z planety (ciała pod atakiem)", !!a && a.fromBody === "planet", JSON.stringify(a));
 }
 
-console.log("\n── W22. Atak w oknie nocnego FS → obrona wygrywa z FS (ratunek, nie lot FS) ──");
+console.log("\n── W22. Atak przy WŁĄCZONYM Fleet Save → obrona wygrywa z FS (ratunek, nie lot FS) ──");
 {
-  const cfgFS = { ...CFG, fs: { enabled: true, startHour: 1, endHour: 7, speedPct: 10 } };
-  const s = base({ threats: [threat("3:272:7", "moon", 300)], night: { active: true, endsAt: NOW + 6 * 3600e3 } });
+  // v3.68.1 (audyt przed merge): scenariusz karmił decide() polami, których od 3.68 już
+  // nie ma (`startHour`/`endHour` zamiast `returnHour`, `night` — FS stracił okno), więc
+  // gałąź FS nie mogła się w nim odpalić i strażnik był FAŁSZYWIE ZIELONY. Kolizja jest
+  // teraz realna, bo FS startuje o KAŻDEJ porze — i musi być sprawdzona na parze CICHEJ,
+  // bo atakowana para do gałęzi FS w ogóle nie wchodzi.
+  const cfgFS = { ...CFG, fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: null }, aster: { enabled: false }, debris: { enabled: false } };
+  const s = base({ threats: [threat("3:272:7", "moon", 300)], fsReturnAt: NOW + 6 * 3600e3 });
   const r = decide(s, cfgFS, NOW);
   const a = flyOf(r)[0];
-  check("W22: jeden lot i jest to ratunek (rescue), nie FS", flyOf(r).length === 1 && a.rescue === true && !a.fs, JSON.stringify(r.actions));
+  check("W22: lot z ATAKOWANEJ pary to ratunek, nie Fleet Save", !!a && a.rescue === true && !a.fs, JSON.stringify(r.actions));
+
+  // druga, CICHA para z flotą: FS wolno wystawić, ale ratunek musi zostać w kolejce
+  const s2 = base({
+    threats: [threat("3:272:2", "moon", 300)],
+    hangars: { "3:272:7|moon": { total: 1e6, at: NOW - 30e3, ships: [] }, "3:272:2|moon": { total: 5e6, at: NOW - 30e3, ships: [] } },
+    fsReturnAt: NOW + 6 * 3600e3,
+  });
+  const r2 = decide(s2, cfgFS, NOW);
+  const resc = flyOf(r2).find(x => x.rescue), fsAct = flyOf(r2).find(x => x.fs);
+  check("W22b: przy ataku na jedną parę ratunek dla niej POWSTAJE, choć druga para chce na FS", !!resc && resc.fromKey === "3:272:2", JSON.stringify(r2.actions));
+  check("W22c: Fleet Save cichej pary NIGDY nie celuje w ciało pod atakiem", !fsAct || fsAct.toKey !== "3:272:2", JSON.stringify(fsAct));
 }
 
 console.log("\n── W23. Napastnik zawrócił (pasek czysty ≥60 s) → wcześniejszy zawrót; nowy atak w tym stanie = nowy ratunek ──");

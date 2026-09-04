@@ -697,10 +697,14 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
   {
     // v3.68.0: FS nie ma już okna — leci natychmiast, o DOWOLNEJ porze. returnHour parę
     // godzin w przyszłości wystarcza za dowód, że to NIE jest okno startowe.
-    const H = new Date().getHours();
+    // v3.68.1 (audyt): `(H + 2) % 24` zawijało się między 22:00 a 23:59 na 0/1 — czyli
+    // na godzinę JUŻ MINIONĄ dziś, więc `fsReturnAt` przeskakiwał na jutro (~25 h) i oba
+    // scenariusze FS padały deterministycznie w tym oknie doby. Liczymy godzinę z zegara
+    // przesuniętego o 2 h, zamiast liczyć modulo na samej liczbie.
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
     const cfg = {
       autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
-      fs: { enabled: true, returnHour: (H + 2) % 24, returnMinute: 0, speedPct: 10 },
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10 },
       human: { breaks: false, economyAtNight: true },
     };
     const g = new Game({
@@ -720,7 +724,15 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("misja to stacjonowanie, nie atak", !!fs && /Deploy/i.test(fs.mission || ""), fs && fs.mission);
     const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     const f = (st.flights || [])[0];
-    check("z zaplanowanym zawrotem na skonfigurowaną godzinę (nie koniec okna)", !!f && f.recallAt > Date.now(), f && new Date(f.recallAt).toISOString());
+    // v3.68.1 (audyt): `recallAt > Date.now()` przechodziło dla DOWOLNEJ przyszłości —
+    // także dla błędu, który kosztował Fleet Save sens: klikania zawrotu dopiero O
+    // GODZINIE POWROTU. Zawrócona flota wraca tyle, ile już leciała, więc żeby być w
+    // domu o T, zawrót musi paść w POŁOWIE drogi między startem a T.
+    const homeAt = (() => { const d = new Date(); d.setHours(cfg.fs.returnHour, 0, 0, 0); if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1); return d.getTime(); })();
+    const mid = f ? (f.sentAt + homeAt) / 2 : 0;
+    check("zawrót zaplanowany na POŁOWĘ drogi, żeby flota była w domu o skonfigurowanej godzinie",
+      !!f && f.recallAt < homeAt && Math.abs(f.recallAt - mid) < 5 * 60e3,
+      f && `recallAt=${new Date(f.recallAt).toISOString()} połowa=${new Date(mid).toISOString()} dom=${new Date(homeAt).toISOString()}`);
     // Godzina powrotu minęła: termin zawrotu minął
     advance(g, 3 * 3600e3);
     const r2 = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
@@ -730,25 +742,77 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
 
   console.log("\n── 15b. FLEET SAVE (v3.68.0, port z Atheny): miner zostaje w domu, gdy mining pracuje; cel stały ──");
   {
-    const H = new Date().getHours();
+    // v3.68.1 (audyt): `(H + 2) % 24` zawijało się między 22:00 a 23:59 na 0/1 — czyli
+    // na godzinę JUŻ MINIONĄ dziś, więc `fsReturnAt` przeskakiwał na jutro (~25 h) i oba
+    // scenariusze FS padały deterministycznie w tym oknie doby. Liczymy godzinę z zegara
+    // przesuniętego o 2 h, zamiast liczyć modulo na samej liczbie.
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
     const cfg = {
       autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
       aster: { enabled: true }, debris: { enabled: false },
-      fs: { enabled: true, returnHour: (H + 2) % 24, returnMinute: 0, speedPct: 10, target: "1:100:9" },
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10, target: "1:100:9" },
       human: { breaks: false, economyAtNight: true },
     };
     const g = new Game({
       pairs: [
         { key: "1:100:5", name: "Baza", moon: true },
         { key: "1:100:9", name: "Cel", moon: true },
+        // v3.68.1 (audyt): bez trzeciej, DALSZEJ pary „najdalsza kolonia" wypadała
+        // dokładnie na cel stały — asercja niżej przechodziła nawet wtedy, gdy kod
+        // całkowicie ignorował `cfg.fs.target` (potwierdzone testem mutacyjnym).
+        { key: "5:200:3", name: "Daleka", moon: true },
       ],
       hangars: { "1:100:5|moon": { BATTLESHIP: 700, ASTEROID_MINER: 50 } },
     });
+    g.flightSec = 4 * 3600;                     // FS musi WISIEĆ w powietrzu do godziny powrotu
     const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
     const fs = g.sent[0];
     check("FS poleciał na STAŁY skonfigurowany cel, nie najdalszą kolonię", !!fs && fs.to === "1:100:9", JSON.stringify(fs));
     check("wziął pancerniki", !!fs && fs.ships && fs.ships.BATTLESHIP === 700, JSON.stringify(fs && fs.ships));
     check("miner ZOSTAŁ w domu (mining pracuje — port z Atheny)", !!fs && fs.ships && !fs.ships.ASTEROID_MINER, JSON.stringify(fs && fs.ships));
+    // v3.68.1 (audyt): zerowanie hangaru było pomijane w całości, gdy lot niósł
+    // wykluczenia — stan udawał wtedy PEŁNĄ flotę w domu przez 48 h („flota-duch":
+    // drugi FS z pustego księżyca, a przy ataku ratunek floty, której nie ma).
+    // Hangar źródła ma pokazywać dokładnie to, co naprawdę zostało: same minery.
+    const st15b = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const h15b = (st15b.hangars || {})["1:100:5|moon"];
+    check("hangar źródła po locie pokazuje TYLKO zostawionego minera (nie kłamie w żadną stronę)",
+      !!h15b && h15b.total === 50 && (h15b.ships || []).length === 1 && h15b.ships[0].type === "ASTEROID_MINER",
+      JSON.stringify(h15b));
+    // Sam stan hangaru to za mało: sztuczna gra i tak odświeża go przy kolejnym wejściu
+    // na /fleet, więc asercja wyżej przechodzi nawet wtedy, gdy bot w ogóle nie domknął
+    // wysyłki (potwierdzone mutacją). Dowodem, że domknięcie ZASZŁO i zostawiło minera,
+    // jest linia logu — pojawia się wyłącznie ze ścieżki z `keepTypes`.
+    check("bot ZAPISAŁ, że domknął wysyłkę zostawiając minera w domu (nie wyzerował hangaru w ciemno)",
+      logs.some(m => /w domu zostaje .*ASTEROID_MINER/.test(m)), logs.filter(m => /hangar/.test(m)).slice(0, 3).join(" | "));
+  }
+
+  console.log("\n── 15c. FLEET SAVE NIGDY NIE WYWŁASZCZA RATUNKU (audyt przed merge v3.68.1) ──");
+  {
+    // Kolejność akcji szła za kolejnością par na pasku, a pętla robi `break` po PIERWSZYM
+    // locie — cicha para z Fleet Save potrafiła więc zabrać jedyny lot obrony i zostawić
+    // atakowaną flotę pod uderzeniem. Do 3.67 kolizja istniała tylko w oknie nocnym;
+    // odkąd FS startuje o każdej porze, okno to 24/7.
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Cicha", moon: true },
+        { key: "9:300:2", name: "Atakowana", moon: true },
+        { key: "5:200:3", name: "Daleka", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700 }, "9:300:2|moon": { BATTLESHIP: 5000 } },
+      threats: [{ src: "9:9:9", dst: "9:300:2", dstBody: "moon", eta: 300 }],
+    });
+    g.flightSec = 4 * 3600;
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const first = g.sent[0];
+    check("pierwszy lot to RATUNEK atakowanej pary, nie Fleet Save cichej", !!first && first.from === "9:300:2", JSON.stringify(g.sent));
+    check("atakowana flota faktycznie opuściła ciało pod ostrzałem", !!first && first.ships && (first.ships.BATTLESHIP || 0) === 5000, JSON.stringify(first && first.ships));
   }
 
   console.log("\n── 16. STRONA BŁĘDU GRY: bot wraca do gry zamiast zamierać ──");

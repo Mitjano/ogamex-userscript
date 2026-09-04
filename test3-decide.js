@@ -201,7 +201,9 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
   check("rekonesans stoi przy ATAKU, ale sonda go nie blokuje", /threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > now\)\) return false/.test(recon));
   check("rekonesans stoi, gdy lot jest w powietrzu", /flightsBlocking\(s, Date\.now\(\)\)\) return false/.test(recon), recon.slice(0, 300));
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
-  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu", /if \(!actions\.some\(a => a\.kind === "fly" \|\| a\.kind === "recall"\)\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
+  // v3.68.1: bramka pomija akcje FS (te wiszą w `actions`, dopóki flota stoi w domu,
+  // i gasiły ekonomię bezterminowo) oraz pyta o FAKTYCZNIE trwającą misję.
+  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu (FS nie blokuje ekonomii)", /if \(!Fly\.mission\(\) && !actions\.some\(a => \(a\.kind === "fly" && !a\.fs\) \|\| a\.kind === "recall"\)\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
   check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
 }
 
@@ -493,8 +495,14 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
   // domknięciu wpisu lotu decide() wystawiał ten sam lot bez końca, a bramka
   // anty-duplikat ścinała go po jednej nawigacji na obrót.
   check("po potwierdzonej wysyłce hangar ŹRÓDŁA jest zerowany",
-    /function emptySourceHangar\(fromKey, fromBody, why\)/.test(src) &&
+    /function emptySourceHangar\(fromKey, fromBody, why, keepTypes\)/.test(src) &&
     (src.match(/emptySourceHangar\(/g) || []).length >= 4);
+  // v3.68.1 (audyt): zerowanie NIE MOŻE być pomijane przy `excludeTypes` — hangar
+  // udawałby wtedy pełną flotę przez 48 h. Zamiast pomijać, zostawiamy wykluczone typy,
+  // i to na WSZYSTKICH trzech ścieżkach domknięcia wysyłki.
+  check("zerowanie hangaru zostawia typy celowo pominięte, zamiast być pomijane",
+    !/!\(m\.excludeTypes && m\.excludeTypes\.length\)\) emptySourceHangar/.test(src) &&
+    (src.match(/emptySourceHangar\([^)]*(?:m|f)\.excludeTypes\)/g) || []).length >= 3);
   check("bramka anty-duplikat wysyła trasę w karencję (koniec pętli nawigacji)",
     /blG\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\] = ls\.at \+ guardMs/.test(src));
   check("karencja NIE dotyczy ekspedycji (fale lecą tą samą trasą co 60–90 s)",
@@ -592,7 +600,11 @@ console.log("── 20. FLEET SAVE (v3.68.0: port z Atheny — jedna godzina pow
   const a = decide(s, FSCFG, NOW).actions.find(x => x.fs);
   check("flota wychodzi z hangaru OD RAZU — bez żadnego okna godzinowego", !!a, JSON.stringify(decide(s, FSCFG, NOW).actions));
   check("FS leci poza parę, powoli, z zawrotem liczonym z fsReturnAt (nie z zegara okna)", a && a.toKey !== "3:272:7" && a.speed === 10 && a.recall === true && a.recallAt === fsReturnAt, JSON.stringify(a));
-  check("FS wybiera NAJDALSZĄ nieatakowaną kolonię, gdy brak stałego celu", a && a.toKey === "5:100:4", JSON.stringify(a));
+  // v3.68.1 (audyt przed merge): stara asercja pilnowała tylko `toKey`, a fixture ma
+  // najdalszą kolonię BEZ księżyca — test wykonywał więc blocker „FS leci na PLANETĘ"
+  // i świecił na zielono. Reguła 3.x brzmi „misja zawsze moon→moon": kolonie bez
+  // księżyca odpadają, nawet gdy są najdalsze.
+  check("FS wybiera NAJDALSZĄ nieatakowaną kolonię Z KSIĘŻYCEM, gdy brak stałego celu", a && a.toKey === "3:272:2" && a.toBody === "moon", JSON.stringify(a));
   check("FS niesie excludeTypes (miner/recykler wykluczani WARUNKOWO w Fly.form)", a && Array.isArray(a.excludeTypes), JSON.stringify(a));
 
   const s2 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, threats: [threat("5:100:4", "planet", 600)] });
@@ -630,9 +642,9 @@ console.log("── 20. FLEET SAVE (v3.68.0: port z Atheny — jedna godzina pow
   // recykler tylko gdy złom pracuje (bezczynny miner/recykler to zwykły cel, leci).
   const s9 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } });
   const a9off = decide(s9, Object.assign({}, FSCFG, { aster: { enabled: false }, debris: { enabled: false } }), NOW).actions.find(x => x.fs);
-  check("mining i złom OFF → nic nie wykluczone (miner/recykler bezczynny leci z FS)", a9off && a9off.excludeTypes.length === 0, JSON.stringify(a9off));
+  check("mining i złom OFF → nic nie wykluczone (miner/recykler bezczynny leci z FS)", !!a9off && Array.isArray(a9off.excludeTypes) && a9off.excludeTypes.length === 0, JSON.stringify(a9off));
   const a9on = decide(s9, Object.assign({}, FSCFG, { aster: { enabled: true }, debris: { enabled: true } }), NOW).actions.find(x => x.fs);
-  check("mining i złom ON → miner i recykler wykluczeni (pracują, zostają w domu)", a9on && a9on.excludeTypes.includes("ASTEROID_MINER") && a9on.excludeTypes.includes("RECYCLER"), JSON.stringify(a9on));
+  check("mining i złom ON → miner i recykler wykluczeni (pracują, zostają w domu)", !!a9on && Array.isArray(a9on.excludeTypes) && a9on.excludeTypes.includes("ASTEROID_MINER") && a9on.excludeTypes.includes("RECYCLER"), JSON.stringify(a9on));
 }
 
 console.log("── 21. OKNO NOCNE (czysta funkcja nightWindow) ──");
@@ -1376,6 +1388,115 @@ console.log("\n── 49. AUDYT PRZED PUSH: regresyjne strażniki dla poprawek s
   check("Recon.bodiesOf pilnuje AKTYWNIE par ze świeżo utraconym księżycem (s.moonLost), nie czeka na wolny obieg w tle", /lostPlanets = Object\.keys\(s\.moonLost \|\| \{\}\)/.test(src) && /dedupe\(\[\.\.\.all, \.\.\.lostPlanets\]\)/.test(src));
   check("rescueFail NIE liczy ręcznego Abort operatora jako dowodu na brak deuteru", /m\.rescue && m\.air && m\.toBody === "moon" && why !== "operator"/.test(src));
   check("anyRefuge przyjmuje wykluczenie konkretnej pary (drugi parametr)", /const anyRefuge = \(k, exclude\) => \{/.test(src) && /ok === exclude/.test(src));
+}
+
+console.log("\n── 50. AUDYT PRZED MERGE v3.68.1: Fleet Save nie może zaszkodzić obronie ani zapętlić bota ──");
+{
+  const FSON = Object.assign({}, CFG, { fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: null }, aster: { enabled: true }, debris: { enabled: true } });
+  const fsReturnAt = NOW + 6 * 3600e3;
+
+  // (a) NAJWAŻNIEJSZE: ucieczka przed atakiem NIE MOŻE nieść wykluczeń ekonomii.
+  // Przy domyślnym debris.enabled zostawiałaby WSZYSTKIE recyklery pod uderzeniem
+  // (zrzut z żywej gry: 20 983 szt.) — odwrotność reguły „obrona ma bezwzględny
+  // priorytet nad ekonomią". Athena wykluczała tylko statki FAKTYCZNIE pracujące,
+  // a pracujący statek jest w locie i w formularzu go nie ma.
+  const sAtk = base({ fsReturnAt, threats: [threat("3:272:7", "moon", 300)] });
+  const aAtk = decide(sAtk, FSON, NOW).actions.find(x => x.kind === "fly");
+  check("ratunek przed atakiem zabiera CAŁY hangar (żadnych excludeTypes)", !!aAtk && aAtk.rescue === true && !aAtk.excludeTypes, JSON.stringify(aAtk));
+
+  // (b) atak na OBA ciała → ucieczka do refugium, też bez wykluczeń
+  const sBoth = base({ fsReturnAt, threats: [threat("3:272:7", "moon", 300), threat("3:272:7", "planet", 300)], pairs: {
+    "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+    "9:100:4": { hasMoon: true, galaxy: 9, system: 100, position: 4 },
+  } });
+  const aBoth = decide(sBoth, FSON, NOW).actions.find(x => x.kind === "fly");
+  check("ucieczka do refugium też bez excludeTypes", !!aBoth && aBoth.rescue === true && !aBoth.excludeTypes, JSON.stringify(aBoth));
+
+  // (c) FS niesie godzinę POWROTU osobno (homeAt) — Fly przelicza ją na moment zawrotu
+  const aFs = decide(base({ fsReturnAt }), FSON, NOW).actions.find(x => x.fs);
+  check("akcja FS niesie homeAt = godzina bycia W DOMU", !!aFs && aFs.homeAt === fsReturnAt, JSON.stringify(aFs));
+  check("akcja FS celuje w KSIĘŻYC, nigdy w planetę", !!aFs && aFs.toBody === "moon", JSON.stringify(aFs));
+
+  // (d) brak kolonii z księżycem → alarm, nie lot na planetę
+  const sNoMoon = decide(base({ fsReturnAt, pairs: {
+    "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+    "5:100:4": { hasMoon: false, galaxy: 5, system: 100, position: 4 },
+  } }), FSON, NOW);
+  check("żadna wolna kolonia bez księżyca nie zostaje celem FS", !sNoMoon.actions.some(x => x.fs), JSON.stringify(sNoMoon.actions));
+  check("zamiast lotu na planetę → alarm o braku księżyca", sNoMoon.alerts.some(al => /nie ma księżyca|bez księżyca/.test(al.msg)), JSON.stringify(sNoMoon.alerts));
+
+  // (e) każdy alert FS ma dławik — inaczej log dostaje tę linię co 60 s bez końca
+  const alFs = decide(base({ fsReturnAt, pairs: { "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 } } }), FSON, NOW).alerts.filter(al => /^FS:/.test(al.msg));
+  check("alerty FS mają throttleMs (nie spamują co minutę)", alFs.length > 0 && alFs.every(al => (al.throttleMs || 0) >= 10 * 60e3), JSON.stringify(alFs));
+
+  // (f) rekonesans FS jest CICHY — FS lata o każdej porze, nie wolno mu przestawiać
+  // operatorowi planety w środku gry (owner zgłaszał to dwukrotnie: v3.43.0, v3.46.0)
+  const rRec = decide(base({ fsReturnAt, hangars: { "3:272:7|moon": { total: 1e6, at: NOW - 2 * 3600e3, ships: [] } } }), FSON, NOW);
+  const aRec = rRec.actions.find(x => x.kind === "recon");
+  check("rekonesans przed FS idzie ścieżką cichą (bez nawigacji)", !!aRec && aRec.quiet === true, JSON.stringify(aRec));
+}
+
+console.log("\n── 51. AUDYT PRZED MERGE v3.68.1: strażniki dla poprawek spoza decide() ──");
+{
+  const loop = src.slice(src.indexOf("async function defenceTick"));
+  // Strażnik regexowy niczego nie wykonuje, a to jest reguła, na której wisi flota:
+  // pętla robi `break` po PIERWSZYM locie, więc o wszystkim decyduje kolejność. Wycinamy
+  // z produkcji RANK + prio + sam sort i URUCHAMIAMY je na mieszanej liście akcji.
+  const RANKSrc = (loop.match(/const RANK = \{ fly: 0[^;]+;/) || [])[0];
+  const prioSrc = (loop.match(/const prio = \(a\) => [^;]+;/) || [])[0];
+  const sortSrc = (loop.match(/actions\.sort\(\(x, y\) => [^;]+;/) || [])[0];
+  check("kolejkę akcji da się wyciąć z produkcji (RANK + prio + sort)", !!RANKSrc && !!prioSrc && !!sortSrc, `${RANKSrc} | ${prioSrc} | ${sortSrc}`);
+  if (RANKSrc && prioSrc && sortSrc) {
+    const sortIt = new Function("actions", `${RANKSrc}\n${prioSrc}\n${sortSrc}\nreturn actions;`);
+    // cicha para z FS stoi na pasku PRZED parą pod ostrzałem — tak było w grze ownera
+    const mixed = sortIt([
+      { kind: "fly", fs: true, fromKey: "1:100:5", why: "FLEET SAVE" },
+      { kind: "fly", rescue: true, fromKey: "9:300:2", why: "atak" },
+      { kind: "recon", key: "5:200:3" },
+    ]);
+    check("RATUNEK wychodzi przed Fleet Save, choć jego para jest dalej na pasku", mixed[0].rescue === true, JSON.stringify(mixed.map(a => a.why || a.kind)));
+    check("Fleet Save nie wyprzedza też ślepego alarmu", sortIt([
+      { kind: "fly", fs: true, fromKey: "1:100:5" },
+      { kind: "fly", blind: true, fromKey: "9:300:2" },
+    ])[0].blind === true);
+    check("rekonesans nadal jest na końcu (nawigacja nie wyprzedza lotu)", mixed[mixed.length - 1].kind === "recon", JSON.stringify(mixed.map(a => a.kind)));
+  }
+  check("FS nie przerywa trwającej ekspedycji (nie jest „urgent”)",
+    /actions\.some\(a => \(a\.kind === "fly" && !a\.fs\) \|\| a\.kind === "recall"\)/.test(loop));
+  check("FS ma własny sufit prób (3/h) niezależny od karencji ratunku",
+    /Store\.get\("fs_try", \{\}\)/.test(loop) && /r3\.n >= 3/.test(loop));
+  check("udana wysyłka FS zwalnia budżet prób", /if \(m\.fs\) \{ try \{ const ft = Store\.get\("fs_try", \{\}\) \|\| \{\}; delete ft\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\]/.test(src));
+  check("przycisk „RATUJ FLOTĘ TERAZ” nigdy nie wysyła Fleet Save",
+    /actions\.find\(x => x\.kind === "fly" && x\.fromKey === a0\.key && !x\.fs\)/.test(src));
+  check("zawrót FS liczony na POŁOWĘ drogi (flota w domu o godzinie, nie zawracana o godzinie)",
+    /const t0 = Date\.now\(\), homeAt = m\.homeAt \|\| m\.recallAt, half = \(homeAt - t0\) \/ 2;/.test(src) && /m\.recallAt = t0 \+ half;/.test(src));
+  check("lot za krótki na powrót o godzinie → odmowa z instrukcją, nie ciche lądowanie",
+    /if \(m\.flightMs < half\)/.test(src) && /Zmniejsz prędkość FS albo ustaw dalszy cel/.test(src));
+  check("pauza ekonomii na FS pyta flightStale (wpis po nieudanym zawrocie nie gasi bota na 12 h)",
+    /f\.fs && f\.phase !== "done" && !flightStale\(f, Date\.now\(\)\)/.test(src));
+  check("migracja FS rozstrzyga po STARYM kształcie (endHour+startHour), nie po braku returnHour",
+    /typeof savedFs\.endHour === "number" && typeof savedFs\.startHour === "number"/.test(src));
+  check("panel zaokrągla prędkość FS do kroku 10 (gra nie zna innych)",
+    /Math\.max\(10, Math\.min\(100, Math\.round\(v \/ 10\) \* 10\)\)/.test(src));
+  check("wpis lotu zapamiętuje excludeTypes (żeby domknięcie po przeładowaniu nie skłamało o hangarze)",
+    (src.match(/excludeTypes: m\.excludeTypes \|\| null/g) || []).length >= 2);
+}
+
+console.log("\n── 52. AUDYT PRZED MERGE v3.68.1: fsReturnAt (czysta funkcja, wykonywana) ──");
+{
+  const fra = new Function("fs", "d", bodyOf("function fsReturnAt(fs, d) {"));
+  const at = (h, mi = 0) => { const d = new Date(NOW); d.setHours(h, mi, 0, 0); return d; };
+  const FS7 = { enabled: true, returnHour: 7, returnMinute: 0 };
+  check("FS wyłączony → 0 (żadnego terminu zawrotu)", fra({ enabled: false, returnHour: 7 }, at(3)) === 0);
+  check("06:59 → dziś o 7:00", new Date(fra(FS7, at(6, 59))).getHours() === 7 && fra(FS7, at(6, 59)) > at(6, 59).getTime());
+  check("07:30 → JUTRO o 7:00 (nie termin w przeszłości)", fra(FS7, at(7, 30)) - at(7, 30).getTime() > 22 * 3600e3);
+  check("dokładnie 07:00 → jutro (zawrót zerowej długości nie ma sensu)", fra(FS7, at(7)) > at(7).getTime());
+  check("termin ZAWSZE w przyszłości, o każdej porze doby", [0, 3, 7, 12, 18, 23].every(h => fra(FS7, at(h)) > at(h).getTime()));
+  // audyt: `??` łapało tylko null/undefined — NaN dawał Invalid Date i lot BEZ zawrotu,
+  // bez jednej linii w logu. Zepsuta wartość ma wracać do domyślnej.
+  check("returnHour NaN → domyślna 7:00, nie Invalid Date", new Date(fra({ enabled: true, returnHour: NaN, returnMinute: 0 }, at(3))).getHours() === 7);
+  check("returnMinute NaN → :00, nie NaN", Number.isFinite(fra({ enabled: true, returnHour: 7, returnMinute: NaN }, at(3))) && new Date(fra({ enabled: true, returnHour: 7, returnMinute: NaN }, at(3))).getMinutes() === 0);
+  check("returnMinute spoza zakresu przycięte, nie przewinięte na następną godzinę", new Date(fra({ enabled: true, returnHour: 7, returnMinute: 90 }, at(3))).getHours() === 7);
 }
 
 console.log("");

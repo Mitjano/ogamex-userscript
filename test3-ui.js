@@ -62,7 +62,9 @@ $("ogx3-min").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 ck("ponowny klik rozwija", $("ogx3-body").style.display === "block");
 
 // wszystkie ID przycisków z 3.10.x nadal istnieją (handlery i testy po ID)
-const IDS = "on auto push voice recon deb aster fs fs-a fs-b expo disc waves slotres res spd sim-moon sim-planet dump report pushtest abort save home copy clear log status topic expo-st fs-st aster-st".split(" ");
+// v3.68.0: FS stracił okno „od X do Y" (fs-b) na rzecz jednej godziny powrotu (fs-a)
+// oraz dostał stały cel i prędkość — lista pilnuje NOWEGO kształtu panelu.
+const IDS = "on auto push voice recon deb aster fs fs-a fs-target fs-speed expo disc waves slotres res spd sim-moon sim-planet dump report pushtest abort save home copy clear log status topic expo-st fs-st aster-st".split(" ");
 const missing = IDS.filter(i => !$("ogx3-" + i));
 ck("wszystkie pola/przyciski z 3.10.x na miejscu", missing.length === 0, "brakuje: " + missing.join(", "));
 
