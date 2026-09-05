@@ -758,7 +758,29 @@ console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznane
   const nokey = { pairs: {}, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
   const r4 = decide(nokey, CFG, NOW);
   check("atak na kolonię spoza paska planet → GŁOŚNY alarm, nigdy cisza", r4.alerts.some(x => x.unknownPair && x.level === "error"), JSON.stringify(r4));
-  check("alarm o nieznanej kolonii i ślepy alarm idą na telefon", /\(a\.unknownPair \|\| a\.blind\) && !Once\.said/.test(src));
+  // v3.68.3 (audyt 04.09): dyspozytora pusha pilnował do tej pory SAM regex — dowód, że
+  // linia istnieje, a nie że działa; audyt policzył to jako dziurę przepuszczającą mutację.
+  // Tniemy więc PRAWDZIWĄ pętlę alertów z defenceTick i URUCHAMIAMY ją na atrapach
+  // Once/log/Journal, sprawdzając, co naprawdę wychodzi na telefon, a co zostaje w logu.
+  const dispatchPush = (alert, said = () => false) => {
+    const sent = [];
+    new Function("alerts", "Once", "log", "Journal",
+      `for (const a of alerts) {${bodyOf("for (const a of alerts) {")}}`)(
+      [alert],
+      { said },                         // domyślnie żaden dławik nie tłumi — badamy sam warunek
+      () => {},                         // log do kosza
+      { add: (kind, msg) => sent.push(`${kind}|${msg}`) },
+    );
+    return sent;
+  };
+  const AL = (over) => Object.assign({ key: "1:200:8", level: "error", msg: "ALARM testowy" }, over);
+  check("alarm o nieznanej kolonii idzie na telefon", dispatchPush(AL({ unknownPair: true })).length === 1, JSON.stringify(dispatchPush(AL({ unknownPair: true }))));
+  check("ślepy alarm idzie na telefon", dispatchPush(AL({ blind: true })).length === 1, JSON.stringify(dispatchPush(AL({ blind: true }))));
+  check("alarm z jawną flagą push idzie na telefon (v3.68.3)", dispatchPush(AL({ push: true })).length === 1, JSON.stringify(dispatchPush(AL({ push: true }))));
+  check("alert bez żadnej z tych flag NIE budzi telefonu", dispatchPush(AL({})).length === 0, JSON.stringify(dispatchPush(AL({}))));
+  check("push ma własny dławik na kluczu `push|<para>` — powtórka nie budzi telefonu drugi raz",
+    dispatchPush(AL({ push: true }), (k) => k.startsWith("push|")).length === 0
+    && /`push\|\$\{a\.key\}`, 5 \* 60e3/.test(src));
   const quiet = { pairs: { "1:200:8": { hasMoon: false, galaxy: 1, system: 200, position: 8 } }, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
   check("znana kolonia bez wiedzy o hangarze → też alarm (nie cisza)", decide(quiet, CFG, NOW).alerts.length > 0);
 }

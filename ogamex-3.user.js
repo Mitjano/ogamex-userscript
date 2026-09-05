@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.2
+// @version      3.68.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.2";
+  const VERSION = "3.68.3";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -3426,7 +3426,16 @@
         const k = `alert|${a.key}|${a.msg.replace(/\d+/g, "#").slice(0, 60)}`;
         if (Once.said(k, a.throttleMs || 60e3)) continue;
         log(`[OBRONA] ${a.msg}`, a.level === "error" ? "error" : "warn");
-        if ((a.unknownPair || a.blind) && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
+        // v3.68.3 (audyt 04.09): na telefon wychodziły WYŁĄCZNIE alarmy z flagą
+        // `unknownPair` albo `blind`, czyli tylko te, w których bot sam nie wie, co się
+        // dzieje. Alarm, w którym bot WIE, że zostawia flotę pod uderzeniem (np. drugie
+        // ciało pary bez ratunku), nie miał żadnej z tych dwóch flag — kończył jako
+        // cichy wpis w logu, którego właściciel nie czyta, i o utracie floty dowiadywał
+        // się po fakcie. `push` jest odtąd trzecią, jawną drogą na telefon: alarm
+        // deklaruje „to musi obudzić właściciela" niezależnie od tego, skąd pochodzi.
+        // Żaden dzisiejszy alert tej flagi nie ustawia, więc zachowanie 3.68.2 jest
+        // bit w bit takie samo — to przygotowanie pod alarmy z audytu 04.09.
+        if ((a.unknownPair || a.blind || a.push) && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
       }
       // Samokontrola to przegląd okresowy, nie sprawdzian na każdym przebiegu: raz na 5 minut.
       // (Pakiet E2E pokazał to od razu — dodatkowa praca w KAŻDYM ticku przesuwała czas
