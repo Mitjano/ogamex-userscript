@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.7
+// @version      3.68.8
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.7";
+  const VERSION = "3.68.8";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -871,7 +871,11 @@
           // znaczy księżyc tak czytelnie jak komórka celu.
           if (!o.isReturn || !(o.src || o.dst)) continue;
           const lkKey = o.src || o.dst;
-          const fl = (s.flights || []).find(f => f.fromKey === lkKey && f.phase !== "done");
+          // v3.68.8 (obrona-stan-lotu#3): odkąd para może mieć wpis lotu z KAŻDEGO ciała,
+          // wybieramy ten, którego cel zgadza się z wierszem — inaczej lądowanie lotu
+          // z planety zapisałoby się na księżycu (albo odwrotnie).
+          const fl = (s.flights || []).find(f => f.fromKey === lkKey && f.phase !== "done" && o.dst && f.toKey === o.dst)
+            || (s.flights || []).find(f => f.fromKey === lkKey && f.phase !== "done");
           const rawBody2 = (fl && fl.fromBody) || (o.src ? o.srcBody : o.dstBody) || "planet";
           // v3.67.0 (audyt przed push): trzeci rejestr z tym samym ryzykiem co
           // s.expected/s.expoLandings — fromBody zapisane RAZ przy wysyłce lotu
@@ -953,38 +957,12 @@
         s.expoLandings = el;
       }
       // loty wysłane przez nas: zamknij te, których hangar-cel/źródło już pełny (hangar > zegar)
-      // v3.9.0 (audyt): lot domykał się WYŁĄCZNIE po zapełnieniu hangaru ŹRÓDŁA.
-      // Dla lotu planeta→księżyc ("dom = księżyc") źródło zostaje puste na zawsze,
-      // więc wpis wisiał 12 h i przez cały ten czas decide() uznawał parę za
-      // "w locie" — czyli po pierwszej rutynowej akcji bot przestawał bronić tej pary.
-      // Teraz: lot z zawrotem domyka hangar ŹRÓDŁA (flota wróciła), lot bez zawrotu
-      // (dom/swap) domyka hangar CELU (flota doleciała).
-      s.flights = (s.flights || []).filter(f => {
-        // v3.10.2 (audyt regresji): `pending` znaczy "klik wykonany, czekam na
-        // potwierdzenie" — to stan sekundowy. Bez limitu czasu osierocony wpis
-        // (klik nawigowal, kod potwierdzajacy nie wykonal sie) zaslepial pare na
-        // zawsze. Po 10 min wpis przechodzi w normalne reguly wygaszania.
-        if (f.pending && now - f.sentAt < 10 * 60e3) return true;
-        if (f.pending) { log(`[LOT] wpis "${f.kind}" [${f.fromKey}]→[${f.toKey}] wisi 10 min bez potwierdzenia — zdejmuję, para wraca pod pełną obronę.`, "warn"); return false; }
-        const watchKey = f.recallAt ? `${f.fromKey}|${f.fromBody}` : `${f.toKey}|${f.toBody}`;
-        const h = s.hangars[watchKey];
-        if (h && h.total > 0 && h.at > f.sentAt + 60e3) {
-          // v3.52.0 (audyt powrotów 31.08) + v3.53.1 (incydent 19:29:08 — STRACONY ZAWRÓT
-          // 11 mln statków): lot z zawrotem w fazie "launched" NIE MOŻE stać w hangarze
-          // źródła przed terminem zawrotu — fizycznie wciąż leci. Statki widziane w źródle
-          // to powroty ekspedycji, i to NIEZALEŻNIE od rejestru powrotów (3.52 pytała
-          // rejestr, a ten nie znał fal wysłanych przed aktualizacją — fałszywe domknięcie
-          // wykasowało wpis i 11 mln statków poleciało 5 h w jedną stronę bez zawrotu).
-          // Ręczny zawrót operatora nie cierpi: wykrycie „[OPERATOR] ręczny zawrót"
-          // przestawia fazę na "recalled" i wtedy domknięcie hangarem działa normalnie.
-          const rescueStillOut = f.recallAt && f.phase === "launched" && h.at < f.recallAt;
-          if (!rescueStillOut) { log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${h.total.toLocaleString("pl-PL")}).`, "success"); return false; }
-          if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny PRZED terminem zawrotu — to powroty/lądowania, nie ratunek; wpis ZOSTAJE (zawrót planowo).`, "info");
-        }
-        if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis, para znów pod pełną obroną.`, "warn"); return false; }
-        if (now - f.sentAt > 12 * 3600e3) return false;
-        return true;
-      });
+      // v3.68.8 (audyt 04.09): cała reguła „czy ten wpis lotu jeszcze coś znaczy" mieszka
+      // teraz w `flightAlive()` (niżej, obok `flightStale`). Wyjęta stąd po to, żeby dało
+      // się ją URUCHOMIĆ w teście: dopóki siedziała w domknięciu wewnątrz refresh(), jedyną
+      // ochroną był regex na kształt warunku — i dokładnie dlatego dziura z obrona-stan-lotu#2
+      // przeżyła dwa audyty.
+      s.flights = (s.flights || []).filter(f => flightAlive(f, s, now));
       return this.save(s);
     },
     // hangar z flotą (świeży <48 h) — gdzie stoi flota.
@@ -1041,6 +1019,70 @@
     return false;
   }
   const flightsBlocking = (s, now) => (s.flights || []).some(f => f.phase !== "done" && !flightStale(f, now));
+
+  // ── ŻYCIE WPISU LOTU ────────────────────────────────────────────────────
+  // v3.9.0 (audyt): lot domykał się WYŁĄCZNIE po zapełnieniu hangaru ŹRÓDŁA.
+  // Dla lotu planeta→księżyc ("dom = księżyc") źródło zostaje puste na zawsze,
+  // więc wpis wisiał 12 h i przez cały ten czas decide() uznawał parę za
+  // "w locie" — czyli po pierwszej rutynowej akcji bot przestawał bronić tej pary.
+  // Stąd: lot z zawrotem domyka hangar ŹRÓDŁA (flota wróciła), lot bez zawrotu
+  // (dom/swap) domyka hangar CELU (flota doleciała).
+  //
+  // v3.68.8 (audyt 04.09, obrona-stan-lotu#2 P0 + expo-wykonanie#1 P1) — CO SIĘ PSUŁO:
+  // ochrona wpisu przed przedwczesnym domknięciem (v3.53.1, po incydencie „STRACONY
+  // ZAWRÓT 11 mln statków") pytała ZEGARA: chroniła tylko PRZED terminem zawrotu i tylko
+  // w fazie "launched". Po `recallAt` — albo po kliknięciu zawrotu — pierwszy niezerowy
+  // odczyt hangaru źródła kasował wpis lotu, który fizycznie WCIĄŻ LECI:
+  //   · Fleet Save zostawia w domu recyklery (`excludeTypes`, przy domyślnym debris.enabled
+  //     to 20 983 szt. ze zrzutu żywej gry), więc hangar źródła NIGDY nie jest pusty —
+  //     wpis ginął w tym samym przebiegu, w którym miał pójść zawrót;
+  //   · przy zwykłym ratunku hangar bazy zapełnia wracająca fala ekspedycji.
+  // Po skasowaniu wpisu nie ma czego zawrócić (wszystkie drogi zawrotu i ręczny przycisk
+  // czytają `s.flights`) ani o czym alarmować (pętla alertów też iteruje po `s.flights`) —
+  // czyli cisza i flota poza domem, klasa incydentu nieodwracalnego.
+  // Teraz rozstrzyga FIZYKA, nie zegar — i to bez łamania reguły „stan lotu zamyka
+  // HANGAR, nie zegar" (CLAUDE.md), bo obie poprawki mówią tylko tyle, że TEGO, CO
+  // WIDAĆ W HANGARZE, nie da się przypisać temu lotowi:
+  //   1) faza "launched" z zawrotem = flota leci DO CELU; w hangarze ŹRÓDŁA nie ma jej
+  //      prawa być o ŻADNEJ porze, więc żaden odczyt tego hangaru nie domyka wpisu.
+  //      To, co tam stoi, to powroty ekspedycji i produkcja stoczni;
+  //   2) statki CELOWO zostawione w domu (`leftHome` — zapisywane przy wysyłce przez
+  //      emptySourceHangar) nie są powrotem floty w ŻADNEJ fazie: sam recykler po FS
+  //      nie może udawać, że ratunek wrócił.
+  // Fazy zawrotu ("recall_clicked"/"recalled") domyka hangar jak dotąd — tam flota
+  // FIZYCZNIE wraca do źródła, a wpis, który by to przespał, kazałby obronie milczeć
+  // („z pary trwa lot") nad flotą stojącą już w domu. Świadomie zostaje jedna szpara:
+  // fala ekspedycji lądująca na źródle POMIĘDZY klikiem zawrotu a wierszem powrotnym
+  // domknie wpis i ponowienie z „zawrót bez potwierdzenia" nie ma czego ponowić —
+  // dlatego takie domknięcie NIE jest ciche (linia „zawrót NIEPOTWIERDZONY" niżej).
+  // Wpis i tak nie jest wieczny (CLAUDE.md): domykają go hangar, sufit 30 min dla lotów
+  // bez zawrotu i twardy sufit 12 h, a parę spod blokady obrony zwalnia `flightStale()`
+  // (godzina po terminie zawrotu).
+  function flightAlive(f, s, now) {
+    // v3.10.2 (audyt regresji): `pending` znaczy "klik wykonany, czekam na
+    // potwierdzenie" — to stan sekundowy. Bez limitu czasu osierocony wpis
+    // (klik nawigowal, kod potwierdzajacy nie wykonal sie) zaslepial pare na
+    // zawsze. Po 10 min wpis przechodzi w normalne reguly wygaszania.
+    if (f.pending && now - f.sentAt < 10 * 60e3) return true;
+    if (f.pending) { log(`[LOT] wpis "${f.kind}" [${f.fromKey}]→[${f.toKey}] wisi 10 min bez potwierdzenia — zdejmuję, para wraca pod pełną obronę.`, "warn"); return false; }
+    const watchKey = f.recallAt ? `${f.fromKey}|${f.fromBody}` : `${f.toKey}|${f.toBody}`;
+    const h = (s.hangars || {})[watchKey];
+    // v3.68.8: próg „w hangarze stoi COŚ WIĘCEJ niż to, co sami tam zostawiliśmy".
+    // Dotyczy wyłącznie lotów pilnowanych po ŹRÓDLE — dla lotu bez zawrotu patrzymy
+    // na hangar CELU, a tam nic celowo nie zostawialiśmy.
+    const leftHome = f.recallAt ? (f.leftHome || 0) : 0;
+    if (h && (h.total || 0) > leftHome && h.at > f.sentAt + 60e3) {
+      const stillOut = !!f.recallAt && f.phase === "launched";
+      if (!stillOut) {
+        if (f.phase === "recall_clicked") log(`[LOT] domykam wpis [${f.fromKey}]→[${f.toKey}] hangarem, choć zawrót NIEPOTWIERDZONY wierszem powrotnym — jeśli to nie ta flota wróciła, sprawdź listę ruchów.`, "warn");
+        log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${(h.total || 0).toLocaleString("pl-PL")}).`, "success"); return false;
+      }
+      if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny, a lot [${f.fromKey}]→[${f.toKey}] jest W POWIETRZU (${f.phase}) — to powroty/lądowania, nie ratunek; wpis ZOSTAJE (zawrót planowo).`, "info");
+    }
+    if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis, para znów pod pełną obroną.`, "warn"); return false; }
+    if (now - f.sentAt > 12 * 3600e3) return false;
+    return true;
+  }
 
   function barExcessState(bar, threats, prev, now, cfg) {
     if (!cfg.barExcess || !bar) return { active: false, count: 0, since: 0 };
@@ -2703,7 +2745,8 @@
       const m = this.mission(); Store.del("mission");
       if (!m) return;
       // v3.10.2: przerwana misja nie moze zostawiac wpisu `pending` w stanie obrony.
-      try { const sA = Situation.load(); const n0 = (sA.flights || []).length; sA.flights = (sA.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending)); if ((sA.flights || []).length !== n0) Situation.save(sA); } catch {}
+      // v3.68.8 (obrona-stan-lotu#3): para może mieć wpis lotu z OBU ciał — sprzątamy tylko swój.
+      try { const sA = Situation.load(); const n0 = (sA.flights || []).length; sA.flights = (sA.flights || []).filter(f => !(f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending)); if ((sA.flights || []).length !== n0) Situation.save(sA); } catch {}
       if (opts.quiet) { log(`[LOT] przerwany: ${why}`, "warn"); const blq = Store.get("fly_block", {}) || {}; blq[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3; Store.set("fly_block", blq); return; }
       log(`[LOT] przerwany: ${why}`, "error");
       Journal.add("BŁĄD", `Lot [${m.fromKey}]→[${m.toKey}] przerwany: ${why}`);
@@ -2747,7 +2790,7 @@
       // TYLKO loty obronne trafiają do `flights` (v3.2.0): ekspedycja tam wpisana
       // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek.
       if (!eco) {
-        const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && f.pending);
+        const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending);   // v3.68.8: wpis z DRUGIEGO ciała pary nie jest naszym potwierdzeniem
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
         if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
@@ -2911,7 +2954,7 @@
             // Kod robiący to po kliku nie wykonał się, bo „Send fleet" przeładował stronę.
             try {
               const sD = Situation.load();
-              const fD = (sD.flights || []).find(x => x.fromKey === m.fromKey && x.pending);
+              const fD = (sD.flights || []).find(x => x.fromKey === m.fromKey && (x.fromBody || m.fromBody) === m.fromBody && x.pending);   // v3.68.8: wpis lotu z DRUGIEGO ciała pary to nie nasza wysyłka
               if (fD) { delete fD.pending; if (m.flightMs) fD.flightMs = m.flightMs; Situation.save(sD); log(`[LOT] wpis lotu [${fD.fromKey}]→[${fD.toKey}] potwierdzony (wysyłka już poszła).`, "success"); }
             } catch {}
             // v3.39.2: samo skasowanie misji NIE wystarczy — decide() wystawi tę samą
@@ -3216,7 +3259,28 @@
       }
       if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
         const sPre = Situation.load();
-        sPre.flights = (sPre.flights || []).filter(f => f.fromKey !== m.fromKey);
+        // v3.68.8 (audyt 04.09, obrona-stan-lotu#3 P1): filtr patrzył na SAM KLUCZ pary,
+        // więc nowy lot obronny z PLANETY kasował wpis lotu wciąż lecącego z KSIĘŻYCA tej
+        // samej pary — a z nim jedyną drogę do zawrotu (wszystkie gałęzie zawrotu i ręczny
+        // przycisk czytają `s.flights`) i jedyny alarm o niezawróconej flocie. Stan wejściowy
+        // powstaje sam: `flightStale()` zwalnia parę godzinę po terminie zawrotu, a lot na 10%
+        // prędkości leci wtedy jeszcze godzinami, więc `inFlightFrom()` przestaje go widzieć
+        // i decide() spokojnie wystawia następny lot z tej pary.
+        // Kasujemy więc wpisy z TEGO SAMEGO ciała startu (tam faktycznie startuje nowy lot),
+        // a wpis z drugiego ciała zostaje, dopóki jego flota jest w powietrzu albo czeka na
+        // ręczne sprowadzenie. Wpis nie staje się przez to wieczny — domyka go hangar,
+        // sufit 12 h i `flightStale()`.
+        const inAir = (f) => !!f.recallAt && ["launched", "recall_clicked", "recall_failed"].includes(f.phase);
+        const zdjete = [];
+        sPre.flights = (sPre.flights || []).filter(f => {
+          if (f.fromKey !== m.fromKey) return true;
+          if (f.fromBody !== m.fromBody && inAir(f)) return true;
+          if (!f.pending && inAir(f)) zdjete.push(f);
+          return false;
+        });
+        // Kasowanie śladu po flocie, która jest w powietrzu, nie może być CICHE — to jest
+        // dokładnie ten moment, w którym bot traci zdolność zawrócenia tamtego lotu.
+        for (const f of zdjete) Journal.add("BŁĄD", `Nadpisuję wpis lotu [${f.fromKey}] ${f.fromBody} → [${f.toKey}] (${f.kind}/${f.phase}) nowym lotem z tego samego ciała — zawrotu tamtej floty bot już NIE kliknie. Sprowadź ją ręcznie.`);
         sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
@@ -3253,7 +3317,7 @@
         log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"}${disabledTxt}; hangar ${after ? `${after.total.toLocaleString("pl-PL")} szt., oczekiwano ≤ ${expectedLeft.toLocaleString("pl-PL")}` : "nieodczytany"})`, "error");
         // v3.10.2: sprzatanie wpisu `pending` bylo NIEOSIAGALNE (stalo za tym returnem).
         const sBad = Situation.load();
-        sBad.flights = (sBad.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending));
+        sBad.flights = (sBad.flights || []).filter(f => !(f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending));   // v3.68.8: jw. — sprzątamy wyłącznie wpis TEJ misji
         sBad.expected = (sBad.expected || []).filter(e => !(e.fromKey === m.fromKey && e.pending));   // v3.52.0: rejestr powrotów też
         Situation.save(sBad);
         return this.abort("brak potwierdzenia wysyłki");
@@ -3589,6 +3653,14 @@
       const left = keep.size ? (h.ships || []).filter(x => keep.has(String(x.type).toUpperCase()) && (x.qty || 0) > 0) : [];
       const total = left.reduce((x, sh) => x + (sh.qty || 0), 0);
       s.hangars[hk] = { total, ships: left, at: Date.now() };
+      // v3.68.8 (audyt 04.09, obrona-stan-lotu#2 P0): ile statków zostało w domu CELOWO.
+      // Bez tego pola pierwszy odczyt hangaru źródła po Fleet Save („20 983 recyklery")
+      // wyglądał jak POWRÓT floty i domykał wpis lotu — razem z jedyną drogą do zawrotu.
+      // Zapisujemy na wpisie tego lotu, który właśnie z tego ciała wystartował.
+      {
+        const f = (s.flights || []).filter(x => x.fromKey === fromKey && x.fromBody === fromBody && x.phase !== "done").sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+        if (f) f.leftHome = total;
+      }
       Situation.save(s);
       log(total
         ? `[LOT] hangar ${fromBody} [${fromKey}]: flota wyleciała, w domu zostaje ${total.toLocaleString("pl-PL")} szt. celowo pominiętych (${left.map(x => x.type).join(", ")}) — ${why}.`
@@ -3601,7 +3673,7 @@
       if (!location.href.includes("fleetSendSuccessfully")) return;
       const ls = Store.get("last_send", null); if (!ls) return;
       const s = Situation.load();
-      const f = (s.flights || []).find(x => x.pending && x.fromKey === ls.from && Math.abs((x.sentAt || 0) - ls.at) < 60e3);
+      const f = (s.flights || []).find(x => x.pending && x.fromKey === ls.from && (!ls.fromBody || !x.fromBody || x.fromBody === ls.fromBody) && Math.abs((x.sentAt || 0) - ls.at) < 60e3);   // v3.68.8: ciało ze stempla rozróżnia wpisy z obu ciał pary
       // v3.52.0: rejestr powrotów potwierdzamy tą samą drogą — wysyłka ekonomii też
       // potrafi nawigować przed wykonaniem kodu potwierdzającego.
       const e = (s.expected || []).find(x => x.pending && x.fromKey === ls.from && Math.abs((x.sentAt || 0) - ls.at) < 60e3);
@@ -3812,7 +3884,8 @@
           continue;
         }
         if (a.kind === "hold") { if (!Once.said(`hold|${a.key}`, 120e3)) log(`[OBRONA] [${a.key}]: ${a.why} — nie ruszam floty.`, "info"); continue; }
-        if (a.kind === "extend") { const s2 = Situation.load(); const f = (s2.flights || []).find(x => x.fromKey === a.flight.fromKey && x.phase === "launched"); if (f && f.recallAt < a.recallAt) { f.recallAt = a.recallAt; Situation.save(s2); log(`[LOT] ${a.why} — zawrót przesunięty na ${new Date(a.recallAt).toLocaleTimeString("pl-PL")}`, "warn"); } continue; }
+        // v3.68.8 (obrona-stan-lotu#3): zawrót przesuwamy TEMU lotowi, nie drugiemu z tej pary.
+        if (a.kind === "extend") { const s2 = Situation.load(); const f = (s2.flights || []).find(x => x.fromKey === a.flight.fromKey && x.toKey === a.flight.toKey && (x.fromBody || a.flight.fromBody) === a.flight.fromBody && x.phase === "launched"); if (f && f.recallAt < a.recallAt) { f.recallAt = a.recallAt; Situation.save(s2); log(`[LOT] ${a.why} — zawrót przesunięty na ${new Date(a.recallAt).toLocaleTimeString("pl-PL")}`, "warn"); } continue; }
         if (!CFG.autoRescue) { if (!Once.said(`obs|${a.kind}|${a.fromKey || a.flight?.fromKey}`, 60e3)) log(`[OBSERWATOR] zrobiłbym: ${a.kind} ${a.why || ""} — auto-ratunek OFF.`, "warn"); continue; }
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") {

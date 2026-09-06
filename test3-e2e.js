@@ -1970,6 +1970,80 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       (stE.expected || []).some(e => e.kind === "expedition" && !e.pending), JSON.stringify(stE.expected));
   }
 
+  console.log("\n── 48. FLEET SAVE Z RECYKLERAMI W DOMU: hangar pełen resztek NIE kasuje wpisu lotu (v3.68.8, obrona-stan-lotu#2 P0) ──");
+  {
+    // Ochrona wpisu lotu (v3.53.1, po incydencie „STRACONY ZAWRÓT 11 mln statków") działała
+    // tylko PRZED terminem zawrotu. Od v3.68.1 hangar źródła po Fleet Save nigdy nie jest
+    // pusty (excludeTypes zostawiają w domu recyklery), więc PIERWSZY odczyt tego hangaru
+    // po `recallAt` kasował wpis lotu, który fizycznie wciąż leci — i bot nie miał już czego
+    // zawrócić ani o czym alarmować. Tu jedzie CAŁA maszyna: refresh → decide → Fly.recall.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, moon: { enabled: false }, bonus: { enabled: false },
+      recon: true, reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "5:200:3", name: "Daleka", moon: true }],
+      hangars: { "1:100:5|moon": { RECYCLER: 20983 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });          // obieg na sucho: pary i hangary
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    // CHIRURGIA STANU: FS wyleciał 2 h temu z KSIĘŻYCA bazy (leci 5 h), termin zawrotu minął
+    // minutę temu, a hangar źródła bot odczytał 30 s temu — czyli JUŻ PO terminie zawrotu.
+    // Wpis celowo BEZ pola `leftHome` (stan sprzed aktualizacji): ma go bronić sama faza lotu.
+    st.flights = [{ kind: "air", fs: true, excludeTypes: ["RECYCLER"], fromKey: "1:100:5", fromBody: "moon",
+      toKey: "5:200:3", toBody: "moon", sentAt: Date.now() - 2 * 3600e3, flightMs: 5 * 3600e3,
+      recallAt: Date.now() - 60e3, phase: "launched", tries: 0 }];
+    st.hangars["1:100:5|moon"] = { total: 20983, ships: [{ type: "RECYCLER", qty: 20983 }], at: Date.now() - 30e3 };
+    g.store.set(K, JSON.stringify(st));
+    // w grze ten lot naprawdę wisi w powietrzu (wiersz z przyciskiem zawracania)
+    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "5:200:3", toBody: "moon", mission: "Deploy",
+      ships: { BATTLESHIP: 5_000_000 }, inFlight: true, eta: 10800 });
+    const { logs } = await run(g, { cfg, loads: 12, ticksPerLoad: 3 });
+    const st2 = JSON.parse(g.store.get(K) || "{}");
+    const f = (st2.flights || []).find(x => x.fs);
+    check("wpis lotu FS PRZEŻYŁ odczyt hangaru z samymi recyklerami (jest co zawracać)",
+      !!f, JSON.stringify(st2.flights) + " | " + logs.filter(m => /LOT|ZAWR/.test(m)).slice(0, 6).join(" | "));
+    check("bot KLIKNĄŁ zawrót floty FS", !!(g.sent[0] && g.sent[0].returning),
+      JSON.stringify(g.sent[0]) + " | " + logs.filter(m => /ZAWR|LOT/.test(m)).slice(0, 6).join(" | "));
+    check("… i nie ogłosił „lot domknięty — flota widziana” nad flotą w powietrzu",
+      !logs.some(m => /domknięty — flota widziana/.test(m)), logs.filter(m => /LOT/.test(m)).slice(0, 6).join(" | "));
+  }
+
+  console.log("\n── 49. RATUNEK Z PLANETY NIE KASUJE WPISU LOTU LECĄCEGO Z KSIĘŻYCA TEJ SAMEJ PARY (v3.68.8, obrona-stan-lotu#3) ──");
+  {
+    // Fly.form czyścił wpisy lotu po SAMYM kluczu pary. Stan wejściowy powstaje sam:
+    // `flightStale()` zwalnia parę godzinę po terminie zawrotu, a lot na 10% prędkości
+    // leci wtedy jeszcze godzinami — więc pierwszy ratunek z PLANETY kasował wpis lotu
+    // wciąż lecącego z KSIĘŻYCA, razem z jedyną drogą do jego zawrotu i jedynym alarmem.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, moon: { enabled: false }, bonus: { enabled: false },
+      recon: true, reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Sasiad", moon: true },
+        { key: "5:200:3", name: "Daleka", moon: true }],
+      hangars: { "1:100:5|planet": { BATTLESHIP: 4000 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });          // obieg na sucho: pary i hangary
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    st.flights = [{ kind: "air", fs: true, excludeTypes: ["RECYCLER"], fromKey: "1:100:5", fromBody: "moon",
+      toKey: "5:200:3", toBody: "moon", sentAt: Date.now() - 3 * 3600e3, flightMs: 8 * 3600e3,
+      recallAt: Date.now() - 2 * 3600e3, phase: "launched", tries: 0 }];   // zawrót przespany = wpis „stale"
+    g.store.set(K, JSON.stringify(st));
+    g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "planet", eta: 300 });
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const rescue = g.sent.find(x => x.from === "1:100:5" && x.fromBody === "planet");
+    check("(warunek wstępny) ratunek z atakowanej PLANETY poszedł", !!rescue,
+      JSON.stringify(g.sent) + " | " + logs.filter(m => /OBRONA|LOT/.test(m)).slice(0, 6).join(" | "));
+    const st2 = JSON.parse(g.store.get(K) || "{}");
+    check("wpis lotu z KSIĘŻYCA przeżył wysyłkę ratunku z planety (jest co zawracać i o czym alarmować)",
+      (st2.flights || []).some(x => x.fromBody === "moon" && x.fs), JSON.stringify(st2.flights));
+    check("… a nowy lot z planety też ma swój wpis (obie floty w stanie)",
+      (st2.flights || []).some(x => x.fromBody === "planet"), JSON.stringify(st2.flights));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

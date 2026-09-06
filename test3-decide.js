@@ -973,8 +973,11 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   // (ktory przy natychmiastowej nawigacji nigdy sie nie wykonuje), a filtr wygaszania
   // przepuszczal go przed kazda regula. Efekt: bot milczal przy kazdym kolejnym ataku
   // na te pare. Pilnujemy WSZYSTKICH trzech drog sprzatania.
-  check("nieudana wysyłka zdejmuje wpis pending PRZED abortem", /sBad\.flights = \(sBad\.flights \|\| \[\]\)\.filter\(f => !\(f\.fromKey === m\.fromKey && f\.pending\)\)[\s\S]{0,200}?return this\.abort/.test(src));
-  check("przerwana misja sprząta swój wpis pending", /abort\(why, opts = \{\}\)[\s\S]{0,400}?f\.pending\)\)/.test(src));
+  // v3.68.8: sprzątanie celuje dodatkowo w CIAŁO startu (para może mieć wpis lotu z obu
+  // ciał) — wzorzec pilnuje samej reguły i KOLEJNOŚCI (sprzątanie przed abortem), nie
+  // dokładnego kształtu warunku.
+  check("nieudana wysyłka zdejmuje wpis pending PRZED abortem", /sBad\.flights = \(sBad\.flights \|\| \[\]\)\.filter\(f => !\(f\.fromKey === m\.fromKey &&[\s\S]{0,160}?f\.pending\)\)[\s\S]{0,300}?return this\.abort/.test(src));
+  check("przerwana misja sprząta swój wpis pending", /abort\(why, opts = \{\}\)[\s\S]{0,700}?f\.pending\)\)/.test(src));
   check("osierocony pending wygasa po 10 min (nie blokuje pary na zawsze)", /f\.pending && now - f\.sentAt < 10 \* 60e3\) return true/.test(src));
   check("jedna definicja 'wpis lotu nic nie znaczy' (decide + ekonomia + rekonesans)", /function flightStale\(f, now\)/.test(src) && /flightsBlocking\(s, now\)\) return \{ skip/.test(src));
   check("ratunek ma skróconą karencję po potknięciu (nie 3 min)", /a\.air \|\| a\.rescue\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
@@ -1349,8 +1352,12 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
 {
   // v3.53.1 (incydent 19:29:08, stracony zawrót 11 mln statków): warunek NIE zależy już
   // od rejestru powrotów (ten nie znał fal sprzed aktualizacji) — lot "launched" z zawrotem
-  // w przyszłości fizycznie NIE MOŻE stać w hangarze źródła, kropka.
-  check("hangar źródła pełny przed terminem zawrotu NIE domyka lotu 'launched'", /rescueStillOut = f\.recallAt && f\.phase === "launched" && h\.at < f\.recallAt/.test(src) && /wpis ZOSTAJE/.test(src));
+  // fizycznie NIE MOŻE stać w hangarze źródła, kropka.
+  // v3.68.8: sam warunek jest teraz URUCHAMIANY w sekcji 56 (regex tylko pilnował kształtu
+  // i dlatego dziura obrona-stan-lotu#2 przeżyła dwa audyty). Tu zostaje strażnik miejsca:
+  // reguła musi żyć w wyciętej funkcji, a refresh() musi z niej korzystać.
+  check("reguła życia wpisu lotu jest osobną funkcją, a refresh() jej UŻYWA (da się ją wykonać w teście)",
+    /function flightAlive\(f, s, now\) \{/.test(src) && /s\.flights = \(s\.flights \|\| \[\]\)\.filter\(f => flightAlive\(f, s, now\)\);/.test(src) && /wpis ZOSTAJE/.test(src));
   check("rejestr zapisywany PRZED klikiem Send fleet, tylko z czasem lotu z formularza", /m\.flightMs\) \{\s*\n\s*const sE = Situation\.load\(\);\s*\n\s*sE\.expected/.test(src));
   check("wpis rejestru potwierdzany po wysyłce i po przeładowaniu (confirmPendingSend)", /e0\.pending/.test(src) && /\(s\.expected \|\| \[\]\)\.find\(x => x\.pending && x\.fromKey === ls\.from/.test(src));
   check("rejestr wygaszany: pending>10 min, godzinę po lądowaniu; korekta zegarem z listy", /e\.pending && now - \(e\.sentAt \|\| 0\) > 10 \* 60e3/.test(src) && /best\.returnAt = o\.arriveAt/.test(src));
@@ -1971,6 +1978,127 @@ console.log("\n── 55. AUDYT 04.09 (partia antyduplikat): bramka anty-duplika
   check("55f: stempel wysyłki złomu Z PLANETY nie udaje wysyłki z KSIĘŻYCA (ta sama trasa)",
     lsMine(stamp({ kind: "debris", fromKey: "1:100:5", fromBody: "planet", toKey: "1:100:5", toBody: "debris", startedAt: NOW - 60e3 }, NOW - 55e3),
       { kind: "debris", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:5", toBody: "debris", startedAt: NOW - 5e3 }) === false);
+}
+
+console.log("\n── 56. AUDYT 04.09 (partia stan-lotu): wpis lotu ma odzwierciedlać FIZYKĘ lotu ──");
+{
+  // obrona-stan-lotu#2 (P0), expo-wykonanie#1 (P1), obrona-stan-lotu#3 (P1).
+  // Wszystko URUCHAMIANE na kodzie wyciętym ze źródła — poprzednia wersja miała tu sam
+  // regex na kształt warunku i właśnie dlatego dziura przeżyła dwa audyty.
+  const logi = [];
+  const flightAlive = new Function("f", "s", "now", "log", "Once",
+    bodyOf("function flightAlive(f, s, now) {"));
+  const zyje = (f, s, now = NOW) => flightAlive(f, s, now, (m) => logi.push(m), { said: () => false });
+
+  // wpis lotu FS: wyleciał 2 h temu z KSIĘŻYCA bazy, w domu ZOSTAŁY recyklery (excludeTypes),
+  // termin zawrotu minął minutę temu.
+  const fsFlight = (over = {}) => Object.assign({
+    kind: "air", fs: true, excludeTypes: ["RECYCLER"], fromKey: "3:272:7", fromBody: "moon",
+    toKey: "5:100:4", toBody: "moon", sentAt: NOW - 2 * 3600e3, flightMs: 5 * 3600e3,
+    recallAt: NOW - 60e3, phase: "launched", tries: 0,
+  }, over);
+  // hangar ŹRÓDŁA odczytany PO terminie zawrotu — same recyklery zostawione celowo
+  const domZResztkami = (over = {}) => ({ hangars: { "3:272:7|moon": Object.assign({ total: 20983, ships: [{ type: "RECYCLER", qty: 20983 }], at: NOW - 30e3 }, over) } });
+
+  check("56-0: refresh() faktycznie filtruje wpisy tą funkcją (test nie bada martwego kodu)",
+    /s\.flights = \(s\.flights \|\| \[\]\)\.filter\(f => flightAlive\(f, s, now\)\);/.test(src));
+
+  // (a) P0: lot W POWIETRZU (faza "launched") — hangar źródła NIE MA prawa go domknąć,
+  // także PO terminie zawrotu. Wcześniej wpis znikał i zawrotu nie było już nigdy.
+  check("56a: FS w fazie 'launched' przeżywa odczyt hangaru źródła PO terminie zawrotu",
+    zyje(fsFlight(), domZResztkami()) === true, JSON.stringify(logi.slice(-2)));
+
+  // (a2) to samo bez Fleet Save: lot ratunkowy, a hangar bazy zapełniła wracająca
+  // fala ekspedycji (expo-wykonanie#1) — 4 mln statków, odczyt po recallAt.
+  check("56a2: ratunek 'launched' przeżywa lądowanie fali ekspedycji na ciele startu",
+    zyje(fsFlight({ fs: false, excludeTypes: null }), { hangars: { "3:272:7|moon": { total: 4_000_000, ships: [], at: NOW - 30e3 } } }) === true);
+
+  // (b) P0 wariant „recall_clicked": w hangarze stoją WYŁĄCZNIE statki zostawione celowo,
+  // więc to nie jest powrót floty — wpis (i ponowienie zawrotu) musi żyć.
+  check("56b: same resztki po excludeTypes (leftHome) NIE udają powrotu floty",
+    zyje(fsFlight({ phase: "recall_clicked", recalledAt: NOW - 3 * 60e3, leftHome: 20983 }), domZResztkami()) === true);
+
+  // (c) REGRESJA W DRUGĄ STRONĘ — wpis nie może być wieczny: flota naprawdę wróciła
+  // (resztki + 5 mln statków), zawrót potwierdzony wierszem powrotnym.
+  check("56c: prawdziwy powrót floty domyka wpis (hangar > leftHome)",
+    zyje(fsFlight({ phase: "recalled", recalledAt: NOW - 30 * 60e3, leftHome: 20983 }),
+      domZResztkami({ total: 5_020_983 })) === false);
+  check("56c2: … i domknięcie jest widoczne w logu", /domknięty — flota widziana/.test(logi.join(" | ")));
+
+  // (d) faza "recall_clicked" domykana hangarem jak dotąd (flota FIZYCZNIE wraca do
+  // źródła — wpis, który by to przespał, kazałby obronie milczeć nad flotą w domu),
+  // ale NIE po cichu: brak potwierdzenia zawrotu ma zostawić ślad w logu.
+  const przed = logi.length;
+  check("56d: zawrót kliknięty + hangar źródła pełen OBCYCH statków → wpis domknięty",
+    zyje(fsFlight({ phase: "recall_clicked", recalledAt: NOW - 3 * 60e3, leftHome: 20983 }),
+      domZResztkami({ total: 4_000_000 })) === false);
+  check("56d2: … i bot mówi wprost, że zawrót był NIEPOTWIERDZONY",
+    /zawrót NIEPOTWIERDZONY/.test(logi.slice(przed).join(" | ")), logi.slice(przed).join(" | "));
+
+  // (e) reguły, których poprawka nie miała ruszyć
+  check("56e: lot BEZ zawrotu (dom/swap) domyka hangar CELU",
+    zyje({ kind: "home", fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:7", toBody: "moon", sentAt: NOW - 5 * 60e3, phase: "launched" },
+      { hangars: { "3:272:7|moon": { total: 900, ships: [], at: NOW - 60e3 } } }) === false);
+  check("56e2: lot bez zawrotu przeterminowany po 30 min",
+    zyje({ kind: "home", fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:7", toBody: "moon", sentAt: NOW - 31 * 60e3, phase: "launched" }, { hangars: {} }) === false);
+  check("56e3: twardy sufit 12 h zdejmuje nawet lot 'launched' z zawrotem",
+    zyje(fsFlight({ sentAt: NOW - 13 * 3600e3 }), { hangars: {} }) === false);
+  check("56e4: 'pending' żyje 10 min, potem wpis znika", zyje(fsFlight({ pending: true, sentAt: NOW - 60e3 }), { hangars: {} }) === true
+    && zyje(fsFlight({ pending: true, sentAt: NOW - 11 * 60e3 }), { hangars: {} }) === false);
+
+  // (f) `leftHome` musi być NAPRAWDĘ zapisywane przy wysyłce — inaczej próg z 56b jest
+  // martwy. Uruchamiamy emptySourceHangar wycięte ze źródła.
+  {
+    const empty = new Function("fromKey", "fromBody", "why", "keepTypes", "Situation", "log",
+      bodyOf("function emptySourceHangar(fromKey, fromBody, why, keepTypes) {"));
+    const stan = {
+      hangars: { "3:272:7|moon": { total: 5_020_983, ships: [{ type: "BATTLESHIP", qty: 5_000_000 }, { type: "RECYCLER", qty: 20983 }], at: NOW } },
+      flights: [{ kind: "air", fs: true, fromKey: "3:272:7", fromBody: "moon", toKey: "5:100:4", sentAt: NOW, phase: "launched" },
+        { kind: "air", fromKey: "3:272:7", fromBody: "planet", toKey: "5:100:4", sentAt: NOW, phase: "launched" }],
+    };
+    empty("3:272:7", "moon", "wysyłka potwierdzona", ["RECYCLER"], { load: () => stan, save: () => {} }, () => {});
+    check("56f: emptySourceHangar zapisuje na wpisie lotu, ile statków ZOSTAŁO w domu",
+      stan.flights[0].leftHome === 20983, JSON.stringify(stan.flights[0]));
+    check("56f2: … i nie dopisuje tego wpisowi lotu z DRUGIEGO ciała pary",
+      stan.flights[1].leftHome === undefined, JSON.stringify(stan.flights[1]));
+  }
+
+  // (g) obrona-stan-lotu#3: nowy lot z pary nie może kasować wpisu lotu wciąż lecącego
+  // z DRUGIEGO ciała tej samej pary. Filtr wycinamy ze źródła Fly.form i uruchamiamy.
+  {
+    const zrodloFiltru = (() => {
+      const i = src.indexOf("const inAir = (f) => !!f.recallAt");
+      const j = src.indexOf("sPre.flights.push({");
+      if (i < 0 || j < 0 || j < i) throw new Error("nie znalazłem filtru wpisów lotu w Fly.form");
+      return src.slice(i, j);
+    })();
+    const filtruj = new Function("sPre", "m", "Journal", `${zrodloFiltru} return sPre.flights;`);
+    const lecacyZKsiezyca = { kind: "air", fs: true, fromKey: "3:272:7", fromBody: "moon", toKey: "5:100:4", toBody: "moon", sentAt: NOW - 3 * 3600e3, flightMs: 8 * 3600e3, recallAt: NOW - 2 * 3600e3, phase: "launched" };
+    const ratunekZPlanety = { fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:2", toBody: "moon", air: true };
+    let bledy = [];
+    const J = { add: (kind, msg) => bledy.push(`${kind}: ${msg}`) };
+
+    const po = filtruj({ flights: [{ ...lecacyZKsiezyca }] }, ratunekZPlanety, J);
+    check("56g: ratunek z PLANETY nie kasuje wpisu lotu lecącego z KSIĘŻYCA tej samej pary",
+      po.length === 1 && po[0].fromBody === "moon", JSON.stringify(po));
+    check("56g2: … i nie wystawia fałszywego alarmu o utraconym zawrocie", bledy.length === 0, JSON.stringify(bledy));
+
+    bledy = [];
+    const po2 = filtruj({ flights: [{ ...lecacyZKsiezyca, fromBody: "moon" }] },
+      { fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", air: true }, J);
+    check("56g3: lot z TEGO SAMEGO ciała nadal nadpisuje stary wpis (jeden lot na ciało)", po2.length === 0, JSON.stringify(po2));
+    check("56g4: … ale nie po cichu — kasowanie floty w powietrzu idzie do dziennika (i pusha)",
+      bledy.length === 1 && /BŁĄD/.test(bledy[0]) && /NIE kliknie/.test(bledy[0]), JSON.stringify(bledy));
+
+    bledy = [];
+    const po3 = filtruj({ flights: [{ ...lecacyZKsiezyca, phase: "recalled" }] }, ratunekZPlanety, J);
+    check("56g5: wpis z drugiego ciała PO zawrocie nie jest już chroniony (nie zostaje śmieć)", po3.length === 0, JSON.stringify(po3));
+
+    bledy = [];
+    const po4 = filtruj({ flights: [{ ...lecacyZKsiezyca, fromBody: "planet", pending: true }] }, ratunekZPlanety, J);
+    check("56g6: własny wpis 'pending' (ta sama misja po przeładowaniu) znika bez alarmu",
+      po4.length === 0 && bledy.length === 0, JSON.stringify(po4) + " | " + JSON.stringify(bledy));
+  }
 }
 
 console.log("");
