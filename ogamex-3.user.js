@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.3
+// @version      3.68.4
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.3";
+  const VERSION = "3.68.4";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1351,9 +1351,34 @@
         continue;
       }
       const bodies = attackedBodies(k);
+      // ratujemy z ciała, które JEST pod atakiem; przy dwóch takich — z większego
+      // v3.68.4 (audyt 04.09): `hitBodies` liczone TU, PRZED bramką trwającego lotu.
+      // Wcześniej powstawały dopiero za `continue` z gałęzi „z pary trwa lot", więc ta
+      // gałąź nie miała pojęcia, czy pod uderzeniem cokolwiek jeszcze stoi — i milczała.
+      const hitBodies = all.filter(x => bodies.has(x.body) || bodies.has("unknown")).sort((a, b) => b.total - a.total);
       const f = inFlightFrom(k);
-      if (f) {
-        if (f.kind === "air" && f.phase === "launched") { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); }
+      // v3.68.4 (audyt 04.09, obrona-fs#1 P0): lot Fleet Save zajmował JEDYNY wpis lotu
+      // pary, więc atak na tę parę nie dawał ani ratunku, ani alarmu — decide() zwracał
+      // puste listy przez cały dolot. A przy FS na atakowanym ciele NAPRAWDĘ stoi flota:
+      // FS niesie `excludeTypes` (przy domyślnym debris.enabled zostawia w domu WSZYSTKIE
+      // recyklery — zrzut z żywej gry: 20 983 szt.), a drugiego ciała pary w ogóle nie
+      // dotyka (powroty ekspedycji, produkcja stoczni). FS jest lotem DOBROWOLNYM, a
+      // obrona ma bezwzględny priorytet (CLAUDE.md), więc para wraca do normalnej ścieżki
+      // ratunku. Wyłącznie faza "launched": lot w zawrocie już wraca do domu i jego wpisu
+      // nie wolno zgubić — tam zostaje sam alarm.
+      const fsBypass = !!f && !!f.fs && f.phase === "launched" && hitBodies.length > 0;
+      if (fsBypass) alerts.push({ key: k, level: "error", push: true, throttleMs: 10 * 60e3,
+        msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — próbuję ratować ${hitBodies[0].body} (${hitBodies[0].total.toLocaleString("pl-PL")} szt.). UWAGA: wysyłka ratunku NADPISZE wpis lotu FS, więc zawrotu FS bot już nie kliknie — sprowadź tamtą flotę ręcznie` });
+      if (f && !fsBypass) {
+        // v3.68.4 (audyt 04.09, obrona-decide#5): brakowało warunku `f.recallAt` — bliźniacza
+        // gałąź w „flota już wyleciała" ma go od zawsze. Lot, któremu Fly skasował zawrót,
+        // bo doleci i WYLĄDUJE (`m.landing = true; m.recallAt = 0`), dostawał przy dosłanej
+        // fali `extend` (0 < lastArrive+bufor) i egzekutor wpisywał ten termin do stanu.
+        // Bot planował wtedy zawrót floty, która stoi już na ziemi: po terminie 5 nieudanych
+        // prób, faza `recall_failed`, fałszywy push „nie widzę lotu — zawróć ręcznie", a wpis
+        // przestawał domykać się hangarem CELU i wypadał spod czyszczenia 30-minutowego,
+        // czyli zaślepiał parę dłużej, niż trzeba — w środku ataku.
+        if (f.kind === "air" && f.phase === "launched") { if (f.recallAt) { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); } }
         // v3.29.0 (audyt O1): wpis lotu kazał tu ROBIĆ `continue` — czyli atak na parę,
         // z której coś już leci, nie dawał ani alarmu, ani pusha. Fazy "done" nikt
         // nigdy nie ustawia, a faza "recalled" żyje aż do `recallAt + 60 min`, więc
@@ -1371,10 +1396,22 @@
           if (inc.length || landedHit.length) alerts.push({ key: k, level: "error", throttleMs: 60e3,
             msg: `ATAK na [${k}] za ${secs}s: ${landedHit.length ? `fala z powrotu JUŻ stoi na atakowanym ciele (${landedHit.join("/")})` : ""}${landedHit.length && inc.length ? ", a " : ""}${inc.length ? `${inc.length === 1 ? "kolejna fala ląduje" : inc.length + " kolejne fale lądują"} przed uderzeniem (pierwsza ${hhmmss(inc[0].returnAt)}, ~${inc[0].total.toLocaleString("pl-PL")} szt.)` : ""} — trwa już lot ratunkowy, drugiego nie wyślę; zawróć fale albo rozegraj ręcznie` });
         }
+        // v3.68.4 (audyt 04.09, obrona-decide#1 P0): WSZYSTKIE alarmy tej gałęzi siedziały
+        // w łańcuchu `else if`, a pierwsza gałąź („air/launched" — czyli stan zaraz po
+        // WŁASNYM ratunku bota) ten łańcuch konsumowała. Przy ataku na OBA ciała pary
+        // przebieg 1 dawał ratunek większego hangaru i obietnicę „drugie ciało w następnym
+        // przebiegu", a przebieg 2 i KAŻDY kolejny aż do uderzenia — zero akcji i zero
+        // alertów, choć na drugim ciele stały setki milionów statków. Ten strażnik stoi
+        // POZA łańcuchem i poza warunkiem `inc.length || landedHit.length` (fala z rejestru
+        // powrotów to zupełnie inny przypadek niż flota, która po prostu STOI w domu):
+        // dopóki na atakowanym ciele cokolwiek stoi, bot krzyczy — i budzi telefon (push),
+        // bo to jest świadoma decyzja o zostawieniu floty pod uderzeniem.
+        if (hitBodies.length) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
+          // wiek odczytu w treści, bo `fleetsAt` przyjmuje hangary sprzed nawet 48 h —
+          // alarm ma mówić, ile bot NAPRAWDĘ wie, a nie udawać świeżej wiedzy.
+          msg: `ATAK na [${k}] za ${secs}s: w domu NADAL STOI flota (${hitBodies.map(x => `${x.body} ${x.total.toLocaleString("pl-PL")} szt.${now - (x.at || 0) > 30 * 60e3 ? ` — odczyt sprzed ${Math.round((now - (x.at || 0)) / 60000)} min` : ""}`).join(" + ")}), a jedyny slot lotu tej pary zajmuje ${f.kind}/${f.phase}${f.fs ? " (Fleet Save)" : ""} → [${f.toKey}] — drugiego lotu z tej pary bot NIE wyśle, ratuj ręcznie` });
         continue;
       }
-      // ratujemy z ciała, które JEST pod atakiem; przy dwóch takich — z większego
-      const hitBodies = all.filter(x => bodies.has(x.body) || bodies.has("unknown")).sort((a, b) => b.total - a.total);
       if (!hitBodies.length) {
         // v3.52.0 (audyt powrotów 31.08, snajperka powrotów — ścieżka A5 z Atheny):
         // „bezpieczna strona" bywała wnioskiem z odczytu SPRZED lądowania fali —
@@ -1402,7 +1439,15 @@
         actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona` }); continue;
       }
       const src0 = hitBodies[0];
-      if (hitBodies.length > 1) alerts.push({ key: k, level: "warn", msg: `flota na OBU ciałach [${k}] pod atakiem — ratuję najpierw ${src0.body} (${src0.total.toLocaleString("pl-PL")}), drugie ciało w następnym przebiegu` });
+      // v3.68.4 (audyt 04.09, obrona-decide#1 P0): komunikat obiecywał „drugie ciało w
+      // następnym przebiegu", a ten przebieg nigdy nie mógł nic zrobić — wpis lotu jest
+      // JEDEN na parę, więc kolejne przebiegi trafiały na `inFlightFrom(k)` i robiły
+      // `continue`. Operator czytał obietnicę, bot milczał, flota z drugiego ciała ginęła.
+      // Poziom „warn" (sam log, bez pusha) był przy tym najniższym możliwym w sytuacji,
+      // w której bot ŚWIADOMIE zostawia flotę pod uderzeniem. Komunikat mówi teraz prawdę
+      // i budzi telefon. Docelowo (partia stan-lotu) wpisy lotów mają być kluczowane per
+      // CIAŁO, nie per para — dopiero wtedy drugie ciało dostanie własny ratunek.
+      if (hitBodies.length > 1) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3, msg: `flota na OBU ciałach [${k}] pod atakiem — ratuję TYLKO ${src0.body} (${src0.total.toLocaleString("pl-PL")} szt.); na ${hitBodies[1].body} ZOSTAJE ${hitBodies[1].total.toLocaleString("pl-PL")} szt., których bot NIE ruszy (jeden lot na parę) — przenieś ręcznie` });
       fleet.body = src0.body; fleet.total = src0.total;
       if (now - firstSeen < cfg.confirmMs && secs > cfg.tooLateSec + cfg.confirmMs / 1000) { alerts.push({ key: k, level: "warn", msg: `atak na [${k}] za ${secs}s — potwierdzam ${Math.round((cfg.confirmMs - (now - firstSeen)) / 1000)}s` }); continue; }
       if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }

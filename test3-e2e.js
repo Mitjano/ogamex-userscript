@@ -815,6 +815,43 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("atakowana flota faktycznie opuściła ciało pod ostrzałem", !!first && first.ships && (first.ships.BATTLESHIP || 0) === 5000, JSON.stringify(first && first.ships));
   }
 
+  console.log("\n── 15d. FLEET SAVE W POWIETRZU Z TEJ SAMEJ PARY: obrona ma pierwszeństwo (audyt 04.09, obrona-fs#1) ──");
+  {
+    // 15c pilnuje kolejności akcji na DWÓCH parach. Tu kolizja jest na JEDNEJ: lot FS
+    // zajmował jedyny wpis lotu pary, więc `inFlightFrom(k)` zwracał go i gałąź ataku
+    // robiła `continue` — ani ratunku, ani alertu przez cały dolot. A FS z definicji
+    // zostawia flotę w domu (excludeTypes: recyklery) i drugiego ciała pary nie dotyka,
+    // więc premisa „flota w powietrzu, nie ma czego ratować" jest przy nim fałszywa.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },
+        { key: "1:100:9", name: "Sasiad", moon: true },
+        { key: "5:200:3", name: "Daleka", moon: true },
+      ],
+      hangars: { "1:100:5|planet": { BATTLESHIP: 4000 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });     // obieg na sucho: pary i hangary
+    // CHIRURGIA STANU: Fleet Save wyleciał godzinę temu z KSIĘŻYCA bazy i wisi w powietrzu
+    // z zawrotem za 2 h. Na PLANECIE tej samej pary stoi flota, której FS nie zabrał.
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    st.flights = [{ kind: "air", fs: true, excludeTypes: ["RECYCLER"], fromKey: "1:100:5", fromBody: "moon",
+      toKey: "5:200:3", toBody: "moon", sentAt: Date.now() - 60 * 60e3, flightMs: 5 * 3600e3,
+      recallAt: Date.now() + 2 * 3600e3, phase: "launched", tries: 0 }];
+    g.store.set(K, JSON.stringify(st));
+    check("(warunek wstępny) bot zna hangar planety bazy", (st.hangars || {})["1:100:5|planet"] > 0 || ((st.hangars || {})["1:100:5|planet"] || {}).total > 0, JSON.stringify(st.hangars));
+    g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "planet", eta: 300 });
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const rescue = g.sent.find(x => x.from === "1:100:5");
+    check("FS w powietrzu NIE blokuje ratunku — flota z atakowanej planety wyleciała", !!rescue && rescue.fromBody === "planet", JSON.stringify(g.sent) + " | " + logs.filter(m => /OBRONA|LOT/.test(m)).slice(0, 6).join(" | "));
+    check("ratunek uciekł na sąsiedni księżyc, nie na atakowane ciało", !rescue || (rescue.to === "1:100:9" && rescue.toBody === "moon"), JSON.stringify(rescue));
+    check("i zabrał CAŁĄ flotę z planety (żadnych wykluczeń po FS)", !!rescue && (rescue.ships.BATTLESHIP || 0) === 4000, JSON.stringify(rescue && rescue.ships));
+  }
+
   console.log("\n── 16. STRONA BŁĘDU GRY: bot wraca do gry zamiast zamierać ──");
   {
     const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
