@@ -344,8 +344,13 @@ console.log("\n── 17d. EKSPEDYCJE: ciało startu — pusty księżyc nie wyp
   check("oba świeże i puste → „brak statków” (prawda), bez pętli odczytów", /brak statków/.test(p3.skip || ""), JSON.stringify(p3.skip));
   const p4 = expoPlan(mk(hM(REC(3000), 60e3), hM(LF(800), 60e3)), ECFG, NOW, null);
   // Owner 04.09: „powinien wysyłać ekspy tylko z moona". Myśliwce stojące na planecie nie
-  // są powodem do startu z ciała widocznego dla falangi — bot ma o tym zamilczeć i czekać.
-  check("na księżycu same wykluczone typy, na planecie myśliwce → BRAK fali (nie startuje z planety)", /brak statków/.test(p4.skip || ""), JSON.stringify(p4.skip || p4.fromBody));
+  // są powodem do startu z ciała widocznego dla falangi — bot ma czekać.
+  // v3.68.7 (audyt 04.09, expo-plan#1): ...ale NIE MA prawa zamilczeć. Do 3.68.6 mówił tu
+  // „brak statków do wysłania", czyli nieprawdę, i stał tak bezterminowo. Zakaz startu z
+  // planety zostaje (`fromBody` nigdy nie jest „planet"), zmienia się to, co bot z tym robi.
+  check("na księżycu same wykluczone typy, na planecie myśliwce → ŻADNEJ fali z planety", !!p4.skip && p4.fromBody !== "planet", JSON.stringify(p4.skip || p4.fromBody));
+  check("… i stan jest NAZWANY + zwóz na księżyc zamówiony (koniec „brak statków”)",
+    /stoi na PLANECIE/.test(p4.skip || "") && !!p4.ferry && p4.ferry.fromKey === "1:100:5" && p4.ferry.total === 800 && p4.stuck === true, JSON.stringify(p4));
   const p5 = expoPlan(mk(hM(LF(800), 60e3), hM(LF(800), 10e3)), ECFG, NOW, null);
   check("flota na obu ciałach → księżyc ma pierwszeństwo (dom floty)", !p5.skip && p5.fromBody === "moon", JSON.stringify(p5.skip || p5.fromBody));
   const p6 = expoPlan(mk(hM([], 16 * 3600e3), null), ECFG, NOW, null);
@@ -402,6 +407,72 @@ console.log("\n── 17b. EKSPEDYCJE: powroty w środku serii (zgłoszenie 30.0
     const q = pl.ships[0].qty; porcje.push(q); hangar -= q; sent = pl.last ? 0 : sent + 1;
   }
   check("4 fale z hangaru 1000 → 250/250/250/250 i zero resztek", porcje.join("/") === "250/250/250/250" && hangar === 0, porcje.join("/") + " reszta " + hangar);
+}
+
+console.log("\n── 17f. EKSPEDYCJE: flota stoi na PLANECIE bazy — koniec stanu terminalnego (v3.68.7, audyt 04.09 expo-plan#1/#2) ──");
+{
+  // Stan z żywej gry: para MA księżyc, więc od v3.68.2 ciałem startowym jest bezwarunkowo
+  // księżyc — a flota siedzi na PLANECIE tej samej pary (bot sam ją tam ewakuował, bo w
+  // układzie nie było sąsiedniego księżyca; albo powstała w stoczni planety; albo fale
+  // wróciły na gołą planetę po zniszczeniu księżyca). Do 3.68.6 expoPlan na zmianę mówił
+  // „brak statków do wysłania" i „hangar moon nieznany/stary", nic nie przenosiło floty
+  // (homeToMoon OFF), a jedynym śladem była linijka „info" co 10 min: priorytet nr 2
+  // właściciela umierał po cichu, a flota stała na ciele widocznym dla falangi.
+  const pairM = { "1:100:5": { hasMoon: true, galaxy: 1, system: 100, position: 5 } };
+  const hM = (ships, ago) => ({ total: ships.reduce((n, x) => n + x.qty, 0), at: NOW - ago, ships });
+  const LF = (q) => [{ type: "LIGHT_FIGHTER", qty: q }];
+  const mk = (moon, planet) => ebase({ pairs: pairM, hangars: { ...(moon ? { "1:100:5|moon": moon } : {}), ...(planet ? { "1:100:5|planet": planet } : {}) } });
+
+  const stoi = expoPlan(mk(hM([], 60e3), hM(LF(4_000_000), 60e3)), ECFG, NOW, null);
+  check("księżyc świeży i pusty + 4 mln na planecie → stan NAZWANY, nie „brak statków”",
+    /stoi na PLANECIE/.test(stoi.skip || "") && !/brak statków/.test(stoi.skip || ""), JSON.stringify(stoi.skip));
+  check("… i zamówiony zwóz planeta → księżyc TEJ SAMEJ pary (wąsko, nie homeToMoon)",
+    !!stoi.ferry && stoi.ferry.fromKey === "1:100:5" && stoi.ferry.total === 4_000_000, JSON.stringify(stoi.ferry));
+  check("… ale fala NADAL nie startuje z planety (zakaz z v3.68.2 nienaruszony)",
+    !stoi.ships && stoi.fromBody !== "planet", JSON.stringify(stoi));
+
+  // Odczyt planety starszy niż 30 min to nie jest wiedza o tym, gdzie stoi flota — zwozu
+  // nie wolno na nim oprzeć (statków może tam już nie być). Ma pójść PROŚBA O ODCZYT.
+  const stary = expoPlan(mk(hM([], 60e3), hM(LF(4_000_000), 45 * 60e3)), ECFG, NOW, null);
+  check("odczyt planety sprzed 45 min → BEZ zwozu, najpierw odczyt planety", !stary.ferry && stary.needPlanet === true, JSON.stringify(stary.skip));
+
+  // expo-plan#2: przy recon:false NIKT nie czytał hangaru planety bazy — pusty księżyc i
+  // planeta NIGDY nieczytana kończyły się „brak statków" i ciszą. Ma być prośba o odczyt.
+  const nieznana = expoPlan(mk(hM([], 60e3), null), ECFG, NOW, null);
+  check("planeta bazy nigdy nieczytana + pusty księżyc → prośba o odczyt PLANETY (nie cisza)",
+    nieznana.needPlanet === true && /nigdy nie był robiony/.test(nieznana.skip || ""), JSON.stringify(nieznana.skip));
+
+  // Kontrola: gdy na planecie NAPRAWDĘ nic nie ma (świeży odczyt), zostaje uczciwe „brak statków".
+  const puste = expoPlan(mk(hM([], 60e3), hM([], 60e3)), ECFG, NOW, null);
+  check("oba ciała świeże i puste → nadal uczciwe „brak statków” (bez zwozu i bez odczytu)",
+    /brak statków/.test(puste.skip || "") && !puste.ferry && !puste.needPlanet, JSON.stringify(puste.skip));
+  // Para BEZ księżyca startuje z planety jak dotąd — cała gałąź jej nie dotyczy.
+  const bezKsiezyca = expoPlan(ebase({ hangars: { "1:100:5|planet": { total: 0, at: NOW - 60e3, ships: [] } } }), ECFG, NOW, null);
+  check("para bez księżyca: pusty hangar planety → „brak statków”, żadnego zwozu", /brak statków/.test(bezKsiezyca.skip || "") && !bezKsiezyca.ferry, JSON.stringify(bezKsiezyca.skip));
+  check("każdy skip zastoju jest oznaczony (`stuck`) — po to, żeby Expo.tick mógł go zgłosić",
+    stoi.stuck === true && stary.stuck === true && puste.stuck === true, JSON.stringify([stoi.stuck, stary.stuck, puste.stuck]));
+}
+
+console.log("\n── 17g. EKSPEDYCJE: licznik serii ma termin ważności (v3.68.7, audyt 04.09 expo-wykonanie#3) ──");
+{
+  // Incydent projektowy: `burst` (waves/sent/lastSendAt) nie wygasał. Seria przerwana ciszą
+  // nocną wracała rano z licznikiem „8. fala z 10" — pierwsza poranna fala stawała się falą
+  // DOMYKAJĄCĄ i cały hangar szedł w JEDNYM locie. To odwrócenie sensu dzielenia na fale.
+  const C10 = { expo: { ...ECFG.expo, waves: 10, slotReserve: 0 } };
+  const s = ebase({ hangars: { "1:100:5|planet": { total: 8_000_000, at: NOW - 60e3, ships: [{ type: "LIGHT_FIGHTER", qty: 8_000_000 }] } },
+    slots: { fleet: { used: 0, total: 20 }, expo: { used: 0, total: 10 }, at: NOW } });
+  const swiezy = expoPlan(s, C10, NOW, { waves: 10, sent: 9, lastSendAt: NOW - 5 * 60e3, gapMs: 60e3 });
+  check("(kontrola) seria ŻYWA (5 min temu) → 10. fala domyka serię i bierze cały hangar",
+    swiezy.last === true && swiezy.ships[0].qty === 8_000_000, JSON.stringify(swiezy.skip || swiezy.ships));
+  const nocny = expoPlan(s, C10, NOW, { waves: 10, sent: 9, lastSendAt: NOW - 6 * 3600e3, gapMs: 60e3 });
+  check("licznik sprzed 6 h (cisza nocna) NIE domyka serii — fala 1/10, a nie 8 mln w jednym locie",
+    nocny.last !== true && nocny.ships[0].qty === 800_000, JSON.stringify(nocny.skip || nocny.ships));
+  const graniczny = expoPlan(s, C10, NOW, { waves: 10, sent: 5, lastSendAt: NOW - 3 * 3600e3 - 1000, gapMs: 60e3 });
+  check("licznik starszy niż 3 h zaczyna serię od nowa (dzielnik 1/10, nie 1/5)", graniczny.ships[0].qty === 800_000, JSON.stringify(graniczny.ships));
+  const bezStempla = expoPlan(s, C10, NOW, { waves: 10, sent: 9 });
+  check("burst bez `lastSendAt` (wpis sprzed aktualizacji) też nie domyka serii", bezStempla.last !== true && bezStempla.ships[0].qty === 800_000, JSON.stringify(bezStempla.ships));
+  check("Expo.tick KASUJE martwy licznik serii (panel nie może pokazywać serii, której nie ma)",
+    /Store\.del\("burst"\)[\s\S]{0,200}?licznik serii/.test(src), "brak kasowania martwego burst w Expo.tick");
 }
 
 console.log("\n── 18. EKSPEDYCJE: flota za mała ──");

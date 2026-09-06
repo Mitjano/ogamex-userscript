@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.6
+// @version      3.68.7
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.6";
+  const VERSION = "3.68.7";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -1957,8 +1957,23 @@
   // ═══ EKSPEDYCJE (Odkrywca) ══════════════════════════════════════════════
   // Cel: pozycja 16 układu bazy. Id misji uczymy się RAZ z wiersza 16 dowolnej
   // strony galaktyki (fork ma własną numerację — nie zgadujemy).
+  // v3.68.7 (audyt 04.09, expo-plan#4 P2): nauka zapisywała wpis TAKŻE wtedy, gdy w href
+  // wiersza 16 nie było `?mission=` — a `learn()` wychodziło w pierwszej linii na samym
+  // `this.get()`. Wpis z `mission:null` blokował więc naukę NA ZAWSZE: `Expo.tick` widział
+  // `!link.mission`, jechał na galaktykę co 10 min, `learn()` wracał bez zmiany i ekspedycje
+  // stały bezterminowo (jedyny ratunek: ręczne skasowanie klucza w Tampermonkey). Do tego
+  // wpis nie miał żadnego terminu ważności — wbrew regule „żaden wpis stanu nie może być
+  // wieczny". Teraz: zapisujemy WYŁĄCZNIE komplet (href + id misji), niepełny wiersz zostawia
+  // zrzut markupu i próbuje dalej, a po tygodniu wpis i tak wygasa (fork może przenumerować
+  // misje po aktualizacji — jedna nawigacja na tydzień to tania polisa).
   const ExpoLink = {
-    get() { return Store.get("expo_link", null); },
+    TTL: 7 * 24 * 3600e3,
+    get() {
+      const v = Store.get("expo_link", null);
+      if (!v || !v.mission) return null;
+      if (Date.now() - (v.at || 0) > this.TTL) { Store.del("expo_link"); log("[EXPO] link ekspedycji ma ponad tydzień — uczę się go od nowa (fork mógł przenumerować misje).", "info"); return null; }
+      return v;
+    },
     learn() {
       if (page() !== "galaxy" || this.get()) return;
       for (const item of document.querySelectorAll(".galaxy-item")) {
@@ -1968,8 +1983,17 @@
         if (!a) { log(`[EXPO] wiersz 16 bez linku /fleet — markup: ${item.innerHTML.replace(/\s+/g, " ").slice(0, 600)}`, "warn"); return; }
         const href = a.getAttribute("href");
         const mission = (href.match(/[?&]mission=(\d+)/) || [])[1] || null;
-        Store.set("expo_link", { href, mission: mission ? parseInt(mission) : null, at: Date.now() });
-        log(`[EXPO] link ekspedycji wyuczony: ${href} (mission=${mission ?? "?"})`, "success");
+        if (!mission) {
+          // Niepełny link to NIE jest wiedza — zapisany zablokowałby naukę na stałe.
+          const n = (Store.get("expo_link_fail", 0) || 0) + 1;
+          Store.set("expo_link_fail", n);
+          log(`[EXPO] wiersz 16 ma link /fleet BEZ parametru mission (${href}) — nie zapisuję niepełnego linku (próba ${n}). Markup: ${item.innerHTML.replace(/\s+/g, " ").slice(0, 600)}`, "warn");
+          if (n >= 3 && !Once.said("expo_link_fail", 6 * 3600e3)) Journal.add("BŁĄD", `Nie umiem odczytać id misji ekspedycji z wiersza 16 galaktyki (${n} prób) — ekspedycje STOJĄ. Zrzut markupu jest w logu.`);
+          return;
+        }
+        Store.set("expo_link", { href, mission: parseInt(mission), at: Date.now() });
+        Store.del("expo_link_fail");
+        log(`[EXPO] link ekspedycji wyuczony: ${href} (mission=${mission})`, "success");
         return;
       }
     },
@@ -2037,9 +2061,47 @@
     if (expo && expo.used >= cap) return { skip: `ekspedycje ${expo.used}/${expo.total} (limit fal ${cap}) — czekam na powroty` };
     if (burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000)) return { skip: "odstęp między falami" };
     const avail = (h.ships || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
-    if (!avail.length) return { skip: "brak statków do wysłania (poza wykluczeniami)" };
+    if (!avail.length) {
+      // v3.68.7 (audyt 04.09, expo-plan#1 + expo-wykonanie#2, P0): pusty księżyc bazy kończył
+      // się KŁAMSTWEM „brak statków do wysłania" także wtedy, gdy cała flota stała na PLANECIE
+      // tej samej pary — a od v3.68.2 ciałem startowym jest bezwarunkowo księżyc. Powstawał
+      // stan terminalny: nic nie przenosi floty planeta→księżyc (`homeToMoon` OFF z decyzji
+      // ownera 30.08, jednorazowy zwóz po odbudowie księżyca to inne zdarzenie), a ekspedycje
+      // — priorytet nr 2 właściciela — stały bezterminowo przy jednej linijce „info" co 10 min.
+      // Flota trafia na tę planetę realnie: bot SAM ewakuuje moon→planet, gdy w układzie nie ma
+      // sąsiedniego księżyca; nowe statki powstają w stoczni PLANETY; fale wracają na gołą
+      // planetę po zniszczeniu księżyca. NIE cofamy v3.68.2 (start z planety zostaje zakazany —
+      // falanga widzi planety) — dokładamy brakujące wyjście: nazywamy stan po imieniu i wołamy
+      // o JEDNORAZOWY zwóz na księżyc tej samej pary (wąsko: tylko ciało startu ekspedycji).
+      if (body === "moon") {
+        const hp0 = (s.hangars || {})[`${homeKey}|planet`];
+        const availP = ((hp0 && hp0.ships) || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
+        const nP = availP.reduce((n, x) => n + x.qty, 0);
+        const freshP = !!hp0 && now - (hp0.at || 0) < 30 * 60e3;
+        if (nP > 0 && freshP) return { skip: `flota bazy stoi na PLANECIE [${homeKey}] (${nP.toLocaleString("pl-PL")} szt.), a ekspedycje startują tylko z księżyca — zwożę ją na księżyc`, ferry: { fromKey: homeKey, total: nP }, stuck: true };
+        // v3.68.7 (audyt 04.09, expo-plan#2 P1): odkąd cichy dociąg w Expo.tick pyta o TO SAMO
+        // ciało co plan (czyli od 3.68.2 zawsze o księżyc), przy `recon:false` (domyślne) NIKT
+        // już nie czytał hangaru PLANETY bazy. Bez tego odczytu ani ten strażnik, ani gałąź
+        // decide „powrót po ratunku" nie mają czym oddychać — flota wywieziona na planetę
+        // zostaje tam na stałe, widoczna dla falangi. Pusty księżyc + nieznana/stara planeta =
+        // prośba o odczyt PLANETY. To nadal NIE jest podmiana ciała startowego: startujemy
+        // wyłącznie z księżyca, planetę tylko oglądamy, żeby wiedzieć, gdzie jest flota.
+        if (!freshP) return { skip: `hangar [${homeKey}] moon pusty, a odczyt planety ${hp0 ? "jest stary" : "nigdy nie był robiony"} — sprawdzam, czy flota nie stoi na planecie`, needPlanet: true, stuck: true };
+      }
+      return { skip: "brak statków do wysłania (poza wykluczeniami)", stuck: true };
+    }
     const waves = Math.max(1, e.waves || 1);
-    const inSeries = (burst && burst.waves === waves && (burst.sent || 0) < waves) ? (burst.sent || 0) : 0;
+    // v3.68.7 (audyt 04.09, expo-wykonanie#3 P2): licznik serii (`burst`) nie miał ŻADNEGO
+    // terminu ważności — wbrew regule „żaden wpis stanu nie może być wieczny". Seria przerwana
+    // ciszą nocną, alarmem albo zamknięciem przeglądarki wracała z licznikiem sprzed godzin:
+    // przy `sent = 9` z 10 fal warunek `inSeries >= waves - 1` robił z PIERWSZEJ porannej fali
+    // falę domykającą i cały hangar (u ownera 8 mln szt.) szedł w JEDNYM locie — dokładne
+    // odwrócenie sensu dzielenia na fale (jedno „flota utracona" trafia w całość). Fala z
+    // żywej serii jest wysyłana co 60–90 s, a najdłuższa realna przerwa w serii to czekanie
+    // na powroty (~1–2 h przy 40-minutowym postoju Odkrywcy): licznik starszy niż 3 h opisuje
+    // serię, której już nie ma. Wtedy zaczynamy od nowa — od cienkiej fali 1/N.
+    const burstFresh = !!(burst && burst.lastSendAt && now - burst.lastSendAt < 3 * 3600e3);
+    const inSeries = (burstFresh && burst.waves === waves && (burst.sent || 0) < waves) ? (burst.sent || 0) : 0;
     // v3.65.0 (log 03.09 09:13–09:16): przy 5/8 zajętych slotach dzielnik brał 8 fal
     // serii, więc poszło 6,2 / 6,5 / 38,9 mln — trzecia (ostatni wolny slot) zgarnęła
     // resztę. Wartość oczekiwana ta sama, ale jedno „flota utracona" trafiało w 39 mln.
@@ -2091,6 +2153,31 @@
 
   const Expo = {
     burst() { return Store.get("burst", null); },
+    // v3.68.7 (audyt 04.09, expo-plan#1 P0): ekspedycje to priorytet nr 2 właściciela, a każdy
+    // ich zastój kończył się JEDNĄ linijką „info" w logu z dławikiem 10 min — bez wpisu w
+    // dzienniku i bez pusha. Stan „stoję" trwający godzinami wyglądał więc dokładnie tak samo
+    // jak stan „właśnie wysłałem falę": cisza. Teraz zastój ma własny licznik (skip + od kiedy
+    // trwa) z terminem ważności, a gdy przekroczy próg — idzie wpis „BŁĄD", czyli push na
+    // telefon (Notifier.fromJournal). Progi: stan, w którym bot NIE MA czym lecieć (pusty
+    // księżyc, flota na planecie, zwóz się nie udaje) — 30 min; każdy inny skip — 6 h, bo
+    // „czekam na powroty" przy pełnych slotach potrafi trwać cały cykl fal i push co godzinę
+    // znieczulałby na alarmy obrony (lekcja expo-wykonanie#5).
+    STALL_BENIGN: /wyłączone|odstęp między falami|alarm — obrona|ratunek w powietrzu|przerwa między seriami/,
+    noteStall(p, now) {
+      const kluczSkipu = String(p.skip || "").replace(/[\d\s.,]+/g, "#");
+      const st = Store.get("expo_stall", null);
+      // Sam wpis też ma termin ważności: licznik sprzed 12 h (wyłączony bot, zamknięta
+      // przeglądarka) nie mierzy już niczego, co bot NAPRAWDĘ obserwował — liczymy od nowa.
+      const ciagly = !!(st && st.skip === kluczSkipu && st.since && now - (st.at || st.since) < 12 * 3600e3);
+      const since = ciagly ? st.since : now;
+      // Zapis nie musi iść co przebieg (co 20 s) — wystarczy przy zmianie stanu i raz na minutę.
+      if (!ciagly || now - (st.at || 0) > 60e3) Store.set("expo_stall", { skip: kluczSkipu, since, at: now });
+      if (this.STALL_BENIGN.test(p.skip)) return;
+      const limit = p.stuck ? 30 * 60e3 : 6 * 3600e3;
+      if (now - since < limit) return;
+      if (Once.said("expo_stall_alarm", 6 * 3600e3)) return;
+      Journal.add("BŁĄD", `Ekspedycje stoją od ${Math.round((now - since) / 60e3)} min: ${p.skip}. To priorytet nr 2 — sprawdź, gdzie stoi flota.`);
+    },
     // v3.48.0 (owner 31.08: „przed chwilą znowu przeskoczył"): fale ekspedycji MUSZĄ
     // przestawić aktywne ciało (formularz floty tego wymaga), ale po domknięciu serii
     // operator ma zastać kartę tam, gdzie ją zostawił. Wpis `eco_return` robi Fly przy
@@ -2119,9 +2206,18 @@
       const why = Human.economyAllowed(s);
       if (why) { if (!Once.said("human|" + why.slice(0, 12), 10 * 60e3)) log(`[EXPO] wstrzymane: ${why}`, "info"); return false; }
       const now = Date.now();
+      // v3.68.7 (audyt 04.09, expo-wykonanie#3 P2): licznik serii nie miał terminu ważności.
+      // expoPlan go już ignoruje po 3 h, a tu KASUJEMY martwy wpis — inaczej panel dalej
+      // pokazywałby „seria 9/10" po nocnej przerwie, czyli stan, którego nie ma.
+      { const b0 = this.burst();
+        if (b0 && b0.lastSendAt && now - b0.lastSendAt > 3 * 3600e3) {
+          Store.del("burst");
+          log(`[EXPO] licznik serii sprzed ${Math.round((now - b0.lastSendAt) / 60e3)} min jest martwy (przerwa dłuższa niż 3 h) — nowa seria liczy się od pierwszej fali.`, "info");
+        } }
       const b = this.burst();
       const p = expoPlan(s, CFG, now, b);
       if (p.skip) {
+        this.noteStall(p, now);
         // v3.25.0: „hangar nieznany/stary" to jedyny skip, który bot może usunąć SAM —
         // i robi to po cichu (fetch strony floty tej planety), bez przełączania Ci strony.
         if (/hangar .* nieznany\/stary/.test(p.skip) && !Once.said("expo_pull", 60e3)) {
@@ -2133,10 +2229,38 @@
             if (got) { log(`[EXPO] dociągnąłem hangar [${hk}] ${hb} w tle (${got.total.toLocaleString("pl-PL")} szt.) — wysyłka w następnym przebiegu.`, "info"); return false; }
           }
         }
+        // v3.68.7 (audyt 04.09, expo-plan#2 P1): od 3.68.2 cichy dociąg pyta o TO SAMO ciało
+        // co plan, czyli zawsze o księżyc — i przy `recon:false` (domyślne) NIKT już nie czytał
+        // hangaru PLANETY bazy. Pusty księżyc przy wolnych slotach to pytanie „to gdzie jest
+        // flota?", a jedyna tania odpowiedź to zerknięcie na planetę tej samej pary. Rzadziej
+        // niż dociąg ciała startowego (20 min): to ciało tylko oglądamy, nie startujemy z niego.
+        if (p.needPlanet && !Once.said("expo_pull_planet", 20 * 60e3)) {
+          const hk = CFG.expo.launchFrom ? key(CFG.expo.launchFrom) : (s.active && s.active.key);
+          if (hk) {
+            const got = await Hangar.scanRemote(hk, "planet");
+            if (got) { log(`[EXPO] księżyc [${hk}] pusty — sprawdziłem w tle hangar PLANETY tej pary (${got.total.toLocaleString("pl-PL")} szt.).`, "info"); return false; }
+          }
+        }
+        // v3.68.7 (audyt 04.09, expo-plan#1 / expo-wykonanie#2, P0): BRAKUJĄCE WYJŚCIE ze stanu
+        // „ciało startowe = księżyc, a flota stoi na planecie tej samej pary". Zwóz jest WĄSKI
+        // (tylko para startu ekspedycji), JEDNORAZOWY (dławik 30 min na parę) i odpalany dopiero,
+        // gdy plan sam stwierdzi, że na księżycu nie ma czym lecieć, a na planecie flota stoi.
+        // Nie łamie to decyzji ownera z 30.08 („flota rusza się tylko przy ataku"): `homeToMoon`
+        // zostaje OFF dla wszystkich pozostałych kolonii, a tu chodzi o odstawienie floty do
+        // DOMU pary, czyli z ciała widocznego dla falangi na ciało, którego falanga nie widzi.
+        // Ten sam wzorzec co zwóz po odbudowie księżyca (Moon.tick) i ręczny przycisk w panelu.
+        if (p.ferry && !Fly.mission() && !Fly.blocked({ fromKey: p.ferry.fromKey, toKey: p.ferry.fromKey })
+          && !Once.said(`expo_ferry|${p.ferry.fromKey}`, 30 * 60e3)) {
+          log(`[EXPO] ${p.skip} — startuję zwóz [${p.ferry.fromKey}] planeta → księżyc (${p.ferry.total.toLocaleString("pl-PL")} szt.).`, "warn");
+          if (Fly.start({ kind: "home", fromKey: p.ferry.fromKey, fromBody: "planet", toKey: p.ferry.fromKey, toBody: "moon",
+            why: "ciało startowe ekspedycji to księżyc, a flota stoi na planecie — zwożę ją do domu pary", speed: 100, recall: false, home: true })) { await Fly.tick(); return true; }
+        }
         this.maybeReturnOperator(p.skip);
-        if (!Once.said("expo|" + p.skip, 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info");
+        // Licznik w treści skipu (ilość statków, sloty) nie może rozbijać dławika na nowe klucze.
+        if (!Once.said("expo|" + p.skip.replace(/[\d\s.,]+/g, "#"), 10 * 60e3)) log(`[EXPO] ${p.skip}`, "info");
         return false;
       }
+      Store.del("expo_stall");   // plan jest wykonalny — licznik zastoju liczy się od nowa
       // v3.49.0 (pytanie ownera 31.08: „czy zachowanie bota jest naturalne i admin nie
       // zwróci uwagi?"): serie NIE ruszają jak w zegarku. Między ZAKOŃCZONĄ serią
       // a następną losowa przerwa 5–20 min (`restMinMin`/`restMaxMin`), liczona od
@@ -3110,10 +3234,23 @@
       await sleep(jitter(3000, 4500));
       const okUrl = location.href.includes("fleetSendSuccessfully");
       const after = page() === "fleet" ? Hangar.scan() : null;
-      const ok = okUrl || (after && after.total < shipsBefore * 0.05);
+      // v3.68.7 (audyt 04.09, expo-wykonanie#5 P3): zapasowe potwierdzenie „hangar prawie pusty"
+      // pisano dla lotów OBRONNYCH, które zabierają CAŁY hangar — dla fali ekspedycji biorącej
+      // 1/left hangaru było arytmetycznie nieosiągalne (`after.total >= 0.5 * shipsBefore`).
+      // Gdy przekierowanie forka nie zdążyło w oknie 3–4,5 s, bot uznawał UDANĄ wysyłkę za
+      // nieudaną: kasował własny wpis w rejestrze powrotów (fala wracała „znikąd"), stawiał
+      // karencję na trasę i wołał `abort` → wpis „BŁĄD" w dzienniku i PUSH na telefon. Fałszywy
+      // alarm raz na falę to znieczulenie na alarmy PRAWDZIWE, czyli koszt po stronie obrony.
+      // Miarą jest teraz to, co naprawdę wyszło z hangaru: ile statków WPISALIŚMY w formularz.
+      const expectedLeft = Math.max(0, shipsBefore - loadedTotal);
+      const ok = okUrl || (after && loadedTotal > 0 && after.total <= expectedLeft + Math.floor(loadedTotal * 0.1));
       if (!ok) {
         const err = document.querySelector(".error, .alert, .modal.show, [class*='error']");
-        log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"})`, "error");
+        // Rozróżnienie z 2.x: „przycisk BYŁ, ale WYŁĄCZONY" (gra nie przyjmuje floty — brak
+        // slotu/deuteru) to inna usterka niż „brak komunikatu". „Send fleet" jest jedynym
+        // krokiem klikanym bez `clickWhenEnabled`, więc stan przycisku sprawdzamy tutaj.
+        const disabledTxt = this.isDisabled(send) ? " — przycisk „Send fleet” jest WYŁĄCZONY (gra nie przyjmuje tej floty: slot? deuter?)" : "";
+        log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"}${disabledTxt}; hangar ${after ? `${after.total.toLocaleString("pl-PL")} szt., oczekiwano ≤ ${expectedLeft.toLocaleString("pl-PL")}` : "nieodczytany"})`, "error");
         // v3.10.2: sprzatanie wpisu `pending` bylo NIEOSIAGALNE (stalo za tym returnem).
         const sBad = Situation.load();
         sBad.flights = (sBad.flights || []).filter(f => !(f.fromKey === m.fromKey && f.pending));
@@ -4498,6 +4635,10 @@
             }
             if (/czekam na powroty|ekspedycje \d/.test(p.skip)) return p.skip.replace("— czekam na powroty", "").trim();   // v3.22.0: NIE ukrywamy "(limit fal N)" — to jedyne miejsce, gdzie widac, ze bot blokuje sie wlasnym ustawieniem
             if (/rekonesans/.test(p.skip)) return "czekam na odczyt hangaru";
+            // v3.68.7 (audyt 04.09, expo-plan#1): stan „flota stoi na planecie" przycinał się
+            // do 26 znaków („flota bazy stoi na PLANECI") — panel ma mówić, CO bot z tym robi.
+            if (p.ferry) return "flota na PLANECIE → zwożę";
+            if (p.needPlanet) return "pusty ☾ — sprawdzam planetę";
             return p.skip.slice(0, 26);
           }
           return "fala gotowa";
@@ -4505,7 +4646,13 @@
       })();
       { const st = `${eSl ? eSl.used + "/" + eSl.total : "?"} · fl ${fSl ? fSl.used + "/" + fSl.total : "?"}${expoNext ? " · " + expoNext : ""}`;
         this.setRow("ogx3-r-expo", CFG.expo.enabled ? "ok" : "dim", CFG.expo.enabled ? st : `OFF · ${st}`);
-        $("ogx3-expo-st").textContent = `sloty: expo ${eSl ? eSl.used + "/" + eSl.total : "?"}, floty ${fSl ? fSl.used + "/" + fSl.total : "?"}${burst && burst.sent ? ` · seria ${burst.sent}/${burst.waves}` : ""}`;
+        // v3.68.7 (audyt 04.09): licznik serii starszy niż 3 h jest martwy — plan go ignoruje,
+        // więc panel też nie ma prawa pokazywać „seria 9/10" po nocnej przerwie. Obok tego
+        // JAWNY licznik zastoju: ekspedycje mają nie stawać po cichu (expo-plan#1).
+        const burstAlive = burst && burst.sent && burst.lastSendAt && now - burst.lastSendAt < 3 * 3600e3;
+        const stall = Store.get("expo_stall", null);   // wpis nieodświeżany od 30 min (ekspedycje OFF) już nic nie mówi
+        const stallMin = stall && stall.since && now - (stall.at || 0) < 30 * 60e3 ? Math.round((now - stall.since) / 60e3) : 0;
+        $("ogx3-expo-st").textContent = `sloty: expo ${eSl ? eSl.used + "/" + eSl.total : "?"}, floty ${fSl ? fSl.used + "/" + fSl.total : "?"}${burstAlive ? ` · seria ${burst.sent}/${burst.waves}` : ""}${stallMin >= 30 ? ` · STOI ${stallMin} min` : ""}`;
         $("ogx3-t-expo").textContent = CFG.expo.enabled ? (CFG.expo.discoverer40 ? "ON · 40 min" : "ON") : "OFF"; }
 
       // v3.52.0: rejestr powrotów w panelu — operator widzi to samo, co obrona.

@@ -62,6 +62,8 @@ class Game {
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
     this.errorPage = false;   // gra oddaje strone bledu
     this.moonLinks = false;   // v3.65.0: pasek daje księżycowi własny ?planet=UUID-moon (jak fork) — cichy odczyt hangaru księżyca
+    this.expoLinkNoMission = false;  // v3.68.7: wiersz 16 galaktyki BEZ parametru ?mission= (inny render forka)
+    this.slowRedirect = false;       // v3.68.7: „Send fleet" wysyła flotę, ale strona sukcesu ładuje się dłużej niż okno 3–4,5 s
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
@@ -174,7 +176,7 @@ class Game {
         <div class="galaxy-item"><span class="planet-index">5</span>
           <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
         </div>
-        <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16&mission=15">Expedition</a>
+        <div class="galaxy-item"><span class="planet-index">16</span><a href="/fleet?x=${gx}&y=${sy}&z=16${this.expoLinkNoMission ? "" : "&mission=15"}">Expedition</a>
           <div class="galaxy-col col-debris">${this.fleetIcon16 ? `<div class="fleetActionIcon fleetActionFriendly"></div>` : ""}${this.debris16 ? `<div class="tooltip_sticky" data-tooltip-content="&lt;div&gt;Debris field&lt;/div&gt;&lt;span&gt;1.200.000.000&lt;/span&gt;&lt;span&gt;800.000.000&lt;/span&gt;"></div>` : ""}</div>
         </div>
         <div class="galaxy-item"><span class="planet-index">17</span>
@@ -352,6 +354,10 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       game.hangars[src] = h;
       game.sent.push({ from: game.active.key, fromBody: game.active.body, to: game.formTarget, toBody: game.formBody, mission: game.formMission, ships: { ...game.formShips }, inFlight: true });
       game.slots.fleet.used++;
+      // v3.68.7 (expo-wykonanie#5): fork potrafi wysłać flotę i DOPIERO POTEM (po dłuższej
+      // chwili niż okno 3–4,5 s) pokazać stronę sukcesu. Flota naprawdę leci, adresu
+      // `fleetSendSuccessfully` jeszcze nie ma, a hangar źródła jest już pomniejszony.
+      if (game.slowRedirect) { game.formStep = 0; w.document.body.innerHTML = game.bodyHtml(); return; }
       nav("/home?fleetSendSuccessfully=1");
       w.document.body.innerHTML = game.bodyHtml();     // gra przeladowala strone: formularza juz nie ma
       return;
@@ -1834,6 +1840,134 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       !logs.some(m => /już poszła/.test(m)), logs.filter(m => /już poszła/.test(m)).join(" | "));
     check("… i NIE skłamała, że hangar atakowanej planety jest pusty",
       !logs.some(m => /bramka anty-duplikat/.test(m)), logs.filter(m => /bramka anty-duplikat/.test(m)).join(" | "));
+  }
+
+  console.log("\n── 45. FLOTA NA PLANECIE BAZY: ekspedycje nie mogą stanąć na stałe (v3.68.7, audyt 04.09 expo-plan#1/#2) ──");
+  {
+    // v3.68.2 („ekspedycje startują TYLKO z księżyca") poszła bez ani jednego scenariusza
+    // E2E i zamknęła bota w stanie terminalnym: para ma księżyc, więc ciałem startowym jest
+    // księżyc — a cała flota stoi na PLANECIE tej samej pary (bot sam ją tam ewakuował, bo
+    // w układzie nie było sąsiedniego księżyca; albo statki wyszły ze stoczni planety; albo
+    // fale wróciły na gołą planetę po zniszczeniu księżyca). Nic nie przenosiło floty z
+    // powrotem (homeToMoon OFF), przy `recon:false` nikt już nie czytał hangaru PLANETY, a
+    // log dostawał jedną linijkę „info" co 10 min. Priorytet nr 2 właściciela stał
+    // bezterminowo, a flota parkowała na ciele widocznym dla falangi.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      expo: { enabled: true, waves: 1, slotReserve: 0, launchFrom: { galaxy: 1, system: 217, position: 6 } } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:217:6", name: "Ekspo", moon: true }],
+      hangars: { "1:217:6|moon": {}, "1:217:6|planet": { LIGHT_FIGHTER: 4000 } },   // księżyc PUSTY, flota na planecie
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.moonLinks = true;
+    g.slots = { fleet: { used: 0, total: 20 }, expo: { used: 0, total: 10 } };
+    const K = "genesis.ogamex.net:ogx3_situation";
+    // bot wie tylko tyle, ile widział: świeży, PUSTY odczyt księżyca. Hangaru planety nigdy
+    // nie czytał (recon OFF) — dokładnie stan z żywej gry.
+    g.store.set(K, JSON.stringify({ pairs: {}, hangars: { "1:217:6|moon": { total: 0, at: Date.now() - 60e3, ships: [] } },
+      threats: [], own: [], flights: [], expected: [], bar: null, active: null, updatedAt: Date.now() }));
+    const r = { logs: [] };
+    for (let i = 0; i < 6 && !g.sent.some(x => x.toBody === "moon" && x.from === "1:217:6"); i++) { const rr = await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); r.logs.push(...rr.logs); }
+    check("bot sam zajrzał w tle do hangaru PLANETY bazy (przy recon:false to jedyna droga)",
+      r.logs.some(m => /sprawdziłem w tle hangar PLANETY tej pary/.test(m)), r.logs.filter(m => /EXPO|REKONESANS/.test(m)).slice(0, 8).join(" | "));
+    check("… i NIE skłamał „brak statków do wysłania” (flota przecież stoi na planecie)",
+      !r.logs.some(m => /brak statków do wysłania/.test(m)), r.logs.filter(m => /brak statków/.test(m)).join(" | "));
+    const zwoz = g.sent.find(x => x.from === "1:217:6" && x.fromBody === "planet" && x.toBody === "moon");
+    check("ZWÓZ planeta → księżyc TEJ SAMEJ pary poszedł (Deploy, cała flota)",
+      !!zwoz && zwoz.to === "1:217:6" && zwoz.mission === "Deploy" && zwoz.ships.LIGHT_FIGHTER === 4000,
+      JSON.stringify(g.sent.map(x => ({ from: x.from, fromBody: x.fromBody, to: x.to, toBody: x.toBody, mission: x.mission, ships: x.ships }))) + " | " + r.logs.filter(m => /EXPO|LOT/.test(m)).slice(0, 8).join(" | "));
+    check("… i żadna fala NIE wystartowała z planety (zakaz z v3.68.2 nienaruszony)",
+      !g.sent.some(x => /Expedition/i.test(x.mission || "") && x.fromBody === "planet"), JSON.stringify(g.sent.map(x => [x.mission, x.fromBody])));
+
+    // Część 2: zastój, którego bot NIE UMIE naprawić, ma krzyczeć na telefon — nie milczeć.
+    // Oba ciała pary są puste i świeżo odczytane: nie ma czego zwozić ani czego wysyłać.
+    const g2 = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:217:6", name: "Ekspo", moon: true }],
+      hangars: { "1:217:6|moon": {}, "1:217:6|planet": {} },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g2.moonLinks = true;
+    g2.store.set(K, JSON.stringify({ pairs: {}, hangars: {
+      "1:217:6|moon": { total: 0, at: Date.now() - 60e3, ships: [] },
+      "1:217:6|planet": { total: 0, at: Date.now() - 60e3, ships: [] },
+    }, threats: [], own: [], flights: [], expected: [], bar: null, active: null, updatedAt: Date.now() }));
+    await run(g2, { cfg, loads: 4, ticksPerLoad: 2 });      // pierwszy przebieg: zastój zapamiętany
+    const st0 = JSON.parse(g2.store.get("genesis.ogamex.net:ogx3_expo_stall") || "null");
+    check("zastój ekspedycji ma własny licznik w stanie (od kiedy trwa)", !!st0 && !!st0.since, String(g2.store.get("genesis.ogamex.net:ogx3_expo_stall")));
+    advance(g2, 45 * 60e3);                                  // ...i trwa 45 minut
+    const r2 = await run(g2, { cfg, loads: 4, ticksPerLoad: 2 });
+    const dz = JSON.parse(g2.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+    check("po pół godzinie zastoju leci wpis „BŁĄD” do dziennika (a nie kolejne ciche „info”)",
+      dz.some(e => e.kind === "BŁĄD" && /Ekspedycje stoją od/.test(e.msg || "")), JSON.stringify(dz.slice(0, 3)) + " | " + r2.logs.filter(m => /EXPO/.test(m)).slice(0, 4).join(" | "));
+    check("… i budzi telefon (push „Obrona: BŁĄD”)",
+      (g2.pushes || []).some(p => /ntfy\.sh/.test(String(p.url)) && /BŁĄD/.test(String(p.title)) && /Ekspedycje stoją/.test(String(p.body))),
+      JSON.stringify((g2.pushes || []).map(p => [p.title, String(p.body).slice(0, 60)])));
+  }
+
+  console.log("\n── 46. LINK EKSPEDYCJI BEZ ID MISJI: niepełna nauka nie może zamurować ekspedycji (v3.68.7, expo-plan#4) ──");
+  {
+    // Do 3.68.6 `learn()` zapisywał wpis TAKŻE bez `?mission=`, a wychodził w pierwszej
+    // linii na samym `this.get()` — wpis z `mission:null` blokował więc naukę NA ZAWSZE:
+    // bot co 10 min jechał na galaktykę, wracał bez zmiany i nie wysyłał nic. Jedynym
+    // ratunkiem było ręczne skasowanie klucza w Tampermonkey.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      expo: { enabled: true, waves: 1, slotReserve: 0 } };
+    const g = new Game();
+    g.moonLinks = true;
+    g.expoLinkNoMission = true;                     // fork renderuje wiersz 16 bez ?mission=
+    // run() kończy pętlę, gdy bot nie nawiguje — a cichy dociąg hangaru NIE nawiguje,
+    // więc wyjazd na galaktykę przypada dopiero na kolejne wywołanie (jak scenariusz 41).
+    const r1 = { logs: [] };
+    for (let i = 0; i < 6 && !r1.logs.some(m => /BEZ parametru mission/.test(m)); i++) { const rr = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); r1.logs.push(...rr.logs); }
+    check("niepełny wiersz 16 zostawia ZRZUT markupu i ostrzeżenie (nie cichy zapis)",
+      r1.logs.some(m => /wiersz 16 ma link \/fleet BEZ parametru mission/.test(m)), r1.logs.filter(m => /EXPO/.test(m)).slice(0, 6).join(" | "));
+    const zapis = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_expo_link") || "null");
+    check("… i NIE zapisuje kalekiego linku (to on murował ekspedycje na stałe)", !zapis, JSON.stringify(zapis));
+    check("(warunek wstępny) bez id misji żadna fala nie poszła", !g.sent.some(x => /Expedition/i.test(x.mission || "")), JSON.stringify(g.sent));
+    // fork wraca do normalnego renderu (albo bot trafia na inny wiersz): 10-minutowy dławik
+    // wyjazdu na galaktykę mija — bot ma się DOUCZYĆ i wysłać falę.
+    g.expoLinkNoMission = false;
+    g.store.set("genesis.ogamex.net:ogx3_once", "{}");
+    const r2 = { logs: [] };
+    for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const rr = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
+    check("po powrocie normalnego markupu bot DOUCZA SIĘ id misji", r2.logs.some(m => /link ekspedycji wyuczony.*mission=15/.test(m)), r2.logs.filter(m => /EXPO/.test(m)).slice(0, 6).join(" | "));
+    check("… i fala ekspedycji wreszcie leci", g.sent.some(x => /Expedition/i.test(x.mission || "")), JSON.stringify(g.sent.map(x => [x.mission, x.from])));
+  }
+
+  console.log("\n── 47. WOLNE PRZEKIEROWANIE PO „Send fleet”: fala częściowa nie jest fałszywym alarmem (v3.68.7, expo-wykonanie#5) ──");
+  {
+    // Zapasowe potwierdzenie wysyłki („hangar spadł poniżej 5%") pisano dla lotów obronnych,
+    // które zabierają CAŁY hangar. Fala ekspedycji bierze 1/N, więc dla każdej fali poza
+    // domykającą było arytmetycznie nieosiągalne: gdy przekierowanie forka nie zdążyło w
+    // oknie 3–4,5 s, bot uznawał UDANĄ wysyłkę za nieudaną — kasował wpis w rejestrze
+    // powrotów (fala wracała „znikąd"), stawiał karencję na trasę i wołał `abort`, czyli
+    // wpis „BŁĄD" w dzienniku i PUSH na telefon. Fałszywy alarm raz na falę znieczula
+    // na alarmy prawdziwe, więc to koszt po stronie priorytetu nr 1.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      expo: { enabled: true, waves: 2, slotReserve: 0 } };     // fala 1/2 hangaru = 50% zostaje w domu
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { LIGHT_FIGHTER: 4000 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.moonLinks = true;
+    g.slowRedirect = true;         // gra wysyła flotę, ale strony sukcesu jeszcze nie ma
+    const r = { logs: [] };
+    for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const rr = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); r.logs.push(...rr.logs); }
+    const ex = g.sent.find(x => /Expedition/i.test(x.mission || ""));
+    check("(warunek wstępny) fala CZĘŚCIOWA naprawdę wyszła (2000 z 4000 szt.)", !!ex && ex.ships.LIGHT_FIGHTER === 2000, JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
+    check("bot POTWIERDZIŁ wysyłkę po stanie hangaru, mimo braku strony sukcesu",
+      r.logs.some(m => /\[EXPO\] fala wysłana/.test(m)), r.logs.filter(m => /LOT|EXPO/.test(m)).slice(-8).join(" | "));
+    check("… żadnego „wysyłka NIE potwierdzona” i żadnego fałszywego BŁĘDU w dzienniku",
+      !r.logs.some(m => /wysyłka NIE potwierdzona/.test(m))
+      && !JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => e.kind === "BŁĄD" && /przerwany/.test(e.msg || "")),
+      r.logs.filter(m => /NIE potwierdzona|przerwany/.test(m)).join(" | "));
+    const stE = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("… a wpis w rejestrze powrotów PRZEŻYŁ (bez niego fala wraca „znikąd”)",
+      (stE.expected || []).some(e => e.kind === "expedition" && !e.pending), JSON.stringify(stE.expected));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
