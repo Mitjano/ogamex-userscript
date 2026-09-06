@@ -852,6 +852,139 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("i zabrał CAŁĄ flotę z planety (żadnych wykluczeń po FS)", !!rescue && (rescue.ships.BATTLESHIP || 0) === 4000, JSON.stringify(rescue && rescue.ships));
   }
 
+  console.log("\n── 15e. LOT RUTYNOWY („powrót po ratunku”) NIE WYPRZEDZA RATUNKU (audyt 04.09, obrona-decide#2) ──");
+  {
+    // 15c pilnowało kolizji Fleet Save z ratunkiem. Ta sama klasa błędu żyła dalej dla lotu
+    // RUTYNOWEGO: „powrót po ratunku" (kind:"fly", home:true, bez `fs` i bez `rescue`) miał
+    // ten sam klucz sortowania co ratunek, a pętla robi `break` po pierwszym locie — więc
+    // o jedynym locie przebiegu decydowała kolejność kolonii na pasku planet. Stan wejściowy
+    // powstaje SAM: stempel `s.rescues` zapisuje się po KAŻDEJ ucieczce i żyje 6 h, czyli
+    // dokładnie w noc drugiej fali. Działa przy DOMYŚLNYM configu (homeToMoon OFF).
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Cicha", moon: true },        // pierwsza na pasku — ona wygrywała
+        { key: "9:300:2", name: "Atakowana", moon: true },
+        { key: "9:300:7", name: "Schron", moon: true },
+      ],
+      hangars: { "1:100:5|planet": { BATTLESHIP: 500 }, "9:300:2|moon": { BATTLESHIP: 5000 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    await run(g, { cfg, loads: 10, ticksPerLoad: 2 });        // obieg na sucho: pary i hangary
+    check("(warunek wstępny) w spokoju, bez stempla ratunku, bot nie rusza flotą", g.sent.length === 0, JSON.stringify(g.sent));
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    st.rescues = { "1:100:5": Date.now() - 30 * 60e3 };        // pół godziny temu bot stąd uciekał
+    g.store.set(K, JSON.stringify(st));
+    check("(warunek wstępny) bot zna hangar PLANETY cichej pary", ((st.hangars || {})["1:100:5|planet"] || {}).total > 0, JSON.stringify(st.hangars));
+    g.threats.push({ src: "9:9:9", dst: "9:300:2", dstBody: "moon", eta: 300 });
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const first = g.sent[0];
+    check("pierwszy lot to RATUNEK atakowanej pary, nie „powrót po ratunku” cichej",
+      !!first && first.from === "9:300:2" && first.fromBody === "moon",
+      JSON.stringify(g.sent.map(x => `${x.from}|${x.fromBody}→${x.to}`)) + " | " + logs.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
+    check("atakowana flota faktycznie opuściła ciało pod ostrzałem", !!first && (first.ships.BATTLESHIP || 0) === 5000, JSON.stringify(first && first.ships));
+    check("bot NIE zwoził w tym czasie floty planeta→księżyc cichej pary",
+      !g.sent.some(x => x.from === "1:100:5" && x.to === "1:100:5"), JSON.stringify(g.sent.map(x => `${x.from}→${x.to}`)));
+  }
+
+  console.log("\n── 15f. FLEET SAVE CZEKA, DOPÓKI ATAK WISI (audyt 04.09, obrona-decide#2 — strażnik w pętli) ──");
+  {
+    // Po wysłaniu ratunku akcja ratunku znika z listy (para ma lot w powietrzu), więc samo
+    // „czy w tym przebiegu jest ratunek" przestaje chronić — a atak nadal leci. Do 3.68.4 bot
+    // wydawał wtedy swój jedyny slot lotu na Fleet Save z cichej pary, w środku ostrzału.
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Cicha", moon: true },
+        { key: "9:300:2", name: "Atakowana", moon: true },
+        { key: "5:200:3", name: "Daleka", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700 }, "9:300:2|moon": { BATTLESHIP: 5000 } },
+    });
+    g.flightSec = 4 * 3600;
+    // Obieg na sucho z WYŁĄCZONYM FS: bot ma poznac oba hangary, zanim zacznie się ostrzał.
+    // Bez tego kroku galąź FS w ogóle nie miałaby danych i asercja niżej byłaby pusta.
+    await run(g, { cfg: { ...cfg, fs: { enabled: false } }, loads: 12, ticksPerLoad: 2 });
+    check("(warunek wstępny) w spokoju, bez FS, bot nie rusza flotą", g.sent.length === 0, JSON.stringify(g.sent));
+    const st15f = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    check("(warunek wstępny) bot zna hangar księżyca cichej pary (galąź FS ma z czego wystartować)",
+      ((st15f.hangars || {})["1:100:5|moon"] || {}).total > 0, JSON.stringify(st15f.hangars));
+    g.threats.push({ src: "9:9:9", dst: "9:300:2", dstBody: "moon", eta: 900 });
+    const { logs } = await run(g, { cfg, loads: 30, ticksPerLoad: 3 });
+    check("ratunek atakowanej pary poszedł pierwszy", !!g.sent[0] && g.sent[0].from === "9:300:2", JSON.stringify(g.sent.map(x => `${x.from}→${x.to}`)));
+    check("dopóki atak wisi, Fleet Save cichej pary NIE startuje",
+      !g.sent.some(x => x.from === "1:100:5"),
+      JSON.stringify(g.sent.map(x => `${x.from}→${x.to}`)) + " | " + logs.filter(m => /LOT|FS/.test(m)).slice(0, 8).join(" | "));
+    check("… i bot mówi wprost, że wstrzymał lot dobrowolny",
+      logs.some(m => /WSTRZYMANY lot dobrowolny/.test(m)), logs.filter(m => /LOT/.test(m)).slice(0, 8).join(" | "));
+  }
+
+  console.log("\n── 15g. TRWAJĄCY LOT DOBROWOLNY JEST PRZERYWANY PRZY ALARMIE (audyt 04.09, obrona-decide#3 / obrona-wykonanie#2) ──");
+  {
+    // Scenariusz 13 dowodzi tego dla misji EKONOMICZNEJ. Lista przerywanych misji znała
+    // jednak wyłącznie `expedition/asteroid/debris`, a misja obronno-rutynowa ma
+    // kind:"fly" albo "home" (Fleet Save, „dom = księżyc", „powrót po ratunku", ręczny
+    // powrót z panelu). Taka misja szła spokojnie dalej, a `if (Fly.mission()) return`
+    // wycinało z przebiegu CAŁĄ listę akcji — ratunek, zawrót i extend — aż do sufitu
+    // misji (5 min / 6 nawigacji). Wstrzykujemy misję wprost, tak jak scenariusz 13.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { LIGHT_FIGHTER: 500, SMALL_CARGO: 50 }, "1:100:9|planet": { SMALL_CARGO: 20 } } });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("(warunek wstępny) w spokoju nic nie wysyła", g.sent.length === 0, JSON.stringify(g.sent));
+    g.store.set("genesis.ogamex.net:ogx3_mission", JSON.stringify({
+      kind: "fly", home: true, backHome: true, fromKey: "1:100:9", fromBody: "planet",
+      toKey: "1:100:9", toBody: "moon", speed: 100, why: "powrót po ratunku: planeta → księżyc",
+      step: "switch", startedAt: Date.now(),
+    }));
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }];
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("bot PRZERWAŁ trwający lot dobrowolny przy alarmie",
+      logs.some(m => /ratunek ma pierwszeństwo przed lotem dobrowolnym/i.test(m)), logs.slice(0, 8).join(" | "));
+    const rescue = g.sent.find(x => x.from === "1:100:5");
+    check("i wykonał RATUNEK mimo trwającej wcześniej misji", !!rescue, JSON.stringify(g.sent.map(x => `${x.from}→${x.to}`)) + " | " + logs.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
+    check("ratunek nie poleciał na atakowane ciało", !rescue || !(rescue.to === "1:100:5" && rescue.toBody === "moon"), JSON.stringify(rescue));
+  }
+
+  console.log("\n── 15h. DWA ATAKI NARAZ: ratujemy PILNIEJSZĄ parę, a o odłożonej bot krzyczy (audyt 04.09, obrona-decide#4) ──");
+  {
+    // Klucz sortowania znał tylko RODZAJ akcji, więc dwa ratunki były nierozróżnialne —
+    // stabilny `sort` zostawiał kolejność par z paska planet, a `break` po pierwszym locie
+    // oddawał jedyny slot misji kolonii stojącej wyżej na pasku. Skoordynowany nalot
+    // (600 s na pustawy księżyc, 120 s na główny hangar) ratował więc tę, której nic nie
+    // groziło. Tu para pilniejsza stoi na pasku DRUGA — dokładnie jak w dowodzie z audytu.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Spokojniejsza", moon: true },   // pasek: pierwsza, dolot 600 s
+        { key: "1:100:9", name: "Pilna", moon: true },           // pasek: druga, dolot 120 s
+        { key: "1:100:12", name: "Schron", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { SMALL_CARGO: 1000 }, "1:100:9|moon": { BATTLESHIP: 400000 } },
+    });
+    await run(g, { cfg, loads: 12, ticksPerLoad: 2 });            // obieg na sucho: pary i hangary
+    check("(warunek wstępny) w spokoju nic nie wysyła", g.sent.length === 0, JSON.stringify(g.sent));
+    g.threats = [
+      { src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 600, id: "tA" },
+      { src: "9:9:9", dst: "1:100:9", dstBody: "moon", eta: 120, id: "tB" },
+    ];
+    await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("pierwszy leci ratunek pary z KRÓTSZYM dolotem, nie tej wyżej na pasku",
+      !!g.sent[0] && g.sent[0].from === "1:100:9", JSON.stringify(g.sent.map(x => `${x.from}→${x.to}`)));
+    const dziennik = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+    check("… a para odłożona dostaje własny wpis w dzienniku (i push na telefon)",
+      dziennik.some(e => /BEZ RATUNKU zostaje/.test(e.msg) && /1:100:5/.test(e.msg)),
+      JSON.stringify(dziennik.slice(0, 6).map(e => e.msg.slice(0, 120))));
+  }
+
   console.log("\n── 16. STRONA BŁĘDU GRY: bot wraca do gry zamiast zamierać ──");
   {
     const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };

@@ -899,7 +899,20 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("osierocony pending wygasa po 10 min (nie blokuje pary na zawsze)", /f\.pending && now - f\.sentAt < 10 \* 60e3\) return true/.test(src));
   check("jedna definicja 'wpis lotu nic nie znaczy' (decide + ekonomia + rekonesans)", /function flightStale\(f, now\)/.test(src) && /flightsBlocking\(s, now\)\) return \{ skip/.test(src));
   check("ratunek ma skróconą karencję po potknięciu (nie 3 min)", /a\.air \|\| a\.rescue\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
-  check("ratunek na drugie ciało też jest oznaczony jako ratunek", /toBody: other,[\s\S]{0,300}?recall: false, rescue: true \}\);/.test(src));
+  // v3.68.5 (audyt 04.09): strażnik regexowy pilnował literalnego końca linii i padał przy
+  // każdym dopisaniu pola do akcji (a taki dopisek to właśnie `etaMs`/`saveTotal` z tej
+  // partii). Wykonujemy decide() zamiast czytać źródło: atak w KSIĘŻYC przy nieatakowanej
+  // planecie tej samej pary → ucieczka na drugie ciało, oznaczona jako ratunek.
+  {
+    const drugie = base({
+      pairs: { "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 } },
+      hangars: { "3:272:7|moon": H(900_000) },
+      threats: [threat("3:272:7", "moon", 300)],
+    });
+    const aDrugie = decide(drugie, CFG, NOW).actions.find(a => a.kind === "fly");
+    check("ratunek na drugie ciało też jest oznaczony jako ratunek",
+      !!aDrugie && aDrugie.toKey === "3:272:7" && aDrugie.toBody === "planet" && aDrugie.rescue === true, JSON.stringify(aDrugie));
+  }
   // v3.10.3 (E2E): reguly, ktore wyszly dopiero na symulatorze
   check("zero statkow to 'pusty hangar' TYLKO na kroku wyboru statkow", /const shipsStep = ships\.length > 0/.test(src) && /if \(!shipsStep\) \{/.test(src));
   check("lot krotszy niz termin zawrotu = LADOWANIE (zawrot skasowany)", /recallOf\(mm\) \{/.test(src) && /recallAt: this\.recallOf\(m\)/.test(src));
@@ -1491,15 +1504,115 @@ console.log("\n── 51. AUDYT PRZED MERGE v3.68.1: strażniki dla poprawek spo
       { kind: "fly", fs: true, fromKey: "1:100:5" },
       { kind: "fly", blind: true, fromKey: "9:300:2" },
     ])[0].blind === true);
-    check("rekonesans nadal jest na końcu (nawigacja nie wyprzedza lotu)", mixed[mixed.length - 1].kind === "recon", JSON.stringify(mixed.map(a => a.kind)));
+    // v3.68.5 (audyt 04.09): rekonesans stoi między ratunkiem a lotem DOBROWOLNYM —
+    // ratunkowi nigdy nie wolno mu ustąpić, ale Fleet Save/lot domowy idą dopiero za nim.
+    check("rekonesans za ratunkiem, ale przed lotem dobrowolnym", mixed[0].rescue === true && mixed[1].kind === "recon" && mixed[2].fs === true, JSON.stringify(mixed.map(a => a.kind + (a.fs ? "(fs)" : a.rescue ? "(rescue)" : ""))));
+
+    // ── v3.68.5 (audyt 04.09, obrona-wykonanie#3 + testy-architektura#2, P1/P2):
+    // kara +0,5 spychała FS wyłącznie za inne loty `fly` — a RANK.recall to 1 i RANK.extend
+    // to 2, więc Fleet Save wyprzedzał DRUGĄ POŁOWĘ tej samej operacji ratunkowej. Pętla
+    // robi `break` po pierwszym `fly`, więc zawrót uciekającej floty czekał do końca misji
+    // FS (do 5 min / 6 nawigacji) i flota lądowała na obcym refugium zamiast wrócić.
+    check("ZAWRÓT ucieczki wychodzi przed Fleet Save", sortIt([
+      { kind: "fly", fs: true, fromKey: "3:272:2" },
+      { kind: "recall", flight: { fromKey: "3:272:7" } },
+    ])[0].kind === "recall");
+    check("EXTEND (przesunięcie zawrotu przy dosłanej fali) też wychodzi przed Fleet Save", sortIt([
+      { kind: "fly", fs: true, fromKey: "3:272:2" },
+      { kind: "extend", flight: { fromKey: "3:272:7" } },
+    ])[0].kind === "extend");
+    check("lot RUTYNOWY („powrót po ratunku”/„dom = księżyc”) też ustępuje zawrotowi", sortIt([
+      { kind: "fly", home: true, backHome: true, fromKey: "1:1:1" },
+      { kind: "recall", flight: { fromKey: "3:272:7" } },
+    ])[0].kind === "recall");
+
+    // ── v3.68.5 (audyt 04.09, obrona-decide#2 P0): `prio` degradował WYŁĄCZNIE `fs`, więc
+    // lot rutynowy planeta→księżyc (kind:"fly", home:true, bez `fs` i bez `rescue`) miał
+    // ten sam klucz co ratunek. Sort jest stabilny, czyli decydowała kolejność par na
+    // pasku planet — a `backFromRescue` działa przy DOMYŚLNYM configu (homeToMoon OFF)
+    // przez 6 h po KAŻDEJ ucieczce, czyli dokładnie w noc drugiej fali.
+    const rut = sortIt([
+      { kind: "fly", home: true, backHome: true, fromKey: "1:1:1", why: "powrót po ratunku: planeta → księżyc" },
+      { kind: "fly", rescue: true, fromKey: "3:272:7", etaMs: 200e3, saveTotal: 5e6, why: "atak w moon → sąsiedni księżyc" },
+    ]);
+    check("RATUNEK wychodzi przed lotem rutynowym „powrót po ratunku”", rut[0].rescue === true, JSON.stringify(rut.map(a => a.why)));
+    // wariant bez ŻADNYCH pól pilności — tu rozstrzyga wyłącznie `prio`, więc asercja
+    // pada, gdy ktoś wróci do degradowania samego `fs` (stabilny sort zostawiłby wtedy
+    // lot rutynowy na przodzie, bo jego para stoi wcześniej na pasku planet)
+    const rutSlepy = sortIt([
+      { kind: "fly", home: true, backHome: true, fromKey: "1:1:1", why: "powrót po ratunku" },
+      { kind: "fly", blind: true, fromKey: "3:272:7", why: "ŚLEPY ALARM" },
+    ]);
+    check("… także wtedy, gdy ŻADNA z akcji nie zna zegara uderzenia (decyduje sam prio)", rutSlepy[0].blind === true, JSON.stringify(rutSlepy.map(a => a.why)));
+
+    // ── v3.68.5 (audyt 04.09, obrona-decide#4 P0): dwa ataki naraz miały IDENTYCZNY klucz
+    // sortowania, więc bot wydawał swój jedyny slot lotu na parę stojącą wyżej na pasku —
+    // nawet gdy tamtej groziło uderzenie za 600 s, a drugiej za 80 s.
+    const dwa = sortIt([
+      { kind: "fly", rescue: true, fromKey: "3:272:7", etaMs: 600e3, saveTotal: 1000 },
+      { kind: "fly", rescue: true, fromKey: "1:1:1", etaMs: 80e3, saveTotal: 1.5e12 },
+    ]);
+    check("przy dwóch atakach pierwszy leci ratunek z KRÓTSZYM dolotem, nie ten wyżej na pasku",
+      dwa[0].fromKey === "1:1:1", JSON.stringify(dwa.map(a => `${a.fromKey}@${a.etaMs}`)));
+    const remis = sortIt([
+      { kind: "fly", rescue: true, fromKey: "3:272:7", etaMs: 300e3, saveTotal: 1000 },
+      { kind: "fly", rescue: true, fromKey: "1:1:1", etaMs: 300e3, saveTotal: 900_000 },
+    ]);
+    check("przy równym dolocie ratujemy WIĘKSZY hangar", remis[0].fromKey === "1:1:1", JSON.stringify(remis.map(a => `${a.fromKey}@${a.saveTotal}`)));
+    // ślepy alarm nie zna zegara uderzenia — ma iść ZA ratunkiem o znanym dolocie,
+    // ale nadal przed każdym lotem dobrowolnym
+    const slepy = sortIt([
+      { kind: "fly", blind: true, fromKey: "5:5:5", saveTotal: 9e9 },
+      { kind: "fly", rescue: true, fromKey: "1:1:1", etaMs: 500e3, saveTotal: 10 },
+      { kind: "fly", fs: true, fromKey: "2:2:2" },
+    ]);
+    check("ratunek o ZNANYM dolocie przed ślepym alarmem, a Fleet Save za obydwoma",
+      slepy[0].rescue === true && slepy[1].blind === true && slepy[2].fs === true, JSON.stringify(slepy.map(a => a.fromKey)));
+    // porządek całej kolejki nie może się rozjechać przy braku pól pilności
+    const bezPol = sortIt([
+      { kind: "recon", key: "a" }, { kind: "fly", fs: true, fromKey: "b" }, { kind: "hold", key: "c" },
+      { kind: "fly", rescue: true, fromKey: "d" }, { kind: "extend", flight: {} }, { kind: "recall", flight: {} },
+    ]);
+    check("bez pól pilności kolejka nie rozsypuje się (NaN w komparatorze)",
+      bezPol.map(a => a.kind + (a.fs ? "!" : "")).join(",") === "fly,recall,extend,hold,recon,fly!", JSON.stringify(bezPol.map(a => a.kind + (a.fs ? "!" : ""))));
   }
+  // v3.68.5: sam sort NIE wystarcza — gdy ratunek odpadnie wyżej (karencja `Fly.blocked`,
+  // sufit prób), pętla schodzi niżej i mimo wszystko wypala lot dobrowolny. Twardy strażnik
+  // w gałęzi `fly` musi stać PRZED `Fly.blocked`, a jego kryterium to sam ALARM — w oknie
+  // potwierdzania zagrożenia akcji ratunku jeszcze nie ma.
+  check("strażnik wstrzymuje lot dobrowolny PRZED sprawdzeniem karencji",
+    /if \(alarmNow && !a\.rescue && !a\.blind\) \{[\s\S]{0,400}?continue;[\s\S]{0,20}?\}\s*\n\s*if \(Fly\.blocked\(a\)\)/.test(loop));
+  check("kryterium strażnika to ALARM (potwierdzony atak), nie tylko gotowa akcja ratunku",
+    /const alarmNow = hasRescue \|\| \(s\.threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > Date\.now\(\)\);/.test(loop));
+  check("rekonesans NIE jest gaszony samym alarmem (przy alarmie bywa jedyną drogą do hangaru)",
+    /if \(hasRescue && CFG\.autoRescue\) \{ continue; \}/.test(loop));
+  // v3.68.5 (obrona-decide#3 + obrona-wykonanie#2): trwająca misja DOBROWOLNA (FS,
+  // „dom = księżyc", powrót po ratunku, `kind:"home"`) była nietykalna — lista ECO jej nie
+  // znała, a `if (Fly.mission()) return` wycinało z przebiegu fly, recall i extend.
+  check("trwający lot DOBROWOLNY jest przerywany przy alarmie (nie tylko ekonomia)",
+    /\} else if \(mNow && !mNow\.rescue && !mNow\.blind\) \{/.test(loop)
+    && /ALARM — ratunek ma pierwszeństwo przed lotem dobrowolnym/.test(loop));
+  check("… ale NIE po kliknięciu „Send fleet” (stempel last_send — inaczej gubimy wysłany lot)",
+    /const wyslane = !!ls && ls\.from === mNow\.fromKey && ls\.toKey === mNow\.toKey && \(ls\.at \|\| 0\) >= \(mNow\.startedAt \|\| 0\);/.test(loop)
+    && /if \(urgent && !wyslane\) Fly\.abort/.test(loop));
+  check("… i NIGDY misja ratunkowa (jej przerwanie zostawiłoby flotę pod uderzeniem)",
+    /else if \(mNow && !mNow\.rescue && !mNow\.blind\)/.test(loop));
+  // v3.68.5 (obrona-decide#4): jeden slot lotu to twarde ograniczenie gry — para odłożona
+  // musi dostać własny sygnał na telefon, bo tylko właściciel może ją uratować ręcznie.
+  check("para odłożona przy dwóch atakach dostaje push „BEZ RATUNKU zostaje…”",
+    /const odlozone = actions\.filter\(x => x !== a && x\.kind === "fly" && \(x\.rescue \|\| x\.blind\)\);/.test(loop)
+    && /Journal\.add\("ATAK", `Ratuję \[\$\{a\.fromKey\}\][\s\S]{0,300}?BEZ RATUNKU zostaje/.test(loop));
   check("FS nie przerywa trwającej ekspedycji (nie jest „urgent”)",
     /actions\.some\(a => \(a\.kind === "fly" && !a\.fs\) \|\| a\.kind === "recall"\)/.test(loop));
   check("FS ma własny sufit prób (3/h) niezależny od karencji ratunku",
     /Store\.get\("fs_try", \{\}\)/.test(loop) && /r3\.n >= 3/.test(loop));
   check("udana wysyłka FS zwalnia budżet prób", /if \(m\.fs\) \{ try \{ const ft = Store\.get\("fs_try", \{\}\) \|\| \{\}; delete ft\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\]/.test(src));
-  check("przycisk „RATUJ FLOTĘ TERAZ” nigdy nie wysyła Fleet Save",
-    /actions\.find\(x => x\.kind === "fly" && x\.fromKey === a0\.key && !x\.fs\)/.test(src));
+  // v3.68.5 (audyt 04.09, obrona-decide#2): `!x.fs` odrzucało wyłącznie Fleet Save, więc
+  // awaryjny drugi `find` mógł sięgnąć po lot RUTYNOWY z cudzej pary. Przycisk wybiera
+  // teraz tylko akcje ratunkowe — w OBU wyszukiwaniach.
+  check("przycisk „RATUJ FLOTĘ TERAZ” wybiera wyłącznie akcje RATUNKOWE (nie FS, nie lot rutynowy)",
+    /actions\.find\(x => x\.kind === "fly" && x\.fromKey === a0\.key && \(x\.rescue \|\| x\.blind\)\)/.test(src)
+    && /\|\| actions\.find\(x => x\.kind === "fly" && \(x\.rescue \|\| x\.blind\)\)/.test(src));
   check("zawrót FS liczony na POŁOWĘ drogi (flota w domu o godzinie, nie zawracana o godzinie)",
     /const t0 = Date\.now\(\), homeAt = m\.homeAt \|\| m\.recallAt, half = \(homeAt - t0\) \/ 2;/.test(src) && /m\.recallAt = t0 \+ half;/.test(src));
   check("lot za krótki na powrót o godzinie → odmowa z instrukcją, nie ciche lądowanie",
@@ -1623,6 +1736,86 @@ console.log("\n── 53. AUDYT 04.09 (partia decide-cisza): w gałęzi ataku bo
   });
   check("53c-1: lot BEZ zawrotu (wyląduje u sąsiada) nie dostaje extend", !decide(landing(), CFG, NOW).actions.some(a => a.kind === "extend"), JSON.stringify(decide(landing(), CFG, NOW).actions));
   check("53c-2: lot Z zawrotem nadal dostaje extend (reguła W12 nietknięta)", decide(landing({ recallAt: NOW + 30e3 }), CFG, NOW).actions.some(a => a.kind === "extend"), JSON.stringify(decide(landing({ recallAt: NOW + 30e3 }), CFG, NOW).actions));
+}
+
+console.log("\n── 54. AUDYT 04.09 (partia kolejka-akcji): lot DOBROWOLNY nigdy przed ratunkiem ──");
+{
+  // ── (a) obrona-decide#2 (P0): „powrót po ratunku" (stempel `s.rescues` żyje 6 h po
+  // KAŻDEJ ucieczce — czyli w noc drugiej fali) ma kind:"fly" bez `fs` i bez `rescue`.
+  // Do 3.68.4 dostawał ten sam klucz sortowania co ratunek, a `sort` jest stabilny, więc
+  // o jedynym locie przebiegu decydowała kolejność kolonii na pasku planet. Gorzej: w
+  // oknie potwierdzania zagrożenia (confirmMs) akcji ratunku jeszcze NIE MA, więc lot
+  // rutynowy wygrywał niezależnie od kolejności. Czysta funkcja go teraz nie wystawia.
+  const PAIRS2 = {
+    "1:1:1": { hasMoon: true, galaxy: 1, system: 1, position: 1 },
+    "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+    "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },
+  };
+  const rut = (over = {}) => Object.assign({
+    pairs: PAIRS2,
+    hangars: { "1:1:1|planet": H(500), "3:272:7|moon": H(5_000_000) },
+    rescues: { "1:1:1": NOW - 30 * 60e3 },     // ucieczka pół godziny temu → powrót po ratunku
+    threats: [], flights: [], active: { key: "1:1:1", body: "planet" },
+  }, over);
+
+  const spokoj = decide(rut(), CFG, NOW);
+  check("54a-1 (kontrola): bez ataku „powrót po ratunku” nadal powstaje — mechanizm nietknięty",
+    spokoj.actions.some(a => a.kind === "fly" && a.backHome === true), JSON.stringify(spokoj.actions));
+
+  const atak = decide(rut({ threats: [threat("3:272:7", "moon", 200)] }), CFG, NOW);
+  check("54a-2: przy ataku na INNĄ parę lot rutynowy w ogóle NIE POWSTAJE",
+    !atak.actions.some(a => a.kind === "fly" && a.backHome === true), JSON.stringify(atak.actions));
+  check("54a-3: … a jedyny lot przebiegu to RATUNEK atakowanej pary",
+    atak.actions.filter(a => a.kind === "fly").length === 1 && atak.actions.find(a => a.kind === "fly").rescue === true,
+    JSON.stringify(atak.actions.filter(a => a.kind === "fly")));
+
+  // okno potwierdzania: ratunku jeszcze nie ma (seenAt = teraz), a lotu rutynowego
+  // już też nie — to jest dokładnie ta chwila, w której bot tracił slot misji.
+  const okno = decide(rut({ threats: [threat("3:272:7", "moon", 200, { seenAt: NOW, lastSeenAt: NOW })] }), CFG, NOW);
+  check("54a-4: w oknie potwierdzania zagrożenia bot NIE wypuszcza żadnego lotu",
+    !okno.actions.some(a => a.kind === "fly") && okno.alerts.some(a => /potwierdzam/.test(a.msg)),
+    JSON.stringify(okno.actions) + " | " + JSON.stringify(okno.alerts.map(a => a.msg)));
+  check("54a-5: … i wciąż istnieje kolonia, która to zwożenie by dostała (test nie jest pusty)",
+    decide(rut({ threats: [threat("9:9:9", "moon", 200, { seenAt: NOW, lastSeenAt: NOW })] }), CFG, NOW - 1).actions.length >= 0
+    && spokoj.actions.some(a => a.fromKey === "1:1:1"), JSON.stringify(spokoj.actions));
+
+  // ── (b) obrona-decide#4 (P0): pilność musi jechać RAZEM z akcją — warstwa wykonawcza
+  // nie zna ani zegara uderzenia, ani wielkości ratowanego hangaru.
+  const dwaAtaki = decide({
+    pairs: PAIRS2,
+    hangars: { "1:1:1|moon": H(1_500_000_000_000), "3:272:7|moon": H(1000) },
+    threats: [threat("3:272:7", "moon", 600), threat("1:1:1", "moon", 80)],
+    flights: [], active: { key: "3:272:7", body: "moon" },
+  }, CFG, NOW);
+  const ratunki = dwaAtaki.actions.filter(a => a.kind === "fly" && a.rescue);
+  check("54b-1: dwa ataki → dwa ratunki (jak dotąd)", ratunki.length === 2, JSON.stringify(dwaAtaki.actions));
+  check("54b-2: KAŻDY ratunek niesie etaMs (czas do uderzenia) i saveTotal (wielkość hangaru)",
+    ratunki.every(a => Number.isFinite(a.etaMs) && Number.isFinite(a.saveTotal)), JSON.stringify(ratunki.map(a => ({ from: a.fromKey, etaMs: a.etaMs, saveTotal: a.saveTotal }))));
+  const pilny = ratunki.find(a => a.fromKey === "1:1:1");
+  check("54b-3: etaMs zgadza się z zegarem zagrożenia, saveTotal z ratowanym hangarem",
+    !!pilny && pilny.etaMs === 80_000 && pilny.saveTotal === 1_500_000_000_000, JSON.stringify(pilny));
+  check("54b-4: ślepy alarm niesie saveTotal, ale NIE etaMs (nie zna godziny uderzenia)",
+    (() => {
+      const r = decide({ pairs: PAIRS2, hangars: { "1:1:1|moon": H(777_000) }, threats: [], flights: [],
+        barExcess: { active: true, count: 3, since: NOW - 120e3 }, active: { key: "1:1:1", body: "moon" } }, CFG, NOW);
+      const b = r.actions.find(a => a.kind === "fly" && a.blind);
+      return !!b && b.saveTotal === 777_000 && b.etaMs === undefined;
+    })());
+
+  // ── (c) ewakuacja po utracie księżyca to RATUNEK, nie lot dobrowolny — atak gdzie
+  // indziej nie ma prawa jej zdusić (kontrola, że bramka `!anyAttack` nie poszła za daleko).
+  const moonLost = decide({
+    pairs: {
+      "1:1:1": { hasMoon: false, galaxy: 1, system: 1, position: 1 },
+      "1:1:9": { hasMoon: true, galaxy: 1, system: 1, position: 9 },     // sąsiad z księżycem = refugium
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },
+    },
+    hangars: { "1:1:1|planet": H(400_000) },
+    moonLost: { "1:1:1": NOW - 60e3 },
+    threats: [threat("3:272:2", "moon", 300)], flights: [], active: { key: "1:1:1", body: "planet" },
+  }, CFG, NOW);
+  check("54c: ewakuacja z gołej planety (rescue) leci mimo ataku na inną parę",
+    moonLost.actions.some(a => a.kind === "fly" && a.rescue === true && a.fromKey === "1:1:1"), JSON.stringify(moonLost.actions));
 }
 
 console.log("");
