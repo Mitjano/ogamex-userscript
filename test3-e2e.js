@@ -1792,6 +1792,50 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       JSON.stringify(g.sent.map(x => ({ to: x.to, toBody: x.toBody, mission: x.mission }))) + " | " + logs.filter(m => /KSIĘŻYC|zwożę/.test(m)).slice(0, 4).join(" | "));
   }
 
+  console.log("\n── 44. ZŁOM NA WŁASNEJ POZYCJI BAZY NIE MOŻE ZJEŚĆ RATUNKU (v3.68.6, audyt 04.09 obrona-stan-lotu#1) ──");
+  {
+    // Pole szczątków po bitwie obronnej leży na WŁASNEJ pozycji bazy, więc wysyłka
+    // recyklerów stempluje `last_send{from:[1:100:5], toKey:[1:100:5]}` — dokładnie ta
+    // sama para kluczy co ratunek „drugie ciało pary" ([1:100:5] planeta → [1:100:5]
+    // księżyc). Bramka anty-duplikat porównywała samą trasę i czas, więc uznawała
+    // ratunek za powtórkę: kasowała misję I wołała `emptySourceHangar` na ciele POD
+    // ATAKIEM. Następny przebieg widział „flota po bezpiecznej stronie" i milczał aż
+    // do uderzenia. Złom jest domyślnie WŁĄCZONY, więc to był scenariusz z żywej gry.
+    const cfg = { autoRescue: true, recon: false, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: true, everyMin: 0 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      // kolonia w INNYM układzie — nie ma sąsiedniego księżyca, więc ratunek musi
+      // pójść ścieżką „drugie ciało tej samej pary" (ta z kolizją kluczy).
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:217:6", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { RECYCLER: 100 }, "1:100:5|planet": { BATTLESHIP: 340000 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.debris = true;      // atrapa galaktyki kładzie złom na poz. 5 = pozycja bazy
+    // hangar PLANETY (tam stoi flota z powrotu ekspedycji) znany botowi — w produkcji
+    // pilnuje tego rekonesans; tu podajemy go wprost, żeby scenariusz był powtarzalny.
+    g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({ pairs: {}, hangars: {
+      "1:100:5|planet": { total: 340000, at: Date.now(), ships: [{ type: "BATTLESHIP", qty: 340000 }] },
+      "1:100:5|moon": { total: 100, at: Date.now(), ships: [{ type: "RECYCLER", qty: 100 }] },
+    }, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: Date.now() }));
+    let logs = (await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    const zl = g.sent.find(x => x.toBody === "debris");
+    check("(warunek wstępny) recyklery poszły po złom na WŁASNĄ pozycję bazy [1:100:5]",
+      !!zl && zl.to === "1:100:5", JSON.stringify(g.sent) + " | " + logs.filter(m => /ZŁOM|LOT/.test(m)).slice(0, 6).join(" | "));
+    // ...i chwilę później (stempel wysyłki złomu WCIĄŻ świeży — okno bramki to 3 min)
+    // przychodzi atak na planetę, na której stoi cała flota.
+    g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "planet", eta: 400 }];
+    logs = logs.concat((await run(g, { cfg, loads: 25, ticksPerLoad: 3 })).logs);
+    const rat = g.sent.find(x => x.from === "1:100:5" && x.fromBody === "planet" && x.toBody === "moon");
+    check("RATUNEK wyszedł mimo świeżego stempla wysyłki złomu na tę samą trasę",
+      !!rat, JSON.stringify(g.sent.map(x => ({ from: x.from, fromBody: x.fromBody, to: x.to, toBody: x.toBody, mission: x.mission }))) + " | " + logs.filter(m => /LOT|ATAK|hold/.test(m)).slice(0, 8).join(" | "));
+    check("… i zabrał całą flotę z atakowanej planety", !!rat && rat.ships.BATTLESHIP === 340000, JSON.stringify(rat && rat.ships));
+    check("bramka anty-duplikat NIE zetnęła ratunku („już poszła … nie powtarzam”)",
+      !logs.some(m => /już poszła/.test(m)), logs.filter(m => /już poszła/.test(m)).join(" | "));
+    check("… i NIE skłamała, że hangar atakowanej planety jest pusty",
+      !logs.some(m => /bramka anty-duplikat/.test(m)), logs.filter(m => /bramka anty-duplikat/.test(m)).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

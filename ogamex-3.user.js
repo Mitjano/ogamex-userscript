@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.5
+// @version      3.68.6
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.5";
+  const VERSION = "3.68.6";
   const HOST = location.host;
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
@@ -2755,7 +2755,33 @@
           // w minutach — dostaje pełne 3 minuty jak loty obronne.
           const guardMs = m.kind === "debris" ? 3 * 60e3 : ECO_KINDS.includes(m.kind) ? 20e3 : 3 * 60e3;
           const ls = Store.get("last_send", null);
-          if (ls && Date.now() - ls.at < guardMs && ls.toKey === m.toKey && ls.from === m.fromKey) {
+          // v3.68.6 (audyt 04.09, obrona-stan-lotu#1 P0 + expo-wykonanie#4 P2): bramka
+          // porównywała SAMĄ TRASĘ (klucz→klucz) i czas — nie rodzaj lotu i nie ciała.
+          // Pole złomu po bitwie obronnej leży na WŁASNEJ pozycji bazy, więc stempel
+          // wysyłki recyklerów [K]→[K] wyglądał identycznie jak ratunek „drugie ciało
+          // pary" [K] planeta → [K] księżyc: bot kasował misję RATUNKOWĄ i — gorzej —
+          // wołał `emptySourceHangar` na ciele POD ATAKIEM, czyli sam wpisywał sobie
+          // „tu nic nie stoi". Następny przebieg widział „flota po bezpiecznej stronie"
+          // i milczał (zero alarmu, zero pusha, zero rekonesansu) aż do uderzenia.
+          // Ta sama kolizja zjadała recyklery po ekspedycji (oba loty celują w [g:sy:16]).
+          // Rodzaj lotu i ciała porównujemy ZAWSZE — to one różnią złom od ratunku i
+          // ekspedycję od recyklerów. Ciała łagodnie (`!ls.fromBody || ...`), żeby stempel
+          // sprzed aktualizacji skryptu — jeszcze bez tych pól — dalej chronił przed
+          // podwójną wysyłką.
+          // Dla lotów OBRONNYCH żądamy dodatkowo TOŻSAMOŚCI misji (stempel nie starszy niż
+          // jej start, ten sam `startedAt`), bo tylko tam pomyłka kosztuje flotę: bramka
+          // zeruje hangar źródła i wystawia karencję trasy. Jest to bezpieczne dla powodu,
+          // dla którego bramka powstała (v3.62.0: „Send fleet" przeładowuje stronę, zanim
+          // wykona się kod potwierdzający) — stempel powstaje PRZED klikiem i niesie
+          // `startedAt` tej samej misji, która wróci tu po przeładowaniu.
+          // Ekonomii zostawiamy szerszą siatkę (sama trasa + rodzaj w oknie czasu): tam
+          // pomyłka to powtórzona fala, a nie utracona flota, i to ona łapie „stronę
+          // sukcesu, która ładowała się tak wolno, że fala poszła dwa razy".
+          const lsMine = !!ls && ls.kind === m.kind && ls.from === m.fromKey && ls.toKey === m.toKey
+            && (!ls.fromBody || ls.fromBody === m.fromBody) && (!ls.toBody || ls.toBody === m.toBody)
+            && (ECO_KINDS.includes(m.kind)
+              || ((ls.at || 0) >= (m.startedAt || 0) && (ls.startedAt == null || ls.startedAt === m.startedAt)));
+          if (lsMine && Date.now() - ls.at < guardMs) {
             log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");
             // v3.39.0: skoro wiemy, że wysyłka poszła, zdejmujemy `pending` z wpisu lotu.
             // Kod robiący to po kliku nie wykonał się, bo „Send fleet" przeładował stronę.
@@ -2770,6 +2796,9 @@
             // bramki: egzekutor mówi wtedy „w karencji — czekam" i NIE nawiguje.
             // TYLKO dla lotów obronnych: fale ekspedycji lecą tą samą trasą co 60–90 s,
             // więc karencja zjadłaby serię (złapane przez E2E „fala 2 też wyszła").
+            // v3.68.6: zerowanie hangaru jest tu dozwolone wyłącznie dlatego, że warunek
+            // wyżej dowodzi, iż stempel pochodzi z TEJ misji (rodzaj + trasa z ciałami +
+            // `startedAt`) — nigdy z lotu innego rodzaju o tych samych współrzędnych.
             if (!ECO_KINDS.includes(m.kind)) {
               emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat", m.excludeTypes);
               try { const blG = Store.get("fly_block", {}) || {}; blG[`${m.fromKey}>${m.toKey}`] = ls.at + guardMs; Store.set("fly_block", blG); } catch {}
@@ -3068,7 +3097,10 @@
         Situation.save(sPre);
       }
       // v3.62.0: skład floty w stemplu — po przeładowaniu to jedyne źródło dla logu „fala wysłana"
-      Store.set("last_send", { at: Date.now(), toKey: m.toKey, kind: m.kind, from: m.fromKey, loaded: loaded.join(", "), total: loadedTotal });
+      // v3.68.6 (obrona-stan-lotu#1): stempel niesie też CIAŁA i `startedAt` misji. Bez nich
+      // wysyłka złomu na własną pozycję bazy ([K]→[K] z księżyca) była nie do odróżnienia od
+      // ratunku [K] planeta → [K] księżyc i bramka anty-duplikat zjadała ten ratunek.
+      Store.set("last_send", { at: Date.now(), toKey: m.toKey, toBody: m.toBody, kind: m.kind, from: m.fromKey, fromBody: m.fromBody, startedAt: m.startedAt, loaded: loaded.join(", "), total: loadedTotal });
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);
       // v3.62.0: klik przez Nav.click — przeładowanie po „Send fleet" ma w linii startowej
       // powód „bot: wysyłka", a nie „otwarte ręcznie" (i nie udaje klikania operatora).

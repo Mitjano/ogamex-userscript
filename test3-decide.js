@@ -888,8 +888,16 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   // sondy
   check("sondy nie blokują rekonesansu ani ekonomii", (src.match(/t\.attack && t\.arriveAt >/g) || []).length >= 4);
   // wysyłka
-  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,900}?Nav\.click\(send/.test(src));
-  check("stempel wysyłki blokuje powtórkę po przeładowaniu", /Store\.get\("last_send"[\s\S]{0,400}?nie powtarzam/.test(src));
+  // v3.68.6: okna obu strażników poszerzone o komentarz „dlaczego" przy stemplu
+  // `last_send` i przy bramce anty-duplikat — mierzą KOLEJNOŚĆ, nie długość komentarzy.
+  check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,1600}?Nav\.click\(send/.test(src));
+  check("stempel wysyłki blokuje powtórkę po przeładowaniu",
+    /const ls = Store\.get\("last_send", null\);/.test(src)
+    && /if \(lsMine && Date\.now\(\) - ls\.at < guardMs\) \{\s*\n\s*log\(`\[LOT\] wysyłka do \[\$\{m\.toKey\}\] już poszła[\s\S]{0,120}?nie powtarzam/.test(src));
+  // v3.68.6 (obrona-stan-lotu#1): stempel MUSI nieść ciała i `startedAt` — bez nich
+  // wysyłka złomu na własną pozycję bazy była nie do odróżnienia od ratunku.
+  check("stempel wysyłki niesie ciała i tożsamość misji (rodzaj + startedAt)",
+    /Store\.set\("last_send", \{ at: Date\.now\(\), toKey: m\.toKey, toBody: m\.toBody, kind: m\.kind, from: m\.fromKey, fromBody: m\.fromBody, startedAt: m\.startedAt,/.test(src));
   // v3.10.0: wpis `pending` byl NIESMIERTELNY — kasowal go tylko kod PO send.click()
   // (ktory przy natychmiastowej nawigacji nigdy sie nie wykonuje), a filtr wygaszania
   // przepuszczal go przed kazda regula. Efekt: bot milczal przy kazdym kolejnym ataku
@@ -1816,6 +1824,82 @@ console.log("\n── 54. AUDYT 04.09 (partia kolejka-akcji): lot DOBROWOLNY nig
   }, CFG, NOW);
   check("54c: ewakuacja z gołej planety (rescue) leci mimo ataku na inną parę",
     moonLost.actions.some(a => a.kind === "fly" && a.rescue === true && a.fromKey === "1:1:1"), JSON.stringify(moonLost.actions));
+}
+
+console.log("\n── 55. AUDYT 04.09 (partia antyduplikat): bramka anty-duplikat rozpoznaje RODZAJ lotu i CIAŁA ──");
+{
+  // obrona-stan-lotu#1 (P0) + expo-wykonanie#4 (P2): bramka porównywała samą trasę
+  // (klucz→klucz) i czas. Pole złomu po bitwie obronnej leży na WŁASNEJ pozycji bazy,
+  // więc stempel wysyłki recyklerów [K]→[K] był nie do odróżnienia od ratunku
+  // [K] planeta → [K] księżyc — bot kasował ratunek i zerował hangar ciała POD ATAKIEM.
+  // Tu URUCHAMIAMY warunek bramki i kształt stempla WYCIĘTE ZE ŹRÓDŁA (nie regex).
+  const stmtOd = (co) => {
+    const i = src.indexOf(co);
+    if (i < 0) throw new Error(`nie znalazłem w źródle: ${co}`);
+    const s0 = src.slice(i);
+    return s0.slice(0, s0.indexOf(";\n") + 1);
+  };
+  // ECO_KINDS bierzemy TEŻ ze źródła — inaczej test badałby własną listę rodzajów.
+  const lsMine = new Function("ls", "m", `${stmtOd("const ECO_KINDS = [")}\n${stmtOd("const lsMine =")}\nreturn !!lsMine;`);
+  // stempel `last_send` budujemy Z ORYGINALNEGO literału obiektu — test upada także
+  // wtedy, gdy ktoś usunie ze stempla ciała albo `startedAt`, a warunek zostawi.
+  const stampSrc = (() => {
+    const s0 = src.slice(src.indexOf('Store.set("last_send", {'));
+    return s0.slice(s0.indexOf("{"), s0.indexOf("});") + 1);
+  })();
+  const stamp = (m, at) => new Function("m", "loaded", "loadedTotal", "Date", `return (${stampSrc});`)(m, [], 0, { now: () => at });
+
+  check("55-0: bramka faktycznie korzysta z wyliczonego warunku (test nie bada martwego kodu)",
+    /if \(lsMine && Date\.now\(\) - ls\.at < guardMs\) \{/.test(src));
+
+  // (a) ZŁOM NA WŁASNEJ POZYCJI vs RATUNEK „drugie ciało pary" — dokładnie scenariusz P0
+  const misjaZlom = { kind: "debris", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:5", toBody: "debris", startedAt: NOW - 65e3 };
+  const lsZlom = stamp(misjaZlom, NOW - 60e3);
+  const ratunek = { kind: "fly", fromKey: "1:100:5", fromBody: "planet", toKey: "1:100:5", toBody: "moon", rescue: true, startedAt: NOW - 5e3 };
+  check("55a: stempel wysyłki ZŁOMU nie udaje ratunku [K] planeta → [K] księżyc",
+    lsMine(lsZlom, ratunek) === false, JSON.stringify(lsZlom));
+
+  // (b) EKSPEDYCJA vs ZŁOM na tym samym polu [g:sy:16] (expo-wykonanie#4)
+  const misjaExpo = { kind: "expedition", fromKey: "2:223:9", fromBody: "moon", toKey: "2:223:16", toBody: "planet", startedAt: NOW - 80e3 };
+  const lsExpo = stamp(misjaExpo, NOW - 78e3);
+  check("55b: stempel fali EKSPEDYCJI nie blokuje recyklerów na to samo pole [2:223:16]",
+    lsMine(lsExpo, { kind: "debris", fromKey: "2:223:9", fromBody: "moon", toKey: "2:223:16", toBody: "debris", startedAt: NOW - 10e3 }) === false, JSON.stringify(lsExpo));
+
+  // (c) DWA RATUNKI NA TEJ SAMEJ PARZE (fala 1 na planetę, fala 2 na księżyc):
+  // trasa w obie strony ma ten sam klucz — rozróżniają ją dopiero CIAŁA.
+  const lsRatunek1 = stamp({ ...ratunek, startedAt: NOW - 65e3 }, NOW - 60e3);
+  check("55c: ratunek moon→planet nie uchodzi za wysłany, bo poszedł planet→moon",
+    lsMine(lsRatunek1, { kind: "fly", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:5", toBody: "planet", rescue: true, startedAt: NOW - 5e3 }) === false, JSON.stringify(lsRatunek1));
+
+  // (d) PRAWDZIWY DUPLIKAT (powód, dla którego bramka istnieje, v3.62.0): „Send fleet"
+  // przeładował stronę, misja wraca tu z tym samym `startedAt` — bramka MUSI strzelić.
+  const misjaFS = { kind: "fly", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", startedAt: NOW - 30e3 };
+  check("55d: ta sama misja po przeładowaniu strony NADAL jest duplikatem",
+    lsMine(stamp(misjaFS, NOW - 25e3), misjaFS) === true, JSON.stringify(stamp(misjaFS, NOW - 25e3)));
+  check("55d-2: … tak samo dla fali ekspedycji (okno 20 s)",
+    lsMine(stamp(misjaExpo, NOW - 78e3), misjaExpo) === true);
+
+  // (d-3) EKONOMIA zachowuje SZERSZĄ siatkę: tam pomyłka to powtórzona fala, nie utracona
+  // flota, a to ona łapie „stronę sukcesu, która ładowała się tak wolno, że fala poszła
+  // dwa razy" (v3.62.0) — także wtedy, gdy Expo zdążył zaplanować już NOWĄ misję.
+  check("55d-3: ekonomia: stempel fali sprzed 10 s blokuje kolejną misję na tę samą trasę",
+    lsMine(stamp(misjaExpo, NOW - 10e3), { ...misjaExpo, startedAt: NOW - 2e3 }) === true);
+  check("55d-4: … ale obrona wymaga TOŻSAMOŚCI misji (tam pomyłka kosztuje flotę)",
+    lsMine(stamp(misjaFS, NOW - 10e3), { ...misjaFS, startedAt: NOW - 2e3 }) === false);
+
+  // (e) ZGODNOŚĆ WSTECZ: stempel sprzed aktualizacji (bez ciał i bez `startedAt`)
+  // dalej chroni przed podwójną wysyłką tej samej misji.
+  check("55e: stary stempel bez ciał i bez startedAt nadal blokuje powtórkę",
+    lsMine({ at: NOW - 25e3, toKey: "1:100:9", kind: "fly", from: "1:100:5" }, misjaFS) === true);
+  check("55e-2: … ale stary stempel ZŁOMU i tak nie zetnie ratunku (rodzaj się nie zgadza)",
+    lsMine({ at: NOW - 60e3, toKey: "1:100:5", kind: "debris", from: "1:100:5" }, ratunek) === false);
+
+  // (f) CIAŁA W STEMPLU są jedynym, co rozróżnia dwie wysyłki ekonomii o tej samej
+  // trasie i rodzaju (księżyc zniszczony → recyklery startują nagle z planety).
+  // Bez `fromBody`/`toBody` w stemplu bramka zjadłaby tę drugą wysyłkę.
+  check("55f: stempel wysyłki złomu Z PLANETY nie udaje wysyłki z KSIĘŻYCA (ta sama trasa)",
+    lsMine(stamp({ kind: "debris", fromKey: "1:100:5", fromBody: "planet", toKey: "1:100:5", toBody: "debris", startedAt: NOW - 60e3 }, NOW - 55e3),
+      { kind: "debris", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:5", toBody: "debris", startedAt: NOW - 5e3 }) === false);
 }
 
 console.log("");
