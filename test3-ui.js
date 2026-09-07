@@ -68,6 +68,22 @@ const IDS = "on auto push voice recon deb aster fs fs-a fs-target fs-speed expo 
 const missing = IDS.filter(i => !$("ogx3-" + i));
 ck("wszystkie pola/przyciski z 3.10.x na miejscu", missing.length === 0, "brakuje: " + missing.join(", "));
 
+// v3.69.1: godzina powrotu FS z MINUTAMI (owner 07.09: „na Athenie wpisywałem 8:50").
+// Silnik liczył minuty od 3.68.0, panel zapisywał samą godzinę i pokazywał sztywne „:00".
+const fsA = $("ogx3-fs-a");
+const cfgFs = () => JSON.parse(store.get("genesis.ogamex.net:ogx3_cfg") || "{}").fs || {};
+const zmien = (v) => { fsA.value = v; fsA.dispatchEvent(new w.Event("change", { bubbles: true })); };
+ck("pole „wróć o” pokazuje HH:MM (domyślnie 07:00)", fsA.value === "07:00", fsA.value);
+zmien("8:50");
+ck("wpis 8:50 → returnHour 8 i returnMinute 50 w zapisanym configu", cfgFs().returnHour === 8 && cfgFs().returnMinute === 50, JSON.stringify(cfgFs()));
+ck("pole po zapisie pokazuje 08:50", fsA.value === "08:50", fsA.value);
+zmien("13");
+ck("sama godzina „13” = 13:00", cfgFs().returnHour === 13 && cfgFs().returnMinute === 0, JSON.stringify(cfgFs()));
+zmien("25:70");
+ck("śmieci (25:70) nie ruszają ustawienia, pole wraca do 13:00", cfgFs().returnHour === 13 && cfgFs().returnMinute === 0 && fsA.value === "13:00", JSON.stringify(cfgFs()) + " pole=" + fsA.value);
+zmien("abc");
+ck("tekst (abc) też odrzucony", cfgFs().returnHour === 13 && cfgFs().returnMinute === 0 && fsA.value === "13:00", JSON.stringify(cfgFs()) + " pole=" + fsA.value);
+
 // v3.32.0: cisza nocna i przerwy kawowe muszą dać się wyłączyć BEZ grzebania
 // w GM storage (pytanie właściciela 29.08: „jak wyłączyć nocną przerwę?").
 const RYTM = "quiet quiet-a quiet-b breaks human-st".split(" ");

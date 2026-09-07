@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.69.0
+// @version      3.69.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.69.0";
+  const VERSION = "3.69.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -4764,7 +4764,7 @@
             <div class="note" id="ogx3-expo-st"></div>
           </div></div>
           <div class="sec" data-sec="fs"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Fleet Save</span><span class="tail" id="ogx3-t-fs"></span></div><div class="sec-b">
-            <div class="line"><button id="ogx3-fs" class="ogx3-btn"></button> wróć o <input id="ogx3-fs-a" style="width:24px" />:00</div>
+            <div class="line"><button id="ogx3-fs" class="ogx3-btn"></button> wróć o <input id="ogx3-fs-a" style="width:44px" placeholder="HH:MM" /></div>
             <div class="line">cel (księżyc) <input id="ogx3-fs-target" style="width:70px" placeholder="g:s:p = najdalsza" /> · prędkość <input id="ogx3-fs-speed" style="width:26px" />%</div>
             <div class="note" id="ogx3-fs-st"></div>
           </div></div>
@@ -4874,8 +4874,22 @@
       // jest jawny w panelu — 0 = fale lecą od razu, N = czekaj N minut ciszy.
       $("ogx3-idle").value = String(Math.round((CFG.human.ecoIdleSec ?? 0) / 60));
       $("ogx3-idle").onchange = (e) => { const m2 = Math.max(0, Math.min(60, parseInt(e.target.value) || 0)); CFG.human.ecoIdleSec = m2 * 60; saveCfg(); log(m2 > 0 ? `Ekonomia czeka ${m2} min ciszy po Twoim kliknięciu, zanim ruszy falą.` : "Ekonomia NIE czeka, aż przestaniesz klikać — fala może przejąć kartę w trakcie gry.", "info"); this.renderStatus(); };
-      $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save ${CFG.fs.enabled ? `ON (wraca o ${String(CFG.fs.returnHour).padStart(2, "0")}:00)` : "OFF"}`, "info"); this.renderStatus(); };
-      $("ogx3-fs-a").value = String(CFG.fs.returnHour ?? 7); $("ogx3-fs-a").onchange = (e) => { CFG.fs.returnHour = Math.max(0, Math.min(23, parseInt(e.target.value) || 0)); saveCfg(); log(`FS: wraca o ${String(CFG.fs.returnHour).padStart(2, "0")}:00.`, "info"); this.renderStatus(); };
+      const fsHHMM = () => `${String(CFG.fs.returnHour ?? 7).padStart(2, "0")}:${String(CFG.fs.returnMinute || 0).padStart(2, "0")}`;   // v3.69.1: z minutami
+      $("ogx3-fs").onclick = () => { CFG.fs.enabled = !CFG.fs.enabled; saveCfg(); log(`Fleet Save ${CFG.fs.enabled ? `ON (wraca o ${fsHHMM()})` : "OFF"}`, "info"); this.renderStatus(); };
+      // v3.69.1 (owner 07.09: „na Athenie wpisywałem powrót np. o 8:50 i bot zawracał tak,
+      // żeby wróciła ok. 8:50"): silnik od 3.68.0 liczy termin z `returnHour` I `returnMinute`
+      // (fsReturnAt), a zawrót w połowie drogi trafia w tę minutę — panel zapisywał jednak
+      // samą godzinę i pokazywał sztywne „:00". Jedno pole „HH:MM" (samo „13" = 13:00);
+      // wpis, który nie jest godziną, nie rusza ustawienia i wraca do poprzedniej wartości.
+      $("ogx3-fs-a").value = fsHHMM(); $("ogx3-fs-a").onchange = (e) => {
+        const raw = String(e.target.value || "").trim();
+        const m = raw.match(/^(\d{1,2})(?:[:.](\d{1,2}))?$/);
+        const h = m ? parseInt(m[1], 10) : NaN, mi = (m && m[2] !== undefined) ? parseInt(m[2], 10) : 0;
+        if (!m || h > 23 || mi > 59) { e.target.value = fsHHMM(); log(`FS: „${raw}" to nie godzina — wpisz HH:MM (np. 8:50); zostaje ${fsHHMM()}.`, "warn"); return; }
+        CFG.fs.returnHour = h; CFG.fs.returnMinute = mi; saveCfg();
+        e.target.value = fsHHMM();
+        log(`FS: wraca o ${fsHHMM()}.`, "info"); this.renderStatus();
+      };
       // v3.68.0 (port z Atheny): cel = STAŁY księżyc (puste pole = stare zachowanie,
       // najdalsza bezpieczna kolonia), prędkość ręczna (niższa = dłuższy lot = flota
       // dłużej poza domem, zanim w ogóle trzeba ją zawracać).
