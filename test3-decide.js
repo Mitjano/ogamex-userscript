@@ -1009,7 +1009,10 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("przerwana misja sprząta swój wpis pending", /abort\(why, opts = \{\}\)[\s\S]{0,700}?f\.pending\)\)/.test(src));
   check("osierocony pending wygasa po 10 min (nie blokuje pary na zawsze)", /f\.pending && now - f\.sentAt < 10 \* 60e3\) return true/.test(src));
   check("jedna definicja 'wpis lotu nic nie znaczy' (decide + ekonomia + rekonesans)", /function flightStale\(f, now\)/.test(src) && /flightsBlocking\(s, now\)\) return \{ skip/.test(src));
-  check("ratunek ma skróconą karencję po potknięciu (nie 3 min)", /a\.air \|\| a\.rescue\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
+  // v3.68.11 (audyt 04.09, obrona-wykonanie#4): skrót należy się flocie POD OSTRZAŁEM —
+  // ewakuacja z gołej planety (`evac`, leci bez ataku) czeka pełne 3 min jak lot rutynowy.
+  check("ratunek ma skróconą karencję po potknięciu (nie 3 min), ale ewakuacja bez ataku NIE",
+    /\(a\.air \|\| a\.rescue\) && !a\.evac\) return until - 2 \* 60e3 - 15e3 > Date\.now\(\)/.test(src));
   // v3.68.5 (audyt 04.09): strażnik regexowy pilnował literalnego końca linii i padał przy
   // każdym dopisaniu pola do akcji (a taki dopisek to właśnie `etaMs`/`saveTotal` z tej
   // partii). Wykonujemy decide() zamiast czytać źródło: atak w KSIĘŻYC przy nieatakowanej
@@ -2328,6 +2331,48 @@ console.log("\n── 58. FLEET SAVE I STAN (audyt 04.09, partia 'fs-i-stan') �
     check("58g1: pomiar zapisany PRZED rozgałęzieniem (także po udanym starcie)", iZap > 0 && iShort > iZap, `${iZap} / ${iShort}`);
     check("58g2: wpisy s.fsMeasured mają termin ważności (24 h)", /s\.fsMeasured\[rk\] \|\| \{\}\)\.at \|\| 0\) > 24 \* 3600e3\) delete/.test(src));
   }
+}
+
+console.log("\n── 59. SUFITY I NAWIGACJA (audyt 04.09, partia 'sufity-nawigacja') ──");
+{
+  // ── (a) obrona-wykonanie#4: ewakuacja po utracie księżyca leci BEZ ataku, a decide()
+  // wystawia ją przy KAŻDYM przebiegu, dopóki flota stoi na gołej planecie. Do 3.68.10 miała
+  // samo `rescue`, więc dostawała przywileje floty POD OSTRZAŁEM: karencję trasy skróconą do
+  // 45 s i zero sufitu prób. Odmowa gry (brak slotu/deuteru) robiła z niej wielogodzinną
+  // pętlę: przełącz ciało → formularz → odmowa → 45 s → od nowa.
+  const ewak = decide(base({
+    pairs: {
+      "3:272:7": { hasMoon: false, galaxy: 3, system: 272, position: 7 },
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },
+    },
+    hangars: { "3:272:7|planet": H(2_812_000) },
+    moonLost: { "3:272:7": NOW - 5 * 60e3 },
+    active: { key: "3:272:7", body: "planet" },
+  }), CFG, NOW).actions[0];
+  check("59a: ewakuacja z gołej planety jest oznaczona `evac` (własna karencja i własny sufit prób)",
+    !!ewak && ewak.kind === "fly" && ewak.evac === true, JSON.stringify(ewak));
+  check("59a1: … i NADAL jest `rescue` — pierwszeństwo przed lotem dobrowolnym zostaje nietknięte",
+    !!ewak && ewak.rescue === true, JSON.stringify(ewak));
+  // ── (b) kontrola: prawdziwa ucieczka spod ostrzału NIE MOŻE dostać tej flagi, bo to ona
+  // potrzebuje ponowienia po 45 s (dolot wroga bywa krótszy niż 3-minutowa karencja).
+  const podOstrzalem = decide(base({ threats: [threat("3:272:7", "moon", 300)] }), CFG, NOW).actions[0];
+  check("59b: ucieczka POD OSTRZAŁEM zostaje bez `evac` (ponowienie po 45 s jej się należy)",
+    !!podOstrzalem && podOstrzalem.kind === "fly" && !podOstrzalem.evac, JSON.stringify(podOstrzalem));
+
+  // ── (c) obrona-wykonanie#5 i #1 żyją poza decide() (Fly.recall, Fly.clickWhenEnabled) i mają
+  // wykonywane scenariusze w test3-e2e.js (55 i 57). Tutaj tylko strażnicy KSZTAŁTU, żeby
+  // refaktor nie zdjął sufitu po cichu.
+  const flyMod = src.slice(src.indexOf("const Fly = {"), src.indexOf("function defenceReadiness"));
+  check("59c: zawrót przełącza parę przez Nav.click (bez tego pętla jest niewidoczna dla [TEMPO] i linii startowej)",
+    /Nav\.click\(el, `zawrót lotu \[\$\{f\.fromKey\}\]→\$?\{?\[?\$\{f\.toKey\}\]/.test(flyMod) || /Nav\.click\(el, `zawrót lotu/.test(flyMod));
+  check("59c1: … i ma sufit klików, który zeruje się po SKUTECZNYM przełączeniu",
+    /f\.navTries = \(f\.navTries \|\| 0\) \+ 1;/.test(flyMod) && /if \(f\.navTries > 5\)/.test(flyMod)
+    && /if \(f\.navTries\) \{ f\.navTries = 0;/.test(flyMod));
+  check("59d: długie czekanie na formularzu pyta o listę ruchów i przerywa TYLKO lot dobrowolny",
+    /async peekThreat\(m\) \{\s*\n?\s*if \(!m \|\| m\.rescue \|\| m\.blind\) return null;/.test(flyMod)
+    && /const atak = await this\.peekThreat\(this\.mission\(\)\);/.test(flyMod));
+  check("59d1: … a kryterium jest to samo, co przy budowie zagrożeń (wrogi wiersz w NASZE ciało)",
+    /x\.attack && !x\.mine && !x\.friendly && !x\.isReturn && x\.dst && own\.has\(x\.dst\)/.test(flyMod));
 }
 
 console.log("");

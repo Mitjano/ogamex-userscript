@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.10
+// @version      3.68.11
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.10";
+  const VERSION = "3.68.11";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1479,7 +1479,13 @@
           const nbLost = neighbourMoon(k);
           const refLost = nbLost ? { key: nbLost, body: "moon" } : anyRefuge(k);
           if (refLost) {
-            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, home: true, saveTotal: hp.total });
+            // v3.68.11 (audyt 04.09, obrona-wykonanie#4 P2): `evac` odróżnia ten lot od
+            // ucieczki POD OSTRZAŁEM. Obie klasy mają `rescue: true` (pierwszeństwo przed
+            // lotem dobrowolnym zostaje), ale ewakuacja leci BEZ ataku i decide() wystawia
+            // ją przy każdym przebiegu, dopóki flota stoi na gołej planecie — więc odmowa
+            // gry zamieniała ją w wielogodzinną pętlę przeładowań. Flaga włącza dwa sufity:
+            // pełną karencję trasy (Fly.blocked) i budżet 3 prób na godzinę (pętla akcji).
+            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, evac: true, home: true, saveTotal: hp.total });
           } else {
             alerts.push({ key: k, level: "error", throttleMs: 15 * 60e3, msg: `księżyc [${k}] zniszczony, flota stoi na planecie (widoczna dla falangi), a nie mam dokąd jej ewakuować — reaguj ręcznie` });
           }
@@ -3075,6 +3081,10 @@
       if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona", m.excludeTypes);
       // v3.68.1: udana wysyłka zwalnia budżet prób FS — sufit 3/h dotyczy PORAŻEK.
       if (m.fs) { try { const ft = Store.get("fs_try", {}) || {}; delete ft[`${m.fromKey}>${m.toKey}`]; Store.set("fs_try", ft); } catch {} }
+      // v3.68.11 (obrona-wykonanie#4): tak samo dla ewakuacji — sufit 3/h liczy PORAŻKI,
+      // a nie loty. Udana wysyłka zwalnia budżet trasy (kolejna utrata księżyca nie zastanie
+      // bota z wyczerpanym licznikiem sprzed godziny).
+      if (m.evac) { try { const et = Store.get("evac_try", {}) || {}; delete et[`${m.fromKey}>${m.toKey}`]; Store.set("evac_try", et); } catch {} }
       // v3.41.0: ewakuacja (swap/air) zostawia stempel — dzięki niemu wolno potem odstawić
       // flotę na księżyc, nawet gdy rutynowe zwożenie jest wyłączone.
       // v3.68.10 (audyt 04.09, testy-architektura#1 P1) — CO SIĘ PSUŁO: warunek „nie-dom
@@ -3102,7 +3112,13 @@
       const bl = Store.get("fly_block", {}) || {};
       const until = bl[`${a.fromKey}>${a.toKey}`] || 0;
       if (!until) return false;
-      if (a.air || a.rescue) return until - 2 * 60e3 - 15e3 > Date.now();
+      // v3.68.11 (audyt 04.09, obrona-wykonanie#4 P2) — CO SIĘ PSUŁO: skrót do 45 s pisano
+      // dla floty POD OSTRZAŁEM (tam każda minuta karencji to minuta bliżej uderzenia), ale
+      // tę samą klasę `rescue` dostaje ewakuacja z gołej planety po utracie księżyca — lot
+      // BEZ ataku, wystawiany w każdym przebiegu. Przy odmowie gry (brak slotu, brak deuteru)
+      // dawało to ~3 przeładowania na 70 s przez wiele godzin. Ewakuacja czeka pełne 3 min
+      // jak lot rutynowy; ratunek pod ostrzałem ponawiamy jak dotąd po 45 s.
+      if ((a.air || a.rescue) && !a.evac) return until - 2 * 60e3 - 15e3 > Date.now();
       return until > Date.now();
     },
     // v3.12.0 (incydent 28.08 22:17–22:22): misja krążyła „przełącz ciało → otwórz
@@ -3268,12 +3284,39 @@
       return exact(inArea) || exact(anywhere) || loose(inArea) || loose(anywhere) || null;
     },
     isDisabled(el) { return !el || el.disabled || el.classList.contains("disabled") || el.getAttribute("aria-disabled") === "true"; },
+    // v3.68.11 (audyt 04.09, obrona-wykonanie#1 P1) — CO SIĘ PSUŁO: `defenceTick` trzyma
+    // flagę `running` przez cały `await Fly.tick()`, a wypełnianie formularza ma DWA
+    // oczekiwania po 25 s na przycisk „Next" (gra pokazuje go WYŁĄCZONY, kiedy nie przyjmuje
+    // floty — brak wolnego slotu, brak deuteru) plus dwie pętle po 8 s. Przez 30–80 s nie
+    // wykonywał się ANI JEDEN przebieg obrony: `Situation.refresh()` woła wyłącznie
+    // defenceTick, więc bot w tym oknie nie widział nowych wierszy wroga, nie alarmował i
+    // nie ratował floty; bramka „przerywam ekonomię przy alarmie" nie miała jak zadziałać,
+    // bo tick w ogóle nie startował. Zamiast przebudowy pętli (ryzyko dla rdzenia) — LEKKI
+    // PODGLĄD w trakcie czekania: ten sam fetch listy ruchów, co w Situation.refresh, zero
+    // nawigacji i zero DOM-u. Widziany atak przerywa lot DOBROWOLNY (ekonomia, Fleet Save,
+    // lot domowy); ratunku (`rescue`/`blind`) nie przerywa NIC — on jest odpowiedzią na atak.
+    // Podgląd żyje tylko w oczekiwaniach SPRZED kliknięcia „Send fleet", więc nie może
+    // zgubić wysłanego lotu (to samo zastrzeżenie, co przy wywłaszczaniu misji w tick).
+    async peekThreat(m) {
+      if (!m || m.rescue || m.blind) return null;
+      try {
+        const s = Situation.load();
+        const own = new Set(Object.keys(s.pairs || {}));
+        if (!own.size) return null;
+        const r = await Rows.fetchList(own);
+        if (!r || !r.ok) return null;
+        // te same kryteria, co przy budowie zagrożeń w Situation.refresh (wiersz wrogi,
+        // nie nasz, nie powrotny, o celu, który jest NASZYM ciałem)
+        const t = (r.rows || []).find(x => x.attack && !x.mine && !x.friendly && !x.isReturn && x.dst && own.has(x.dst));
+        return t ? `${t.type} → [${t.dst}]${t.eta ? ` za ${t.eta}s` : ""}` : null;
+      } catch { return null; }
+    },
     async clickWhenEnabled(text, maxMs = 25000) {
       const t0 = Date.now();
       // Rozróżnienie z 2.x (v2.66.3): „przycisk był, ale WYŁĄCZONY" to zupełnie inna
       // usterka niż „przycisku nie ma" — pierwsze znaczy, że gra nie przyjmuje floty
       // (np. brak deuteru), drugie, że nie trafiamy w markup.
-      let seen = null, saidWait = false;
+      let seen = null, saidWait = false, obrot = 0;
       while (Date.now() - t0 < maxMs) {
         const b = this.findButton(text);
         if (b) seen = b;
@@ -3284,6 +3327,17 @@
           return b;
         }
         if (b && !saidWait) { saidWait = true; log(`[LOT] przycisk „${text}" jest wyłączony — czekam, zamiast klikać w martwy element.`, "info"); }
+        // v3.68.11 (obrona-wykonanie#1): co dziesiąty obrót (≈4 s czekania) pytamy listę
+        // ruchów. Liczymy OBROTY, nie milisekundy — dzięki temu podgląd jest wykonywany
+        // także w teście, gdzie pauzy bota są skrócone, a zegar biegnie normalnie.
+        if (++obrot % 10 === 0) {
+          const atak = await this.peekThreat(this.mission());
+          if (atak) {
+            log(`[LOT] ALARM w trakcie wypełniania formularza (${atak}) — przerywam lot dobrowolny, obrona ma pierwszeństwo.`, "error");
+            this.abort(`ALARM w trakcie formularza (${atak})`, { quiet: true });
+            return null;
+          }
+        }
         await sleep(400);
       }
       // Bez listy KANDYDATÓW ten błąd był nie do rozwiązania z logu: wiadomo było
@@ -3640,7 +3694,31 @@
       const a = PlanetBar.active();
       if (!a || a.key !== f.fromKey) {
         const el = PlanetBar.anchor(f.fromKey, f.fromBody);
-        if (el) { log(`[ZAWRÓT] przełączam na [${f.fromKey}] ${f.fromBody}`, "info"); el.click(); return; }
+        if (el) {
+          // v3.68.11 (audyt 04.09, obrona-wykonanie#5 P2) — CO SIĘ PSUŁO: ten klik
+          // wychodził stąd `return`em BEZ licznika prób i POZA Nav.click. Gdy klik nie
+          // przestawiał aktywnej pary (fork oddaje stronę bez `.selected`, kotwica
+          // księżyca bez działającego handlera), decide() wystawiał zawrót w KAŻDYM
+          // przebiegu, a każdy przebieg startuje zaraz po przeładowaniu — pętla o tempie
+          // ładowania strony, jako JEDYNA nawigacja bota bez sufitu (formularz ma NAV_MAX 6,
+          // wejście na Fleet przy alarmie 3, otwieranie formularza 3). Była przy tym
+          // niewidoczna dla własnej diagnostyki: bez wpisu `nav_last` linia startowa mówiła
+          // „otwarte ręcznie", [TEMPO] milczał, a `manual_at` kazał botowi wierzyć, że to
+          // operator kręci stroną. Liczymy WYŁĄCZNIE kliki NIESKUTECZNE — licznik zeruje się
+          // niżej, gdy stoimy już na właściwej parze, więc operator przełączający planetę
+          // w kółko nie wyczerpie budżetu.
+          f.navTries = (f.navTries || 0) + 1;
+          if (f.navTries > 5) {
+            f.phase = "recall_failed"; Situation.save(s);
+            log(`[ZAWRÓT] pięć klików w [${f.fromKey}] ${f.fromBody} i nadal stoję na [${a ? a.key : "?"}] — przestaję przeładowywać grę. Zawróć flotę ręcznie.`, "error");
+            Journal.add("BŁĄD", `Nie umiem przełączyć się na [${f.fromKey}] (5 klików bez skutku) — zawróć lot [${f.fromKey}]→[${f.toKey}] ręcznie.`);
+            return;
+          }
+          Situation.save(s);
+          log(`[ZAWRÓT] przełączam na [${f.fromKey}] ${f.fromBody} (${f.navTries}/5)`, "info");
+          Nav.click(el, `zawrót lotu [${f.fromKey}]→[${f.toKey}]: przełączam parę`);
+          return;
+        }
         // v3.10.2 (audyt E2E): bez kotwicy na pasku funkcja wracała CICHO i bez
         // licznika — bot próbował w nieskończoność, operator nie wiedział o niczym.
         f.tries = (f.tries || 0) + 1;
@@ -3649,6 +3727,9 @@
         log(`[ZAWRÓT] brak [${f.fromKey}] ${f.fromBody} na pasku planet (${f.tries}/5)`, "warn");
         return;
       }
+      // v3.68.11 (obrona-wykonanie#5): stoimy na właściwej parze — poprzedni klik zadziałał,
+      // więc budżet klików wraca. Sufit ma gasić PĘTLĘ, nie długie życie lotu.
+      if (f.navTries) { f.navTries = 0; Situation.save(s); }
       let html = ""; try { const r = await fetchT(Rows.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } }); if (r.ok) html = await r.text(); } catch {}
       const doc = new DOMParser().parseFromString(html, "text/html");
       const trs = [...doc.querySelectorAll("tr[class*='row-mission-type-']")];
@@ -4203,6 +4284,28 @@
               continue;
             }
             ft[fk] = { n: r3.n + 1, at: Date.now() }; Store.set("fs_try", ft);
+          }
+          // v3.68.11 (audyt 04.09, obrona-wykonanie#4 P2): ewakuacja z gołej planety po
+          // utracie księżyca leci BEZ ataku, a decide() wystawia ją przy KAŻDYM przebiegu,
+          // dopóki flota tam stoi — gdy gra odmawia wysyłki (brak wolnego slotu, brak
+          // deuteru), robił się z tego wielogodzinny młynek: przełącz ciało → formularz →
+          // odmowa → karencja → i od nowa. Dokładnie ten sam sufit co dla Fleet Save (3
+          // nieudane próby na trasę w ciągu godziny), tyle że kończy się głośno: flota
+          // stoi wtedy widoczna dla falangi i tylko właściciel może ją ruszyć.
+          if (a.evac) {
+            const ek = `${a.fromKey}>${a.toKey}`;
+            const et = Store.get("evac_try", {}) || {};
+            for (const kk of Object.keys(et)) if (Date.now() - ((et[kk] || {}).at || 0) > 60 * 60e3) delete et[kk];   // żaden wpis stanu nie jest wieczny
+            const r4 = et[ek] || { n: 0, at: 0 };
+            if (r4.n >= 3) {
+              if (!Once.said(`evactry|${ek}`, 60 * 60e3)) {
+                log(`[LOT] trzecia nieudana ewakuacja [${a.fromKey}]→[${a.toKey}] w ciągu godziny — przestaję ponawiać do końca godziny. Sprawdź deuter i wolne sloty.`, "error");
+                Journal.add("BŁĄD", `Ewakuacja [${a.fromKey}] → [${a.toKey}] nie udaje się (3 próby w godzinę) — flota stoi na planecie bez księżyca, widoczna dla falangi. Przenieś ją ręcznie.`);
+              }
+              Store.set("evac_try", et);
+              continue;
+            }
+            et[ek] = { n: r4.n + 1, at: Date.now() }; Store.set("evac_try", et);
           }
           // v3.68.5 (audyt 04.09, obrona-decide#4 P0): jeden slot misji to twarde ograniczenie
           // gry — przy nalocie na dwie kolonie naraz bot fizycznie uratuje TYLKO jedną (od

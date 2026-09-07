@@ -64,6 +64,8 @@ class Game {
     this.moonLinks = false;   // v3.65.0: pasek daje księżycowi własny ?planet=UUID-moon (jak fork) — cichy odczyt hangaru księżyca
     this.expoLinkNoMission = false;  // v3.68.7: wiersz 16 galaktyki BEZ parametru ?mission= (inny render forka)
     this.slowRedirect = false;       // v3.68.7: „Send fleet" wysyła flotę, ale strona sukcesu ładuje się dłużej niż okno 3–4,5 s
+    this.stickyBar = false;          // v3.68.11: klik w kotwicę paska planet PRZEŁADOWUJE stronę, ale NIE zmienia aktywnej pary (fork bez `.selected`)
+    this.refuseSubmit = false;       // v3.68.11: gra przyjmuje formularz, ale „Send fleet” nic nie wysyła (brak slotu/deuteru)
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
@@ -284,7 +286,9 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
     if (process.env.DIAG3) console.log("      KLIK:", el.id || el.className || el.tagName, "| krok:", game.formStep);
     const cls = String(el.className || ""), id = String(el.id || "");
     if (cls.includes("planet-select") || cls.includes("moon-select")) {
-      game.active = { key: el.getAttribute("data-key"), body: cls.includes("moon-select") ? "moon" : "planet" };
+      // `stickyBar`: strona się przeładowuje, ale aktywna para zostaje stara — dokładnie to,
+      // co robi fork, gdy kotwica księżyca nie ma działającego handlera (obrona-wykonanie#5).
+      if (!game.stickyBar) game.active = { key: el.getAttribute("data-key"), body: cls.includes("moon-select") ? "moon" : "planet" };
       nav("/" + game.page);
       return;
     }
@@ -331,7 +335,11 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
         const v = parseInt((it.querySelector("input")?.value || "0").replace(/[^\d]/g, "")) || 0;
         if (t && v > 0) game.formShips[t] = v;
       }
-      game.formStep = 1; w.document.body.innerHTML = game.bodyHtml(); return;
+      game.formStep = 1; w.document.body.innerHTML = game.bodyHtml();
+      // v3.68.11: haczyk „coś dzieje się w grze DOKŁADNIE wtedy, gdy bot stoi w formularzu"
+      // (obrona-wykonanie#1 — atak startujący w oknie zamrożenia obrony).
+      if (game.onFormStep) { try { game.onFormStep(1); } catch {} }
+      return;
     }
     if (id === "btn-next-fleet3") {
       const g = w.document.getElementById("fleet2_target_x")?.value, s2 = w.document.getElementById("fleet2_target_y")?.value, p2 = w.document.getElementById("fleet2_target_z")?.value;
@@ -347,6 +355,9 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       return;
     }
     if (id === "btn-submit-fleet") {
+      // v3.68.11: gra ODMAWIA wysyłki (brak wolnego slotu, brak deuteru) — przycisk klika
+      // się, ale nic nie leci i nie ma przekierowania na stronę sukcesu (obrona-wykonanie#4).
+      if (game.refuseSubmit) { game.refusedSubmits = (game.refusedSubmits || 0) + 1; return; }
       // wysyłka: hangar źródła pustoszeje, gra przekierowuje (jak fork)
       const src = `${game.active.key}|${game.active.body}`;
       const h = game.hangars[src] || {};
@@ -451,6 +462,10 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
   }
   return { logs: [...new Set(logs)] };
 }
+
+// Surowy log bota (bez deduplikacji, którą robi `run`) — potrzebny wszędzie tam, gdzie
+// liczymy POWTÓRZENIA tej samej czynności, czyli przy sufitach pętli (v3.68.11).
+function rawLog(game) { try { return JSON.parse(game.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => String(e.msg || "")); } catch { return []; } }
 
 function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/aster|situation|mission/.test(k)) o[k.split("ogx3_")[1]] = String(v).slice(0, 300); return JSON.stringify(o, null, 1); }
 (async () => {
@@ -2166,6 +2181,135 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const gdzie54 = inst54.api.Situation.fleetAt(inst54.api.Situation.load(), "1:100:5", Date.now());
     check("… a bot NIE twierdzi już, że flota stoi na tym księżycu",
       !gdzie54 || gdzie54.body !== "moon", JSON.stringify(gdzie54));
+  }
+
+  console.log("\n── 55. ZAWRÓT, KTÓRY NIE PRZEŁĄCZA PARY: pętla klików ma sufit i ślad (v3.68.11, obrona-wykonanie#5) ──");
+  {
+    // Do 3.68.10 zawrót klikał kotwicę paska planet surowym `el.click()` i wychodził stąd
+    // `return`em — BEZ licznika prób i POZA Nav.click. Gdy klik nie przestawiał aktywnej pary
+    // (fork oddaje stronę bez `.selected`), decide() wystawiał zawrót przy KAŻDYM przebiegu,
+    // a każde przeładowanie natychmiast odpalało kolejny przebieg: pętla o tempie ładowania
+    // strony — jedyna nawigacja bota bez sufitu i przy tym niewidoczna dla własnej
+    // diagnostyki (linia startowa mówiła „otwarte ręcznie", [TEMPO] milczał).
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, moon: { enabled: false }, bonus: { enabled: false },
+      recon: false, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 100 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.stickyBar = true;                                  // klik przeładowuje stronę, ale para zostaje stara
+    await run(g, { cfg, loads: 4, ticksPerLoad: 2 });     // obieg na sucho: bot poznaje pary
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    // CHIRURGIA STANU: z KOLONII (nie z pary, na której stoi bot) wyleciała ucieczka,
+    // termin zawrotu minął minutę temu.
+    st.flights = [{ kind: "air", fromKey: "1:100:9", fromBody: "moon", toKey: "5:200:3", toBody: "moon",
+      sentAt: Date.now() - 30 * 60e3, flightMs: 5 * 3600e3, recallAt: Date.now() - 60e3, phase: "launched", tries: 0 }];
+    g.store.set(K, JSON.stringify(st));
+    const { logs } = await run(g, { cfg, loads: 12, ticksPerLoad: 3 });
+    const st2 = JSON.parse(g.store.get(K) || "{}");
+    const f2 = (st2.flights || []).find(x => x.fromKey === "1:100:9");
+    const kliki = rawLog(g).filter(m => /ZAWRÓT.*przełączam na \[1:100:9\]/.test(m)).length;
+    check("(warunek wstępny) bot w ogóle próbował przełączyć się na parę lotu", kliki > 0, `klików: ${kliki}`);
+    check("pętla klików ma SUFIT (najwyżej 5), a nie tempo ładowania strony", kliki <= 5, `klików: ${kliki}`);
+    check("… i kończy się jawnie: faza recall_failed zamiast wiecznego kręcenia",
+      !!f2 && f2.phase === "recall_failed", JSON.stringify(f2) + " | " + logs.filter(m => /ZAWRÓT/.test(m)).slice(0, 4).join(" | "));
+    check("… z instrukcją dla właściciela na telefonie (tylko on zawróci tę flotę)",
+      (g.pushes || []).some(p => /klików bez skutku/.test(String(p.body))), JSON.stringify((g.pushes || []).map(p => String(p.body).slice(0, 60))));
+    check("każdy klik idzie przez Nav.click — linia startowa mówi, kto przywiódł stronę",
+      logs.some(m => /← bot: zawrót lotu \[1:100:9\]/.test(m)), logs.filter(m => /OGameX Assistant/.test(m)).slice(0, 3).join(" | "));
+  }
+
+  console.log("\n── 56. EWAKUACJA PO UTRACIE KSIĘŻYCA: odmowa gry nie może być wielogodzinną pętlą (v3.68.11, obrona-wykonanie#4) ──");
+  {
+    // Lot ewakuacyjny z gołej planety (v3.67.0) ma flagę `rescue`, więc do 3.68.10 dostawał
+    // przywileje floty POD OSTRZAŁEM: karencję skróconą do 45 s i ZERO sufitu prób. Tyle że
+    // leci BEZ ataku, a decide() wystawia go w każdym przebiegu, dopóki flota tam stoi —
+    // przy odmowie gry (brak slotu, brak deuteru) robił się z tego młynek ~3 przeładowań
+    // na 70 s przez wiele godzin.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, moon: { enabled: false }, bonus: { enabled: false },
+      recon: true, reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|planet": { BATTLESHIP: 5000 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });       // bot poznaje pary i hangar planety bazy
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st0 = JSON.parse(g.store.get(K) || "{}");
+    check("(warunek wstępny) bot zna hangar PLANETY bazy", ((st0.hangars || {})["1:100:5|planet"] || {}).total > 0, JSON.stringify(Object.keys(st0.hangars || {})));
+    g.pairs[0].moon = false;                                // Destroy: księżyc bazy znika z paska
+    g.refuseSubmit = true;                                  // gra przyjmuje formularz, ale floty NIE wysyła
+    const FB = "genesis.ogamex.net:ogx3_fly_block";
+    const startow = () => JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").filter(e => /Start lotu/.test(e.msg || "")).length;
+    await run(g, { cfg, loads: 10, ticksPerLoad: 2 });       // próba 1 → odmowa → karencja trasy
+    check("(warunek wstępny) bot rozpoznał utratę księżyca i spróbował ewakuacji", startow() === 1, `startów: ${startow()}`);
+    // KARENCJA: gdyby ewakuacja dalej uchodziła za flotę pod ostrzałem, wróciłaby po 45 s.
+    {
+      const inst = load(g, { cfg });
+      inst.api.Store.set("fly_block", { "1:100:5>1:100:9": Date.now() + 3 * 60e3 - 60e3 });   // abort sprzed 60 s
+      const trasa = { fromKey: "1:100:5", toKey: "1:100:9" };
+      check("minutę po odmowie EWAKUACJA jeszcze czeka (pełne 3 min, jak lot rutynowy)",
+        inst.api.Fly.blocked({ ...trasa, rescue: true, evac: true }) === true, "blocked=false");
+      check("… ale ratunek POD OSTRZAŁEM nadal wraca po 45 s (skrót nietknięty)",
+        inst.api.Fly.blocked({ ...trasa, rescue: true, air: true }) === false, "blocked=true");
+    }
+    // Trzy odmowy w godzinę = koniec ponawiania. „Minęły 3 minuty" symulujemy zdjęciem
+    // karencji trasy (advance() nie zna `fly_block` — to mapa terminów bezwzględnych).
+    for (let i = 0; i < 3; i++) { g.store.set(FB, JSON.stringify({})); await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); }
+    check("po trzeciej odmowie bot PRZESTAJE ponawiać ewakuację (sufit 3 próby na godzinę)",
+      startow() === 3, `startów: ${startow()}`);
+    check("… i mówi to głośno, zamiast cicho kręcić stroną",
+      rawLog(g).some(m => /trzecia nieudana ewakuacja/.test(m)), rawLog(g).filter(m => /LOT/.test(m)).slice(0, 5).join(" | "));
+    // Wpis „BŁĄD" w dzienniku (panel + kanał push). Sam push bywa tu zjedzony przez dławik
+    // ntfy — jest per (rodzaj + współrzędne z treści), a te same koordy poszły przed chwilą
+    // w pushu o przerwanym locie. Dławika nie ruszamy: to świadoma decyzja z v3.33.0.
+    check("… oraz zostawia właścicielowi wpis „BŁĄD” (flota stoi na ciele widocznym dla falangi)",
+      JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => e.kind === "BŁĄD" && /Ewakuacja \[1:100:5\]/.test(e.msg || "")),
+      JSON.stringify(JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").slice(0, 3)));
+  }
+
+  console.log("\n── 57. ZAMROŻENIE OBRONY NA FORMULARZU EKONOMII (v3.68.11, obrona-wykonanie#1 P1) ──");
+  {
+    // `defenceTick` trzyma flagę `running` przez cały `await Fly.tick()`, a formularz ma dwa
+    // oczekiwania po 25 s na przycisk „Next" (gra pokazuje go WYŁĄCZONY, gdy nie przyjmuje
+    // floty). Przez 30–80 s nie wykonywał się ANI JEDEN przebieg obrony: bot nie widział
+    // nowych wierszy wroga, nie alarmował i nie ratował floty. Tu atak startuje DOKŁADNIE
+    // w tym oknie — bot ma go zobaczyć podglądem listy ruchów i przerwać lot dobrowolny.
+    // UWAGA o zasięgu tego scenariusza: atrapa NIE odtwarza pełnych 25 s zamrożenia (startowy
+    // `defenceTick()` leci bez `await`, więc `run` nie czeka na formularz i zamyka okno przy
+    // następnym załadowaniu — długi await zostaje porzucony). Sprawdzamy więc MECHANIZM:
+    // czy bot, stojąc w formularzu, sam pyta o listę ruchów i porzuca lot dobrowolny.
+    const cfg = { autoRescue: true, recon: false, bonus: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, moon: { enabled: false },
+      expo: { enabled: true, waves: 1, slotReserve: 0, launchFrom: { galaxy: 1, system: 100, position: 5 } },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: false }, { key: "1:100:9", name: "Kolonia", moon: false }],
+      hangars: { "1:100:5|planet": { LARGE_CARGO: 30 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.deadNext = 1;                     // krok 2 BEZ przycisku „Next" = bot czeka w jednym awaicie
+    // Napastnik startuje DOKŁADNIE w chwili, gdy bot wchodzi w krok 2 formularza — czyli
+    // w sekundzie, w której do 3.68.10 zaczynało się 25-sekundowe zamrożenie obrony.
+    g.onFormStep = (krok) => { if (krok === 1 && !g.threats.length) g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "planet", eta: 300 }); };
+    const logs = [];
+    for (let i = 0; i < 4 && !logs.some(m => /ALARM w trakcie wypełniania formularza/.test(m)); i++) {
+      const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 });
+      logs.push(...r.logs);
+    }
+    check("(warunek wstępny) fala ekspedycji weszła w formularz i utknęła na kroku 2",
+      logs.some(m => /\[LOT\] klik „Next"/.test(m)) && logs.some(m => /ekspedycja/.test(m)),
+      logs.filter(m => /EXPO|LOT/.test(m)).slice(0, 6).join(" | "));
+    check("bot ZOBACZYŁ atak, stojąc w formularzu (podgląd listy ruchów w trakcie czekania)",
+      logs.some(m => /ALARM w trakcie wypełniania formularza \(ATTACK → \[1:100:5\]/.test(m)),
+      logs.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
+    check("… i porzucił lot dobrowolny z tego właśnie powodu (nie po limicie czasu)",
+      logs.some(m => /przerwany: ALARM w trakcie formularza/.test(m)),
+      logs.filter(m => /przerwany/.test(m)).join(" | "));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
