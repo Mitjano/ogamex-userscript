@@ -712,7 +712,7 @@ console.log("── 20. FLEET SAVE (v3.68.0: port z Atheny — jedna godzina pow
   // i świecił na zielono. Reguła 3.x brzmi „misja zawsze moon→moon": kolonie bez
   // księżyca odpadają, nawet gdy są najdalsze.
   check("FS wybiera NAJDALSZĄ nieatakowaną kolonię Z KSIĘŻYCEM, gdy brak stałego celu", a && a.toKey === "3:272:2" && a.toBody === "moon", JSON.stringify(a));
-  check("FS niesie excludeTypes (miner/recykler wykluczani WARUNKOWO w Fly.form)", a && Array.isArray(a.excludeTypes), JSON.stringify(a));
+  check("FS NIE niesie wykluczeń — cała dostępna flota (owner 07.09)", a && !(a.excludeTypes && a.excludeTypes.length), JSON.stringify(a));
 
   const s2 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, threats: [threat("5:100:4", "planet", 600)] });
   const a2 = decide(s2, FSCFG, NOW).actions.find(x => x.fs);
@@ -745,13 +745,15 @@ console.log("── 20. FLEET SAVE (v3.68.0: port z Atheny — jedna godzina pow
   const r8 = decide(base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } }), FSCFG_TBAD, NOW);
   check("stały cel nieznany (nie na pasku planet) → alarm, żadnego lotu w ciemno", !r8.actions.some(x => x.fs) && r8.alerts.some(al => /nieznany/.test(al.msg)), JSON.stringify(r8));
 
-  // v3.68.0 (port z Atheny): wykluczenie WARUNKOWE — miner tylko gdy mining pracuje,
-  // recykler tylko gdy złom pracuje (bezczynny miner/recykler to zwykły cel, leci).
+  // v3.68.0 (port z Atheny) wykluczała przy FS miner/recykler, gdy mining/złom pracuje.
+  // v3.70.0 (owner 07.09, po FS bez 14,2 mln recyklerów: „na FS musi być cała flota,
+  // która jest dostępna"): żadnych wykluczeń — pracujący statek i tak jest w locie.
   const s9 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) } });
   const a9off = decide(s9, Object.assign({}, FSCFG, { aster: { enabled: false }, debris: { enabled: false } }), NOW).actions.find(x => x.fs);
-  check("mining i złom OFF → nic nie wykluczone (miner/recykler bezczynny leci z FS)", !!a9off && Array.isArray(a9off.excludeTypes) && a9off.excludeTypes.length === 0, JSON.stringify(a9off));
+  check("mining i złom OFF → FS bez wykluczeń", !!a9off && !(a9off.excludeTypes && a9off.excludeTypes.length), JSON.stringify(a9off));
   const a9on = decide(s9, Object.assign({}, FSCFG, { aster: { enabled: true }, debris: { enabled: true } }), NOW).actions.find(x => x.fs);
-  check("mining i złom ON → miner i recykler wykluczeni (pracują, zostają w domu)", !!a9on && Array.isArray(a9on.excludeTypes) && a9on.excludeTypes.includes("ASTEROID_MINER") && a9on.excludeTypes.includes("RECYCLER"), JSON.stringify(a9on));
+  check("mining i złom ON → FS NADAL bez wykluczeń (recyklery i minery lecą z całą flotą)", !!a9on && !(a9on.excludeTypes && a9on.excludeTypes.length), JSON.stringify(a9on));
+  check("(źródło) decide() nie liczy już `evacExclude` dla FS", !/evacExclude/.test(decideBody));
 }
 
 console.log("── 21. OKNO NOCNE (czysta funkcja nightWindow) ──");

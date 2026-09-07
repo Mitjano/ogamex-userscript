@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.69.1
+// @version      3.70.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.69.1";
+  const VERSION = "3.70.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1291,20 +1291,15 @@
   function decide(s, cfg, now) {
     const actions = [], alerts = [];
     const pairs = s.pairs || {};
-    // v3.68.1 (audyt przed merge, P0): wykluczenia zostają WYŁĄCZNIE przy Fleet Save.
-    // Pierwotnie szły też do obu ścieżek ucieczki przed atakiem — a że `debris.enabled`
-    // jest domyślnie true, każda ewakuacja zostawiałaby WSZYSTKIE recyklery (zrzut z
-    // żywej gry: 20 983 szt.) pod uderzeniem, i to bez pytania operatora. To odwraca
-    // regułę z CLAUDE.md „obrona floty ma bezwzględny priorytet nad ekonomią" i jest
-    // regresem względem 3.67, która ewakuowała wszystko. Athena wykluczała miner/recykler
-    // tylko gdy FAKTYCZNIE pracowały — a pracujący statek jest w locie, więc w ogóle nie
-    // ma go w formularzu; wykluczenie po fladze configu trafia w statki BEZCZYNNE, czyli
-    // dokładnie te, które Athena zabierała. Przy FS (dobrowolnym, planowanym) zostawienie
-    // ich w domu ma sens ekonomiczny; przy ataku nie ma żadnego.
-    const evacExclude = [
-      ...(cfg.aster && cfg.aster.enabled ? ["ASTEROID_MINER"] : []),
-      ...(cfg.debris && cfg.debris.enabled ? ["RECYCLER"] : []),
-    ];
+    // v3.68.0 wykluczała przy Fleet Save miner/recykler „po fladze" (mining/złom ON) — jako port
+    // z Atheny. v3.68.1 (audyt) zawęziła to do samego FS i sama przyznała, że logika jest
+    // odwrócona: statek, który FAKTYCZNIE pracuje, jest w locie i nie ma go w formularzu, więc
+    // wykluczenie po fladze configu trafia wyłącznie w statki BEZCZYNNE — czyli te, które
+    // Athena zabierała. v3.70.0 (owner 07.09, po locie FS bez 14 237 350 recyklerów: „na FS
+    // musi być cała flota, która jest dostępna"): Fleet Save nie wystawia ŻADNYCH wykluczeń.
+    // Wszystko, co stoi w hangarze, leci; pracujący miner/recykler i tak jest w powietrzu.
+    // Mechanizm `excludeTypes`/`keepTypes` w Fly zostaje jako generyczny (testy 53b/56b), ale
+    // żaden lot obrony go dziś nie używa. Ratunek przed atakiem od 3.68.1 zawsze bierze całość.
     const threatsFor = (k) => (s.threats || []).filter(t => t.dst === k && t.attack && t.arriveAt > now);
     const attackedBodies = (k) => { const b = new Set(); for (const t of threatsFor(k)) b.add(t.dstBody || "unknown"); return b; };
     // v3.68.5 (audyt 04.09, obrona-decide#2 P0): gra daje botowi JEDEN slot misji, a pętla
@@ -1575,7 +1570,7 @@
             if (znany && now < openAt) {
               alerts.push({ key: k, level: "warn", throttleMs: 60 * 60e3, msg: `FS: lot [${k}]→[${dest.key}] trwa ${Math.round(short.flightMs / 60e3)} min, a flota ma być w domu o ${hhmm(s.fsReturnAt || 0)} — startuję dopiero o ${hhmm(openAt)} (wcześniej doleciałaby i WYLĄDOWAŁA na obcym księżycu). Chcesz wcześniej? Zmniejsz prędkość FS albo wybierz dalszy cel.` });
             } else {
-              fsCands.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE → [${dest.key}], w domu ~${hhmm(s.fsReturnAt || 0)}`, speed: fsSpeed, recall: true, air: true, fs: true, excludeTypes: evacExclude, homeAt: s.fsReturnAt, recallAt: s.fsReturnAt, saveTotal: fleet.total });
+              fsCands.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE → [${dest.key}], w domu ~${hhmm(s.fsReturnAt || 0)}`, speed: fsSpeed, recall: true, air: true, fs: true, homeAt: s.fsReturnAt, recallAt: s.fsReturnAt, saveTotal: fleet.total });
             }
           }
         }
@@ -3383,6 +3378,9 @@
       // typu — miner/recykler, który akurat PRACUJE (mining/złom włączone), zostaje
       // w domu. Athena: wykluczenie WARUNKOWE, nie stałe (decide() liczy `evacExclude`
       // z aktualnego stanu CFG.aster/CFG.debris przy KAŻDYM przebiegu).
+      // v3.70.0 (owner 07.09: „na FS musi być cała flota, która jest dostępna"): decide()
+      // NIE wystawia już wykluczeń przy Fleet Save — `excl` bywa niepuste tylko w testach
+      // mechanizmu (53b/56b); każdy lot obrony bierze dziś cały hangar.
       const excl = new Set((m.excludeTypes || []).map(t => String(t).toUpperCase()));
       for (const el of els) {
         const type = String(el.dataset.shipType || "").toUpperCase();

@@ -761,7 +761,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("i mówi o tym w dzienniku", r2.logs.some(m => /ZAWRÓT/.test(m)), r2.logs.slice(0, 5).join(" | "));
   }
 
-  console.log("\n── 15b. FLEET SAVE (v3.68.0, port z Atheny): miner zostaje w domu, gdy mining pracuje; cel stały ──");
+  console.log("\n── 15b. FLEET SAVE: miner LECI z FS także gdy mining pracuje (owner 07.09: cała dostępna flota); cel stały ──");
   {
     // v3.68.1 (audyt): `(H + 2) % 24` zawijało się między 22:00 a 23:59 na 0/1 — czyli
     // na godzinę JUŻ MINIONĄ dziś, więc `fsReturnAt` przeskakiwał na jutro (~25 h) i oba
@@ -790,22 +790,23 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const fs = g.sent[0];
     check("FS poleciał na STAŁY skonfigurowany cel, nie najdalszą kolonię", !!fs && fs.to === "1:100:9", JSON.stringify(fs));
     check("wziął pancerniki", !!fs && fs.ships && fs.ships.BATTLESHIP === 700, JSON.stringify(fs && fs.ships));
-    check("miner ZOSTAŁ w domu (mining pracuje — port z Atheny)", !!fs && fs.ships && !fs.ships.ASTEROID_MINER, JSON.stringify(fs && fs.ships));
+    check("miner TEŻ poleciał, choć mining pracuje (owner 07.09: na FS cała dostępna flota)", !!fs && fs.ships && fs.ships.ASTEROID_MINER === 50, JSON.stringify(fs && fs.ships));
     // v3.68.1 (audyt): zerowanie hangaru było pomijane w całości, gdy lot niósł
     // wykluczenia — stan udawał wtedy PEŁNĄ flotę w domu przez 48 h („flota-duch":
     // drugi FS z pustego księżyca, a przy ataku ratunek floty, której nie ma).
-    // Hangar źródła ma pokazywać dokładnie to, co naprawdę zostało: same minery.
+    // v3.70.0: FS zabiera całą dostępną flotę, więc hangar źródła ma być PUSTY — nie „pełna
+    // flota w domu" (flota-duch) i nie „same minery" (stara reguła po fladze).
     const st15b = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     const h15b = (st15b.hangars || {})["1:100:5|moon"];
-    check("hangar źródła po locie pokazuje TYLKO zostawionego minera (nie kłamie w żadną stronę)",
-      !!h15b && h15b.total === 50 && (h15b.ships || []).length === 1 && h15b.ships[0].type === "ASTEROID_MINER",
+    check("hangar źródła po locie jest PUSTY (nic nie zostało celowo w domu)",
+      !!h15b && h15b.total === 0 && (h15b.ships || []).length === 0,
       JSON.stringify(h15b));
     // Sam stan hangaru to za mało: sztuczna gra i tak odświeża go przy kolejnym wejściu
     // na /fleet, więc asercja wyżej przechodzi nawet wtedy, gdy bot w ogóle nie domknął
-    // wysyłki (potwierdzone mutacją). Dowodem, że domknięcie ZASZŁO i zostawiło minera,
-    // jest linia logu — pojawia się wyłącznie ze ścieżki z `keepTypes`.
-    check("bot ZAPISAŁ, że domknął wysyłkę zostawiając minera w domu (nie wyzerował hangaru w ciemno)",
-      logs.some(m => /w domu zostaje .*ASTEROID_MINER/.test(m)), logs.filter(m => /hangar/.test(m)).slice(0, 3).join(" | "));
+    // wysyłki (potwierdzone mutacją). Dowodem, że domknięcie ZASZŁO, jest linia logu o
+    // wyzerowaniu; linia „celowo pominiętych" (ścieżka `keepTypes`) nie ma prawa się pojawić.
+    check("bot ZAPISAŁ wyzerowanie hangaru po wysyłce i niczego nie pominął celowo",
+      logs.some(m => /wyzerowany — flota z niego wyleciała/.test(m)) && !logs.some(m => /celowo pominiętych/.test(m)), logs.filter(m => /hangar/.test(m)).slice(0, 3).join(" | "));
   }
 
   console.log("\n── 15c. FLEET SAVE NIGDY NIE WYWŁASZCZA RATUNKU (audyt przed merge v3.68.1) ──");

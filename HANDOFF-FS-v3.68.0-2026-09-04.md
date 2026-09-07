@@ -1,6 +1,13 @@
 # HANDOFF: Fleet Save — v3.68.0 (port z Atheny) + v3.68.1 (audyt przed merge)
 
 **Status: gałąź `fs-atheny-port-v368` przeszła audyt i pełną baterię testów na Macu.**
+
+> **AKTUALIZACJA 07.09 — v3.70.0.** Po pierwszym żywym locie FS na Genesis (13:57, w domu
+> zostało 14 237 350 recyklerów, bo Złom był ON) owner zdecydował: **„na FS musi być cała
+> flota, która jest dostępna"**. Wykluczenia miner/recykler przy Fleet Save (pkt I.5 i II.2
+> poniżej) są **cofnięte w całości** — `decide()` nie wystawia ich już przy FS. Mechanizm
+> `excludeTypes`/`keepTypes` w Fly zostaje jako generyczny (testy 53b/56b), ale żaden lot
+> obrony go dziś nie używa. Godzina powrotu FS ma od v3.69.1 minuty (pole HH:MM w panelu).
 Sesja Windows (04.09, v3.68.0) → sesja macOS (04.09, v3.68.1). Poniżej: co było, co audyt
 znalazł, co naprawione i co ZOSTAJE do decyzji ownera.
 
