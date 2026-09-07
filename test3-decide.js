@@ -618,8 +618,22 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
   check("stempel ratunku sprzed 8 h już nie uprawnia do zwożenia",
     !(decide(stary, { ...CFG, homeToMoon: false }, NOW).actions || []).some(a => a.kind === "fly"));
 
-  check("ewakuacja zostawia stempel w stanie (Fly), powrót nie",
-    /if \(!m\.home && !eco\)[\s\S]{0,200}?sR\.rescues\[m\.fromKey\] = Date\.now\(\)/.test(src));
+  // v3.68.10 (audyt 04.09, testy-architektura#1 P1): TU BYŁ SAM REGEX na kształt warunku
+  // („if (!m.home && !eco)") i dokładnie dlatego wpadka przeżyła dwa audyty: strażnik nie
+  // mówił nic o tym, KTÓRE loty mają stemplować `rescues`. Od v3.68.0 do tego worka wpadł
+  // Fleet Save (m.home undefined, m.kind "fly"), a decide() czyta ten stempel jako
+  // `backFromRescue` i przez 6 h omija wyłączone `homeToMoon` — czyli decyzję ownera
+  // „przenosić flotę ma tylko podczas ataku". Teraz WYCINAMY warunek z produkcji i go
+  // URUCHAMIAMY na czterech rodzajach misji.
+  const stampCond = (src.match(/if \(([^\n]*?)\) \{ try \{ const sR = Situation\.load\(\); sR\.rescues = sR\.rescues \|\| \{\};/) || [])[1];
+  check("warunek stempla `rescues` da się wyciąć z produkcji", !!stampCond, String(stampCond));
+  if (stampCond) {
+    const stamps = new Function("m", "eco", `return !!(${stampCond});`);
+    check("ucieczka przed atakiem STEMPLUJE rescues (potem wolno odstawić flotę na księżyc)", stamps({ kind: "fly", rescue: true, air: true }, false));
+    check("lot domowy NIE stempluje", !stamps({ kind: "home", home: true }, false));
+    check("ekonomia NIE stempluje", !stamps({ kind: "expedition" }, true));
+    check("FLEET SAVE nie stempluje rescues — wraca ZAWROTEM na to samo ciało, nie ma czego odstawiać", !stamps({ kind: "fly", fs: true, air: true, recall: true }, false));
+  }
   check("panel ma przełącznik „flota rusza się tylko przy ataku”",
     /Flota rusza się TYLKO przy ataku/.test(src) && /CFG\.homeToMoon = !CFG\.homeToMoon/.test(src));
   // v3.43.0 (owner 20:31): każda fala ekspedycji zaczynała się od przełączenia aktywnego
@@ -788,7 +802,10 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
 console.log("── 24. ZŁOM (v3.6.0) ──");
 {
   const dm = src.slice(src.indexOf("const Debris = {"));
-  check("złom stoi przy ataku i przerwie", /t\.attack && t\.arriveAt > Date\.now\(\)\)\) return false/.test(dm) && /if \(Human\.economyAllowed\(s\)\) return false/.test(dm));
+  // v3.68.10 (audyt 04.09, obrona-fs#5): złom nadal stoi przy ataku i przy przerwie/ciszy,
+  // ale PYTA ZE ZNACZNIKIEM „debris" — bo recyklery są wykluczone z lotu Fleet Save
+  // dokładnie po to, żeby w tym czasie pracowały (patrz Human.FS_MIMO).
+  check("złom stoi przy ataku i przerwie", /t\.attack && t\.arriveAt > Date\.now\(\)\)\) return false/.test(dm) && /if \(Human\.economyAllowed\(s, "debris"\)\) return false/.test(dm));
   check("bez recyklerów nic nie robi", /RECYCLER/.test(dm));
   check("sprawdza poz. 16 (ekspedycje) i pozycję bazy (po bitwie)", /wanted = \[16, pos\]/.test(dm));
   check("cel typu ZŁOM to data-planet-type=3", /m\.toBody === "debris" \? "3"/.test(src));
@@ -1720,8 +1737,10 @@ console.log("\n── 51. AUDYT PRZED MERGE v3.68.1: strażniki dla poprawek spo
     && /\|\| actions\.find\(x => x\.kind === "fly" && \(x\.rescue \|\| x\.blind\)\)/.test(src));
   check("zawrót FS liczony na POŁOWĘ drogi (flota w domu o godzinie, nie zawracana o godzinie)",
     /const t0 = Date\.now\(\), homeAt = m\.homeAt \|\| m\.recallAt, half = \(homeAt - t0\) \/ 2;/.test(src) && /m\.recallAt = t0 \+ half;/.test(src));
+  // v3.68.10 (obrona-fs#4): ten sam wpis mówi teraz dodatkowo, O KTÓREJ bot wystartuje —
+  // bo od tej wersji naprawdę czeka do okna, zamiast ponawiać co godzinę (patrz sekcja 58c).
   check("lot za krótki na powrót o godzinie → odmowa z instrukcją, nie ciche lądowanie",
-    /if \(m\.flightMs < half\)/.test(src) && /Zmniejsz prędkość FS albo ustaw dalszy cel/.test(src));
+    /if \(m\.flightMs < half\)/.test(src) && /zmniejsz prędkość FS albo ustaw dalszy cel/i.test(src) && /Startuję dopiero o \$\{hh\(homeAt - 2 \* m\.flightMs\)\}/.test(src));
   check("pauza ekonomii na FS pyta flightStale (wpis po nieudanym zawrocie nie gasi bota na 12 h)",
     /f\.fs && f\.phase !== "done" && !flightStale\(f, Date\.now\(\)\)/.test(src));
   check("migracja FS rozstrzyga po STARYM kształcie (endHour+startHour), nie po braku returnHour",
@@ -2178,6 +2197,137 @@ console.log("\n── 57. WYKRYWANIE (audyt 04.09, partia 'wykrywanie') ──")
   check("57f: zagrożenie starsze od paska nadal wolno zdjąć (napastnik zawrócił)", filtruj(swiezyPasek, NOW).length === 0, JSON.stringify(filtruj(swiezyPasek, NOW)));
   const staryPasek = { threats: [{ dst: "3:272:7", seenAt: NOW - 60e3, lastSeenAt: NOW - 40e3 }], bar: { at: NOW - 5 * 60e3 } };
   check("57f2: pasek WYRENDEROWANY PRZED wykryciem ataku nie kasuje tego ataku", filtruj(staryPasek, NOW).length === 1, JSON.stringify(filtruj(staryPasek, NOW)));
+}
+
+console.log("\n── 58. FLEET SAVE I STAN (audyt 04.09, partia 'fs-i-stan') ──");
+{
+  const FSON = Object.assign({}, CFG, { fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: null, slotReserve: 1 } });
+  const fsReturnAt = NOW + 6 * 3600e3;
+  const moony = (n) => {
+    const p = {}, h = {};
+    for (let i = 1; i <= n; i++) { const k = `3:272:${i}`; p[k] = { hasMoon: true, galaxy: 3, system: 272, position: i }; h[`${k}|moon`] = H(1000 * i); }
+    return { pairs: p, hangars: h };
+  };
+
+  // ── (a) obrona-fs#2: pięć księżyców z flotą = PIĘĆ lotów FS, po jednym slocie floty
+  // każdy. Gdy sloty się kończyły, gra odmawiała wysyłki RATUNKU — a pasek stanu świecił
+  // zielonym „FS w drodze". Z przebiegu ma wychodzić NAJWYŻEJ JEDEN lot FS.
+  {
+    const s = base({ fsReturnAt, ...moony(5) });
+    const r = decide(s, FSON, NOW);
+    const fs = r.actions.filter(x => x.fs);
+    check("58a: pięć księżyców z flotą → JEDEN lot Fleet Save na przebieg", fs.length === 1, JSON.stringify(fs.map(x => [x.fromKey, x.toKey])));
+    check("58a2: … i leci z NAJWIĘKSZEGO hangaru (tam stoi wartość)", fs[0] && fs[0].fromKey === "3:272:5", JSON.stringify(fs[0]));
+    check("58a3: … a operator dowiaduje się z logu, że reszta czeka", fs[0] && /po JEDNYM locie na przebieg/.test(fs[0].why), String(fs[0] && fs[0].why));
+  }
+
+  // ── (b) obrona-fs#2: rezerwa slotów. FS to lot DOBROWOLNY — nie ma prawa zająć slotu,
+  // którego zabraknie ratunkowi. Ta sama reguła, co w ekspedycjach i miningu od 3.7.1.
+  {
+    const s = base({ fsReturnAt, ...moony(2), slots: { fleet: { used: 7, total: 8 }, at: NOW - 60e3 } });
+    const r = decide(s, FSON, NOW);
+    check("58b: ostatni wolny slot floty należy do obrony → żadnego FS", !r.actions.some(x => x.fs), JSON.stringify(r.actions));
+    check("58b2: … i to nie jest cisza (alarm mówi o slotach)", r.alerts.some(al => /sloty floty 7\/8, rezerwa 1/.test(al.msg)), JSON.stringify(r.alerts));
+    const s2 = base({ fsReturnAt, ...moony(2), slots: { fleet: { used: 1, total: 8 }, at: NOW - 60e3 } });
+    check("58b3: gdy slotów jest dość, FS leci normalnie", decide(s2, FSON, NOW).actions.some(x => x.fs), JSON.stringify(decide(s2, FSON, NOW).actions));
+    const s3 = base({ fsReturnAt, ...moony(2), slots: { fleet: { used: 1, total: 8 }, at: NOW - 45 * 60e3 } });
+    const r3 = decide(s3, FSON, NOW);
+    check("58b4: odczyt slotów sprzed 45 min to nie wiedza — bez FS w powietrzu wolno lecieć", r3.actions.some(x => x.fs), JSON.stringify(r3.actions));
+    const s4 = base({ fsReturnAt, ...moony(2), flights: [{ kind: "air", fs: true, fromKey: "9:900:1", toKey: "9:900:2", phase: "launched", sentAt: NOW - 60e3, recallAt: NOW + 3600e3 }] });
+    const r4 = decide(s4, FSON, NOW);
+    check("58b5: sloty nieznane, a jeden FS już wisi w powietrzu → drugiego nie wysyłamy", !r4.actions.some(x => x.fs), JSON.stringify(r4.actions));
+    check("58b6: … i mówimy dlaczego", r4.alerts.some(al => /już wisi w powietrzu/.test(al.msg)), JSON.stringify(r4.alerts));
+  }
+
+  // ── (c) obrona-fs#4: pętla „lot za krótki". Fly wymaga, żeby lot trwał ≥ połowy czasu
+  // do godziny powrotu; poza tym oknem odmowa jest PEWNA, a decide() i tak wystawiała
+  // akcję przy każdym przebiegu — 3 porzucone misje na godzinę, całą dobę, z pushem BŁĄD.
+  {
+    const short = { "3:272:7>3:272:2": { flightMs: 30 * 60e3, speedPct: 10, at: NOW - 10 * 60e3 } };
+    const s = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, fsMeasured: short });
+    const r = decide(s, FSON, NOW);
+    check("58c: znany czas lotu 30 min a powrót za 6 h → FS NIE startuje (doleciałby i wylądował)", !r.actions.some(x => x.fs), JSON.stringify(r.actions));
+    check("58c2: … i pasek/log dostaje GODZINĘ startu zamiast ciszy", r.alerts.some(al => /startuję dopiero o/.test(al.msg)), JSON.stringify(r.alerts));
+    // okno startu = homeAt − 2 × czas lotu; przy powrocie za 40 min lot 30-minutowy już wchodzi
+    const s2 = base({ fsReturnAt: NOW + 40 * 60e3, hangars: { "3:272:7|moon": H(1e6) }, fsMeasured: short });
+    check("58c3: w oknie startu (homeAt − 2× czas lotu) FS rusza normalnie", decide(s2, FSON, NOW).actions.some(x => x.fs), JSON.stringify(decide(s2, FSON, NOW).actions));
+    const s3 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, fsMeasured: { "3:272:7>3:272:2": { flightMs: 30 * 60e3, speedPct: 10, at: NOW - 25 * 3600e3 } } });
+    check("58c4: pomiar sprzed doby nie ma prawa wstrzymywać FS (żaden wpis nie jest wieczny)", decide(s3, FSON, NOW).actions.some(x => x.fs));
+    const s4 = base({ fsReturnAt, hangars: { "3:272:7|moon": H(1e6) }, fsMeasured: { "3:272:7>3:272:2": { flightMs: 30 * 60e3, speedPct: 100, at: NOW - 10 * 60e3 } } });
+    check("58c5: pomiar z INNEJ prędkości nie opisuje tego lotu — nie blokuje", decide(s4, FSON, NOW).actions.some(x => x.fs));
+  }
+
+  // ── (d) obrona-fs#3: DUCH KSIĘŻYCA. Po zniszczeniu księżyca wpis hangaru „klucz|moon"
+  // żył do 48 h i udawał miejsce postoju floty: przy ataku w planetę bot mówił „flota na
+  // moon — bezpieczna strona" i nie robił NIC.
+  {
+    const duch = {
+      pairs: { "3:272:7": { hasMoon: false, galaxy: 3, system: 272, position: 7 }, "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 } },
+      hangars: { "3:272:7|moon": H(1_500_000_000_000, "moon", 12 * 60e3) },
+      moonLost: { "3:272:7": NOW - 10 * 60e3 },
+    };
+    check("58d: fleetAt NIE widzi floty na nieistniejącym księżycu", Situation.fleetAt(base(duch), "3:272:7", NOW) === null, JSON.stringify(Situation.fleetAt(base(duch), "3:272:7", NOW)));
+    const r = decide(base({ ...duch, threats: [threat("3:272:7", "planet", 300)] }), CFG, NOW);
+    check("58d2: atak w planetę → żadnego „bezpieczna strona” nad duchem", !r.actions.some(a => a.kind === "hold" && /bezpieczna strona/.test(a.why || "")), JSON.stringify(r.actions));
+    check("58d3: … bot mówi UCZCIWIE, że nie wie, gdzie stoi flota", r.alerts.some(al => /nie wiem, gdzie stoi flota/.test(al.msg)), JSON.stringify(r.alerts));
+    const rFs = decide(base({ ...duch, fsReturnAt }), FSON, NOW);
+    check("58d4: Fleet Save nie startuje z księżyca, którego nie ma", !rFs.actions.some(x => x.fs && x.fromKey === "3:272:7"), JSON.stringify(rFs.actions));
+    // ślepy alarm bierze ciało z fleetsAt — duch podstawiał mu nieistniejący księżyc
+    const rBlind = decide(base({ ...duch, barExcess: { active: true, count: 2, since: NOW - 120e3 } }), CFG, NOW);
+    check("58d5: ślepy alarm nie ewakuuje z nieistniejącego księżyca", !rBlind.actions.some(a => a.fromKey === "3:272:7" && a.fromBody === "moon"), JSON.stringify(rBlind.actions));
+  }
+
+  // ── (e) obrona-fs#3, druga połowa: wpis hangaru ducha znika ze STANU (Situation.refresh).
+  // Bez tego panel, gotowość obrony i moduły ekonomii dalej widziałyby flotę na ciele,
+  // którego nie ma — a reguła CLAUDE.md mówi: żaden wpis stanu nie może być wieczny.
+  {
+    const drop = new Function("s", "now", "log", `for (const hk of Object.keys(s.hangars || {})) {${bodyOf("for (const hk of Object.keys(s.hangars || {})) {")}}`);
+    const st = {
+      pairs: { "1:100:5": { hasMoon: false }, "1:100:9": { hasMoon: true } },
+      hangars: { "1:100:5|moon": { total: 5e6, at: NOW - 12 * 60e3 }, "1:100:5|planet": { total: 3, at: NOW }, "1:100:9|moon": { total: 7e6, at: NOW }, "8:800:8|moon": { total: 1, at: NOW } },
+    };
+    const linie = [];
+    drop(st, NOW, (m) => linie.push(m));
+    check("58e: hangar zniszczonego księżyca skasowany", !st.hangars["1:100:5|moon"], JSON.stringify(Object.keys(st.hangars)));
+    check("58e2: hangar planety tej samej pary NIETKNIĘTY", !!st.hangars["1:100:5|planet"], JSON.stringify(Object.keys(st.hangars)));
+    check("58e3: hangar księżyca, który ISTNIEJE, nietknięty", !!st.hangars["1:100:9|moon"], JSON.stringify(Object.keys(st.hangars)));
+    check("58e4: para spoza paska planet (nic o niej nie wiemy) nietknięta", !!st.hangars["8:800:8|moon"], JSON.stringify(Object.keys(st.hangars)));
+    check("58e5: kasowanie nie jest ciche", linie.some(m => /nie ma księżyca/.test(String(m))), JSON.stringify(linie));
+  }
+
+  // ── (f) obrona-fs#5: pauza „flota jest na Fleet Save" gasiła CAŁĄ ekonomię, w tym
+  // odbudowę księżyca (zero statków!) i recyklery, które FS SAM zostawia w domu „bo pracują".
+  {
+    const gateSrc = (src.match(/if \(!CFG\.human\.economyAtNight[^\n]*?return "flota jest na Fleet Save";/) || [])[0];
+    const mimoSrc = (src.match(/FS_MIMO: \[[^\]]*\]/) || [])[0];
+    check("58f: bramkę FS i listę wyjątków da się wyciąć z produkcji", !!gateSrc && !!mimoSrc, `${gateSrc} | ${mimoSrc}`);
+    if (gateSrc && mimoSrc) {
+      const Human = new Function("CFG", "flightStale", `return { ${mimoSrc}, gate(s, who = "") { ${gateSrc} return null; } };`)({ human: { economyAtNight: false } }, flightStale);
+      const wLocie = { flights: [{ fs: true, phase: "launched", fromKey: "1:100:5", sentAt: NOW, recallAt: Date.now() + 3600e3 }] };
+      check("58f2: ekspedycje nadal czekają na powrót floty z FS", Human.gate(wLocie, "expedition") === "flota jest na Fleet Save", String(Human.gate(wLocie, "expedition")));
+      check("58f3: moduł bez znacznika też czeka (zachowanie 3.68.9)", Human.gate(wLocie) === "flota jest na Fleet Save", String(Human.gate(wLocie)));
+      check("58f4: ODBUDOWA KSIĘŻYCA idzie mimo FS (nie wysyła ani jednego statku)", Human.gate(wLocie, "moon") === null, String(Human.gate(wLocie, "moon")));
+      check("58f5: ZŁOM idzie mimo FS (recyklery zostały w domu właśnie po to, żeby pracować)", Human.gate(wLocie, "debris") === null, String(Human.gate(wLocie, "debris")));
+      check("58f6: bez lotu FS bramka nikogo nie zatrzymuje", Human.gate({ flights: [] }, "expedition") === null);
+    }
+    const moonMod = src.slice(src.indexOf("const Moon = {"), src.indexOf("const Bonus = {"));
+    check("58f7: Moon.tick pyta ze znacznikiem „moon”", /Human\.economyAllowed\(s, "moon"\)/.test(moonMod));
+    const debMod = src.slice(src.indexOf("const Debris = {"), src.indexOf("const Fly = {"));
+    check("58f8: Debris.tick pyta ze znacznikiem „debris”", /Human\.economyAllowed\(s, "debris"\)/.test(debMod));
+  }
+
+  // ── (g) obrona-fs#4, wykonanie: to Fly ZAPAMIĘTUJE zmierzony czas lotu. Bez tego wpisu
+  // decide() nie ma z czego policzyć okna startu i pętla wraca.
+  {
+    const flyMod = src.slice(src.indexOf("const Fly = {"), src.indexOf("function defenceReadiness"));
+    check("58g: Fly zapisuje zmierzony czas lotu FS do stanu (s.fsMeasured)",
+      /sS\.fsMeasured\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\] = \{ flightMs: m\.flightMs, speedPct: m\.speed \|\| 0, at: Date\.now\(\) \}/.test(flyMod));
+    // pomiar musi iść do stanu w OBU wynikach — inaczej wiedza starzeje się po dobie
+    // i jutro trzeba ją znów kupić porzuconą misją
+    const iZap = flyMod.indexOf("zapamietajLot();"), iShort = flyMod.indexOf("if (m.flightMs < half)");
+    check("58g1: pomiar zapisany PRZED rozgałęzieniem (także po udanym starcie)", iZap > 0 && iShort > iZap, `${iZap} / ${iShort}`);
+    check("58g2: wpisy s.fsMeasured mają termin ważności (24 h)", /s\.fsMeasured\[rk\] \|\| \{\}\)\.at \|\| 0\) > 24 \* 3600e3\) delete/.test(src));
+  }
 }
 
 console.log("");

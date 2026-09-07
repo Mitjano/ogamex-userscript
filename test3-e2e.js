@@ -2135,6 +2135,39 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       JSON.parse(g.store.get("genesis.ogamex.net:ogx3_planet_drift") || "null") === null && !s.listUntrusted, g.store.get("genesis.ogamex.net:ogx3_planet_drift"));
   }
 
+  console.log("\n── 54. DUCH KSIĘŻYCA: po Destroy hangar księżyca ZNIKA ze stanu (v3.68.10, obrona-fs#3 P1) ──");
+  {
+    // Do 3.68.9 zniszczenie księżyca zapalało tylko `s.moonLost`, a wpis hangaru
+    // „klucz|moon" żył dalej — do 48 h. Konsumenci brali go za miejsce postoju floty:
+    // przy ataku w planetę decide() mówił „flota na moon — bezpieczna strona" i nie robił
+    // NIC, Fleet Save startował z nieistniejącego ciała, a samokontrola meldowała
+    // „obrona gotowa". Wpis stanu bez terminu ważności = ciche wyłączenie obrony.
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, moon: { enabled: false }, bonus: { enabled: false },
+      recon: true, reconMs: 1, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 5_000_000 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st1 = JSON.parse(g.store.get(K) || "{}");
+    check("(warunek wstępny) bot zna hangar księżyca bazy", !!(st1.hangars || {})["1:100:5|moon"], JSON.stringify(Object.keys(st1.hangars || {})));
+    g.pairs[0].moon = false;                       // Destroy: pasek planet przestaje pokazywać księżyc
+    g.active = { key: "1:100:5", body: "planet" };
+    const { logs } = await run(g, { cfg, loads: 4, ticksPerLoad: 2 });
+    const st2 = JSON.parse(g.store.get(K) || "{}");
+    check("hangar zniszczonego księżyca ZNIKA ze stanu (żaden wpis nie jest wieczny)",
+      !(st2.hangars || {})["1:100:5|moon"], JSON.stringify(Object.keys(st2.hangars || {})));
+    check("… i nie jest to ciche (log mówi, co skasował i dlaczego)",
+      logs.some(m => /nie ma księżyca, a w stanie leżał jego hangar/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 4).join(" | "));
+    const inst54 = load(g, { cfg });
+    const gdzie54 = inst54.api.Situation.fleetAt(inst54.api.Situation.load(), "1:100:5", Date.now());
+    check("… a bot NIE twierdzi już, że flota stoi na tym księżycu",
+      !gdzie54 || gdzie54.body !== "moon", JSON.stringify(gdzie54));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
