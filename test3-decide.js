@@ -2375,6 +2375,39 @@ console.log("\n── 59. SUFITY I NAWIGACJA (audyt 04.09, partia 'sufity-nawiga
     /x\.attack && !x\.mine && !x\.friendly && !x\.isReturn && x\.dst && own\.has\(x\.dst\)/.test(flyMod));
 }
 
+console.log("\n── 60. HEAVY CARGO NIE LECI NA EKSPEDYCJE (owner 07.09, v3.69.0) ──");
+{
+  // Duże transportery zostają w domu. Nazwa typu z żywej gry: `HEAVY_CARGO`
+  // (STAN-I-PLAN: „HEAVY_CARGO×12 341"); ten fork nie zna `LARGE_CARGO` (to nazwa z atrapy E2E).
+  const DEFAULTS = new Function("return {" + bodyOf("const DEFAULTS = {") + "}")();
+  check("60a: domyślna lista wykluczeń ekspedycji zawiera HEAVY_CARGO (i nadal minery/recyklery)",
+    DEFAULTS.expo.excludeTypes.includes("HEAVY_CARGO") && DEFAULTS.expo.excludeTypes.includes("ASTEROID_MINER") && DEFAULTS.expo.excludeTypes.includes("RECYCLER"),
+    JSON.stringify(DEFAULTS.expo.excludeTypes));
+  const cfgD = { expo: { ...ECFG.expo, waves: 1, excludeTypes: DEFAULTS.expo.excludeTypes } };
+  const hang = (ships) => ({ "1:100:5|planet": { total: ships.reduce((n, x) => n + x.qty, 0), at: NOW - 60000, ships } });
+  const p = expoPlan(ebase({ hangars: hang([{ type: "BATTLESHIP", qty: 800 }, { type: "HEAVY_CARGO", qty: 200 }, { type: "SMALL_CARGO", qty: 100 }]) }), cfgD, NOW, null);
+  check("60b: fala ekspedycji NIE zawiera HEAVY_CARGO", !p.skip && !p.ships.some(x => x.type === "HEAVY_CARGO"), JSON.stringify(p));
+  check("60b1: … a reszta hangaru leci w całości (pancerniki + małe transportery)",
+    !p.skip && p.ships.find(x => x.type === "BATTLESHIP")?.qty === 800 && p.ships.find(x => x.type === "SMALL_CARGO")?.qty === 100, JSON.stringify(p.ships));
+  const only = expoPlan(ebase({ hangars: hang([{ type: "HEAVY_CARGO", qty: 5000 }]) }), cfgD, NOW, null);
+  check("60c: same duże transportery w hangarze = skip „brak statków”, nie fala z transporterami", /brak statków/.test(only.skip || "") && !only.ships, JSON.stringify(only));
+  // Schowek z POPRZEDNIEJ wersji: `saveCfg` zapisuje CAŁY CFG, więc w przeglądarce ownera
+  // leży stara lista bez HEAVY_CARGO — ani budowa CFG, ani syncCfg NIE MOGĄ jej przyjąć.
+  const OLD = ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"];
+  const pinCodeOwned = new Function("DEFAULTS", `return (c) => {${bodyOf("const pinCodeOwned = (c) => {")}}`)(DEFAULTS);
+  const buildCfg = (saved) => new Function("Store", "DEFAULTS", "pinCodeOwned", bodyOf("const CFG = (() => {"))({ get: (k, d) => (k === "cfg" ? saved : d) }, DEFAULTS, pinCodeOwned);
+  const built = buildCfg({ expo: { enabled: true, waves: 8, excludeTypes: OLD }, autoRescue: true });
+  check("60d: stara lista ze schowka NIE nadpisuje domyślnej (HEAVY_CARGO wykluczony zaraz po aktualizacji)",
+    built.expo.excludeTypes.includes("HEAVY_CARGO"), JSON.stringify(built.expo.excludeTypes));
+  check("60d1: … a pozostałe ustawienia ze schowka zostają (ekspedycje ON, 8 fal, auto-ratunek)",
+    built.expo.enabled === true && built.expo.waves === 8 && built.autoRescue === true, JSON.stringify(built.expo));
+  check("60d2: przypięcie nie mutuje DEFAULTS (kopia tablicy, nie ta sama referencja)",
+    built.expo.excludeTypes !== DEFAULTS.expo.excludeTypes && JSON.stringify(built.expo.excludeTypes) === JSON.stringify(DEFAULTS.expo.excludeTypes));
+  const syncSrc = bodyOf("const syncCfg = () => {");
+  check("60e: syncCfg (zapis z innej karty) też przypina listę z kodu zaraz po scaleniu",
+    /cfgMerge\(CFG, st\);\s*pinCodeOwned\(CFG\);/.test(syncSrc), syncSrc.slice(0, 200));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

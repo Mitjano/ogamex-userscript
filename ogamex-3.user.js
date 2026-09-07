@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.11
+// @version      3.69.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.11";
+  const VERSION = "3.69.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -307,10 +307,22 @@
       // seriami DOMYŚLNIE WYŁĄCZONA (0 = brak). Włączenie = restMaxMin > 0.
       restMinMin: 0, restMaxMin: 0,
       slotReserve: 1,       // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"],
+      // v3.69.0 (owner 07.09: „nie wysyłaj heavy cargo na ekspedycję"): duże transportery
+      // zostają w domu. Nazwa typu `HEAVY_CARGO` potwierdzona zrzutem z żywej gry
+      // (STAN-I-PLAN: „HEAVY_CARGO×12 341"; ten fork NIE zna `LARGE_CARGO` — ta nazwa żyje
+      // tylko w atrapie E2E). Lista jest WŁASNOŚCIĄ KODU, nie schowka — patrz `pinCodeOwned`.
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "HEAVY_CARGO"],
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
     },
   };
+  // v3.69.0: `expo.excludeTypes` jest własnością KODU. `saveCfg` zapisuje CAŁY obiekt CFG,
+  // a zarówno budowa CFG przy starcie (Object.assign po podobiektach), jak i `syncCfg`
+  // (cfgMerge) podmieniają tablice W CAŁOŚCI — lista wykluczeń zapisana w schowku przez
+  // poprzednią wersję (bez HEAVY_CARGO) nadpisywałaby nową domyślną przy KAŻDYM
+  // przeładowaniu, na zawsze, a panel nie ma pola, którym operator mógłby to odkręcić.
+  // Dopóki pola w panelu nie ma, jedynym źródłem tej listy jest DEFAULTS: przypinamy ją
+  // po każdym scaleniu ze schowkiem (start karty + zapis z innej karty).
+  const pinCodeOwned = (c) => { c.expo.excludeTypes = DEFAULTS.expo.excludeTypes.slice(); return c; };
   // v3.9.0 (audyt): płytki Object.assign nadpisywał CAŁE podobiekty (fs/expo/aster/
   // human/debris) zapisem z przeglądarki — po aktualizacji brakowało nowych pól
   // domyślnych (np. human.breakEveryMinMin → jitter(undefined) = NaN).
@@ -320,6 +332,7 @@
     for (const [k, v] of Object.entries(DEFAULTS)) {
       out[k] = (v && typeof v === "object" && !Array.isArray(v)) ? Object.assign({}, v, saved[k] || {}) : (saved[k] !== undefined ? saved[k] : v);
     }
+    pinCodeOwned(out);   // v3.69.0: lista wykluczeń ekspedycji zawsze z kodu (schowek ma starą)
     return out;
   })();
   // v3.65.0 (owner 03.09 12:18: „ekspedycje miałem wyłączone, a bot wysłał całą serię"):
@@ -358,7 +371,7 @@
       const st = Store.get("cfg", null);
       if (!st) { cfgSavedAt = at; return false; }
       const before = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
-      cfgMerge(CFG, st); cfgSavedAt = at;
+      cfgMerge(CFG, st); pinCodeOwned(CFG); cfgSavedAt = at;
       const after = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
       const diff = Object.keys(before).filter(k => before[k] !== after[k]).map(k => `${{ expo: "ekspedycje", aster: "minery", debris: "złom", bot: "bot", auto: "auto-ratunek" }[k]} ${after[k] ? "ON" : "OFF"}`);
       log(`[CFG] ustawienia zmienione w innej karcie (${new Date(at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}) — przeładowane${diff.length ? ": " + diff.join(", ") : ""}.`, diff.length ? "warn" : "info");

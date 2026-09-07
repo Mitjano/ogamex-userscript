@@ -2312,6 +2312,20 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       logs.filter(m => /przerwany/.test(m)).join(" | "));
   }
 
+  console.log("\n── 58. HEAVY CARGO ZOSTAJE W DOMU: fala ekspedycji bez dużych transporterów (owner 07.09, v3.69.0) ──");
+  {
+    // Schowek z POPRZEDNIEJ wersji: `saveCfg` zapisał cały CFG ze starą listą wykluczeń
+    // (bez HEAVY_CARGO). Po aktualizacji skryptu bot ma mimo to zostawić transportery w domu.
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 40, HEAVY_CARGO: 20 } } });
+    g.store.set("genesis.ogamex.net:ogx3_cfg", JSON.stringify({ expo: { enabled: true, waves: 1, excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"] } }));
+    const { logs } = await run(g, { cfg: { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true } }, loads: 25, ticksPerLoad: 2 });
+    const expo = g.sent.find(s => /Expedition/i.test(s.mission || ""));
+    check("ekspedycja poleciała (mimo starej listy w schowku)", !!expo, JSON.stringify(g.sent.map(s => s.mission)) + " | " + logs.filter(m => /EXPO|LOT/.test(m)).slice(0, 6).join(" | "));
+    check("bez HEAVY_CARGO w składzie fali", !!expo && !(expo.ships.HEAVY_CARGO > 0), JSON.stringify(expo && expo.ships));
+    check("… a pancerniki poleciały w komplecie (fala domykająca bierze resztę hangaru)", !!expo && expo.ships.BATTLESHIP === 40, JSON.stringify(expo && expo.ships));
+    check("duże transportery zostały w hangarze księżyca", (g.hangars["1:100:5|moon"].HEAVY_CARGO || 0) === 20, JSON.stringify(g.hangars["1:100:5|moon"]));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
