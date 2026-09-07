@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.68.8
+// @version      3.68.9
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,8 +32,18 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.68.8";
+  const VERSION = "3.68.9";
   const HOST = location.host;
+  // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
+  // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
+  // wierszach — nie ma tykającego bliźniaka, który by go korygował. Bot stemplował go
+  // chwilą PARSOWANIA (`at: now`), więc wszystkie trzy bramki świeżości paska mierzyły
+  // zawsze zero: ślepy alarm potrafił stać na snapshocie sprzed 10 minut (keepalive
+  // przeładowuje dopiero po tylu), i to dokładnie w klasie ataku, dla której powstał
+  // (fork gubi na liście ataki z WŁASNEGO układu). PAGE_AT to chwila wykonania skryptu
+  // na TEJ stronie — czyli wiek snapshotu. Świadomie NIE `Store.get("last_load")`:
+  // Store to GM storage wspólne dla kart, inna karta nadpisałaby stempel.
+  const PAGE_AT = Date.now();
 
   // ─── Store: klucze per host, JSON ────────────────────────────────────────
   const Store = {
@@ -165,7 +175,9 @@
     //   Owner prosił o „sekundę po ataku"; domyślne 2 s, bo licznik gry ma ziarno
     //   jednej sekundy — przy +1 s co druga wysyłka trafiałaby w niezakończoną
     //   bitwę. Pole jest w panelu, można zejść do 1 s albo podnieść.
-    impact: { enabled: true, leadSec: 60, recyclerOffsetSec: 2, beep: true, title: true },
+    //   goMaxLateSec — po tylu sekundach od uderzenia sygnał „recki teraz" już nie ma
+    //   sensu (v3.68.9: wpis z nocy krzyczał urgentem rano, po restarcie przeglądarki).
+    impact: { enabled: true, leadSec: 60, recyclerOffsetSec: 2, beep: true, title: true, goMaxLateSec: 300 },
     // ── ŚLEPY ALARM (pasek misji jako trzecie źródło prawdy) ──
     // Fork nie pokazuje na liście ruchów ataków z WŁASNEGO układu (2.x: katastrofa
     // 12.08 13:10 i atak 25.08 16:22 — pasek widział, lista nie). Pasek podaje samą
@@ -175,6 +187,12 @@
     barHoldMs: 60e3,        // ile musi trwać nadwyżka, zanim ruszymy flotą
     barMaxAgeMs: 3 * 60e3,  // pasek starszy niż to nie jest dowodem na nic (strona bez paska)
     barSpyHoldMs: 5 * 60e3, // gdy pasek mówi „Type: Spy" — dłużej (sondy wracają w minuty)
+    barSpyMaxExcess: 1,     // …ale tylko dla nadwyżki, którą ta jedna sonda tłumaczy w CAŁOŚCI
+    // v3.68.9: świeży pasek prosto z odpowiedzi listy ruchów (zero nawigacji). WYŁĄCZONE,
+    // dopóki nie potwierdzimy na żywej grze, że tamten licznik jest GLOBALNY, a nie
+    // per-para — licznik per-para zaniżałby liczbę obcych flot i GASIŁ ślepy alarm.
+    // Bot sam podpowie w logu ([LOTY DOM] „…ZAWIERA licznik misji…”), co tam widzi.
+    barFromList: false,
     // ── LIMITY TEMPA (bezpieczeństwo konta) ──
     maxNavPerHour: 240,     // sufit nawigacji/h dla EKONOMII (obrona nigdy nie liczona)
     quietHours: { enabled: true, startHour: 23, endHour: 5 },   // cisza ekonomii, niezależna od FS
@@ -457,7 +475,11 @@
     parse(text) {
       const t = String(text || "");
       const m = t.match(/(\d+)\s*Missions?\s*:/);
-      if (!m) return /No fleet movement/i.test(t) ? { total: 0, own: 0, foreign: 0, barType: null } : null;
+      // v3.68.9 (obrona-wykrywanie#2): `counter` mówi, czy w treści BYŁ licznik
+      // „N Missions:". Odpowiedź listy ruchów jest per-para, więc jej „No fleet
+      // movement" NIE jest dowodem globalnego spokoju — jako pasek wolno użyć
+      // wyłącznie odczytu z licznikiem.
+      if (!m) return /No fleet movement/i.test(t) ? { total: 0, own: 0, foreign: 0, barType: null, counter: false } : null;
       const total = parseInt(m[1]) || 0;
       const win = t.slice(m.index, m.index + 1200).replace(/\s+/g, " ").slice(0, 220);
       const seg = (re) => { const x = win.match(re); return x ? (parseInt(x[1]) || 0) : null; };
@@ -465,7 +487,15 @@
       if (own === null && hostile === null && friendly === null) return null;
       const foreign = hostile !== null ? hostile : Math.max(0, total - (own || 0) - (friendly || 0));
       const barType = ((win.match(/Type\s*:\s*([A-Za-z][A-Za-z ()]{0,24})/) || [])[1] || "").trim() || null;
-      return { total, own: own || 0, foreign, barType, spyType: /Type\s*:\s*(Spy|Espionage)/i.test(win) };
+      // v3.68.9 (audyt 04.09, obrona-wykrywanie#3 P1) — CO SIĘ PSUŁO: `spyType` był
+      // testem na CAŁYM 220-znakowym oknie, więc pasek „Type: Spy | 09:12 Type: Attack"
+      // (albo jakiekolwiek „Spy" w oknie) wydłużał próg ślepego alarmu z 60 s do 5 minut
+      // — czyli standardowy schemat napastnika (sondy przodem, flota za nimi) uciszał
+      // jedyny detektor ataku z własnego układu. Flaga opisuje odtąd POLE „Type:", czyli
+      // najbliższy dolot; jawny rodzaj bojowy w oknie zapisujemy osobno i on ten próg gasi.
+      const attackType = /Type\s*:\s*(Attack|ACS|Destr|Bomb|Missile|Invas|Federation|Group|Hold)/i.test(win);
+      return { total, own: own || 0, foreign, barType, counter: true,
+        spyType: /^(Spy|Espionage)/i.test(barType || ""), attackType };
     },
     read() { return this.parse(document.body.textContent); },
   };
@@ -513,18 +543,53 @@
     //    kolonii" ze zrzutu ownera to loty DOTYKAJĄCE aktywnej pary (cel = baza).
     // WNIOSEK: nie ma znanej drogi, by zobaczyć atak na kolonię spoza aktywnej pary.
     // Jedyny globalny sygnał to licznik na pasku misji (obsługuje go barExcess).
+    // v3.68.9 (audyt 04.09, obrona-wykrywanie#1 P1) — CO SIĘ PSUŁO: awaria listy była
+    // CAŁKOWICIE cicha. HTTP 503 i timeout 8 s zwracały `{ok:false, rows:[]}` bez jednej
+    // linii logu, a `Situation.refresh` czytał tylko `rows` — więc „nie udało się odczytać"
+    // było nieodróżnialne od „nie ma żadnych lotów". Główny detektor ataku mógł być martwy
+    // godzinami, a [GOTOWOŚĆ] meldował „obrona gotowa". Do tego `Session.tried()` stało ZA
+    // bramką `res.ok`, więc nieudana próba nie liczyła się nawet jako próba sesji.
+    listFail(powod) {
+      const st = Store.get("list_fail", null) || { since: Date.now(), n: 0 };
+      Store.set("list_fail", { since: st.since || Date.now(), n: (st.n || 0) + 1, at: Date.now(), why: powod });
+      if (!Once.said("list_fail", 5 * 60e3)) log(`[LOTY] lista ruchów flot nie odpowiada (${powod}) — GŁÓWNY detektor ataków nie widzi NIC; zostaje sam licznik na pasku misji (60 s zwłoki, bez celu).`, "error");
+    },
+    // v3.68.9 (obrona-wykrywanie#2): pasek misji z ODPOWIEDZI listy ruchów byłby najtańszym
+    // źródłem świeżości — ten fetch leci i tak co 20 s, więc dawałby świeży licznik bez
+    // jednej nawigacji. ALE reguła domu brzmi „nieznany markup = zrzut, nie zgadywanie”,
+    // a tu stawką jest KIERUNEK ewentualnej pomyłki: gdyby licznik w tej odpowiedzi był
+    // PER-PARA (jak same wiersze — werdykt wyżej), zaniżałby liczbę obcych flot i gasił
+    // ślepy alarm, czyli jedyny detektor ataku z własnego układu. Dlatego domyślnie tylko
+    // ZRZUCAMY, co tam jest (raz na 6 h), a użycie siedzi za `CFG.barFromList` — do
+    // włączenia dopiero po porównaniu tych liczb z paskiem na żywej stronie.
+    barFrom(doc) {
+      try {
+        const txt = (doc && doc.body && doc.body.textContent) || "";
+        const b = Bar.parse(txt);
+        if (b && b.counter) {
+          if (!Once.said("list_bar_yes", 6 * 3600e3)) log(`[LOTY DOM] odpowiedź listy ruchów ZAWIERA licznik misji (${b.total} Missions: ${b.own} Own, ${b.foreign} Hostile). Jeśli te liczby zgadzają się z paskiem na stronie (czyli są GLOBALNE), można włączyć CFG.barFromList — bot miałby wtedy świeży pasek bez przeładowywania strony.`, "info");
+          return b;
+        }
+        if (!Once.said("list_bar_dom", 6 * 3600e3)) log(`[LOTY DOM] odpowiedź listy ruchów NIE zawiera licznika „N Missions:” — świeży pasek misji muszę brać ze strony. Fragment: ${String(txt).replace(/\s+/g, " ").slice(0, 300)}`, "info");
+      } catch {}
+      return null;
+    },
     async fetchList(own) {
+      let status = 0;
       try {
         const res = await fetchT(this.URL, { headers: { "X-Requested-With": "XMLHttpRequest" } });
-        if (!res.ok) return { ok: false, rows: [] };
+        status = (res && res.status) || 0;
+        Session.tried();                                   // próba liczy się także wtedy, gdy padła
+        if (!res.ok) { this.listFail(`HTTP ${status}`); return { ok: false, rows: [], status }; }
         const html = await res.text();
-        Session.tried();
-        if (looksLoggedOut(res, html)) { Session.lost(); return { ok: false, rows: [], loggedOut: true }; }
+        if (looksLoggedOut(res, html)) { Session.lost(); return { ok: false, rows: [], loggedOut: true, status }; }
         Session.ok();
         const doc = new DOMParser().parseFromString(html, "text/html");
         const trs = [...doc.querySelectorAll("tr[class*='row-mission-type-']")];
-        return { ok: true, rows: trs.map(tr => this.classify(tr, own)) };
-      } catch { return { ok: false, rows: [] }; }
+        Store.set("list_ok_at", Date.now());
+        Store.del("list_fail");
+        return { ok: true, rows: trs.map(tr => this.classify(tr, own)), bar: this.barFrom(doc) };
+      } catch (e) { this.listFail(`brak odpowiedzi (${(e && e.message) || "timeout"})`); return { ok: false, rows: [], status }; }
     },
     readEvents(own) {
       const trs = [...document.querySelectorAll("#fleet-movement-content tr[class*='row-mission-type-'], #layoutFleetMovements tr[class*='row-mission-type-']")];
@@ -627,6 +692,31 @@
 
   // Hangar na stronie /fleet: [data-ship-type][data-ship-quantity].
   const Hangar = {
+    // v3.68.9 (audyt 04.09, obrona-wykrywanie#4 P1) — CO SIĘ PSUŁO: drugi fetch, ten
+    // ODKRĘCAJĄCY przełączenie sesji, leciał w `try {...} catch {}` bez sprawdzenia
+    // `.ok`, bez ponowienia i bez jednej linii logu (przy 503 fetch nawet nie rzuca, więc
+    // catch się nie wykonywał). Sesja zostawała wtedy na obcej kolonii, a
+    // `/home/fleetmovementlist` na tym forku oddaje wiersze WYŁĄCZNIE aktywnej pary —
+    // atak na bazę przestawał istnieć na liście, a `PlanetBar.active()` z zastygłego DOM-u
+    // dalej twierdził, że wszystko gra. Zasada z linii niżej („nie umiem przywrócić → nie
+    // czytam") obowiązywała tylko dla braku kotwicy; teraz obejmuje też NIEUDANE
+    // przywrócenie: ponowienie, a po nim głośny alarm i znacznik do naprawy w refresh().
+    async restoreActive(uuid) {
+      if (!uuid) return false;
+      try { const r = await fetchT(`/fleet?planet=${uuid}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" }); return !!(r && r.ok); }
+      catch { return false; }
+    },
+    async restoreOrShout(uuid, actKey, actBody) {
+      if (await this.restoreActive(uuid)) { Store.del("planet_drift"); return true; }
+      await sleep(600);
+      if (await this.restoreActive(uuid)) { Store.del("planet_drift"); return true; }
+      Store.set("planet_drift", { uuid, key: actKey || null, body: actBody || null, at: Date.now() });
+      if (!Once.said("planet_drift", 10 * 60e3)) {
+        log(`[REKONESANS] NIE przywróciłem Twojej planety [${actKey || "?"}] ${actBody || ""} — sesja gry stoi na obcej kolonii, więc lista ruchów pokazuje TERAZ jej parę, a atak na bazę jest dla niej niewidoczny. Ponawiam przy każdym przebiegu obrony.`, "error");
+        Journal.add("BŁĄD", `Sesja gry została na obcej kolonii (nie wróciłem na [${actKey || "?"}]) — lista ruchów raportuje złą parę, obrona widzi tylko licznik na pasku.`);
+      }
+      return false;
+    },
     // v3.24.0 (właściciel 29.08: „nie chcę, żeby przeskakiwało po planetach"):
     // hangar da się odczytać BEZ ruszania strony operatora — pasek planet ma linki
     // z identyfikatorem planety (?planet=UUID), więc pobieramy tę stronę fetchem
@@ -645,19 +735,19 @@
       // OPERATOR, a po odczycie przywracamy je drugim fetchem. Nie umiemy przywrócić
       // (brak kotwicy aktywnego ciała) → NIE czytamy wcale: lepszy ślepy hangar niż
       // wyrwana planeta.
-      let restore = null;
+      let restore = null, restoreKey = null, restoreBody = null;
       {
         const act = PlanetBar.active();
         if (act && !(act.key === k && act.body === body)) {
           const ea = PlanetBar.anchor(act.key, act.body);
           const ma = ea && ((ea.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i));
           if (!ma) return null;
-          if (ma[1] !== m[1]) restore = ma[1];
+          if (ma[1] !== m[1]) { restore = ma[1]; restoreKey = act.key; restoreBody = act.body; }
         }
       }
       try {
         const r = await fetchT(`/fleet?planet=${m[1]}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
-        if (restore) { try { await fetchT(`/fleet?planet=${restore}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" }); restore = null; } catch {} }
+        if (restore) { await this.restoreOrShout(restore, restoreKey, restoreBody); restore = null; }
         if (!r.ok) return null;
         const html = await r.text();
         if (looksLoggedOut(r, html)) { Session.lost(); return null; }
@@ -678,7 +768,7 @@
       } catch (e) {
         // Główny fetch mógł dojść do serwera, zanim rzucił (timeout w drodze powrotnej)
         // — wybór operatora i tak przywracamy.
-        if (restore) { try { await fetchT(`/fleet?planet=${restore}`, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" }); } catch {} }
+        if (restore) { await this.restoreOrShout(restore, restoreKey, restoreBody); }
         return null;
       }
     },
@@ -770,7 +860,9 @@
       }
       const active = PlanetBar.active(); if (active) s.active = active;
       const own = PlanetBar.ownKeys();
-      const bar = Bar.read(); if (bar) s.bar = { ...bar, at: now };
+      // v3.68.9 (obrona-wykrywanie#2): stempel = wiek RENDERU strony (PAGE_AT), nie chwila
+      // parsowania. `readAt` zostaje do diagnostyki: mówi, kiedy bot ten snapshot czytał.
+      const bar = Bar.read(); if (bar) s.bar = { ...bar, at: PAGE_AT, readAt: now };
       // v3.68.0: FS stracił własne okno (Athena: JEDNA godzina powrotu, wylatuje o
       // dowolnej porze niezależnie od zegara, nie tylko nocą) — s.night zniknęło,
       // zastąpione przez fsReturnAt (NASTĘPNE wystąpienie skonfigurowanej godziny
@@ -779,7 +871,33 @@
       s.fsReturnAt = fsReturnAt(CFG.fs, new Date(now));
       Rows.ensureOpen();                // zwinięty pasek misji = zero współrzędnych (v3.36.0)
       const evRows = Rows.readEvents(own);
-      const list = (Session.lostRecently() && !Session.retryDue()) ? { ok: false, rows: [] } : await Rows.fetchList(own);
+      // v3.68.9 (obrona-wykrywanie#4): dopóki wisi znacznik `planet_drift`, sesja stoi na
+      // obcej kolonii i lista ruchów raportuje ZŁĄ parę. Naprawiamy PRZED odczytem listy,
+      // a dopóki się nie uda — mówimy o tym wprost (panel, [GOTOWOŚĆ]).
+      s.listUntrusted = false;
+      {
+        const d = Store.get("planet_drift", null);
+        if (d && d.uuid && now - (d.at || 0) < 30 * 60e3) {
+          // ponowienie raz na minutę, nie przy każdym przebiegu — nieudany fetch co 20 s
+          // przez pół godziny to 90 żądań, czyli ślad aktywności bez żadnego pożytku
+          if (now - (d.retryAt || 0) < 60e3) s.listUntrusted = true;
+          else if (await Hangar.restoreActive(d.uuid)) { Store.del("planet_drift"); log(`[REKONESANS] przywróciłem planetę operatora [${d.key || "?"}] — lista ruchów znów pokazuje właściwą parę.`, "success"); }
+          else { Store.set("planet_drift", { ...d, retryAt: now }); s.listUntrusted = true; }
+        } else if (d) Store.del("planet_drift");
+      }
+      const skipList = Session.lostRecently() && !Session.retryDue();
+      const list = skipList ? { ok: false, rows: [], skipped: true } : await Rows.fetchList(own);
+      // v3.68.9 (obrona-wykrywanie#2): pasek z odpowiedzi listy jest ŚWIEŻY (fetch co 20 s),
+      // więc bije snapshot ze strony, która potrafi wisieć 10 minut. Bierzemy go tylko
+      // z licznikiem („N Missions:") — patrz Rows.barFrom.
+      if (CFG.barFromList && list.bar && list.bar.counter) s.bar = { ...list.bar, at: now, readAt: now, src: "lista" };
+      // v3.68.9 (obrona-wykrywanie#1): stempel ostatniego UDANEGO odczytu listy. Bez niego
+      // „nie udało się odczytać" było nieodróżnialne od „nie ma lotów" — także dla
+      // defenceReadiness, które meldowało „obrona gotowa" nad martwym detektorem.
+      if (list.ok) s.listOkAt = now;
+      else if (!s.listOkAt) s.listOkAt = Store.get("list_ok_at", 0) || now;   // pierwszy przebieg dostaje karencję, nie alarm
+      if (!list.ok && !list.skipped && !Session.lostRecently() && now - (s.listOkAt || 0) > 120e3 && !Once.said("list_blind", 15 * 60e3))
+        Journal.add("BŁĄD", `Lista ruchów flot nie odpowiada od ${Math.round((now - (s.listOkAt || 0)) / 60000)} min — ataki widzę już tylko po liczniku na pasku misji (60 s zwłoki, bez celu). Sprawdź grę.`);
       // v3.50.0: obie sondy diagnostyczne USUNIĘTE — werdykty ostateczne w komentarzu
       // przy Rows (sonda listy przestawiała ownerowi planetę w sesji przy każdej próbie).
       Session.maybeRecover();
@@ -840,7 +958,12 @@
           // wiersz widziany na liście w ostatnich 30 s jest ŻYWYM dowodem — pasek
           // sprzed ataku nie może go unieważnić. Zdejmujemy tylko zagrożenia, których
           // lista nie potwierdziła od ≥30 s.
-          s.threats = (s.threats || []).filter(t => t.source === "sim" || now - (t.lastSeenAt || 0) < 30e3);
+          // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0, drugi skutek fałszywego wieku):
+          // snapshot paska SPRZED ataku nie może być dowodem zawrotu. Odkąd `bar.at` mówi
+          // prawdę, wolno unieważnić tylko zagrożenie, które istniało JUŻ w chwili renderu
+          // tego paska — inaczej świeżo wykryty atak (wiersz, którego lista chwilowo nie
+          // potwierdza) znikał ze stanu, a decide() zawracał ucieczkę pod nadlatującą falę.
+          s.threats = (s.threats || []).filter(t => t.source === "sim" || now - (t.lastSeenAt || 0) < 30e3 || (s.bar.at || 0) <= (t.seenAt || 0));
           if (s.threats.length < before) log(`[OBRONA] pasek misji czysty od ≥60 s — napastnik ZAWRÓCIŁ (${before - s.threats.length} zagrożeń zdjętych przed terminem dolotu). Ucieczka może wracać.`, "success");
         }
       }
@@ -1094,8 +1217,16 @@
     const excess = Math.max(0, (bar.foreign || 0) - live.length);
     if (excess <= 0) return { active: false, count: 0, since: 0 };
     const since = (prev && prev.count > 0 && prev.since) ? prev.since : (bar.at || now);
-    const hold = bar.spyType ? (cfg.barSpyHoldMs || 5 * 60e3) : (cfg.barHoldMs || 60e3);
-    return { active: now - since >= hold, count: excess, since, spyType: !!bar.spyType, waitMs: Math.max(0, hold - (now - since)) };
+    // v3.68.9 (audyt 04.09, obrona-wykrywanie#3 P1) — CO SIĘ PSUŁO: wydłużony próg zapadał
+    // od SAMEJ obecności „Spy" w oknie paska, choć pole „Type:" opisuje JEDNĄ misję
+    // (najbliższy dolot), a nie rodzaj całej nadwyżki. Jedna sonda uciszała więc reakcję na
+    // WSZYSTKIE nierozpoznane obce floty — także na jawne „N Hostile" — czyli dokładnie na
+    // schemat „sondy przodem, flota tuż za nimi". Próg 5 min należy się wyłącznie
+    // nadwyżce, którą ta sonda tłumaczy w całości: jeden nieprzypisany lot, najbliższy
+    // dolot rodzaju sondującego i ani śladu rodzaju bojowego w oknie.
+    const spyHold = !!bar.spyType && !bar.attackType && excess <= (cfg.barSpyMaxExcess ?? 1);
+    const hold = spyHold ? (cfg.barSpyHoldMs || 5 * 60e3) : (cfg.barHoldMs || 60e3);
+    return { active: now - since >= hold, count: excess, since, spyType: !!bar.spyType, spyHold, waitMs: Math.max(0, hold - (now - since)) };
   }
 
   // ═══ decide — CZYSTA FUNKCJA ════════════════════════════════════════════
@@ -1570,8 +1701,19 @@
         if (dest) actions.push({ kind: "fly", fromKey: t.k, fromBody: t.f.body, toKey: dest.key, toBody: dest.body, why: "ŚLEPY ALARM (pasek widzi atak, listy brak)", speed: cfg.airSpeedPct, recall: true, air: true, blind: true, saveTotal: t.f.total, recallAt: now + 10 * 60e3 });
         else alerts.push({ key: t.k, level: "error", msg: "ŚLEPY ALARM, ale nie mam dokąd uciec — reaguj ręcznie" });
       } else {
-        alerts.push({ key: "?", level: "warn", msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych, ale nie wiem, gdzie stoi flota` });
+        // v3.68.9 (audyt 04.09, obrona-wykrywanie#1): ten wariant nie miał ŻADNEJ flagi
+        // pusha, więc „widzę atak, ale nie wiem, gdzie stoi flota" kończyło jako cicha
+        // linia w logu — najgorszy możliwy moment na milczenie.
+        alerts.push({ key: "?", level: "error", push: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych, ale nie wiem, gdzie stoi flota — reaguj ręcznie` });
       }
+    }
+    // v3.68.9 (audyt 04.09, obrona-wykrywanie#3 P1): wydłużony próg „Type: Spy" ma prawo
+    // wstrzymać RATUNEK w ciemno (fałszywa ewakuacja na każdą sondę byłaby droższa), ale
+    // nie ma prawa wstrzymać INFORMACJI. Po zwykłym progu (60 s) właściciel dostaje push,
+    // więc pięć minut wstrzymania nigdy nie jest pięcioma minutami ciszy.
+    else if (s.barExcess && s.barExcess.count > 0 && s.barExcess.spyHold && now - (s.barExcess.since || now) >= (cfg.barHoldMs || 60e3)) {
+      alerts.push({ key: "pasek", level: "error", push: true, throttleMs: 5 * 60e3,
+        msg: `pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — ratunku w ciemno JESZCZE nie wysyłam, bo najbliższy dolot na pasku to sonda. Jeśli za sondą idzie flota, ratuj ręcznie` });
     }
     // v3.7.0 (audyt 28.08): zagrożenie na kolonię, której NIE MA na pasku planet
     // (strona bez sidebara, świeża kolonia, literówka w koordach) nie może zniknąć
@@ -3713,6 +3855,13 @@
         if (!wLocie) braki.push(`na [${guard}] nie widzę żadnej floty (cała w powietrzu?)`);
       }
     }
+    // v3.68.9 (audyt 04.09, obrona-wykrywanie#1/#2/#4): samokontrola sprawdzała osiem
+    // rzeczy i ani jednej o tym, czy bot w ogóle COŚ WIDZI. Martwa lista ruchów, pasek
+    // sprzed kwadransa i sesja zaparkowana na obcej kolonii dawały pełne „obrona gotowa".
+    const lo = s.listOkAt || Store.get("list_ok_at", 0) || 0;
+    if (!Session.lostRecently() && now - lo > 2 * 60e3) braki.push(`lista ruchów flot nie odpowiada od ${Math.round((now - lo) / 60000)} min — nie widzę ataków, zostaje sam licznik na pasku`);
+    if (s.listUntrusted) braki.push("sesja gry stoi na obcej kolonii (nie udało się przywrócić Twojej planety) — lista ruchów pokazuje ZŁĄ parę");
+    if (!s.bar || now - (s.bar.at || 0) > (CFG.barMaxAgeMs || 3 * 60e3)) braki.push(`pasek misji ${s.bar ? `sprzed ${Math.round((now - (s.bar.at || 0)) / 60000)} min` : "nieodczytany"} — ślepy alarm (ataki z własnego układu) NIE działa`);
     if (Object.keys(s.pairs || {}).length < 2) braki.push("jedna kolonia — nie ma dokąd uciec");
     if (Store.get("hb_ok", null) === false) braki.push("strażnik (watchdog) nie odpowiada — zawieszona karta nie zostanie ożywiona");
     return braki;
@@ -3936,6 +4085,32 @@
       // zablokowany karencją albo dławikiem. Stara bramka gasiła wtedy całą ekonomię
       // (Expo/Aster/Debris/Moon/Recon) bezterminowo. FS nie blokuje ekonomii; blokuje ją
       // dopiero FAKTYCZNIE trwająca misja (`Fly.mission()`), czyli lot, który wystartował.
+      // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0, druga połowa poprawki): odkąd wiek
+      // paska jest UCZCIWY, snapshot naprawdę starzeje się szybciej (3 min), niż keepalive
+      // przeładowuje stronę (10 min) — bez tego bot po prostu tracił ślepy alarm zamiast
+      // stać na kłamstwie. To jest DZIŚ jedyne źródło świeżości: tańsza droga (pasek prosto
+      // z odpowiedzi listy ruchów, Rows.barFrom) czeka wyłączona za `CFG.barFromList`, aż
+      // potwierdzimy na żywo, że tamten licznik jest globalny. Mechanizm z 2.x („ślepy
+      // alarm sam idzie po wzrok"), ale
+      // wyzwalany WIEKIEM strony, nie brakiem paska. Sufit: 3 próby, potem pół godziny
+      // przerwy i jedno głośne zdanie — pętla nawigacji musi mieć koniec (CLAUDE.md).
+      const barAge = Date.now() - ((s.bar && s.bar.at) || 0);
+      // (…i nigdy nie wyrywamy strony operatorowi, który właśnie gra — lekcja v3.47.0.
+      //  Gdy klika, ma pasek misji przed oczami sam.)
+      if (barAge > (CFG.barMaxAgeMs || 3 * 60e3) && CFG.barExcess && !Fly.mission() && !Session.lostRecently() && !Human.playing()
+          && !(s.threats || []).some(t => t.attack && t.arriveAt > Date.now())
+          && !actions.some(a => a.kind === "fly" || a.kind === "recall" || a.kind === "recon")) {
+        const bn = Store.get("bar_nav", null) || { at: 0, n: 0 };
+        const wiek = Date.now() - (bn.at || 0);
+        if (wiek > 30 * 60e3) { bn.n = 0; }                        // po pół godzinie próbujemy od nowa
+        if (bn.n >= 3) {
+          if (!Once.said("bar_nav_dead", 30 * 60e3)) log(`[OBRONA] trzy przeładowania i nadal nie mam świeżego paska misji (ostatni sprzed ${Math.round(barAge / 60000)} min) — przestaję kręcić stroną na pół godziny. Ślepy alarm jest w tym czasie WYŁĄCZONY.`, "error");
+        } else if (wiek > 150e3) {
+          Store.set("bar_nav", { at: Date.now(), n: (bn.n || 0) + 1 });
+          Nav.go("/home", `obrona: pasek misji sprzed ${Math.round(barAge / 60000)} min — idę po świeży wzrok`);
+          return;
+        }
+      } else if (barAge < (CFG.barMaxAgeMs || 3 * 60e3) && (Store.get("bar_nav", null) || {}).n) Store.set("bar_nav", { at: 0, n: 0 });
       if (!Fly.mission() && !actions.some(a => (a.kind === "fly" && !a.fs) || a.kind === "recall")) {
         try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Moon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
         catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
@@ -4189,7 +4364,20 @@
           Notifier.speak(`Uderzenie za ${s} sekund`, 1);
           this.beep(3);
         }
-        if (!v.go && now >= goAt && this.ostatnia(v)) {
+        // v3.68.9 (audyt 04.09, obrona-wykrywanie#5 P2) — CO SIĘ PSUŁO: sygnał „recki teraz"
+        // wyzwalał sam warunek „minęła godzina uderzenia", BEZ górnej granicy spóźnienia.
+        // Flagi `lead`/`go` zapisują się dopiero po wystrzale, a `prune()` (30 min po
+        // dolocie) woła wyłącznie `note()`, czyli tylko wtedy, gdy w przebiegu był obcy
+        // wiersz — wpis zostawiony w magazynie przy zamkniętej karcie nie miał więc ani
+        // flagi, ani terminu ważności (a to łamie regułę „żaden wpis stanu nie jest
+        // wieczny"). Po restarcie przeglądarki rano bot krzyczał urgentem o fali, która
+        // spadła w nocy, i zużywał zaufanie do jedynego kanału prawdziwego alarmu.
+        const spoznienie = now - goAt;
+        const maxSpoznienie = Math.max(0, cfg.goMaxLateSec ?? 300) * 1000;
+        if (!v.go && spoznienie >= 0 && spoznienie > maxSpoznienie) {
+          v.go = true; zm = true;   // wpis obsłużony: nie krzyknie o tym przy następnym tiku
+          if (!Once.said(`imp_late|${id}`, 6 * 3600e3)) log(`[ZEGAR] uderzenie w [${v.dst}] o ${Clock.hms(v.at)} minęło ${Math.round(spoznienie / 60000)} min temu (karta była zamknięta) — NIE wołam o recki, złomu tam dawno nie ma.`, "info");
+        } else if (!v.go && now >= goAt && this.ostatnia(v)) {
           v.go = true; zm = true;
           log(`[ZEGAR] UDERZENIE w [${v.dst}] o ${Clock.hms(v.at)} — RECKI TERAZ (złom leży w [${v.dst}]).`, "success");
           Notifier.push("🛰 RECKI TERAZ", `Uderzenie w [${v.dst}] o ${Clock.hms(v.at)} — wysyłaj recyklery na pole złomu.`, "urgent", "recycle");
@@ -4759,7 +4947,7 @@
       // ── szczegóły (zwinięte): pełny stan jak w 3.10.x ────────────────────
       const fleetsTxt = Object.entries(s.hangars || {}).filter(([, h]) => h.total > 0 && now - h.at < 48 * 3600e3).sort((a, b) => b[1].total - a[1].total).slice(0, 4).map(([k, h]) => `${k.replace("|", " ")}: ${h.total.toLocaleString("pl-PL")} (${new Date(h.at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })})`).join("\n  ");
       const fl = flights.map(f => `${f.kind} [${f.fromKey}]→[${f.toKey}] ${f.phase}${f.recallAt ? " zawrót " + new Date(f.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : ""}`).join("\n  ");
-      $("ogx3-status").textContent = `Aktywne: ${s.active ? `${s.active.body} [${s.active.key}]` : "?"} · pary: ${Object.keys(s.pairs || {}).length} · pasek: ${s.bar ? `${s.bar.foreign} obcych${s.bar.barType ? " (" + s.bar.barType + ")" : ""}` : "?"}\nZagrożenia: ${th.length ? th.map(t => `${t.attack ? "ATAK" : "sonda"} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - now) / 1000)}s`).join("; ") : "brak"}\nHangary:\n  ${fleetsTxt || "(wejdź na Fleet)"}\nLoty: ${fl ? "\n  " + fl : "brak"}${m ? `\nMISJA: ${m.step} [${m.fromKey}]→[${m.toKey}]` : ""}${Session.lostRecently() ? "\nSESJA WYGASŁA" : ""}`;
+      $("ogx3-status").textContent = `Aktywne: ${s.active ? `${s.active.body} [${s.active.key}]` : "?"} · pary: ${Object.keys(s.pairs || {}).length} · pasek: ${s.bar ? `${s.bar.foreign} obcych${s.bar.barType ? " (" + s.bar.barType + ")" : ""} ${(() => { const w = Math.round((now - (s.bar.at || 0)) / 1000); return w > Math.round((CFG.barMaxAgeMs || 3 * 60e3) / 1000) ? `⚠ STARY (sprzed ${Math.round(w / 60)} min)` : `(sprzed ${w} s)`; })()}` : "?"}${s.listUntrusted ? " · ⚠ SESJA NA OBCEJ KOLONII" : ""}\nZagrożenia: ${th.length ? th.map(t => `${t.attack ? "ATAK" : "sonda"} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - now) / 1000)}s`).join("; ") : "brak"}\nHangary:\n  ${fleetsTxt || "(wejdź na Fleet)"}\nLoty: ${fl ? "\n  " + fl : "brak"}${m ? `\nMISJA: ${m.step} [${m.fromKey}]→[${m.toKey}]` : ""}${Session.lostRecently() ? "\nSESJA WYGASŁA" : ""}`;
     },
     renderLog() {
       const el = document.getElementById("ogx3-log");

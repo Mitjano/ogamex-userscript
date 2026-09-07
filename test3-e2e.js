@@ -2044,6 +2044,97 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       (st2.flights || []).some(x => x.fromBody === "planet"), JSON.stringify(st2.flights));
   }
 
+  console.log("\n── 50. WIEK PASKA MISJI = WIEK STRONY, nie chwila parsowania (v3.68.9, obrona-wykrywanie#2 P0) ──");
+  {
+    // Do 3.68.8 KAŻDY przebieg stemplował pasek `at: now`, więc wszystkie trzy bramki
+    // świeżości mierzyły zawsze zero — bot mógł siedzieć na stronie z 02:14 i twierdzić,
+    // że „przed chwilą" widział 0 obcych flot. Sprawdzamy to jedynym uczciwym sposobem:
+    // DWA odczyty w TEJ SAMEJ, niezmienionej karcie, między nimi upływ czasu.
+    const g = new Game();
+    const inst = load(g, { cfg: { autoRescue: true, expo: { enabled: false }, recon: false } });
+    await inst.api.Situation.refresh();
+    const at1 = (inst.api.Situation.load().bar || {}).at;
+    await new Promise(r => setTimeout(r, 300));
+    await inst.api.Situation.refresh();
+    const at2 = (inst.api.Situation.load().bar || {}).at;
+    check("pasek NIE odmładza się przy każdym odczycie (stempel = załadowanie strony)", !!at1 && at1 === at2, `${at1} vs ${at2}`);
+    check("… więc bot widzi realny wiek snapshotu, a nie zawsze zero", Date.now() - at2 >= 250, String(Date.now() - at2));
+    const s = inst.api.Situation.load();
+    check("odczyt niesie też chwilę parsowania (diagnostyka), ale decyduje wiek strony", (s.bar.readAt || 0) > s.bar.at, JSON.stringify(s.bar));
+  }
+
+  console.log("\n── 51. STARY PASEK: bot idzie po świeży wzrok, zamiast stać na kłamstwie (v3.68.9, obrona-wykrywanie#2) ──");
+  {
+    // Odkąd wiek jest uczciwy, pasek naprawdę się starzeje (3 min) szybciej, niż keepalive
+    // przeładowuje stronę (10 min). Bez tej drugiej połowy poprawki bot po prostu traciłby
+    // ślepy alarm w nocy — czyli w klasie ataku, dla której ten alarm powstał.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
+    const g = new Game();
+    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    g.hideBar = true;                       // strona bez paska: stary odczyt zostaje w stanie
+    advance(g, 12 * 60e3);
+    const przed = g.navigations.length;
+    const { logs } = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    check("bot przeładowuje stronę po świeży pasek", g.navigations.length > przed && g.navigations.some(n => /\/home/.test(String(n))), JSON.stringify(g.navigations.slice(-4)));
+    check("i mówi w logu, PO CO tam idzie (żadna nawigacja nie jest cicha)", logs.some(m => /idę po świeży wzrok/.test(m)), logs.filter(m => /bot:|OBRONA/.test(m)).slice(0, 5).join(" | "));
+    check("mimo braku wzroku nie ewakuuje floty na ślepo", g.sent.length === 0, JSON.stringify(g.sent));
+  }
+
+  console.log("\n── 52. AWARIA LISTY RUCHÓW NIE MOŻE BYĆ CICHA (v3.68.9, obrona-wykrywanie#1 P1) ──");
+  {
+    // Do 3.68.8 `fetchList` zwracał {ok:false, rows:[]} bez linii logu, a refresh czytał
+    // tylko `rows` — „nie udało się odczytać" było nieodróżnialne od „nie ma lotów",
+    // więc główny detektor ataku mógł być martwy godzinami przy meldunku „obrona gotowa".
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
+    const g = new Game();
+    const inst = load(g, { cfg });
+    await new Promise(r => setTimeout(r, 200));         // startowy przebieg bota ma się skończyć PRZED podmianą fetcha
+    const realFetch = inst.w.fetch;
+    inst.w.fetch = async (u) => (/fleetmovementlist/.test(String(u)) ? { ok: false, status: 503, url: String(u), text: async () => "" } : realFetch(u));
+    await inst.api.Situation.refresh();
+    await new Promise(r => setTimeout(r, 80));          // log zapisuje się z debouncem (800 ms / 150 w atrapie)
+    const logi = () => (JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]")).map(e => e.msg);
+    check("HTTP 503 na liście ruchów zostawia ślad w logu", logi().some(m => /lista ruchów flot nie odpowiada/.test(m)), logi().slice(0, 4).join(" | "));
+    check("i zapisuje licznik porażek (stan do diagnozy, nie cisza)", !!JSON.parse(g.store.get("genesis.ogamex.net:ogx3_list_fail") || "null"), g.store.get("genesis.ogamex.net:ogx3_list_fail"));
+    // stempel ostatniego UDANEGO odczytu cofamy o 20 min: detektor milczy od dawna
+    const K = "genesis.ogamex.net:ogx3_situation";
+    { const st = JSON.parse(g.store.get(K) || "{}"); st.listOkAt = Date.now() - 20 * 60e3; g.store.set(K, JSON.stringify(st)); }
+    g.pushes = [];
+    await inst.api.Situation.refresh();
+    check("po dwóch minutach ciszy detektora idzie push na telefon", (g.pushes || []).some(p => /BŁĄD/.test(String(p.title))), JSON.stringify(g.pushes));
+    inst.w.fetch = realFetch;
+    await inst.api.Situation.refresh();
+    check("gdy lista znów odpowiada, stempel udanego odczytu jest świeży", Date.now() - (inst.api.Situation.load().listOkAt || 0) < 5000, String(inst.api.Situation.load().listOkAt));
+    check("… i licznik porażek jest skasowany", JSON.parse(g.store.get("genesis.ogamex.net:ogx3_list_fail") || "null") === null, g.store.get("genesis.ogamex.net:ogx3_list_fail"));
+  }
+
+  console.log("\n── 53. NIEUDANE PRZYWRÓCENIE PLANETY OPERATORA (v3.68.9, obrona-wykrywanie#4 P1) ──");
+  {
+    // Drugi fetch scanRemote (ten odkręcający przełączenie sesji) leciał w pustym catch,
+    // bez sprawdzenia `.ok`. Sesja zostawała na obcej kolonii, a lista ruchów — która na
+    // tym forku pokazuje TYLKO aktywną parę — raportowała od tej chwili złą parę.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
+    const g = new Game();
+    const inst = load(g, { cfg });
+    await new Promise(r => setTimeout(r, 200));         // startowy przebieg bota ma się skończyć PRZED podmianą fetcha
+    const realFetch = inst.w.fetch;
+    inst.w.fetch = async (u) => (/^\/fleet\?planet=/.test(String(u)) ? { ok: false, status: 503, url: String(u), text: async () => "" } : realFetch(u));
+    g.pushes = [];
+    const ok = await inst.api.Hangar.restoreOrShout("uuid-1:100:5", "1:100:5", "moon");
+    await new Promise(r => setTimeout(r, 80));          // log zapisuje się z debouncem
+    const logi = () => (JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]")).map(e => e.msg);
+    check("dwie nieudane próby → funkcja mówi WPROST, że nie wróciła", ok === false, String(ok));
+    check("zostaje znacznik `planet_drift` do naprawy przy następnym przebiegu",
+      (JSON.parse(g.store.get("genesis.ogamex.net:ogx3_planet_drift") || "null") || {}).uuid === "uuid-1:100:5", g.store.get("genesis.ogamex.net:ogx3_planet_drift"));
+    check("awaria NIE jest cicha — log", logi().some(m => /NIE przywróciłem Twojej planety/.test(m)), logi().slice(0, 4).join(" | "));
+    check("… i push na telefon", (g.pushes || []).some(p => /BŁĄD/.test(String(p.title))), JSON.stringify(g.pushes));
+    // naprawa: gra znów odpowiada, więc najbliższy refresh() sam odkręca rozjazd
+    inst.w.fetch = realFetch;
+    const s = await inst.api.Situation.refresh();
+    check("gdy gra znów odpowiada, refresh() sam przywraca planetę i kasuje znacznik",
+      JSON.parse(g.store.get("genesis.ogamex.net:ogx3_planet_drift") || "null") === null && !s.listUntrusted, g.store.get("genesis.ogamex.net:ogx3_planet_drift"));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

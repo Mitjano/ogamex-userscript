@@ -182,5 +182,32 @@ console.log("\n---- 6. panel pokazuje GODZINE, nie samo odliczanie");
   ck("po ustaniu zagrozenia pasek dolotu znika", pasek.style.display === "none", pasek.style.display);
 }
 
+console.log("\n---- 7. wpis z zamknietej karty NIE krzyczy 'RECKI TERAZ' (v3.68.9, obrona-wykrywanie#5)");
+{
+  // Flagi lead/go zapisuja sie dopiero po wystrzale, a prune() (30 min po dolocie) wola
+  // WYLACZNIE note() — czyli tylko wtedy, gdy w przebiegu byl obcy wiersz. Wpis
+  // zostawiony w magazynie przy zamknietej karcie nie mial wiec ani flagi, ani terminu
+  // waznosci, a alarms() nie mial gornej granicy spoznienia: po restarcie przegladarki
+  // rano szedl urgentowy push o fali, ktora spadla w nocy.
+  const pushe = [];
+  w.GM_xmlhttpRequest = (o) => { pushe.push(String((o && o.headers && o.headers.Title) || "")); if (o && o.onload) o.onload({ status: 200 }); };
+
+  Impact.save({});
+  Impact.anchor("nocny", Date.now() - 6 * 3600e3, false, { attack: true, dst: "1:217:6", dstBody: "moon", type: "ATTACK" });
+  Impact.alarms();
+  ck("uderzenie sprzed 6 h nie wysyla pusha 'RECKI TERAZ'", !pushe.some(t => /RECKI/.test(t)), JSON.stringify(pushe));
+  ck("...i wpis jest oznaczony jako obsluzony (nie krzyknie przy nastepnym tiku)", Impact.all().nocny.go === true, JSON.stringify(Impact.all().nocny));
+
+  Impact.save({}); pushe.length = 0;
+  Impact.anchor("swiezy", Date.now() - 3000, false, { attack: true, dst: "1:217:6", dstBody: "moon", type: "ATTACK" });
+  Impact.alarms();
+  ck("uderzenie sprzed 3 s NADAL wola o recki (poprawka nie zabija mechanizmu)", pushe.some(t => /RECKI/.test(t)), JSON.stringify(pushe));
+
+  Impact.save({}); pushe.length = 0;
+  Impact.anchor("granica", Date.now() - 4 * 60e3, false, { attack: true, dst: "1:217:6", dstBody: "moon", type: "ATTACK" });
+  Impact.alarms();
+  ck("cztery minuty po uderzeniu recki jeszcze maja sens", pushe.some(t => /RECKI/.test(t)), JSON.stringify(pushe));
+}
+
 console.log(fails ? `\nNIE: ${fails} sprawdzen padlo` : "\nZEGAR OK - wszystko przeszlo");
 process.exit(fails ? 1 : 0);

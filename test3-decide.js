@@ -645,11 +645,23 @@ console.log("\n── 19e. GOTOWOŚĆ OBRONY I PODSUMOWANIE PO PRZERWIE (v3.45.0
   const kfn = (c) => c && Number.isFinite(c.galaxy) ? `${c.galaxy}:${c.system}:${c.position}` : (typeof c === "string" ? c : null);
   const StoreOk = { get: (k, d = null) => (k === "hb_ok" ? true : d) };
   const R = (cfg, sess, notif, sit) => readiness(cfg || CFG_OK, sess || Sess, notif || Notif, sit || Sit, kfn, StoreOk);
+  // v3.68.9 (audyt 04.09, obrona-wykrywanie#1/#2/#4): gotowość obejmuje teraz także to,
+  // czy bot COKOLWIEK widzi — stąd w stanie wzorcowym świeży pasek i żywa lista ruchów.
   const stan = () => ({ active: { key: "3:272:7", body: "moon" },
     pairs: { "3:272:7": { hasMoon: true }, "3:272:2": { hasMoon: true } },
+    bar: { foreign: 0, total: 0, at: Date.now() - 5e3 }, listOkAt: Date.now() - 5e3,
     hangars: { "3:272:7|moon": { total: 1000, at: Date.now() - 60e3 } } });
 
   check("wszystko w porządku → zero braków", R()(stan()).length === 0, JSON.stringify(R()(stan())));
+  const martwaLista = stan(); martwaLista.listOkAt = Date.now() - 20 * 60e3;
+  check("martwa lista ruchów NIE może przejść jako 'obrona gotowa'",
+    /lista ruchów flot nie odpowiada/.test(R()(martwaLista).join("|")), JSON.stringify(R()(martwaLista)));
+  const staryPasek = stan(); staryPasek.bar.at = Date.now() - 15 * 60e3;
+  check("pasek misji sprzed 15 min = ślepy alarm nie działa i bot to mówi",
+    /pasek misji sprzed/.test(R()(staryPasek).join("|")), JSON.stringify(R()(staryPasek)));
+  const drift = stan(); drift.listUntrusted = true;
+  check("sesja zaparkowana na obcej kolonii jest zgłaszana",
+    /sesja gry stoi na obcej kolonii/i.test(R()(drift).join("|")), JSON.stringify(R()(drift)));
   check("bot wyłączony jest zgłaszany", /bot WYŁĄCZONY/.test(R({ ...CFG_OK, enabled: false })(stan()).join("|")));
   check("auto-ratunek OFF jest zgłaszany", /auto-ratunek OFF/.test(R({ ...CFG_OK, autoRescue: false })(stan()).join("|")));
   check("push OFF jest zgłaszany (bez niego nie ma drugiej linii obrony)",
@@ -1205,7 +1217,14 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
 // ciała PRZYWRÓĆ wybór operatora drugim fetchem; nie umiesz przywrócić → nie czytaj;
 // gdy operator gra — odczyty w tle w ogóle czekają.
 {
-  check("scanRemote przywraca planetę operatora po odczycie (i przy błędzie)", /let restore = null/.test(src) && (src.match(/\/fleet\?planet=\$\{restore\}/g) || []).length >= 2);
+  // v3.68.9 (audyt 04.09, obrona-wykrywanie#4): przywrócenie ma teraz WŁASNĄ funkcję —
+  // sprawdza wynik, ponawia i krzyczy — więc zamiast pilnować kształtu regexem
+  // URUCHAMIAMY ją. (Dawna asercja liczyła dwa wystąpienia `/fleet?planet=${restore}`
+  // i przechodziła nad kodem, który wynik drugiego fetcha WYRZUCAŁ do kosza.)
+  // (zachowanie przy NIEUDANYM przywróceniu jest uruchamiane na prawdziwym bocie —
+  //  test3-e2e.js scenariusz 42.)
+  check("scanRemote przywraca planetę operatora po odczycie ORAZ przy błędzie",
+    (src.match(/this\.restoreOrShout\(restore, restoreKey, restoreBody\)/g) || []).length === 2 && /\/fleet\?planet=\$\{uuid\}/.test(src));
   check("scanRemote NIE czyta, gdy nie umie przywrócić wyboru operatora", /if \(!ma\) return null;/.test(src));
   check("recon_bg czeka, gdy operator gra", /if \(!Human\.playing\(\)\) \{\s*\n\s*const bg = Store\.get\("recon_bg"/.test(src));
   check("cichy rekonesans po lądowaniu czeka, gdy operator gra", /if \(Human\.playing\(\)\) continue;/.test(src));
@@ -2099,6 +2118,66 @@ console.log("\n── 56. AUDYT 04.09 (partia stan-lotu): wpis lotu ma odzwierci
     check("56g6: własny wpis 'pending' (ta sama misja po przeładowaniu) znika bez alarmu",
       po4.length === 0 && bledy.length === 0, JSON.stringify(po4) + " | " + JSON.stringify(bledy));
   }
+}
+
+console.log("\n── 57. WYKRYWANIE (audyt 04.09, partia 'wykrywanie') ──");
+{
+  // Wszystko URUCHAMIANE: parser paska, czysta funkcja nadwyżki i decide().
+  const parse = new Function("text", bodyOf("parse(text) {"));
+  const bes = new Function("bar", "threats", "prev", "now", "cfg", bodyOf("function barExcessState(bar, threats, prev, now, cfg) {"));
+  const C = { barExcess: true, barHoldMs: 60e3, barSpyHoldMs: 300e3, barSpyMaxExcess: 1, barMaxAgeMs: 3 * 60e3 };
+
+  // (a) obrona-wykrywanie#3: 'Type:' opisuje JEDNĄ misję (najbliższy dolot), nie rodzaj
+  // całej nadwyżki. Jedno 'Spy' w oknie uciszało ślepy alarm na 5 minut.
+  const mieszany = parse("4 Missions: 1 Own 3 Hostile Next: 00:10 Type: Spy | 09:12 Type: Attack");
+  check("57a: pasek z sondą I atakiem w oknie zgłasza JAWNY rodzaj bojowy", mieszany.attackType === true, JSON.stringify(mieszany));
+  const czysto = parse("2 Missions: 0 Own 2 Hostile Next: 00:42 Type: Espionage");
+  check("57a2: sam pasek sondujący nie zgłasza rodzaju bojowego", czysto.attackType === false && czysto.spyType === true, JSON.stringify(czysto));
+  const poSondzie = parse("3 Missions: 0 Own 3 Hostile Next: 09:12 Type: Attack — wcześniej Spy");
+  check("57a3: 'Spy' gdzieś w oknie NIE robi już z paska paska sondującego", poSondzie.spyType === false, JSON.stringify(poSondzie));
+
+  check("57b: sonda + atak w tym samym oknie → próg 60 s, nie 5 min",
+    bes({ foreign: 3, at: NOW, spyType: true, attackType: true }, [], { count: 3, since: NOW - 61e3 }, NOW, C).active === true,
+    JSON.stringify(bes({ foreign: 3, at: NOW, spyType: true, attackType: true }, [], { count: 3, since: NOW - 61e3 }, NOW, C)));
+  check("57b2: trzy nieprzypisane obce loty przy jednym 'Type: Spy' → też 60 s (sonda tłumaczy najwyżej siebie)",
+    bes({ foreign: 3, at: NOW, spyType: true }, [], { count: 3, since: NOW - 61e3 }, NOW, C).active === true);
+  const jednaSonda = bes({ foreign: 1, at: NOW, spyType: true }, [], { count: 1, since: NOW - 61e3 }, NOW, C);
+  check("57b3: ale POJEDYNCZA sonda dalej dostaje 5 min (bez fałszywych ewakuacji na każdy zwiad)",
+    jednaSonda.active === false && jednaSonda.spyHold === true, JSON.stringify(jednaSonda));
+
+  // decide(): wstrzymanie ratunku w ciemno NIE może być ciszą — po zwykłym progu idzie push.
+  const cichy = base({ barExcess: { active: false, count: 1, since: NOW - 90e3, spyType: true, spyHold: true }, threats: [] });
+  const rc = decide(cichy, CFG, NOW);
+  check("57c: przez wydłużony próg 'Type: Spy' właściciel dostaje alarm na telefon, nie ciszę",
+    rc.alerts.some(a => a.push === true && /sonda/.test(a.msg)), JSON.stringify(rc.alerts.map(a => a.msg)));
+  check("57c2: …ale flotą jeszcze nie ruszamy", !rc.actions.some(a => a.kind === "fly"), JSON.stringify(rc.actions));
+  const zaWczesnie = base({ barExcess: { active: false, count: 1, since: NOW - 30e3, spyType: true, spyHold: true }, threats: [] });
+  check("57c3: przed zwykłym progiem (60 s) alarm jeszcze nie idzie", !decide(zaWczesnie, CFG, NOW).alerts.some(a => a.push === true), JSON.stringify(decide(zaWczesnie, CFG, NOW).alerts.map(a => a.msg)));
+
+  // (d) obrona-wykrywanie#1: ślepy alarm bez znanego hangaru też musi obudzić telefon.
+  const bezFloty = base({ barExcess: { active: true, count: 2, since: NOW - 70e3 }, threats: [], hangars: {} });
+  check("57d: 'widzę atak, ale nie wiem, gdzie stoi flota' idzie na telefon",
+    decide(bezFloty, CFG, NOW).alerts.some(a => a.push === true && /nie wiem, gdzie stoi flota/.test(a.msg)),
+    JSON.stringify(decide(bezFloty, CFG, NOW).alerts.map(a => a.msg)));
+
+  // (e) obrona-wykrywanie#2: uczciwy wiek paska musi realnie zapalać bramkę `stale`.
+  check("57e: pasek sprzed 10 min nie jest już dowodem na nic",
+    bes({ foreign: 5, at: NOW - 10 * 60e3 }, [], { count: 5, since: NOW - 10 * 60e3 }, NOW, C).stale === true);
+  check("57e2: `counter` odróżnia licznik 'N Missions:' od odpowiedzi bez licznika",
+    parse("3 Missions: 0 Own 3 Hostile").counter === true && parse("No fleet movement").counter === false);
+  check("57e3: odpowiedź listy bez licznika NIE może udawać paska (per-para ≠ globalnie)",
+    /CFG\.barFromList && list\.bar && list\.bar\.counter/.test(src) && /barFromList: false/.test(src));
+
+  // (f) obrona-wykrywanie#2, drugi skutek: snapshot SPRZED ataku nie unieważnia zagrożenia.
+  const czyszczenie = (() => {
+    const i = src.indexOf("s.threats = (s.threats || []).filter(t => t.source === \"sim\"");
+    return src.slice(i, src.indexOf("\n", i));
+  })();
+  const filtruj = new Function("s", "now", `${czyszczenie} return s.threats;`);
+  const swiezyPasek = { threats: [{ dst: "3:272:7", seenAt: NOW - 5 * 60e3, lastSeenAt: NOW - 60e3 }], bar: { at: NOW - 30e3 } };
+  check("57f: zagrożenie starsze od paska nadal wolno zdjąć (napastnik zawrócił)", filtruj(swiezyPasek, NOW).length === 0, JSON.stringify(filtruj(swiezyPasek, NOW)));
+  const staryPasek = { threats: [{ dst: "3:272:7", seenAt: NOW - 60e3, lastSeenAt: NOW - 40e3 }], bar: { at: NOW - 5 * 60e3 } };
+  check("57f2: pasek WYRENDEROWANY PRZED wykryciem ataku nie kasuje tego ataku", filtruj(staryPasek, NOW).length === 1, JSON.stringify(filtruj(staryPasek, NOW)));
 }
 
 console.log("");
