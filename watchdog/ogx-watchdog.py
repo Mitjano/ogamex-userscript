@@ -32,7 +32,10 @@ PORT = int(os.environ.get("OGX_WD_PORT", "8765"))
 THRESHOLD = int(os.environ.get("OGX_WD_THRESHOLD", str(12 * 60)))   # s bez pulsu = zawiecha
 CHECK_EVERY = 30                                                     # s między kontrolami
 SLEEP_GAP = 120                                                      # s luki zegara = Mac spał
-STARTUP_GRACE = int(os.environ.get("OGX_WD_GRACE", str(15 * 60)))    # s po starcie strażnika
+# 08.09: 15 min łaski po starcie to było 15 min ślepoty po każdym reboocie i po
+# każdym wskrzeszeniu przez warstwę 2 — 6 min starcza na login + start Firefoksa,
+# a po prostu OTWARCIE gry (to robi restart_firefox przy braku pulsu) nie boli.
+STARTUP_GRACE = int(os.environ.get("OGX_WD_GRACE", str(6 * 60)))     # s po starcie strażnika
 MAX_RESTARTS_H = 3
 DRYRUN = os.environ.get("OGX_WD_DRYRUN") == "1"
 NTFY_TOPIC = os.environ.get("OGX_WD_NTFY", "ogamex3-d0zjvhl9eiho")
