@@ -42,6 +42,12 @@ GAME_URL = os.environ.get("OGX_WD_URL", "https://genesis.ogamex.net/")
 # Puste (domyślnie) = restart o każdej porze. Sam puls nigdy nie wychodzi poza
 # 127.0.0.1, więc dla admina gry strażnik nie istnieje.
 QUIET = os.environ.get("OGX_WD_QUIET", "")
+# 08.09: flota zginęła, gdy karta stała martwa — jedyną odpowiedzią na śpiącego
+# Maca jest Mac, który nie śpi (sekcja 6 AUDYT-ATAKI-2026-08-31.md). Wake lock
+# bota działa tylko przy WIDOCZNEJ karcie; strażnik trzyma teraz caffeinate -i -s
+# (bez snu bezczynności/systemu; ZAMKNIĘTA KLAPA nadal usypia — na to nie ma
+# bezpiecznej rady bez roota). Wyłączenie: OGX_WD_CAFFEINATE=0.
+CAFFEINATE = os.environ.get("OGX_WD_CAFFEINATE", "1") == "1"
 
 
 def quiet_now():
@@ -156,8 +162,24 @@ def monitor():
         restart_firefox()
 
 
+def caffeinate_keeper():
+    # dziecko caffeinate umiera np. przy wylogowaniu — wznawiamy w pętli
+    while True:
+        try:
+            p = subprocess.Popen(["/usr/bin/caffeinate", "-i", "-s"])
+            log(f"caffeinate trzyma Maca na jawie (pid {p.pid}; klapa nadal usypia)")
+            p.wait()
+            log("caffeinate padł — wznawiam za 10 s")
+        except Exception as e:
+            log(f"caffeinate niedostępny: {e}")
+            return
+        time.sleep(10)
+
+
 def main():
-    log(f"OGX watchdog start: port {PORT}, próg {THRESHOLD} s, dryrun={DRYRUN}")
+    log(f"OGX watchdog start: port {PORT}, próg {THRESHOLD} s, dryrun={DRYRUN}, caffeinate={CAFFEINATE}")
+    if CAFFEINATE and not DRYRUN:
+        threading.Thread(target=caffeinate_keeper, daemon=True).start()
     threading.Thread(target=monitor, daemon=True).start()
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), HB).serve_forever()
 

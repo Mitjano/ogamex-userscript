@@ -8,6 +8,16 @@ PLIST="$HOME/Library/LaunchAgents/com.mch.ogx-watchdog.plist"
 APPDIR="$HOME/Library/Application Support/ogx-watchdog"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$APPDIR"
 cp "$DIR/ogx-watchdog.py" "$APPDIR/ogx-watchdog.py"
+# Warstwa 2 (utrata floty 08.09): cron co 5 min wskrzesza martwego strażnika —
+# mechanizm niezależny od flag LaunchAgentów, przez które strażnik leżał od 04.09.
+# Kopia w ~/Library, bo TCC nie wpuszcza crona do ~/Documents.
+cp "$DIR/ogx-heal.sh" "$APPDIR/ogx-heal.sh"
+chmod +x "$APPDIR/ogx-heal.sh"
+CRON_LINE="*/5 * * * * /bin/bash \"$APPDIR/ogx-heal.sh\" # ogx-heal"
+# `|| true`, bo grep -v na pustym crontabie zwraca 1, a set -e + pipefail
+# ubiłyby instalator w połowie (dokładnie to zaszło przy pierwszym uruchomieniu 08.09)
+{ crontab -l 2>/dev/null | grep -v '# ogx-heal$' || true; echo "$CRON_LINE"; } | crontab -
+echo "cron: warstwa 2 co 5 min ($(crontab -l | grep -c '# ogx-heal$') wpis)"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

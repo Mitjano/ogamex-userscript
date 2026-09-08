@@ -1391,6 +1391,17 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
   // a powrót strażnika zeruje dławik.
   check("martwy strażnik pushuje na telefon natychmiast + co 1 h, powrót zeruje dławik", /hb_down_push", 0\) \|\| 0\) >= 3600e3/.test(src) && /Notifier\.push\("🩺 Strażnik karty NIE DZIAŁA/.test(src) && /onload: \(\) => \{ Store\.set\("hb_down_push", 0\);/.test(src));
   check("instalator strażnika zdejmuje flagę disabled launchd", /launchctl enable/.test(fs.readFileSync(path.join(__dirname, "watchdog", "install.sh"), "utf8")));
+  // 08.09 (utrata floty): strażnika pilnował launchd, a launchd miał trwałą flagę disabled —
+  // warstwa 2 to cron, mechanizm NIEZALEŻNY, z fallbackiem nohup gdy launchd zawiedzie.
+  {
+    const heal = fs.readFileSync(path.join(__dirname, "watchdog", "ogx-heal.sh"), "utf8");
+    const inst = fs.readFileSync(path.join(__dirname, "watchdog", "install.sh"), "utf8");
+    const wd = fs.readFileSync(path.join(__dirname, "watchdog", "ogx-watchdog.py"), "utf8");
+    check("warstwa 2: heal zdejmuje disabled, odtwarza plist i ma fallback nohup poza launchd", /launchctl enable/.test(heal) && /cat > "\$PLIST"/.test(heal) && /nohup \/usr\/bin\/python3/.test(heal));
+    check("warstwa 2: instalator wpisuje ogx-heal do crona co 5 min, idempotentnie", /crontab -l 2>\/dev\/null \| grep -v '# ogx-heal\$'/.test(inst) && /\*\/5 \* \* \* \*/.test(inst));
+    check("warstwa 2: nieudane wskrzeszenie pushuje urgent z dławikiem 1 h", /3600/.test(heal) && /Priority: \$2/.test(heal) && /urgent/.test(heal));
+    check("strażnik trzyma caffeinate (Mac nie zasypia z bezczynności), wyłączalne env-em", /OGX_WD_CAFFEINATE/.test(wd) && /caffeinate", "-i", "-s"/.test(wd));
+  }
   check("skrypt strażnika istnieje w repo (watchdog/ogx-watchdog.py + install.sh)", fs.existsSync(path.join(__dirname, "watchdog", "ogx-watchdog.py")) && fs.existsSync(path.join(__dirname, "watchdog", "install.sh")));
 }
 
