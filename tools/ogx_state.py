@@ -14,7 +14,10 @@ def newest_blob():
     if not cands:
         sys.exit("brak pliku snappy-framing w .files")
     src = max(cands, key=os.path.getmtime)
-    dst = os.path.join(SP, "gm_blob")
+    # kopia ZAWSZE do katalogu tymczasowego — nigdy obok skryptu w repo
+    # (08.09: gm_blob obok skryptu wpadł do commita i poleciał na publiczny GitHub)
+    import tempfile
+    dst = os.path.join(tempfile.gettempdir(), "ogx_gm_blob")
     shutil.copy2(src, dst)
     return dst
 
