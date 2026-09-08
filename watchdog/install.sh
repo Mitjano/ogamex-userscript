@@ -24,6 +24,10 @@ cat > "$PLIST" <<EOF
 </dict></plist>
 EOF
 launchctl unload "$PLIST" 2>/dev/null || true
+# 08.09: launchd trzyma trwałą flagę „disabled" (zostaje po `launchctl unload -w`/
+# `disable` i PRZEŻYWA reboot) — 07.09 strażnik przez nią nie wstał po restarcie
+# Maca i flota zginęła bez warty. Instalacja zawsze zdejmuje tę flagę.
+launchctl enable "gui/$(id -u)/com.mch.ogx-watchdog" 2>/dev/null || true
 launchctl load "$PLIST"
 for i in 1 2 3 4 5 6; do
   sleep 2

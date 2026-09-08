@@ -1386,6 +1386,11 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
 {
   check("puls do strażnika: localhost w @connect, throttle 60 s, ping tylko z karty-lidera (w defenceTick po TabLock)", /@connect\s+127\.0\.0\.1/.test(src) && /hb_last", 0\) \|\| 0\) < 60e3\) return;/.test(src) && /Heartbeat\.ping\(\);\s*\n\s*confirmPendingSend\(\);/.test(src));
   check("brak strażnika = log zmiany stanu + wpis w gotowości, nigdy błąd", /hb_ok", null\) !== false/.test(src) && /strażnik \(watchdog\) nie odpowiada/.test(src));
+  // v3.70.1 (utrata floty 08.09): martwy strażnik NIE może być tylko wpisem w dzienniku —
+  // push na telefon natychmiast, powtarzany co godzinę (flotę można stracić w godzinę),
+  // a powrót strażnika zeruje dławik.
+  check("martwy strażnik pushuje na telefon natychmiast + co 1 h, powrót zeruje dławik", /hb_down_push", 0\) \|\| 0\) >= 3600e3/.test(src) && /Notifier\.push\("🩺 Strażnik karty NIE DZIAŁA/.test(src) && /onload: \(\) => \{ Store\.set\("hb_down_push", 0\);/.test(src));
+  check("instalator strażnika zdejmuje flagę disabled launchd", /launchctl enable/.test(fs.readFileSync(path.join(__dirname, "watchdog", "install.sh"), "utf8")));
   check("skrypt strażnika istnieje w repo (watchdog/ogx-watchdog.py + install.sh)", fs.existsSync(path.join(__dirname, "watchdog", "ogx-watchdog.py")) && fs.existsSync(path.join(__dirname, "watchdog", "install.sh")));
 }
 

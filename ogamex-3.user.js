@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.70.0
+// @version      3.70.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.70.0";
+  const VERSION = "3.70.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -114,11 +114,25 @@
       Store.set("hb_last", now);
       try {
         GM_xmlhttpRequest({ method: "GET", url: this.URL, timeout: 4000,
-          onload: () => { if (Store.get("hb_ok", null) !== true) { Store.set("hb_ok", true); log("[WATCHDOG] strażnik odpowiada — zawieszona karta zostanie ożywiona automatycznie (restart Firefoksa + push).", "success"); } },
+          onload: () => { Store.set("hb_down_push", 0); if (Store.get("hb_ok", null) !== true) { Store.set("hb_ok", true); log("[WATCHDOG] strażnik odpowiada — zawieszona karta zostanie ożywiona automatycznie (restart Firefoksa + push).", "success"); } },
           onerror: () => this.down(), ontimeout: () => this.down() });
       } catch { this.down(); }
     },
-    down() { if (Store.get("hb_ok", null) !== false) { Store.set("hb_ok", false); log("[WATCHDOG] strażnik nie odpowiada (LaunchAgent wyłączony?) — po zawieszeniu karty NIE będzie auto-restartu.", "warn"); } },
+    // v3.70.1 (utrata CAŁEJ floty 08.09 ~05:10): strażnik był wyłączony w launchd
+    // (launchctl print-disabled: „disabled" — nie wstał po restartach Maca 07.09),
+    // bot to widział i mówił WYŁĄCZNIE do dziennika w karcie, której nocą nikt nie
+    // czyta. Karta zamarła 04:00–05:54, ekspedycje wróciły na księżyc i stały tam
+    // ~45 min pod ostrzałem bez żadnej warty. Martwy strażnik idzie teraz PUSHEM
+    // na telefon NATYCHMIAST i powtarza się co godzinę, dopóki strażnik nie
+    // wstanie — flotę można tu stracić w godzinę (owner 08.09), więc powtórka
+    // rzadsza niż okno straty nie ma sensu.
+    down() {
+      if (Store.get("hb_ok", null) !== false) { Store.set("hb_ok", false); log("[WATCHDOG] strażnik nie odpowiada (LaunchAgent wyłączony?) — po zawieszeniu karty NIE będzie auto-restartu.", "warn"); }
+      if (Date.now() - (Store.get("hb_down_push", 0) || 0) >= 3600e3) {
+        Store.set("hb_down_push", Date.now());
+        Notifier.push("🩺 Strażnik karty NIE DZIAŁA (Genesis)", "Watchdog na Macu nie odpowiada — zawieszona karta NIE zostanie ożywiona i obrona może umrzeć po cichu. Napraw: bash watchdog/install.sh w repo ogamex-userscript.", "high", "warning");
+      }
+    },
   };
   const Notifier = {
     // v3.68.10 (audyt 04.09, testy-architektura#1): rodzaj „FS" wydzielony z „RATUNEK".
