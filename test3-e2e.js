@@ -66,6 +66,7 @@ class Game {
     this.slowRedirect = false;       // v3.68.7: „Send fleet" wysyła flotę, ale strona sukcesu ładuje się dłużej niż okno 3–4,5 s
     this.stickyBar = false;          // v3.68.11: klik w kotwicę paska planet PRZEŁADOWUJE stronę, ale NIE zmienia aktywnej pary (fork bez `.selected`)
     this.refuseSubmit = false;       // v3.68.11: gra przyjmuje formularz, ale „Send fleet” nic nie wysyła (brak slotu/deuteru)
+    this.homeFetchFail = false;      // v3.71.0: fetch /home (świeży pasek misji) pada — sieć sypie się jak 08.09 03:26
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
@@ -100,8 +101,8 @@ class Game {
              (p.moon ? `<a href="${this.moonLinks ? "/fleet?planet=" + this.uuidOf(p) + "-moon" : "#"}" class="moon-select${mSel}" data-key="${p.key}">Moon</a>` : "") + `</li>`;
     }).join("") + `</ul>`;
   }
-  missionBarHtml() {
-    if (this.hideBar) return "";
+  missionBarHtml(force) {
+    if (this.hideBar && !force) return "";
     const hostile = this.threats.length + this.ghosts;
     const own = this.sent.filter(s => s.inFlight).length;
     if (!hostile && !own) return `<div id="bar">No fleet movement</div>`;
@@ -224,7 +225,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
           const prev = game.active; game.active = { key: p.key, body: isMoon ? "moon" : "planet" };
           const html = game.fleetPageHtml(); game.active = prev; return html;
         })()
-      : /^\/home(\?|$)/.test(String(u)) ? (game.bonus ? game.bonusMenu() : "<div id='overview'>Overview</div>")
+      : /^\/home(\?|$)/.test(String(u)) ? (game.homeFetchFail ? (() => { throw new Error("NetworkError when attempting to fetch resource."); })() : game.planetBarHtml() + (game.bonus ? game.bonusMenu() : "<div id='overview'>Overview</div>") + game.missionBarHtml(true))
       : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
       : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
@@ -2325,6 +2326,70 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bez HEAVY_CARGO w składzie fali", !!expo && !(expo.ships.HEAVY_CARGO > 0), JSON.stringify(expo && expo.ships));
     check("… a pancerniki poleciały w komplecie (fala domykająca bierze resztę hangaru)", !!expo && expo.ships.BATTLESHIP === 40, JSON.stringify(expo && expo.ships));
     check("duże transportery zostały w hangarze księżyca", (g.hangars["1:100:5|moon"].HEAVY_CARGO || 0) === 20, JSON.stringify(g.hangars["1:100:5|moon"]));
+  }
+
+  console.log("\n── 59. RÓJ SOND ≠ ATAK: trwałość nadwyżki musi być ZOBACZONA na drugim odczycie (08.09 10:03, v3.71.0) ──");
+  {
+    // 08.09 10:02:42: pasek „3 obce", lista bez wierszy (sondy leciały na kolonie w innej
+    // galaktyce). 10:02:51–55 sondy doleciały i zniknęły. 10:03:43 bot policzył trwałość z
+    // WIEKU tej samej migawki i ewakuował księżyc z flotą. Teraz: po progu bot bierze świeży
+    // pasek fetchem /home (bez nawigacji); brak obcych = nadwyżka znika.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    g.ghosts = 3;
+    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });                // bot widzi nadwyżkę, próg jeszcze nie minął
+    g.ghosts = 0;                                                     // sondy doleciały i odleciały
+    g.hideBar = true;                                                 // strona bez paska: migawka w stanie ma 70 s
+    advance(g, 70e3);
+    const { logs } = await run(g, { cfg, loads: 6, ticksPerLoad: 3 });
+    check("bot poszedł po świeży pasek fetchem /home (bez nawigacji, bez ?planet=)",
+      (g.fetches || []).some(u => /^\/home(\?|$)/.test(u)) && logs.some(m => /świeży pasek z \/home/.test(m)) && !g.navigations.some(n => /\/home/.test(n) && /planet=/.test(n)),
+      logs.filter(m => /OBRONA|pasek/.test(m)).slice(0, 5).join(" | "));
+    check("świeży pasek bez obcych → ŻADNEJ ewakuacji", g.sent.length === 0, JSON.stringify(g.sent));
+    check("i żadnego „ŚLEPY ALARM: pasek widzi”", !logs.some(m => /ŚLEPY ALARM: pasek widzi/.test(m)), logs.filter(m => /ŚLEPY/.test(m)).join(" | "));
+
+    // kontrola 1: nadwyżka NADAL na świeżym pasku → alarm potwierdzony, ratunek w ciemno jak dotąd
+    const g2 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    g2.ghosts = 3;
+    await run(g2, { cfg, loads: 3, ticksPerLoad: 2 });
+    g2.hideBar = true; advance(g2, 70e3);
+    const r2 = await run(g2, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("nadwyżka potwierdzona drugim odczytem (fetch /home) → ratunek w ciemno", g2.sent.length === 1 && r2.logs.some(m => /POTWIERDZONA/.test(m)),
+      JSON.stringify(g2.sent) + " | " + r2.logs.filter(m => /OBRONA|ŚLEPY/.test(m)).slice(0, 4).join(" | "));
+
+    // kontrola 2: fetch /home PADA (sieć jak 08.09 03:26) → po progu + karencji bot działa na starym odczycie
+    const g3 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    g3.ghosts = 3;
+    await run(g3, { cfg, loads: 3, ticksPerLoad: 2 });
+    g3.hideBar = true; g3.homeFetchFail = true; advance(g3, 130e3);
+    const r3 = await run(g3, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("bez świeżego odczytu (fetch pada) po 130 s bot RATUJE na starym odczycie — sieć nie wyłącza obrony",
+      g3.sent.length === 1 && r3.logs.some(m => /świeżego paska z \/home nie dostałem/.test(m)),
+      JSON.stringify(g3.sent) + " | " + r3.logs.filter(m => /OBRONA|ŚLEPY/.test(m)).slice(0, 4).join(" | "));
+  }
+
+  console.log("\n── 59b. LISTA WIDZI DOM FLOTY: nadwyżka z paska dotyczy innej kolonii → flota zostaje (v3.71.0) ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    // DOWÓD, że lista dotyczy pary domu: własna ekspedycja w locie z [1:100:5]
+    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:16", toBody: "planet", mission: "Expedition", type: "EXPEDITION", ships: { LIGHT_FIGHTER: 10 }, inFlight: true, eta: 1800 });
+    g.ghosts = 3;                                   // 3 sondy na INNE kolonie: widoczne tylko na pasku
+    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    advance(g, 70e3);
+    const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("nadwyżka potwierdzona, ale lista (z własnym wierszem pary domu) nie widzi obcych przy domu → flota ZOSTAJE",
+      g.sent.filter(s => s.mission !== "Expedition").length === 0, JSON.stringify(g.sent));
+    check("bot mówi, że nadwyżka dotyczy innej kolonii", logs.some(m => /nadwyżka dotyczy innej kolonii/.test(m)),
+      logs.filter(m => /OBRONA|pasek|ŚLEPY/.test(m)).slice(0, 5).join(" | "));
+
+    // kontrola: bez własnego wiersza (brak dowodu, że lista dotyczy tej pary) → ratunek w ciemno jak w sc. 10
+    const g2 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    g2.ghosts = 3;
+    await run(g2, { cfg, loads: 3, ticksPerLoad: 2 });
+    advance(g2, 70e3);
+    await run(g2, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("bez dowodu z listy ratunek w ciemno zostaje (jak sc. 10)", g2.sent.length === 1, JSON.stringify(g2.sent));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

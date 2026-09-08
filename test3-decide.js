@@ -2426,6 +2426,54 @@ console.log("\n── 60. HEAVY CARGO NIE LECI NA EKSPEDYCJE (owner 07.09, v3.69
     /cfgMerge\(CFG, st\);\s*pinCodeOwned\(CFG\);/.test(syncSrc), syncSrc.slice(0, 200));
 }
 
+console.log("\n── 61. RÓJ SOND ≠ ATAK: trwałość nadwyżki z DRUGIEGO odczytu + lista widzi dom floty (08.09 10:03, v3.71.0) ──");
+{
+  // 08.09 10:02:42 pasek „3 obce" (sondy DistuRbed na kolonie w galaktyce 1), lista bez wierszy.
+  // 10:02:51–55 sondy doleciały i zniknęły. 10:03:43 bot policzył „trwa 61 s" z WIEKU tej samej
+  // migawki i ewakuował księżyc z flotą w galaktyce 2. Trwałość ma być ZOBACZONA, nie założona.
+  const bes = new Function("bar", "threats", "prev", "now", "cfg", bodyOf("function barExcessState(bar, threats, prev, now, cfg) {"));
+  const C = { barExcess: true, barHoldMs: 60e3, barSpyHoldMs: 300e3, barSpyMaxExcess: 1, barMaxAgeMs: 3 * 60e3, barConfirmGraceMs: 60e3 };
+  const T0 = NOW - 61e3;
+  const jedna = bes({ foreign: 3, at: T0 }, [], { count: 3, since: T0 }, NOW, C);
+  check("61a: JEDNA migawka sprzed 61 s NIE zapala alarmu (trwałość niezaobserwowana)", jedna.active === false && jedna.count === 3, JSON.stringify(jedna));
+  check("61a1: …ale prosi o świeży pasek (needFresh)", jedna.needFresh === true, JSON.stringify(jedna));
+  const drugi = bes({ foreign: 3, at: NOW }, [], { count: 3, since: T0 }, NOW, C);
+  check("61b: DRUGI odczyt ≥60 s po pierwszym nadal z nadwyżką → alarm POTWIERDZONY", drugi.active === true && drugi.confirmed === true && drugi.needFresh === false, JSON.stringify(drugi));
+  const zniknely = bes({ foreign: 0, at: NOW }, [], { count: 3, since: T0 }, NOW, C);
+  check("61c: świeży odczyt bez obcych → nadwyżka znika, licznik od zera", zniknely.active === false && zniknely.count === 0 && zniknely.since === 0, JSON.stringify(zniknely));
+  const zaWczesnie = bes({ foreign: 3, at: T0 + 30e3 }, [], { count: 3, since: T0 }, NOW, C);
+  check("61d: drugi odczyt 30 s po pierwszym jeszcze nie potwierdza (ale prosi o kolejny)", zaWczesnie.active === false && zaWczesnie.needFresh === true, JSON.stringify(zaWczesnie));
+  const bezOdczytu = bes({ foreign: 3, at: NOW - 125e3 }, [], { count: 3, since: NOW - 125e3 }, NOW, C);
+  check("61e: BRAK świeżego odczytu przez próg + karencję (125 s) → alarm na STARYM odczycie (sieć nie wyłącza obrony)", bezOdczytu.active === true && bezOdczytu.confirmed === false, JSON.stringify(bezOdczytu));
+  const staryPasek = bes({ foreign: 3, at: NOW - 200e3 }, [], { count: 3, since: NOW - 200e3 }, NOW, C);
+  check("61e1: …ale pasek starszy niż 3 min dalej nie jest dowodem na nic (stale)", staryPasek.active === false && staryPasek.stale === true, JSON.stringify(staryPasek));
+  const sonda = bes({ foreign: 1, at: NOW, spyType: true }, [], { count: 1, since: NOW - 61e3 }, NOW, C);
+  check("61e2: pojedyncza sonda: próg 5 min zostaje (drugi odczyt po 61 s nie potwierdza)", sonda.active === false && sonda.spyHold === true, JSON.stringify(sonda));
+
+  // decide(): lista z DOWODEM widzi dom floty bez obcych → ślepy alarm nie rusza tej pary
+  const alarm = { active: true, confirmed: true, count: 3, since: NOW - 70e3 };
+  const sQuiet = base({ barExcess: alarm, threats: [], active: { key: "3:272:7", body: "moon" },
+    listSeen: { key: "3:272:7", foreign: 0, proven: true, at: NOW - 10e3 }, hangars: { "3:272:7|moon": H(9e9) } });
+  const rQ = decide(sQuiet, CFG, NOW);
+  check("61f: lista (świeża, z dowodem) widzi dom floty bez obcych → ślepy alarm NIE ewakuuje", !rQ.actions.some(a => a.kind === "fly"), JSON.stringify(rQ.actions));
+  check("61f1: …i mówi dlaczego (nadwyżka dotyczy innej kolonii), bez pushu „nie wiem, gdzie stoi flota”",
+    rQ.alerts.some(a => /innej kolonii/.test(a.msg)) && !rQ.alerts.some(a => /nie wiem, gdzie stoi flota/.test(a.msg)), JSON.stringify(rQ.alerts.map(a => a.msg)));
+  const rNoProof = decide(base({ ...sQuiet, listSeen: { key: "3:272:7", foreign: 0, proven: false, at: NOW - 10e3 } }), CFG, NOW);
+  check("61g: lista BEZ dowodu (żadnego własnego wiersza tej pary) → ratunek w ciemno jak dotąd", rNoProof.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rNoProof.actions));
+  const rForeign = decide(base({ ...sQuiet, listSeen: { key: "3:272:7", foreign: 1, proven: true, at: NOW - 10e3 } }), CFG, NOW);
+  check("61h: lista widzi przy domu obcy wiersz (nierozpoznany) → ratunek w ciemno", rForeign.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rForeign.actions));
+  const rStale = decide(base({ ...sQuiet, listSeen: { key: "3:272:7", foreign: 0, proven: true, at: NOW - 200e3 } }), CFG, NOW);
+  check("61i: odczyt listy starszy niż 2 min → ratunek w ciemno", rStale.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rStale.actions));
+  const rUntrusted = decide(base({ ...sQuiet, listUntrusted: true }), CFG, NOW);
+  check("61j: lista nieufna (dryf planety w sesji) → ratunek w ciemno", rUntrusted.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rUntrusted.actions));
+  const rOther = decide(base({ ...sQuiet, hangars: { "3:272:2|moon": H(9e9) } }), CFG, NOW);
+  check("61k: flota na INNEJ parze niż ta, którą lista widzi → ratunek w ciemno z tamtej pary", rOther.actions.some(a => a.kind === "fly" && a.blind && a.fromKey === "3:272:2"), JSON.stringify(rOther.actions));
+  const rBez = decide(base({ ...sQuiet, listSeen: null }), CFG, NOW);
+  check("61k1: bez wpisu listSeen w stanie (stara wersja stanu) → ratunek w ciemno jak dotąd", rBez.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rBez.actions));
+  check("61l: (źródło) migawka strony nie cofa świeższego odczytu paska z fetcha", /PAGE_AT >= \(s\.bar\.at \|\| 0\)/.test(src));
+  check("61l1: (źródło) świeży pasek idzie fetchem /home BEZ `?planet=` (sesja operatora nietknięta)", /fetchT\("\/home", \{ credentials: "same-origin" \}\)/.test(bodyOf("async fetchFresh() {")) && !/planet=/.test(bodyOf("async fetchFresh() {")));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

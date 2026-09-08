@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.70.1
+// @version      3.71.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.70.1";
+  const VERSION = "3.71.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -204,6 +204,12 @@
     // to atak w ciemno — bronimy kolonii, w której naprawdę stoi flota.
     barExcess: true,
     barHoldMs: 60e3,        // ile musi trwać nadwyżka, zanim ruszymy flotą
+    // v3.71.0 (fałszywa ewakuacja 08.09 10:03 po roju 3 sond na kolonie w galaktyce 1): trwałość
+    // nadwyżki musi być ZOBACZONA na drugim, żywym odczycie paska (≥ barHoldMs po pierwszym),
+    // a nie policzona z wieku jednej migawki. Gdy świeżego odczytu nie da się dostać (fetch
+    // /home pada), po tej dodatkowej zwłoce bot działa na starym odczycie — brak świeżego
+    // odczytu ≠ spokój (flotę 08.09 ~05:10 zabrała cisza bota, nie jego nadgorliwość).
+    barConfirmGraceMs: 60e3,
     barMaxAgeMs: 3 * 60e3,  // pasek starszy niż to nie jest dowodem na nic (strona bez paska)
     barSpyHoldMs: 5 * 60e3, // gdy pasek mówi „Type: Spy" — dłużej (sondy wracają w minuty)
     barSpyMaxExcess: 1,     // …ale tylko dla nadwyżki, którą ta jedna sonda tłumaczy w CAŁOŚCI
@@ -536,6 +542,21 @@
         spyType: /^(Spy|Espionage)/i.test(barType || ""), attackType };
     },
     read() { return this.parse(document.body.textContent); },
+    // v3.71.0: świeży pasek BEZ nawigacji — pełna strona /home (jak sonda bonusu: bez nagłówka
+    // XMLHttpRequest fork oddaje całą stronę, z paskiem misji i paskiem planet). Bez `?planet=`,
+    // więc sesja operatora zostaje na jego planecie. „No fleet movement" liczy się jako 0 obcych
+    // TYLKO na pełnej stronie (pasek planet w odpowiedzi) — fragment listy per para nie jest paskiem.
+    async fetchFresh() {
+      try {
+        const r = await fetchT("/home", { credentials: "same-origin" });
+        if (!r || !r.ok || /\/auth\/login/.test(r.url || "")) return null;
+        const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+        const b = this.parse((doc.body && doc.body.textContent) || "");
+        if (!b) return null;
+        const fullPage = !!doc.querySelector("a.planet-select, .planet-select, #planetList");
+        return (b.counter || (fullPage && b.total === 0)) ? { ...b, counter: true } : null;
+      } catch { return null; }
+    },
   };
 
   // Wiersze ruchów (lista AJAX = tylko aktywna para; panel Events w DOM = wszystkie kolonie).
@@ -900,7 +921,9 @@
       const own = PlanetBar.ownKeys();
       // v3.68.9 (obrona-wykrywanie#2): stempel = wiek RENDERU strony (PAGE_AT), nie chwila
       // parsowania. `readAt` zostaje do diagnostyki: mówi, kiedy bot ten snapshot czytał.
-      const bar = Bar.read(); if (bar) s.bar = { ...bar, at: PAGE_AT, readAt: now };
+      const bar = Bar.read();
+      // v3.71.0: migawka strony (wiek = PAGE_AT) nie może cofnąć ŚWIEŻSZEGO odczytu z fetcha /home.
+      if (bar && (!s.bar || PAGE_AT >= (s.bar.at || 0))) s.bar = { ...bar, at: PAGE_AT, readAt: now };
       // v3.68.0: FS stracił własne okno (Athena: JEDNA godzina powrotu, wylatuje o
       // dowolnej porze niezależnie od zegara, nie tylko nocą) — s.night zniknęło,
       // zastąpione przez fsReturnAt (NASTĘPNE wystąpienie skonfigurowanej godziny
@@ -933,6 +956,14 @@
       // „nie udało się odczytać" było nieodróżnialne od „nie ma lotów" — także dla
       // defenceReadiness, które meldowało „obrona gotowa" nad martwym detektorem.
       if (list.ok) s.listOkAt = now;
+      // v3.71.0: co lista NAPRAWDĘ widzi przy aktywnej parze — z DOWODEM, że to ta para (własny
+      // wiersz z jej koordami; fork pokazuje wyłącznie loty dotykające aktywnej pary). Bez dowodu
+      // wpis nic nie znaczy dla decide() — ślepy alarm ratuje wtedy w ciemno jak dotąd.
+      if (list.ok) {
+        const ak = (s.active && s.active.key) || null;
+        s.listSeen = { key: ak, foreign: list.rows.filter(r => !r.mine).length,
+          proven: !!ak && list.rows.some(r => r.mine && (r.src === ak || r.dst === ak)), at: now };
+      }
       else if (!s.listOkAt) s.listOkAt = Store.get("list_ok_at", 0) || now;   // pierwszy przebieg dostaje karencję, nie alarm
       if (!list.ok && !list.skipped && !Session.lostRecently() && now - (s.listOkAt || 0) > 120e3 && !Once.said("list_blind", 15 * 60e3))
         Journal.add("BŁĄD", `Lista ruchów flot nie odpowiada od ${Math.round((now - (s.listOkAt || 0)) / 60000)} min — ataki widzę już tylko po liczniku na pasku misji (60 s zwłoki, bez celu). Sprawdź grę.`);
@@ -976,6 +1007,20 @@
       // z własnego układu — pasek widzi je jako goły licznik. Nadwyżka „pasek minus
       // rozpoznane wiersze" utrzymująca się dłużej niż próg = atak, którego nie widzimy.
       s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), now, CFG);
+      // v3.71.0: nadwyżka po progu bez drugiego odczytu → świeży pasek fetchem /home (bez
+      // nawigacji i bez `?planet=`, więc sesja operatora zostaje na jego planecie). Dławik 20 s.
+      if (s.barExcess.needFresh && !Once.said("bar_fresh", 20e3)) {
+        const fb = await Bar.fetchFresh();
+        if (fb) {
+          const t2 = Date.now();
+          s.bar = { ...fb, at: t2, readAt: t2, src: "fetch" };
+          s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), t2, CFG);
+          const werdykt = s.barExcess.count > 0 ? (s.barExcess.active ? "nadwyżka POTWIERDZONA — ratuję w ciemno" : "nadwyżka wciąż niepotwierdzona") : "nadwyżka zniknęła (obce loty doleciały i odleciały — np. rój sond)";
+          log(`[OBRONA] nadwyżka na pasku po progu — świeży pasek z /home: ${fb.foreign} obcych → ${werdykt}.`, s.barExcess.active ? "error" : "info");
+        } else if (!Once.said("bar_fresh_fail", 5 * 60e3)) {
+          log(`[OBRONA] nadwyżka na pasku po progu, a świeżego paska z /home nie dostałem — po ${Math.round((CFG.barConfirmGraceMs ?? 60e3) / 1000)} s zadziałam na starym odczycie (sieć nie wyłącza obrony).`, "warn");
+        }
+      }
       Store.set("bar_excess", s.barExcess);
       // v3.53.0 (owner 31.08: „atakujący ręcznie zawrócił flotę — już jest bezpiecznie,
       // nic nie leci, nie ma potrzeby trzymać floty na FS"): WCZEŚNIEJSZY ZAWRÓT.
@@ -1294,7 +1339,18 @@
     // dolot rodzaju sondującego i ani śladu rodzaju bojowego w oknie.
     const spyHold = !!bar.spyType && !bar.attackType && excess <= (cfg.barSpyMaxExcess ?? 1);
     const hold = spyHold ? (cfg.barSpyHoldMs || 5 * 60e3) : (cfg.barHoldMs || 60e3);
-    return { active: now - since >= hold, count: excess, since, spyType: !!bar.spyType, spyHold, waitMs: Math.max(0, hold - (now - since)) };
+    // v3.71.0 (08.09 10:03): „trwa ≥ hold" znaczy: DRUGI żywy odczyt paska, zrobiony co najmniej
+    // `hold` po pierwszym, nadal pokazuje nadwyżkę. Dotąd liczył się wiek JEDNEJ migawki
+    // (`now - since`): pasek z 10:02:42 z trzema sondami, które o 10:02:51–55 doleciały i
+    // zniknęły, o 10:03:43 „trwał 61 s" i ewakuował księżyc w innej galaktyce. `needFresh`
+    // prosi przebieg o świeży pasek (Bar.fetchFresh, bez nawigacji). Gdy świeżego odczytu nie
+    // ma przez `barConfirmGraceMs` po progu, alarm zapada na starym — padająca sieć nie może
+    // wyłączać obrony (utrata floty 08.09 ~05:10 to była CISZA bota, nie jego nadgorliwość).
+    const seenFor = (bar.at || now) - since;                 // ile trwałości ZOBACZYŁY odczyty
+    const confirmed = seenFor >= hold;
+    const overdue = now - since >= hold + (cfg.barConfirmGraceMs ?? 60e3);
+    const needFresh = !confirmed && now - since >= hold;
+    return { active: confirmed || overdue, confirmed, count: excess, since, seenAt: bar.at || now, spyType: !!bar.spyType, spyHold, needFresh, waitMs: Math.max(0, hold - (now - since)) };
   }
 
   // ═══ decide — CZYSTA FUNKCJA ════════════════════════════════════════════
@@ -1815,10 +1871,21 @@
     // Athenie). Nadwyżka na pasku i tak odejmuje loty rozpoznane; pary z własnym
     // atakiem obsługuje pętla wyżej, więc tutaj wystarczy je pominąć.
     if (s.barExcess && s.barExcess.active) {
-      const withFleet = Object.keys(pairs)
+      // v3.71.0 (08.09 10:03: trzy sondy na kolonie w galaktyce 1; lista widziała dom floty
+      // [2:224:7] bez JEDNEGO obcego wiersza, a bot i tak ewakuował ten księżyc): lista jest ślepa
+      // na INNE kolonie, ale nie na aktywną parę. Gdy lista jest świeża (<2 min), ufna, ma DOWÓD,
+      // że dotyczy tej pary (własny wiersz z jej koordami) i nie pokazuje przy niej żadnego obcego
+      // lotu, nadwyżka z paska dotyczy innej kolonii — tej pary nie ruszamy. Bez dowodu, przy
+      // nieufnej liście albo gdy flota stoi na innej parze niż aktywna: ratunek w ciemno jak dotąd.
+      const ls = s.listSeen;
+      const listQuiet = (k) => !!ls && ls.key === k && ls.proven === true && ls.foreign === 0 && now - (ls.at || 0) < 120e3 && !s.listUntrusted;
+      const candidates = Object.keys(pairs)
         .map(k => ({ k, f: fleetsAt(k).sort((a, b) => b.total - a.total)[0] }))
         .filter(x => x.f && !inFlightFrom(x.k) && threatsFor(x.k).length === 0)
         .sort((a, b) => b.f.total - a.f.total);
+      const spared = candidates.filter(x => listQuiet(x.k));
+      const withFleet = candidates.filter(x => !listQuiet(x.k));
+      for (const x of spared) alerts.push({ key: x.k, level: "warn", throttleMs: 10 * 60e3, msg: `pasek widzi ${s.barExcess.count} obcych lotów bez celu, ale lista ruchów (świeża, z własnym wierszem tej pary) nie pokazuje przy [${x.k}] żadnego obcego lotu — nadwyżka dotyczy innej kolonii, flota (${x.f.total.toLocaleString("pl-PL")} szt.) zostaje w domu` });
       if (withFleet.length) {
         const t = withFleet[0];
         alerts.push({ key: t.k, level: "error", blind: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });
@@ -1828,7 +1895,7 @@
         // w kolejce staje ZA ratunkami o znanym dolocie, ale przed każdym lotem dobrowolnym.
         if (dest) actions.push({ kind: "fly", fromKey: t.k, fromBody: t.f.body, toKey: dest.key, toBody: dest.body, why: "ŚLEPY ALARM (pasek widzi atak, listy brak)", speed: cfg.airSpeedPct, recall: true, air: true, blind: true, saveTotal: t.f.total, recallAt: now + 10 * 60e3 });
         else alerts.push({ key: t.k, level: "error", msg: "ŚLEPY ALARM, ale nie mam dokąd uciec — reaguj ręcznie" });
-      } else {
+      } else if (!spared.length) {
         // v3.68.9 (audyt 04.09, obrona-wykrywanie#1): ten wariant nie miał ŻADNEJ flagi
         // pusha, więc „widzę atak, ale nie wiem, gdzie stoi flota" kończyło jako cicha
         // linia w logu — najgorszy możliwy moment na milczenie.
