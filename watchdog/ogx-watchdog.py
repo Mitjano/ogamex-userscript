@@ -3,12 +3,13 @@
 #  OGX WATCHDOG — strażnik karty z grą (macOS, LaunchAgent)
 # ─────────────────────────────────────────────────────────────────────────
 # Powód (owner 31.08: „karta może się zawiesić albo zamrozić — bot wtedy nie
-# działa"): bot żyje wyłącznie w karcie Firefoksa. Martwa karta = cicha
+# działa"): bot żyje wyłącznie w karcie przeglądarki. Martwa karta = cicha
 # śmierć obrony, bez żadnego alarmu. Ten strażnik:
 #   1. słucha pulsu bota na http://127.0.0.1:8765/hb (bot pinguje co ~60 s,
 #      tylko karta-lider),
 #   2. gdy puls ustanie na > THRESHOLD (12 min), wysyła push na ntfy
-#      i restartuje Firefoksa z kartą gry (stan bota przeżywa w GM storage),
+#      i restartuje PRZEGLĄDARKĘ, z której szedł puls (Firefox/Chrome — patrz
+#      OGX_WD_BROWSER), z kartą gry; stan bota przeżywa w GM storage,
 #   3. po uśpieniu Maca NIE restartuje w panice — wykrywa lukę w zegarze
 #      i daje botowi czas na powrót po wybudzeniu.
 # Limity: maks. 3 restarty na godzinę — potem już tylko push „nie umiem ożywić".
@@ -33,8 +34,8 @@ THRESHOLD = int(os.environ.get("OGX_WD_THRESHOLD", str(12 * 60)))   # s bez puls
 CHECK_EVERY = 30                                                     # s między kontrolami
 SLEEP_GAP = 120                                                      # s luki zegara = Mac spał
 # 08.09: 15 min łaski po starcie to było 15 min ślepoty po każdym reboocie i po
-# każdym wskrzeszeniu przez warstwę 2 — 6 min starcza na login + start Firefoksa,
-# a po prostu OTWARCIE gry (to robi restart_firefox przy braku pulsu) nie boli.
+# każdym wskrzeszeniu przez warstwę 2 — 6 min starcza na login + start przeglądarki,
+# a po prostu OTWARCIE gry (to robi restart_browser przy braku pulsu) nie boli.
 STARTUP_GRACE = int(os.environ.get("OGX_WD_GRACE", str(6 * 60)))     # s po starcie strażnika
 MAX_RESTARTS_H = 3
 DRYRUN = os.environ.get("OGX_WD_DRYRUN") == "1"
@@ -63,8 +64,57 @@ def quiet_now():
     h = time.localtime().tm_hour
     return (s <= h < e) if s < e else (h >= s or h < e)
 
-state = {"last_hb": 0.0, "hb_count": 0, "restarts": [], "started": time.time()}
+state = {"last_hb": 0.0, "hb_count": 0, "restarts": [], "started": time.time(),
+         "browser": None, "seen_browsers": {}, "warned_dup": 0.0}
 lock = threading.Lock()
+
+# 09.09 (owner przesiada się na Chrome): strażnik był ZASZYTY na Firefoksa — ubijał
+# proces `firefox` i robił `open -a Firefox`. Przy grze w Chrome to nie tylko nie
+# naprawiało zawieszonej karty, ale ODPALAŁO DRUGĄ INSTANCJĘ BOTA w Firefoksie, a dwie
+# instancje kłócące się o konfigurację to dokładnie mechanizm, który 09.09 o 04:09
+# przestawił bota na OFF (2,5 h ślepoty). Przeglądarkę poznajemy po nagłówku
+# User-Agent PULSU — puls przychodzi z tej samej karty, w której żyje bot, więc to
+# jedyne źródło, które nie może się pomylić. Bez zgadywania i bez uprawnień do
+# automatyzacji (osascript „get tabs" prosiłby o TCC i w LaunchAgencie bywa martwy).
+BROWSER = os.environ.get("OGX_WD_BROWSER", "auto")
+# nazwa procesu do pkill bywa inna niż nazwa aplikacji do `open -a`
+PROC_NAME = {"Firefox": "firefox", "Google Chrome": "Google Chrome",
+             "Brave Browser": "Brave Browser", "Microsoft Edge": "Microsoft Edge"}
+
+
+def browser_from_ua(ua):
+    u = ua or ""
+    if "Firefox/" in u:
+        return "Firefox"
+    if "Edg/" in u:
+        return "Microsoft Edge"
+    if "Brave/" in u:
+        return "Brave Browser"
+    if "Chrome/" in u:            # Chrome UA zawiera też „Safari" — kolejność ma znaczenie
+        return "Google Chrome"
+    return None
+
+
+def is_running(app):
+    try:
+        return subprocess.run(["pgrep", "-x", PROC_NAME.get(app, app)],
+                              capture_output=True).returncode == 0
+    except Exception:
+        return False
+
+
+def target_browser():
+    """Kogo restartować. Jawne ustawienie > przeglądarka pulsu > ta, która działa > Firefox."""
+    if BROWSER and BROWSER != "auto":
+        return BROWSER
+    with lock:
+        seen = state["browser"]
+    if seen:
+        return seen
+    for app in ("Google Chrome", "Firefox", "Brave Browser", "Microsoft Edge"):
+        if is_running(app):
+            return app
+    return "Firefox"
 
 
 def log(msg):
@@ -92,32 +142,53 @@ def push(title, body, priority="urgent"):
         log(f"push NIE wyszedł: {e}")
 
 
-def restart_firefox():
+def restart_browser():
+    app = target_browser()
+    proc = PROC_NAME.get(app, app)
     if DRYRUN:
-        log("[DRYRUN] restart Firefoksa (osascript quit → pkill → open z kartą gry)")
+        log(f"[DRYRUN] restart {app} (osascript quit → pkill {proc} → open z kartą gry)")
         return
     try:
-        subprocess.run(["osascript", "-e", 'tell application "Firefox" to quit'], timeout=20)
+        subprocess.run(["osascript", "-e", f'tell application "{app}" to quit'], timeout=20)
     except Exception:
         pass
     time.sleep(15)
-    subprocess.run(["pkill", "-9", "-x", "firefox"], check=False)
+    subprocess.run(["pkill", "-9", "-x", proc], check=False)
     time.sleep(5)
-    subprocess.run(["open", "-a", "Firefox", GAME_URL], check=False)
-    log(f"Firefox zrestartowany z kartą {GAME_URL}")
+    subprocess.run(["open", "-a", app, GAME_URL], check=False)
+    log(f"{app} zrestartowany z kartą {GAME_URL}")
 
 
 class HB(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/hb"):
+            app = browser_from_ua(self.headers.get("User-Agent"))
+            now = time.time()
+            dup = None
             with lock:
-                state["last_hb"] = time.time()
+                state["last_hb"] = now
                 state["hb_count"] += 1
+                if app:
+                    state["browser"] = app
+                    state["seen_browsers"][app] = now
+                    # DWIE przeglądarki z żywym pulsem = dwie instancje bota, czyli dwa
+                    # panele kłócące się o konfigurację (tak 09.09 o 04:09 bot wpadł w OFF).
+                    swiezE = [b for b, t in state["seen_browsers"].items() if now - t < 300]
+                    if len(swiezE) > 1 and now - state["warned_dup"] > 3600:
+                        state["warned_dup"] = now
+                        dup = swiezE
+            if dup:
+                log(f"UWAGA: puls z DWÓCH przeglądarek ({', '.join(dup)}) — dwie instancje bota")
+                push("⚠️ Dwie instancje bota", "Puls przychodzi z: " + ", ".join(dup)
+                     + ". Dwa panele nadpisują sobie konfigurację (tak bot wpadł w OFF 09.09 04:09) — zamknij grę w jednej przeglądarce.", "high")
             self.send_response(204); self.end_headers()
         elif self.path.startswith("/status"):
             with lock:
                 age = (time.time() - state["last_hb"]) if state["last_hb"] else None
-                body = json.dumps({"hb_count": state["hb_count"],
+                # UWAGA: bez target_browser() — ta funkcja bierze ten sam zamek (zakleszczenie).
+                body = json.dumps({"browser_seen": state["browser"],
+                                   "browser_cfg": BROWSER,
+                                   "hb_count": state["hb_count"],
                                    "last_hb_age_s": round(age) if age is not None else None,
                                    "restarts_last_h": len([t for t in state["restarts"] if time.time() - t < 3600]),
                                    "uptime_s": round(time.time() - state["started"])})
@@ -159,10 +230,11 @@ def monitor():
                 state["last_hb"] = now  # nie spamuj co 30 s
                 continue
             state["restarts"].append(now)
-            state["last_hb"] = now + 300  # 5 min łaski na wstanie Firefoksa
-        log(f"BRAK PULSU od {round(silent)} s — restartuję Firefoksa")
-        push("🩺 Karta z grą ZAMARŁA", f"Brak pulsu bota od {round(silent / 60)} min — restartuję Firefoksa z kartą gry. Sprawdź, czy wstał.")
-        restart_firefox()
+            state["last_hb"] = now + 300  # 5 min łaski na wstanie przeglądarki
+        app = target_browser()
+        log(f"BRAK PULSU od {round(silent)} s — restartuję {app}")
+        push("🩺 Karta z grą ZAMARŁA", f"Brak pulsu bota od {round(silent / 60)} min — restartuję {app} z kartą gry. Sprawdź, czy wstał.")
+        restart_browser()
 
 
 def caffeinate_keeper():
