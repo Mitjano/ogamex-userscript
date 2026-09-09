@@ -639,9 +639,13 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
   // v3.43.0 (owner 20:31): każda fala ekspedycji zaczynała się od przełączenia aktywnego
   // ciała na księżyc bazowy — w środku rozbudowy kolonii. Ekonomia ma czekać, aż operator
   // przestanie klikać. v3.44.0 zdjęła sufit 6 min; v3.48.0 podniosła próg ciszy do 5 min.
+  // v3.72.0: „brak sufitu 6 min" sprawdzamy w OKOLICY bramki ekonomii, nie w całym pliku.
+  // Globalne `!/6 \* 60e3/.test(src)` było miną: każda nowa stała 6-minutowa gdziekolwiek
+  // indziej (barBlindHardMs) wywracała test o ekspedycjach, który z nią nie ma nic wspólnego.
+  const ecoGate = (() => { const i = src.indexOf("grasz — nie przełączam Ci planety, ekspedycja poczeka"); return i < 0 ? "" : src.slice(i - 3000, i + 3000); })();
   check("ekonomia czeka, gdy operator gra (próg ciszy ecoIdleSec, bez sufitu 6 min)",
     /grasz — nie przełączam Ci planety, ekspedycja poczeka/.test(src) &&
-    /eco_wait_since/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src) && /ruszy po \$\{idleMin\} min od ostatniego kliknięcia/.test(src) && !/6 \* 60e3/.test(src));
+    /eco_wait_since/.test(src) && /input_at/.test(src) && /e\.isTrusted/.test(src) && /ruszy po \$\{idleMin\} min od ostatniego kliknięcia/.test(src) && !!ecoGate && !/6 \* 60e3/.test(ecoGate));
 }
 
 console.log("\n── 19e. GOTOWOŚĆ OBRONY I PODSUMOWANIE PO PRZERWIE (v3.45.0) ──");
@@ -2472,6 +2476,64 @@ console.log("\n── 61. RÓJ SOND ≠ ATAK: trwałość nadwyżki z DRUGIEGO o
   check("61k1: bez wpisu listSeen w stanie (stara wersja stanu) → ratunek w ciemno jak dotąd", rBez.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rBez.actions));
   check("61l: (źródło) migawka strony nie cofa świeższego odczytu paska z fetcha", /PAGE_AT >= \(s\.bar\.at \|\| 0\)/.test(src));
   check("61l1: (źródło) świeży pasek idzie fetchem /home BEZ `?planet=` (sesja operatora nietknięta)", /fetchT\("\/home", \{ credentials: "same-origin" \}\)/.test(bodyOf("async fetchFresh() {")) && !/planet=/.test(bodyOf("async fetchFresh() {")));
+}
+
+console.log("\n── 62. NIEPRZYPISANA NADWYŻKA MA TERMIN WAŻNOŚCI (audyt 09.09: atak z WŁASNEGO układu na bazę) ──");
+{
+  // Luka znaleziona 09.09 przy pytaniu ownera „czy bot podniesie główną flotę z księżyca".
+  // Fork GUBI na liście ruchów ataki z własnego układu (2.x: 12.08 13:10 i 25.08 16:22), więc
+  // „lista jest świeża, ma własny wiersz tej pary i nie widzi obcych" NIE dowodzi, że para jest
+  // bezpieczna — dowodzi tylko, że lista nic nie wie. Baza ekspedycyjna ma własne wiersze ZAWSZE
+  // (fale co 40 min), więc listQuiet() zapadał tam na okrągło i 101 mln statków zostawało w domu,
+  // a bot „bronił" kolonii z 60 tys. Nadwyżka nieprzypisana do NICZEGO nie może uciszać obrony
+  // bez końca: sonda odlatuje w minuty, atak wisi do uderzenia.
+  const HARD = 6 * 60e3;
+  const quiet = (sinceMs) => base({
+    barExcess: { active: true, confirmed: true, count: 3, since: NOW - sinceMs },
+    threats: [], active: { key: "3:272:7", body: "moon" },
+    listSeen: { key: "3:272:7", foreign: 0, proven: true, at: NOW - 10e3 },
+    hangars: { "3:272:7|moon": H(101_196_472) },
+  });
+  const rSwieza = decide(quiet(70e3), CFG, NOW);
+  check("62a: nadwyżka świeża (70 s) → cisza zostaje, v3.71.0 nietknięta (rój sond nie rusza floty)",
+    !rSwieza.actions.some(a => a.kind === "fly"), JSON.stringify(rSwieza.actions));
+  check("62a1: …ale komunikat mówi, DO KIEDY bot czeka (cisza z terminem, nie w nieskończoność)",
+    rSwieza.alerts.some(a => /innej kolonii/.test(a.msg) && /podnosz[eę] flot/i.test(a.msg)), JSON.stringify(rSwieza.alerts.map(a => a.msg)));
+
+  const rStara = decide(quiet(HARD + 30e3), CFG, NOW);
+  check("62b: ta sama cisza po przekroczeniu twardego progu (6,5 min) → bot PODNOSI największą flotę",
+    rStara.actions.some(a => a.kind === "fly" && a.blind && a.fromKey === "3:272:7" && a.fromBody === "moon"),
+    JSON.stringify(rStara.actions));
+  check("62b1: …i leci na sąsiedni księżyc z zawrotem (nie zostawia floty na obcym ciele)",
+    rStara.actions.some(a => a.kind === "fly" && a.toBody === "moon" && a.recall === true), JSON.stringify(rStara.actions));
+  check("62b2: …i PUSZCZA na telefon (flaga blind), mówiąc że nadwyżki nie dało się przypisać",
+    rStara.alerts.some(a => a.blind === true && /nie da(ło)? si[eę] przypisa/i.test(a.msg)), JSON.stringify(rStara.alerts.map(a => a.msg)));
+  check("62b3: …i nie zostaje ANI JEDEN alert mówiący, że flota zostaje w domu",
+    !rStara.alerts.some(a => /zostaje w domu/.test(a.msg)), JSON.stringify(rStara.alerts.map(a => a.msg)));
+
+  // Próg liczy się od POCZĄTKU nadwyżki, nie od ostatniego odczytu paska.
+  const rTuzPrzed = decide(quiet(HARD - 30e3), CFG, NOW);
+  check("62c: 30 s przed progiem jeszcze cisza (próg jest twardy, nie uznaniowy)",
+    !rTuzPrzed.actions.some(a => a.kind === "fly"), JSON.stringify(rTuzPrzed.actions));
+
+  // Konfigurowalny próg: 0 nie może znaczyć „użyj domyślnej" (lekcja z v3.15.0, pułapka `x || d`).
+  const rZero = decide(quiet(1e3), { ...CFG, barBlindHardMs: 0 }, NOW);
+  check("62d: barBlindHardMs = 0 znaczy zero uciszania (operator ?? zamiast ||)",
+    rZero.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rZero.actions));
+
+  // Pary MNIEJSZE niż największy hangar też przestają być oszczędzane po progu — nadwyżka
+  // nieprzypisana dotyczy CAŁEGO konta, a nie tylko bazy.
+  const rDwie = decide(base({
+    barExcess: { active: true, confirmed: true, count: 2, since: NOW - (HARD + 30e3) },
+    threats: [], active: { key: "3:272:7", body: "moon" },
+    listSeen: { key: "3:272:7", foreign: 0, proven: true, at: NOW - 10e3 },
+    hangars: { "3:272:7|moon": H(101_196_472), "3:272:2|moon": H(60_000) },
+  }), CFG, NOW);
+  check("62e: po progu broniona jest NAJWIĘKSZA flota, nie ta, którą lista akurat widzi",
+    rDwie.actions.some(a => a.kind === "fly" && a.blind && a.fromKey === "3:272:7"), JSON.stringify(rDwie.actions));
+
+  check("62f: (źródło) próg jest w DEFAULTS, żeby dało się go zmienić bez ruszania logiki",
+    /barBlindHardMs:\s*\d/.test(src), "brak barBlindHardMs w DEFAULTS");
 }
 
 console.log("");
