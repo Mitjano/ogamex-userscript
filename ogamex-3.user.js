@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.72.0
+// @version      3.73.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.72.0";
+  const VERSION = "3.73.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -213,14 +213,6 @@
     barMaxAgeMs: 3 * 60e3,  // pasek starszy niż to nie jest dowodem na nic (strona bez paska)
     barSpyHoldMs: 5 * 60e3, // gdy pasek mówi „Type: Spy" — dłużej (sondy wracają w minuty)
     barSpyMaxExcess: 1,     // …ale tylko dla nadwyżki, którą ta jedna sonda tłumaczy w CAŁOŚCI
-    // v3.72.0 (audyt 09.09, pytanie ownera „czy bot podniesie główną flotę z księżyca"):
-    // cisza z listy ruchów ma TERMIN WAŻNOŚCI. „Lista jest świeża, ma własny wiersz tej pary
-    // i nie widzi obcych" NIE dowodzi, że para jest bezpieczna — fork gubi ataki z WŁASNEGO
-    // układu (2.x: 12.08 13:10, 25.08 16:22), a baza ekspedycyjna ma własne wiersze ZAWSZE
-    // (fale co 40 min), więc ta cisza zapadała tam na okrągło. Po tym progu nadwyżka, której
-    // nie da się przypisać do NICZEGO, znów rusza flotą: sonda odlatuje w minuty, atak wisi
-    // do uderzenia. 0 = nie uciszaj ani sekundy (czytane przez `??`, nie `||`).
-    barBlindHardMs: 6 * 60e3,
     // v3.68.9: świeży pasek prosto z odpowiedzi listy ruchów (zero nawigacji). WYŁĄCZONE,
     // dopóki nie potwierdzimy na żywej grze, że tamten licznik jest GLOBALNY, a nie
     // per-para — licznik per-para zaniżałby liczbę obcych flot i GASIŁ ślepy alarm.
@@ -1886,28 +1878,17 @@
       // lotu, nadwyżka z paska dotyczy innej kolonii — tej pary nie ruszamy. Bez dowodu, przy
       // nieufnej liście albo gdy flota stoi na innej parze niż aktywna: ratunek w ciemno jak dotąd.
       const ls = s.listSeen;
-      // v3.72.0 (audyt 09.09) — CO SIĘ PSUŁO: cisza z listy była BEZTERMINOWA. `proven` znaczy
-      // tylko „lista ma wiersz z koordami tej pary", a baza ekspedycyjna ma taki wiersz ZAWSZE.
-      // Że lista nie pokazuje przy niej obcego lotu, nie znaczy „nic nie leci" — znaczy „lista
-      // nic nie wie", bo ten fork gubi ataki z własnego układu. Efekt na żywej konfiguracji:
-      // 101 mln statków zostawało na [2:224:7], a bot „bronił" kolonii z 60 tys. Nadwyżka
-      // nieprzypisana do NICZEGO nie może uciszać obrony bez końca — po `barBlindHardMs`
-      // wracamy do reguły z 12.08: bronimy tam, gdzie naprawdę stoi flota.
-      const hardMs = cfg.barBlindHardMs ?? 6 * 60e3;
-      const quietUntil = (s.barExcess.since || now) + hardMs;
-      const quietExpired = now >= quietUntil;
-      const listQuiet = (k) => !quietExpired && !!ls && ls.key === k && ls.proven === true && ls.foreign === 0 && now - (ls.at || 0) < 120e3 && !s.listUntrusted;
+      const listQuiet = (k) => !!ls && ls.key === k && ls.proven === true && ls.foreign === 0 && now - (ls.at || 0) < 120e3 && !s.listUntrusted;
       const candidates = Object.keys(pairs)
         .map(k => ({ k, f: fleetsAt(k).sort((a, b) => b.total - a.total)[0] }))
         .filter(x => x.f && !inFlightFrom(x.k) && threatsFor(x.k).length === 0)
         .sort((a, b) => b.f.total - a.f.total);
       const spared = candidates.filter(x => listQuiet(x.k));
       const withFleet = candidates.filter(x => !listQuiet(x.k));
-      for (const x of spared) alerts.push({ key: x.k, level: "warn", throttleMs: 10 * 60e3, msg: `pasek widzi ${s.barExcess.count} obcych lotów bez celu, ale lista ruchów (świeża, z własnym wierszem tej pary) nie pokazuje przy [${x.k}] żadnego obcego lotu — nadwyżka dotyczy innej kolonii, flota (${x.f.total.toLocaleString("pl-PL")} szt.) zostaje w domu; jeśli nadwyżka nie zniknie do ${hhmm(quietUntil)}, podnoszę flotę mimo ciszy z listy` });
+      for (const x of spared) alerts.push({ key: x.k, level: "warn", throttleMs: 10 * 60e3, msg: `pasek widzi ${s.barExcess.count} obcych lotów bez celu, ale lista ruchów (świeża, z własnym wierszem tej pary) nie pokazuje przy [${x.k}] żadnego obcego lotu — nadwyżka dotyczy innej kolonii, flota (${x.f.total.toLocaleString("pl-PL")} szt.) zostaje w domu` });
       if (withFleet.length) {
         const t = withFleet[0];
-        const wygasla = quietExpired && ls ? ` — nadwyżki nie dało się przypisać do żadnej kolonii przez ${Math.round(hardMs / 60e3)} min, cisza z listy wygasła` : "";
-        alerts.push({ key: t.k, level: "error", blind: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s${wygasla} — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });
+        alerts.push({ key: t.k, level: "error", blind: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });
         const nb = neighbourMoon(t.k);
         const dest = nb ? { key: nb, body: "moon" } : anyRefuge(t.k);
         // v3.68.5: `saveTotal` bez `etaMs` — ślepy alarm nie zna zegara uderzenia, więc

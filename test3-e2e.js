@@ -2392,32 +2392,6 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bez dowodu z listy ratunek w ciemno zostaje (jak sc. 10)", g2.sent.length === 1, JSON.stringify(g2.sent));
   }
 
-  console.log("\n── 59c. CISZA Z LISTY MA TERMIN: nadwyżka nieprzypisana po 6 min podnosi flotę (audyt 09.09, v3.72.0) ──");
-  {
-    // Ten sam układ co 59b — baza z ekspedycją w locie, więc lista ZAWSZE ma własny wiersz tej
-    // pary i listQuiet() zapadał tam bezterminowo. Fork gubi ataki z własnego układu, więc taka
-    // cisza nie jest dowodem bezpieczeństwa: po progu bot ma podnieść flotę mimo niej.
-    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
-    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
-    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:16", toBody: "planet", mission: "Expedition", type: "EXPEDITION", ships: { LIGHT_FIGHTER: 10 }, inFlight: true, eta: 1800 });
-    g.ghosts = 3;
-    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
-    advance(g, 70e3);
-    await run(g, { cfg, loads: 6, ticksPerLoad: 3 });
-    const przedProgiem = g.sent.filter(s => s.mission !== "Expedition").length;
-    check("59c-a: przed progiem flota nadal stoi (v3.71.0 nietknięta)", przedProgiem === 0, JSON.stringify(g.sent));
-
-    advance(g, 6 * 60e3 + 30e3);                    // nadwyżka wisi dalej: sonda by dawno odleciała
-    const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
-    const ratunek = g.sent.filter(s => s.mission !== "Expedition");
-    check("59c-b: po 6 min nieprzypisanej nadwyżki bot PODNOSI flotę z bazy", ratunek.length === 1, JSON.stringify(g.sent));
-    check("59c-c: …z księżyca bazy, na który leciałaby ekspedycja (nie z przypadkowej kolonii)",
-      ratunek.length === 1 && ratunek[0].from === "1:100:5" && ratunek[0].fromBody === "moon", JSON.stringify(ratunek));
-    check("59c-d: …i mówi wprost, że nadwyżki nie dało się przypisać",
-      logs.some(m => /nie dało się przypisać do żadnej kolonii/.test(m)),
-      logs.filter(m => /ŚLEPY|nadwyżk/.test(m)).slice(0, 4).join(" | "));
-  }
-
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
