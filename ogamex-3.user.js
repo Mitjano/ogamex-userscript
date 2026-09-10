@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.73.0
+// @version      3.74.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.73.0";
+  const VERSION = "3.74.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -134,6 +134,28 @@
       }
     },
   };
+  // v3.74.0 (noc 09/10.09, przesiadka na Chrome) — CO SIĘ PSUŁO: W CHROME NIE WYCHODZIŁ
+  // ŻADEN PUSH. 422 wpisy „ntfy.sh nie odpowiedziało", ZERO udanych. Nagłówki HTTP są
+  // latin-1, a każdy tytuł zaczyna się od emoji („⚔️ ATAK", „⚠️ Obrona: BŁĄD") — Firefox
+  // to przepuszczał, Chrome odrzuca całe żądanie. Dokładnie ten sam błąd, który strażnik
+  // złapał 31.08 („'latin-1' codec can't encode character") i naprawił kodowaniem RFC 2047;
+  // bot tej poprawki nigdy nie dostał, bo w Firefoksie problem nie istniał. Skutek: w nocy
+  // 09/10.09 bot dwa razy uratował 274 mln statków spod ataku i ani razu nie zdołał o tym
+  // powiadomić — czyli jedyny kanał, którym owner dowiaduje się o utracie floty, był martwy.
+  // Lekcja: kanał alarmowy trzeba testować NA KAŻDEJ przeglądarce, bo „działa u mnie"
+  // znaczy tylko tyle, że działa w tej jednej.
+  function hdrSafe(s) {
+    const t = String(s == null ? "" : s);
+    if (/^[\x20-\x7E]*$/.test(t)) return t;            // czysty ASCII — bez kombinowania
+    try {
+      const bytes = new TextEncoder().encode(t);
+      let bin = ""; for (const b of bytes) bin += String.fromCharCode(b);
+      return "=?UTF-8?B?" + btoa(bin) + "?=";           // RFC 2047 — ntfy to rozkodowuje
+    } catch {
+      return t.replace(/[^\x20-\x7E]/g, "").trim() || "OGameX";   // ostatnia deska: sam tekst
+    }
+  }
+
   const Notifier = {
     // v3.68.10 (audyt 04.09, testy-architektura#1): rodzaj „FS" wydzielony z „RATUNEK".
     // Rutynowy Fleet Save (codziennie, o dowolnej porze) szedł tym samym pushem co realna
@@ -152,7 +174,7 @@
       if (!this.enabled()) { if (priority === "urgent" || priority === "high") log(`[PUSH] POMINIĘTE — push OFF (${title}).`, "warn"); return; }
       const topic = this.topic();
       try {
-        GM_xmlhttpRequest({ method: "POST", url: "https://ntfy.sh/" + topic, headers: { Title: title, Priority: priority, Tags: tags }, data: String(msg).slice(0, 600), timeout: 15000,
+        GM_xmlhttpRequest({ method: "POST", url: "https://ntfy.sh/" + topic, headers: { Title: hdrSafe(title), Priority: priority, Tags: hdrSafe(tags) }, data: String(msg).slice(0, 600), timeout: 15000,
           onload: (r) => log(`[PUSH] wysłano (${priority}) na ${topic}: ${title} — HTTP ${r && r.status}`, "info"),
           onerror: () => log("[PUSH] ntfy.sh nie odpowiedziało.", "warn"), ontimeout: () => log("[PUSH] ntfy.sh timeout.", "warn") });
       } catch (e) { log(`[PUSH] błąd: ${e.message}`, "warn"); }

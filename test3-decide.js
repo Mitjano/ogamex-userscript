@@ -2474,6 +2474,26 @@ console.log("\n── 61. RÓJ SOND ≠ ATAK: trwałość nadwyżki z DRUGIEGO o
   check("61l1: (źródło) świeży pasek idzie fetchem /home BEZ `?planet=` (sesja operatora nietknięta)", /fetchT\("\/home", \{ credentials: "same-origin" \}\)/.test(bodyOf("async fetchFresh() {")) && !/planet=/.test(bodyOf("async fetchFresh() {")));
 }
 
+console.log("\n── 62. PUSH Z EMOJI PRZECHODZI PRZEZ CHROME (noc 09/10.09: 422 nieudane, 0 udanych) ──");
+{
+  // Nagłówki HTTP są latin-1. Każdy tytuł zaczyna się od emoji, więc w Chrome GM_xmlhttpRequest
+  // odrzucał CAŁE żądanie — bot uratował flotę dwa razy i ani razu nie powiadomił.
+  const hdrSafe = new Function("s", bodyOf("function hdrSafe(s) {"));
+  check("62a: czysty ASCII przechodzi bez zmian", hdrSafe("Obrona: BLAD (Genesis)") === "Obrona: BLAD (Genesis)", hdrSafe("Obrona: BLAD (Genesis)"));
+  const t = hdrSafe("⚔️ ATAK (Genesis)");
+  check("62b: tytuł z emoji jest kodowany RFC 2047 (=?UTF-8?B?...?=)", /^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/.test(t), t);
+  check("62c: wynik da się wysłać w nagłówku HTTP (same znaki latin-1)", /^[\x20-\x7E]*$/.test(t), t);
+  const odkoduj = (h) => Buffer.from((h.match(/^=\?UTF-8\?B\?(.*)\?=$/) || [])[1] || "", "base64").toString("utf8");
+  check("62d: po odkodowaniu wraca ORYGINAŁ (nie okaleczony tekst)",
+    odkoduj(t) === "⚔️ ATAK (Genesis)", odkoduj(t));
+  const pl = hdrSafe("Obrona: BŁĄD (Genesis)");
+  check("62e: same polskie znaki też są kodowane (ł, Ą to nie ASCII)", /^=\?UTF-8\?B\?/.test(pl) && /^[\x20-\x7E]*$/.test(pl), pl);
+  check("62f: pusty/undefined nie wysadza kodera", hdrSafe(undefined) === "" && hdrSafe(null) === "", JSON.stringify([hdrSafe(undefined), hdrSafe(null)]));
+  check("62g: (źródło) Title I Tags idą przez hdrSafe, nie surowe",
+    /headers:\s*\{\s*Title:\s*hdrSafe\(title\),\s*Priority:\s*priority,\s*Tags:\s*hdrSafe\(tags\)\s*\}/.test(src),
+    (src.match(/headers:\s*\{[^}]*\}/) || [""])[0]);
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

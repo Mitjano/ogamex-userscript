@@ -211,7 +211,16 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   // v3.33.0: push na telefon był dotąd zaślepiony na głucho — audyt (T2) wytknął,
   // że NIC go nie sprawdza. Teraz atrapa zapisuje każdy wysłany push.
   game.pushes = game.pushes || [];
-  w.GM_xmlhttpRequest = (o) => { game.pushes.push({ url: o && o.url, title: o && o.headers && o.headers.Title, priority: o && o.headers && o.headers.Priority, body: o && o.data }); if (o && o.onload) o.onload({ status: 200 }); };
+  // v3.74.0: tytuł jedzie w nagłówku zakodowany RFC 2047 (nagłówki HTTP są latin-1, a tytuły
+  // mają emoji — w Chrome surowy tytuł wywalał CAŁE żądanie). Atrapa dekoduje go z powrotem,
+  // żeby asercje czytały tytuł, a nie base64 — i żeby każdy push przechodził tę drogę tam
+  // i z powrotem. Nagłówek, którego nie da się zdekodować, zostaje jak jest (test to pokaże).
+  const odkodujTytul = (h) => {
+    const m = /^=\?UTF-8\?B\?(.*)\?=$/.exec(String(h == null ? "" : h));
+    if (!m) return h;
+    try { return Buffer.from(m[1], "base64").toString("utf8"); } catch { return h; }
+  };
+  w.GM_xmlhttpRequest = (o) => { game.pushes.push({ url: o && o.url, title: odkodujTytul(o && o.headers && o.headers.Title), priority: o && o.headers && o.headers.Priority, body: o && o.data }); if (o && o.onload) o.onload({ status: 200 }); };
   const mkStorage = (m) => ({ getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) });
   Object.defineProperty(w, "sessionStorage", { value: mkStorage(game.session), configurable: true });
   Object.defineProperty(w, "localStorage", { value: mkStorage(game.local), configurable: true });

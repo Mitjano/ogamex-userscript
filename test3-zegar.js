@@ -190,7 +190,16 @@ console.log("\n---- 7. wpis z zamknietej karty NIE krzyczy 'RECKI TERAZ' (v3.68.
   // waznosci, a alarms() nie mial gornej granicy spoznienia: po restarcie przegladarki
   // rano szedl urgentowy push o fali, ktora spadla w nocy.
   const pushe = [];
-  w.GM_xmlhttpRequest = (o) => { pushe.push(String((o && o.headers && o.headers.Title) || "")); if (o && o.onload) o.onload({ status: 200 }); };
+  // v3.74.0: tytul pusha jedzie zakodowany RFC 2047 (naglowki HTTP sa latin-1, tytuly maja
+  // emoji — w Chrome surowy tytul odrzucal cale zadanie). Atrapa dekoduje, zeby asercje
+  // czytaly tytul, a nie base64.
+  const odkoduj = (h) => {
+    const s = String(h == null ? "" : h);
+    const m = /^=\?UTF-8\?B\?(.*)\?=$/.exec(s);
+    if (!m) return s;
+    try { return Buffer.from(m[1], "base64").toString("utf8"); } catch { return s; }
+  };
+  w.GM_xmlhttpRequest = (o) => { pushe.push(odkoduj(o && o.headers && o.headers.Title)); if (o && o.onload) o.onload({ status: 200 }); };
 
   Impact.save({});
   Impact.anchor("nocny", Date.now() - 6 * 3600e3, false, { attack: true, dst: "1:217:6", dstBody: "moon", type: "ATTACK" });
