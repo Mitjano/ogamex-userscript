@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.74.0
+// @version      3.75.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.74.0";
+  const VERSION = "3.75.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1482,7 +1482,20 @@
         // cisza: lot ucieczki z tej pary → zawrót po recallAt; brak zagrożeń i flota na planecie z księżycem → wróć na księżyc
         // v3.10.2: do ZAWROTU bierzemy lot niezaleznie od `flightStale` — porzucenie
         // floty w powietrzu jest gorsze niz spozniony zawrot (FS nocny trwa 8 h).
-        const f = inFlightFrom(k) || (s.flights || []).find(x => x.fromKey === k && x.kind === "air" && ["launched", "recall_clicked"].includes(x.phase));
+        // v3.75.0: od kiedy z jednej pary może lecieć WIĘCEJ NIŻ JEDEN ratunek (fale
+        // z powrotu lądujące pod uderzeniem), zawrót nie może patrzeć tylko na pierwszy
+        // wpis — drugi lot wisiałby w powietrzu bez zawrotu, czyli dokładnie ten sam
+        // sposób utraty floty, przed którym ten kod ma bronić.
+        // BEZ filtra `flightBlind` — do zawrotu lot bierzemy niezależnie od tego, czy
+        // wpis jest już „ślepy" (v3.10.2: porzucenie floty w powietrzu jest gorsze niż
+        // spóźniony zawrót, FS nocny trwa 8 h).
+        const wszystkieLoty = (s.flights || []).filter(x => x.fromKey === k && x.kind === "air" && ["launched", "recall_clicked"].includes(x.phase));
+        const f = inFlightFrom(k) || wszystkieLoty[0];
+        for (const g of wszystkieLoty.slice(1)) {
+          if (g.phase === "launched" && g.recallAt && now >= g.recallAt) actions.push({ kind: "recall", flight: g, why: "ataki minęły — zawrót ucieczki (kolejny lot tej pary)" });
+          else if (g.phase === "launched" && !g.fs && g.recallAt && s.hostileClear && now - (s.hostileClear.since || now) >= 60e3) actions.push({ kind: "recall", flight: g, why: "napastnik zawrócił — wcześniejszy zawrót (kolejny lot tej pary)" });
+          else if (g.phase === "recall_clicked" && now - (g.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: g, why: "zawrót bez potwierdzenia — ponawiam (kolejny lot tej pary)" });
+        }
         if (f && f.kind === "air" && f.phase === "launched" && f.recallAt && now >= f.recallAt) actions.push({ kind: "recall", flight: f, why: "ataki minęły — zawrót ucieczki" });
         // v3.53.0: napastnik zawrócił (pasek misji globalnie czysty ≥60 s, zagrożenia
         // zdjęte w refresh) → nie czekamy do martwego terminu dolotu. NIGDY dla FS
@@ -1734,10 +1747,35 @@
       // obrona ma bezwzględny priorytet (CLAUDE.md), więc para wraca do normalnej ścieżki
       // ratunku. Wyłącznie faza "launched": lot w zawrocie już wraca do domu i jego wpisu
       // nie wolno zgubić — tam zostaje sam alarm.
-      const fsBypass = !!f && !!f.fs && f.phase === "launched" && hitBodies.length > 0;
-      if (fsBypass) alerts.push({ key: k, level: "error", push: true, throttleMs: 10 * 60e3,
-        msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — próbuję ratować ${hitBodies[0].body} (${hitBodies[0].total.toLocaleString("pl-PL")} szt.). UWAGA: wysyłka ratunku NADPISZE wpis lotu FS, więc zawrotu FS bot już nie kliknie — sprowadź tamtą flotę ręcznie` });
-      if (f && !fsBypass) {
+      // v3.75.0 (10.09 06:33, strata ~152 mln statków / 6 mld jednostek) — CO SIĘ PSUŁO:
+      // JEDEN RATUNEK NA PARĘ. O 06:22 bot poprawnie uciekł z całą flotą z [2:224:7], a
+      // potem, między 06:23 a 06:33, wróciło na ten księżyc SZEŚĆ fal ekspedycji po ~25 mln
+      // statków. Bot je widział i pisał „UWAGA: 6 własne powroty lądują PRZED uderzeniem",
+      // ale nie ruszał ich, bo z tej pary już coś leciało. Uderzenie zastało je w hangarze.
+      // Reguła „jeden lot na parę" chroniła wpis lotu przed nadpisaniem — a `s.flights` jest
+      // TABLICĄ i spokojnie mieści drugi wpis (własny fromKey+sentAt, własny recallAt).
+      // Od teraz: cokolwiek STOI na atakowanym ciele, dostaje własny ratunek, nawet jeśli
+      // z tej pary już coś leci. Owner 10.09: „ma pilnować KAŻDEJ floty, która wraca".
+      const drugiLot = !!f && hitBodies.length > 0;
+      if (drugiLot && f.fs) alerts.push({ key: k, level: "error", push: true, throttleMs: 10 * 60e3,
+        msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — ratuję ${hitBodies[0].body} (${hitBodies[0].total.toLocaleString("pl-PL")} szt.) osobnym lotem` });
+      else if (drugiLot) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
+        msg: `ATAK na [${k}] za ${secs}s: z tej pary już leci ratunek (${f.kind}/${f.phase} → [${f.toKey}]), ale na ${hitBodies[0].body} STOI ${hitBodies[0].total.toLocaleString("pl-PL")} szt. (fala z powrotu) — wysyłam DRUGI lot ratunkowy` });
+      if (f && drugiLot && f.kind === "air" && f.phase === "launched" && f.recallAt) {
+        // zawrót pierwszego lotu i tak trzeba przesunąć za ostatnią falę — to niżej robi
+        // gałąź `!drugiLot`, więc przy drugim ratunku powtarzamy to tutaj.
+        const lastArrive = Math.max(...th.map(t => t.arriveAt));
+        if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" });
+      }
+      // v3.52.0 (audyt powrotów 31.08) + v3.75.0: rejestr powrotów mówi wprost, co stoi albo
+      // stanie pod uderzeniem — z zegarem. Alarm jest POZA gałęzią „z pary trwa lot", bo
+      // dotyczy tak samo przebiegu, w którym bot wysyła drugi ratunek.
+      if (th.length) {
+        const landedHit = [...bodies].filter(b => b !== "unknown").filter(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
+        if (inc.length || landedHit.length) alerts.push({ key: k, level: "error", throttleMs: 60e3,
+          msg: `ATAK na [${k}] za ${secs}s: ${landedHit.length ? `fala z powrotu JUŻ stoi na atakowanym ciele (${landedHit.join("/")})` : ""}${landedHit.length && inc.length ? ", a " : ""}${inc.length ? `${inc.length === 1 ? "kolejna fala ląduje" : inc.length + " kolejne fale lądują"} przed uderzeniem (pierwsza ${hhmmss(inc[0].returnAt)}, ~${inc[0].total.toLocaleString("pl-PL")} szt.)` : ""} — każda z nich dostanie własny lot ratunkowy po wylądowaniu; jeśli któraś ląduje tuż przed uderzeniem, zawróć ją ręcznie` });
+      }
+      if (f && !drugiLot) {
         // v3.68.4 (audyt 04.09, obrona-decide#5): brakowało warunku `f.recallAt` — bliźniacza
         // gałąź w „flota już wyleciała" ma go od zawsze. Lot, któremu Fly skasował zawrót,
         // bo doleci i WYLĄDUJE (`m.landing = true; m.recallAt = 0`), dostawał przy dosłanej
@@ -1755,15 +1793,6 @@
         // dokładnie pod uderzenie i tylko właściciel może to rozstrzygnąć.
         else if (f.phase === "recalled" || f.phase === "recall_clicked") alerts.push({ key: k, level: "error", throttleMs: 5 * 60e3, msg: `ATAK na [${k}] za ${secs}s, a flota WRACA z [${f.toKey}] — sprawdź, czy zdąży wylądować po uderzeniu; nie mam czego ratować` });
         else alerts.push({ key: k, level: "error", throttleMs: 5 * 60e3, msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa lot (${f.kind}/${f.phase}) — flota jest w powietrzu, reaguj ręcznie, jeśli wróci za wcześnie` });
-        // v3.52.0 (audyt powrotów 31.08, szczera granica): drugiego ratunku z tej samej
-        // pary bot NIE wyśle (jeden wpis lotu na parę — drugi nadpisałby zawrót
-        // pierwszego i zostawił flotę na refugium). Ale z rejestru wie, że fale
-        // ekspedycji stoją albo staną pod uderzeniem — mówi to wprost, z zegarem.
-        {
-          const landedHit = [...bodies].filter(b => b !== "unknown").filter(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
-          if (inc.length || landedHit.length) alerts.push({ key: k, level: "error", throttleMs: 60e3,
-            msg: `ATAK na [${k}] za ${secs}s: ${landedHit.length ? `fala z powrotu JUŻ stoi na atakowanym ciele (${landedHit.join("/")})` : ""}${landedHit.length && inc.length ? ", a " : ""}${inc.length ? `${inc.length === 1 ? "kolejna fala ląduje" : inc.length + " kolejne fale lądują"} przed uderzeniem (pierwsza ${hhmmss(inc[0].returnAt)}, ~${inc[0].total.toLocaleString("pl-PL")} szt.)` : ""} — trwa już lot ratunkowy, drugiego nie wyślę; zawróć fale albo rozegraj ręcznie` });
-        }
         // v3.68.4 (audyt 04.09, obrona-decide#1 P0): WSZYSTKIE alarmy tej gałęzi siedziały
         // w łańcuchu `else if`, a pierwsza gałąź („air/launched" — czyli stan zaraz po
         // WŁASNYM ratunku bota) ten łańcuch konsumowała. Przy ataku na OBA ciała pary
@@ -1774,10 +1803,9 @@
         // powrotów to zupełnie inny przypadek niż flota, która po prostu STOI w domu):
         // dopóki na atakowanym ciele cokolwiek stoi, bot krzyczy — i budzi telefon (push),
         // bo to jest świadoma decyzja o zostawieniu floty pod uderzeniem.
-        if (hitBodies.length) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
-          // wiek odczytu w treści, bo `fleetsAt` przyjmuje hangary sprzed nawet 48 h —
-          // alarm ma mówić, ile bot NAPRAWDĘ wie, a nie udawać świeżej wiedzy.
-          msg: `ATAK na [${k}] za ${secs}s: w domu NADAL STOI flota (${hitBodies.map(x => `${x.body} ${x.total.toLocaleString("pl-PL")} szt.${now - (x.at || 0) > 30 * 60e3 ? ` — odczyt sprzed ${Math.round((now - (x.at || 0)) / 60000)} min` : ""}`).join(" + ")}), a jedyny slot lotu tej pary zajmuje ${f.kind}/${f.phase}${f.fs ? " (Fleet Save)" : ""} → [${f.toKey}] — drugiego lotu z tej pary bot NIE wyśle, ratuj ręcznie` });
+        // v3.75.0: alarm „w domu NADAL STOI flota, a drugiego lotu nie wyślę" zniknął —
+        // ta gałąź jest osiągalna WYŁĄCZNIE przy pustym `hitBodies` (patrz `drugiLot`),
+        // czyli gdy pod uderzeniem nic nie stoi. Stojącą flotę ratuje teraz drugi lot.
         continue;
       }
       if (!hitBodies.length) {
@@ -1815,7 +1843,10 @@
       // w której bot ŚWIADOMIE zostawia flotę pod uderzeniem. Komunikat mówi teraz prawdę
       // i budzi telefon. Docelowo (partia stan-lotu) wpisy lotów mają być kluczowane per
       // CIAŁO, nie per para — dopiero wtedy drugie ciało dostanie własny ratunek.
-      if (hitBodies.length > 1) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3, msg: `flota na OBU ciałach [${k}] pod atakiem — ratuję TYLKO ${src0.body} (${src0.total.toLocaleString("pl-PL")} szt.); na ${hitBodies[1].body} ZOSTAJE ${hitBodies[1].total.toLocaleString("pl-PL")} szt., których bot NIE ruszy (jeden lot na parę) — przenieś ręcznie` });
+      // v3.75.0: drugie ciało NIE jest już porzucane. Ten przebieg ratuje większy hangar,
+      // a w następnym `drugiLot` przepuszcza kolejny lot dla drugiego ciała. Komunikat mówi
+      // więc „w następnym przebiegu", i tym razem to jest prawda, a nie obietnica bez pokrycia.
+      if (hitBodies.length > 1) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3, msg: `flota na OBU ciałach [${k}] pod atakiem — teraz ratuję ${src0.body} (${src0.total.toLocaleString("pl-PL")} szt.), ${hitBodies[1].body} (${hitBodies[1].total.toLocaleString("pl-PL")} szt.) idzie osobnym lotem w następnym przebiegu` });
       fleet.body = src0.body; fleet.total = src0.total;
       if (now - firstSeen < cfg.confirmMs && secs > cfg.tooLateSec + cfg.confirmMs / 1000) { alerts.push({ key: k, level: "warn", msg: `atak na [${k}] za ${secs}s — potwierdzam ${Math.round((cfg.confirmMs - (now - firstSeen)) / 1000)}s` }); continue; }
       if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }
@@ -3722,10 +3753,18 @@
         // sufit 12 h i `flightStale()`.
         const inAir = (f) => !!f.recallAt && ["launched", "recall_clicked", "recall_failed"].includes(f.phase);
         const zdjete = [];
+        // v3.75.0 (strata 10.09): wpis lotu z TEGO SAMEGO ciała też ZOSTAJE, jeśli tamta flota
+        // jest jeszcze w powietrzu. Do tej pory nowy lot go kasował — a od kiedy bot świadomie
+        // wysyła DRUGI ratunek z tego samego księżyca (fala z ekspedycji wróciła pod uderzenie),
+        // kasowanie oznaczałoby, że pierwsza flota traci zawrót i zostaje na refugium.
+        // E2E sc. 60 pilnuje, że po dwóch ratunkach w stanie są DWA wpisy z terminami zawrotu.
         sPre.flights = (sPre.flights || []).filter(f => {
           if (f.fromKey !== m.fromKey) return true;
-          if (f.fromBody !== m.fromBody && inAir(f)) return true;
-          if (!f.pending && inAir(f)) zdjete.push(f);
+          // resztka po TEJ SAMEJ misji (przeładowanie po kliku) — znika po cichu, inaczej
+          // ten sam lot miałby dwa wpisy i drugi nigdy by się nie domknął
+          if (f.pending && f.fromBody === m.fromBody) return false;
+          if (inAir(f)) return true;
+          if (!f.pending) zdjete.push(f);
           return false;
         });
         // Kasowanie śladu po flocie, która jest w powietrzu, nie może być CICHE — to jest

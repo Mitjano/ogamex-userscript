@@ -117,7 +117,11 @@ console.log("\n── 5. INCYDENT 27.08 11:26 — jedna ucieczka na parę, druga
     flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 60000, recallAt: NOW + 300000, phase: "launched" }],
   });
   const { actions } = decide(s, CFG, NOW);
-  check("para w locie NIE dostaje drugiej akcji lotu", !actions.some(a => a.kind === "fly" && a.fromKey === "3:272:7"), JSON.stringify(actions));
+  // v3.75.0 (strata 10.09 06:33): odwrócone. Na [3:272:7] STOI bilion statków pod atakiem,
+  // a to, że z tej pary już coś leci, nie jest powodem, żeby je zostawić — dokładnie tak
+  // zginęło 152 mln statków z fal ekspedycji. Wpisy lotów są tablicą, drugi lot ma własny.
+  check("para w locie DOSTAJE drugi ratunek, bo w hangarze nadal stoi flota pod atakiem",
+    actions.some(a => a.kind === "fly" && a.fromKey === "3:272:7"), JSON.stringify(actions));
   check("druga, niezależna para dostaje własny ratunek", actions.some(a => a.kind === "fly" && a.fromKey === "3:131:8"), JSON.stringify(actions));
 }
 
@@ -1041,7 +1045,11 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("fala domykająca mówi DLACZEGO domyka (sloty/licznik/konfiguracja)", /lastWhy = waves === 1/.test(src) && /ostatni wolny slot ekspedycji \(\$\{expo\.used\}\/\$\{expo\.total\}/.test(src) && /domyka serię — cały hangar: \$\{p\.lastWhy\}/.test(src));
   check("rekonesans ustepuje RATUNKOWI, ale nie rutynowemu FS", /a\.kind === "fly" && \(a\.rescue \|\| a\.blind\)/.test(src));
   check("FS nie startuje na godzinnym odczycie hangaru", /FS: odczyt hangaru/.test(src));
-  check("przeterminowany lot nadal daje sie ZAWROCIC", /inFlightFrom\(k\) \|\| \(s\.flights \|\| \[\]\)\.find\(x => x\.fromKey === k && x\.kind === "air"/.test(src));
+  // v3.75.0: lista lotów do zawrotu powstaje BEZ filtra `flightBlind` — przeterminowany
+  // wpis też musi dać się zawrócić (porzucona flota jest gorsza niż spóźniony zawrót),
+  // a od kiedy z pary może lecieć więcej niż jeden ratunek, bierzemy je WSZYSTKIE.
+  check("przeterminowany lot nadal daje sie ZAWROCIC",
+    /const wszystkieLoty = \(s\.flights \|\| \[\]\)\.filter\(x => x\.fromKey === k && x\.kind === "air"/.test(src) && !/wszystkieLoty[\s\S]{0,120}flightBlind/.test(src));
   check("strona bledu rozpoznaje takze zwykle 50x", /Internal Server Error\|Service Unavailable/.test(src));
   check("akcje sortowane: ratunek przed rekonesansem", /const RANK = \{ fly: 0, recall: 1/.test(src) && /actions\.sort\(/.test(src));
   check("rekonesans ustępuje, gdy w tym przebiegu jest ratunek", /if \(hasRescue && CFG\.autoRescue\) \{ continue; \}/.test(src));
@@ -1106,8 +1114,16 @@ console.log("\n── 33. AUDYT 29.08: cisza obrony i rezerwa slotow (v3.29.0) �
   const s1 = base({ threats: [threat("3:272:7", "moon", 300)], flights: [air] });
   const r1 = decide(s1, CFG, NOW);
   check("atak na pare z lotem w powietrzu NIE jest przemilczany", r1.alerts.some(a => a.key === "3:272:7" && a.level === "error"), JSON.stringify(r1.alerts));
-  check("alarm mowi, ze flota WRACA (a nie ze wszystko gra)", r1.alerts.some(a => /WRACA/.test(a.msg)), JSON.stringify(r1.alerts.map(a => a.msg)));
-  check("i nadal nie probuje ratowac floty, ktorej nie ma w hangarze", !r1.actions.some(a => a.kind === "fly"), JSON.stringify(r1.actions));
+  // v3.75.0 (strata 10.09): domyślny `base()` trzyma na tym księżycu 1,5 bln statków, więc
+  // to NIE jest przypadek „floty nie ma w hangarze" — flota tam STOI, a poprzedni lot już
+  // odleciał. Dawniej bot ją zostawiał (jeden lot na parę). Teraz ratuje ją osobnym lotem.
+  check("stojąca flota dostaje ratunek, mimo że z pary już coś leci",
+    r1.actions.some(a => a.kind === "fly" && a.rescue && a.fromKey === "3:272:7"), JSON.stringify(r1.actions));
+  // …a gdy w hangarze NAPRAWDĘ nic nie ma, bot nie wymyśla lotu, ale też nie milczy.
+  const r1b = decide(base({ threats: [threat("3:272:7", "moon", 300)], flights: [air], hangars: {} }), CFG, NOW);
+  check("pusty hangar: żadnego lotu, ale alarm o locie w powietrzu jest",
+    !r1b.actions.some(a => a.kind === "fly") && r1b.alerts.some(a => a.key === "3:272:7" && /wyleciała|WRACA/.test(a.msg)),
+    JSON.stringify([r1b.actions, r1b.alerts.map(a => a.msg)]));
 
   // O2: "bezpieczna strona" na odczycie sprzed wielu godzin to zgadywanie.
   const stale = base({ threats: [threat("3:272:7", "planet", 300)],
@@ -1313,7 +1329,9 @@ console.log("\n── R3. ATAK + ratunek już w powietrzu + fale lądują przed 
     expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 1_500_000, sentAt: NOW - 30 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW + 200e3 }],
   });
   const { actions, alerts } = decide(s, CFG, NOW);
-  check("bot NIE wysyła drugiego ratunku (jeden wpis lotu na parę)", !actions.some(a => a.kind === "fly"), JSON.stringify(actions));
+  // v3.75.0 (strata 10.09 06:33): odwrócone — te 700 statków stoi pod uderzeniem i ma
+  // odlecieć własnym lotem, mimo że z pary już coś leci.
+  check("stojąca resztka dostaje drugi ratunek, mimo lotu w powietrzu", actions.some(a => a.kind === "fly" && a.rescue), JSON.stringify(actions));
   check("ale alarmuje, że fala ląduje PRZED uderzeniem", alerts.some(a => /fala ląduje przed uderzeniem|kolejne fale lądują|kolejna fala ląduje/.test(a.msg)), JSON.stringify(alerts.map(a => a.msg)));
 }
 
@@ -1814,8 +1832,10 @@ console.log("\n── 53. AUDYT 04.09 (partia decide-cisza): w gałęzi ataku bo
   const p1 = decide(both(), CFG, NOW);
   check("53a-1: przebieg 1 ratuje większe ciało (księżyc)", p1.actions.some(a => a.kind === "fly" && a.rescue && a.fromBody === "moon"), JSON.stringify(p1.actions));
   const promise = p1.alerts.find(a => /OBU ciałach/.test(a.msg));
-  check("53a-2: komunikat NIE obiecuje już ratunku „w następnym przebiegu\"", !!promise && !/następnym przebiegu/.test(promise.msg), JSON.stringify(promise && promise.msg));
-  check("53a-3: … mówi wprost, ILE floty zostaje pod uderzeniem", !!promise && /ZOSTAJE/.test(promise.msg) && M400.test(promise.msg), JSON.stringify(promise && promise.msg));
+  // v3.75.0: obietnica „w następnym przebiegu" była wcześniej pusta, bo drugi lot z pary
+  // był zakazany. Teraz jest wykonalna i sprawdzamy JĄ, a nie ładny komunikat o porzuceniu.
+  check("53a-2: komunikat zapowiada osobny lot dla drugiego ciała", !!promise && /osobnym lotem/.test(promise.msg), JSON.stringify(promise && promise.msg));
+  check("53a-3: … i podaje, ile floty czeka na ten lot", !!promise && M400.test(promise.msg), JSON.stringify(promise && promise.msg));
   check("53a-4: … i budzi telefon (error + push) — to świadome porzucenie floty", !!promise && promise.level === "error" && promise.push === true, JSON.stringify(promise));
 
   // przebieg 2 i 3: ratunek już w powietrzu, hangar księżyca wyzerowany przez
@@ -1825,9 +1845,11 @@ console.log("\n── 53. AUDYT 04.09 (partia decide-cisza): w gałęzi ataku bo
   after.flights = [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW + 5e3, flightMs: 600e3, recallAt: NOW + 320e3 + 90e3, phase: "launched", tries: 0 }];
   for (const dt of [40e3, 200e3]) {
     const r = decide(after, CFG, NOW + dt);
-    const cry = r.alerts.find(a => a.push === true && a.level === "error" && /NADAL STOI/.test(a.msg));
-    check(`53a-5 (+${dt / 1000}s): przebieg po ratunku NIE jest niemy`, !!cry, JSON.stringify(r.alerts.map(a => a.msg)) + " | akcje: " + JSON.stringify(r.actions));
-    check(`53a-6 (+${dt / 1000}s): alarm podaje ciało i liczbę porzuconych statków`, !!cry && /planet/.test(cry.msg) && M400.test(cry.msg), JSON.stringify(cry && cry.msg));
+    // v3.75.0: przebieg po ratunku ma już nie tylko KRZYCZEĆ, ale RATOWAĆ drugie ciało.
+    const cry = r.alerts.find(a => a.push === true && a.level === "error" && /STOI/.test(a.msg));
+    const lot = r.actions.find(a => a.kind === "fly" && a.rescue && a.fromBody === "planet");
+    check(`53a-5 (+${dt / 1000}s): przebieg po ratunku WYSYŁA lot dla drugiego ciała`, !!lot, JSON.stringify(r.alerts.map(a => a.msg)) + " | akcje: " + JSON.stringify(r.actions));
+    check(`53a-6 (+${dt / 1000}s): … i mówi o tym pushem, z ciałem i liczbą statków`, !!cry && /planet/.test(cry.msg) && M400.test(cry.msg), JSON.stringify(cry && cry.msg));
   }
 
   // ── (b) obrona-fs#1 (P0): lot FLEET SAVE zajmował jedyny wpis lotu pary, więc atak
@@ -1850,19 +1872,24 @@ console.log("\n── 53. AUDYT 04.09 (partia decide-cisza): w gałęzi ataku bo
   const flyFs = rFs.actions.find(a => a.kind === "fly" && a.rescue);
   check("53b-1: FS w powietrzu NIE blokuje ratunku — lot startuje z atakowanej planety", !!flyFs && flyFs.fromKey === "3:272:7" && flyFs.fromBody === "planet", JSON.stringify(rFs.actions) + " | " + JSON.stringify(rFs.alerts.map(a => a.msg)));
   check("53b-2: ratunek zabiera CAŁY hangar (żadnych excludeTypes po FS)", !!flyFs && !flyFs.excludeTypes, JSON.stringify(flyFs));
-  check("53b-3: operator dostaje na telefon ostrzeżenie, że zawrotu FS bot już nie kliknie", rFs.alerts.some(a => a.push === true && /Fleet Save/.test(a.msg) && /zawrotu FS/.test(a.msg)), JSON.stringify(rFs.alerts.map(a => a.msg)));
+  // v3.75.0: ratunek nie nadpisuje już wpisu FS — wpisy lotów to tablica, drugi lot dostaje
+  // własny. Ostrzeżenie „zawrotu FS bot nie kliknie" przestało być prawdą i zniknęło.
+  check("53b-3: alarm mówi o osobnym locie, a nie o utracie zawrotu FS",
+    rFs.alerts.some(a => a.push === true && /Fleet Save/.test(a.msg) && /osobnym lotem/.test(a.msg)) && !rFs.alerts.some(a => /zawrotu FS/.test(a.msg)),
+    JSON.stringify(rFs.alerts.map(a => a.msg)));
 
-  // kontrola 1: lot NIE-dobrowolny (własny ratunek) nadal trzyma zasadę „jedna ucieczka
-  // na parę" — ale para przestaje milczeć.
+  // kontrola 1: lot NIE-dobrowolny (własny ratunek) też nie blokuje już drugiego lotu —
+  // to jest dokładnie strata z 10.09, gdzie fale wracały na ratowany właśnie księżyc.
   const rNot = decide(withFlight({ fs: false, excludeTypes: null }), CFG, NOW);
-  check("53b-4: lot ratunkowy (nie-FS) nadal blokuje drugi lot z tej pary", !rNot.actions.some(a => a.kind === "fly"), JSON.stringify(rNot.actions));
-  check("53b-5: … ale zamiast ciszy leci alarm z pushem o flocie stojącej pod uderzeniem", rNot.alerts.some(a => a.push === true && a.level === "error" && /NADAL STOI/.test(a.msg)), JSON.stringify(rNot.alerts.map(a => a.msg)));
+  check("53b-4: trwający ratunek NIE blokuje drugiego lotu, gdy w domu coś stoi", rNot.actions.some(a => a.kind === "fly" && a.rescue), JSON.stringify(rNot.actions));
+  check("53b-5: … i leci push o flocie stojącej pod uderzeniem", rNot.alerts.some(a => a.push === true && a.level === "error" && /STOI/.test(a.msg)), JSON.stringify(rNot.alerts.map(a => a.msg)));
 
-  // kontrola 2: FS w ZAWROCIE już wraca do domu — jego wpisu nie wolno zgubić ratunkiem,
-  // bo wtedy bot straciłby z oczu flotę w powietrzu. Zostaje sam (głośny) alarm.
+  // kontrola 2: FS w ZAWROCIE wraca do domu. Jego wpis ZOSTAJE (własny element tablicy),
+  // a flota stojąca pod uderzeniem i tak dostaje ratunek — jedno nie wyklucza drugiego.
   const rBack = decide(withFlight({ phase: "recall_clicked", recalledAt: NOW - 60e3 }), CFG, NOW);
-  check("53b-6: FS w zawrocie NIE jest nadpisywany ratunkiem", !rBack.actions.some(a => a.kind === "fly"), JSON.stringify(rBack.actions));
-  check("53b-7: … ale i tu bot krzyczy o flocie zostawionej w domu", rBack.alerts.some(a => a.push === true && /NADAL STOI/.test(a.msg)), JSON.stringify(rBack.alerts.map(a => a.msg)));
+  check("53b-6: FS w zawrocie nie przeszkadza uratować tego, co STOI w domu", rBack.actions.some(a => a.kind === "fly" && a.rescue && a.fromBody === "planet"), JSON.stringify(rBack.actions));
+  check("53b-7: … i nadal budzi telefon, podając ciało i liczbę ratowanych statków",
+    rBack.alerts.some(a => a.push === true && /planet/.test(a.msg) && /800/.test(a.msg)), JSON.stringify(rBack.alerts.map(a => a.msg)));
 
   // kontrola 3: FS w powietrzu, ale w domu NIC nie stoi → nic do ratowania, żadnego
   // nowego lotu i żadnego nowego krzyku (nie hałasujemy bez powodu).
@@ -2145,9 +2172,12 @@ console.log("\n── 56. AUDYT 04.09 (partia stan-lotu): wpis lotu ma odzwierci
     bledy = [];
     const po2 = filtruj({ flights: [{ ...lecacyZKsiezyca, fromBody: "moon" }] },
       { fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", air: true }, J);
-    check("56g3: lot z TEGO SAMEGO ciała nadal nadpisuje stary wpis (jeden lot na ciało)", po2.length === 0, JSON.stringify(po2));
-    check("56g4: … ale nie po cichu — kasowanie floty w powietrzu idzie do dziennika (i pusha)",
-      bledy.length === 1 && /BŁĄD/.test(bledy[0]) && /NIE kliknie/.test(bledy[0]), JSON.stringify(bledy));
+    // v3.75.0 (strata 10.09 06:33): odwrócone. Drugi ratunek z TEGO SAMEGO księżyca jest teraz
+    // zamierzony (fala z ekspedycji wraca pod uderzenie), więc wpis lecącej floty MUSI zostać —
+    // inaczej pierwsza flota traci zawrót i zostaje na refugium na stałe.
+    check("56g3: lot z tego samego ciała NIE kasuje wpisu floty wciąż w powietrzu",
+      po2.length === 1 && po2[0].fromBody === "moon", JSON.stringify(po2));
+    check("56g4: … i nie ma już fałszywego alarmu o utraconym zawrocie", bledy.length === 0, JSON.stringify(bledy));
 
     bledy = [];
     const po3 = filtruj({ flights: [{ ...lecacyZKsiezyca, phase: "recalled" }] }, ratunekZPlanety, J);
@@ -2472,6 +2502,55 @@ console.log("\n── 61. RÓJ SOND ≠ ATAK: trwałość nadwyżki z DRUGIEGO o
   check("61k1: bez wpisu listSeen w stanie (stara wersja stanu) → ratunek w ciemno jak dotąd", rBez.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rBez.actions));
   check("61l: (źródło) migawka strony nie cofa świeższego odczytu paska z fetcha", /PAGE_AT >= \(s\.bar\.at \|\| 0\)/.test(src));
   check("61l1: (źródło) świeży pasek idzie fetchem /home BEZ `?planet=` (sesja operatora nietknięta)", /fetchT\("\/home", \{ credentials: "same-origin" \}\)/.test(bodyOf("async fetchFresh() {")) && !/planet=/.test(bodyOf("async fetchFresh() {")));
+}
+
+console.log("\n── 63. FALA Z POWROTU POD UDERZENIEM DOSTAJE WŁASNY RATUNEK (strata 10.09 06:33) ──");
+{
+  // 10.09 06:22 bot uciekł z całą flotą z [2:224:7]. Między 06:23 a 06:33 wróciło na ten
+  // księżyc SZEŚĆ fal po ~25 mln statków. Bot je widział („UWAGA: 6 własne powroty lądują
+  // PRZED uderzeniem") i NIE ruszył ich, bo z tej pary już coś leciało. Uderzenie zastało
+  // je w hangarze: ~152 mln statków, 6 mld jednostek. Reguła „jeden lot na parę" broniła
+  // wpisu lotu przed nadpisaniem, a kosztowała flotę.
+  const lecacy = { kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 10 * 60e3, phase: "launched", recallAt: NOW + 20 * 60e3, flightMs: 5 * 60e3 };
+  const s1 = base({
+    threats: [threat("3:272:7", "moon", 600)],
+    flights: [lecacy],
+    hangars: { "3:272:7|moon": H(25_007_604) },   // fala, która WŁAŚNIE wylądowała
+  });
+  const r1 = decide(s1, CFG, NOW);
+  const rat = r1.actions.filter(a => a.kind === "fly" && a.rescue);
+  check("63a: mimo lotu w powietrzu bot wysyła DRUGI ratunek dla fali, która wylądowała",
+    rat.length === 1 && rat[0].fromKey === "3:272:7" && rat[0].fromBody === "moon", JSON.stringify(r1.actions));
+  check("63b: …i mówi o tym pushem (nie samym logiem)",
+    r1.alerts.some(a => a.push === true && /DRUGI lot ratunkowy/.test(a.msg)), JSON.stringify(r1.alerts.map(a => a.msg)));
+  check("63c: …i NIE twierdzi już, że drugiego lotu nie wyśle",
+    !r1.alerts.some(a => /NIE wyśle|ratuj ręcznie/.test(a.msg)), JSON.stringify(r1.alerts.map(a => a.msg)));
+  // extend dotyczy tylko lotu, którego zawrót wypadał PRZED uderzeniem — inaczej nie ma co
+  // przesuwać. Osobny wariant, bo w s1 zawrót jest i tak późniejszy niż dolot wroga.
+  const wczesnyZawrot = { ...lecacy, recallAt: NOW + 2 * 60e3 };
+  const r1d = decide(base({
+    threats: [threat("3:272:7", "moon", 600)], flights: [wczesnyZawrot],
+    hangars: { "3:272:7|moon": H(25_007_604) },
+  }), CFG, NOW);
+  check("63d: zawrót pierwszego lotu wypadający PRZED uderzeniem jest przesuwany za nie",
+    r1d.actions.some(a => a.kind === "extend" && a.recallAt > NOW + 600e3), JSON.stringify(r1d.actions));
+
+  // Pusty hangar pod uderzeniem = nie ma czego ratować, drugi lot NIE powstaje.
+  const r2 = decide(base({ threats: [threat("3:272:7", "moon", 600)], flights: [lecacy], hangars: {} }), CFG, NOW);
+  check("63e: gdy pod uderzeniem NIC nie stoi, drugiego lotu nie ma (bez młynka)",
+    !r2.actions.some(a => a.kind === "fly"), JSON.stringify(r2.actions));
+
+  // Zawrót MUSI objąć oba loty, inaczej drugi wisi w powietrzu bez powrotu.
+  const dwa = [
+    { ...lecacy, sentAt: NOW - 30 * 60e3, recallAt: NOW - 60e3 },
+    { ...lecacy, sentAt: NOW - 20 * 60e3, recallAt: NOW - 30e3 },
+  ];
+  const r3 = decide(base({ threats: [], flights: dwa, hangars: {} }), CFG, NOW);
+  const zawroty = r3.actions.filter(a => a.kind === "recall");
+  check("63f: po ustaniu ataku zawracane są OBA loty pary, nie tylko pierwszy",
+    zawroty.length === 2 && zawroty.some(a => a.flight === dwa[0]) && zawroty.some(a => a.flight === dwa[1]),
+    JSON.stringify(r3.actions.map(a => [a.kind, a.why])));
 }
 
 console.log("\n── 62. PUSH Z EMOJI PRZECHODZI PRZEZ CHROME (noc 09/10.09: 422 nieudane, 0 udanych) ──");

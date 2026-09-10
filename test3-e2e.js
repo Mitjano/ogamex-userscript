@@ -2401,6 +2401,37 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bez dowodu z listy ratunek w ciemno zostaje (jak sc. 10)", g2.sent.length === 1, JSON.stringify(g2.sent));
   }
 
+  console.log("\n── 60. FALA WRACA POD UDERZENIE: drugi ratunek z tej samej pary (strata 10.09 06:33) ──");
+  {
+    // 10.09 06:22 bot uciekł z całą flotą z księżyca bazy. Do 06:33 wróciło tam SZEŚĆ fal
+    // ekspedycji po ~25 mln statków — bot je widział i nie ruszył, bo z tej pary już coś
+    // leciało. Uderzenie zastało je w hangarze: ~152 mln statków. Ten scenariusz odtwarza
+    // to na sztucznej grze: ratunek w powietrzu + fala, która ląduje przed uderzeniem.
+    const cfg = { autoRescue: true, expo: { enabled: false } };
+    const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 900 }] });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 3 });
+    check("60a: pierwszy ratunek poszedł i opróżnił hangar", g.sent.length === 1 && Object.keys(g.hangars["1:100:5|moon"] || {}).length === 0,
+      JSON.stringify([g.sent.length, g.hangars["1:100:5|moon"]]));
+
+    g.hangars["1:100:5|moon"] = { BATTLESHIP: 25000000 };   // fala z ekspedycji WŁAŚNIE wylądowała
+    const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
+    const drugi = g.sent[1];
+    check("60b: fala, ktora wyladowala pod uderzeniem, dostaje WLASNY lot", g.sent.length === 2 && !!drugi,
+      JSON.stringify(g.sent.map(s => [s.from, s.fromBody, Object.values(s.ships || {}).reduce((a, b) => a + b, 0)])));
+    check("60c: …z tego samego atakowanego ksiezyca i z cala fala",
+      !!drugi && drugi.from === "1:100:5" && drugi.fromBody === "moon" && drugi.ships.BATTLESHIP === 25000000, JSON.stringify(drugi));
+    check("60d: …i hangar znow jest pusty (nic nie zostalo pod uderzeniem)",
+      Object.keys(g.hangars["1:100:5|moon"] || {}).length === 0, JSON.stringify(g.hangars["1:100:5|moon"]));
+
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const zPary = (st.flights || []).filter(f => f.fromKey === "1:100:5");
+    check("60e: OBA loty sa w stanie — pierwszy nie zostal nadpisany drugim", zPary.length === 2, JSON.stringify(st.flights));
+    check("60f: kazdy ma wlasny termin zawrotu (zaden nie zostanie w powietrzu)",
+      zPary.length === 2 && zPary.every(f => f.recallAt > 0), JSON.stringify(zPary.map(f => [f.sentAt, f.recallAt])));
+    check("60g: bot powiedzial wprost, ze wysyla drugi lot", logs.some(m => /DRUGI lot ratunkowy/.test(m)),
+      logs.filter(m => /ATAK|ratun/i.test(m)).slice(0, 4).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
