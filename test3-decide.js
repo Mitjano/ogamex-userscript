@@ -2783,6 +2783,43 @@ console.log("\n── 68. DESTROY: nie lądujemy na planecie pod ginącym księ�
     !!lotBS && lotBS.toKey === "3:272:7" && lotBS.toBody === "planet", JSON.stringify(lotBS));
 }
 
+
+console.log("\n── 69. ZEGAR DOLOTU: odwołany atak przestaje udawać uderzenie (obserwacja właściciela 11.09 12:20) ──");
+{
+  // Właściciel: „miałem atak na kolonię, ale typ już dawno zawrócił", a panel dalej odliczał
+  // do uderzenia o 12:18:50 i podpowiadał godzinę wysyłki recyklerów. Obrona wiedziała prawdę
+  // (mechanizm wcześniejszego zawrotu z v3.53.0 zdjął zagrożenie, stan był pusty, bot sam
+  // sprowadził flotę o 12:17:50) — ale zegar trzyma WŁASNY magazyn `impacts`, do którego
+  // wpis trafia raz i nikt go nie unieważnia. Skutek: jedyny ekran, na który właściciel patrzy
+  // w nocy, uczy go, że kłamie — a w skrajnym przypadku wysyła zbieracze tam, gdzie nic nie spadło.
+  const oznacz = new Function("log", "return function (idki, kiedy) {" + bodyOf("oznaczOdwolane(idki, kiedy) {") + "};")(() => {});
+  const magazyn = { a1: { attack: true, at: NOW + 60e3 }, a2: { attack: true, at: NOW + 90e3 }, s1: { attack: false, at: NOW } };
+  let zapisy = 0;
+  const to = { all: () => magazyn, save: (m) => { zapisy++; Object.assign(magazyn, m); } };
+  oznacz.call(to, ["a1"], NOW);
+  check("69a: odwołany wpis dostaje stempel, reszta nietknięta", magazyn.a1.cancelled === NOW && !magazyn.a2.cancelled, JSON.stringify(magazyn));
+  const przedtem = zapisy;
+  oznacz.call(to, ["a1"], NOW + 1000);
+  check("69b: powtórne oznaczenie nie pisze do magazynu drugi raz (zegar tyka co sekundę)", zapisy === przedtem, `zapisów ${zapisy}`);
+  oznacz.call(to, ["nie-ma-takiego"], NOW);
+  check("69c: nieznane id nie wywraca funkcji", zapisy === przedtem);
+
+  const ataki = new Function("return function () {" + bodyOf("ataki() {") + "};")();
+  const lista = [{ id: "a1", attack: true, cancelled: NOW }, { id: "a2", attack: true }, { id: "s1", attack: false }];
+  const wynik = ataki.call({ list: () => lista });
+  check("69d: odwołany atak wypada z listy uderzeń (nie odlicza, nie rozwija panelu, nie prosi o recki)",
+    wynik.length === 1 && wynik[0].id === "a2", JSON.stringify(wynik));
+
+  check("69e: (źródło) zdjęcie zagrożenia „pasek czysty ≥60 s” oznacza wpisy zegara",
+    /Impact\.oznaczOdwolane\(zdjete\.map\(t => t\.id\)/.test(src));
+  check("69f: (źródło) wiersz odwołanego pokazuje ODWOŁANY zamiast odliczania",
+    /v\.cancelled \? "ODWOŁANY"/.test(src));
+  check("69g: (źródło) odwołany nie dostaje podpowiedzi o recyklerach",
+    /const ost = v\.attack && !v\.cancelled && Impact\.ostatnia\(v\)/.test(src));
+  check("69h: (źródło) wpis ZOSTAJE w historii — tylko wygaszony, nie skasowany",
+    /imp\.odwolany\{opacity/.test(src) && !/delete m\[id\]/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

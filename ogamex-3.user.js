@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.81.0
+// @version      3.82.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.81.0";
+  const VERSION = "3.82.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1113,8 +1113,22 @@
           // prawdę, wolno unieważnić tylko zagrożenie, które istniało JUŻ w chwili renderu
           // tego paska — inaczej świeżo wykryty atak (wiersz, którego lista chwilowo nie
           // potwierdza) znikał ze stanu, a decide() zawracał ucieczkę pod nadlatującą falę.
+          const zdjete = (s.threats || []).filter(t => !(t.source === "sim" || now - (t.lastSeenAt || 0) < 30e3 || (s.bar.at || 0) <= (t.seenAt || 0)));
           s.threats = (s.threats || []).filter(t => t.source === "sim" || now - (t.lastSeenAt || 0) < 30e3 || (s.bar.at || 0) <= (t.seenAt || 0));
-          if (s.threats.length < before) log(`[OBRONA] pasek misji czysty od ≥60 s — napastnik ZAWRÓCIŁ (${before - s.threats.length} zagrożeń zdjętych przed terminem dolotu). Ucieczka może wracać.`, "success");
+          if (s.threats.length < before) {
+            log(`[OBRONA] pasek misji czysty od ≥60 s — napastnik ZAWRÓCIŁ (${before - s.threats.length} zagrożeń zdjętych przed terminem dolotu). Ucieczka może wracać.`, "success");
+            // v3.82.0 (obserwacja właściciela 11.09 12:20: „miałem atak na kolonię, ale typ
+            // dawno zawrócił", a panel dalej odliczał do uderzenia o 12:18:50 i podpowiadał
+            // wysyłkę recyklerów): obrona wiedziała prawdę — zegar dolotu nie. Trzyma własny
+            // magazyn `impacts`, do którego wpis trafia raz i nikt go już nie unieważnia.
+            // Skutek jest gorszy niż sam fałszywy odczyt: właściciel uczy się, że zegar
+            // kłamie, a to jedyny ekran, na który patrzy o trzeciej w nocy — no i mógłby
+            // posłać zbieracze w miejsce, gdzie nic nie spadło. Sygnał bierzemy TEN SAM,
+            // który dopiero co zdjął zagrożenie (pasek GLOBALNY, czysty ≥60 s), więc
+            // przełączenie pary przez operatora niczego tu nie unieważnia — inaczej niż
+            // „wiersz zniknął z listy", które dla nieaktywnej pary nic nie znaczy.
+            try { Impact.oznaczOdwolane(zdjete.map(t => t.id).filter(Boolean), now); } catch {}
+          }
         }
       }
       // własne loty (z Events — globalne; z listy — aktywna para)
@@ -4870,7 +4884,14 @@
       if (zm) this.save(m);
     },
     list() { return Object.entries(this.all()).map(([id, v]) => ({ id, ...v })).sort((a, b) => a.at - b.at); },
-    ataki() { return this.list().filter(x => x.attack); },
+    // v3.82.0: napastnik zawrócił — wpis zostaje w historii (widać, że coś leciało), ale
+    // przestaje być „uderzeniem": nie odlicza, nie rozwija sekcji i nie prosi o recyklery.
+    oznaczOdwolane(idki, kiedy) {
+      const m = this.all(); let n = 0;
+      for (const id of idki || []) if (m[id] && !m[id].cancelled) { m[id] = { ...m[id], cancelled: kiedy || Date.now() }; n++; }
+      if (n) { this.save(m); log(`[ZEGAR] ${n} wpis(ów) oznaczonych jako ODWOŁANE — napastnik zawrócił przed dolotem.`, "info"); }
+    },
+    ataki() { return this.list().filter(x => x.attack && !x.cancelled); },
     // Najbliższe uderzenie przed nami; gdy wszystko już spadło — to, które spadło
     // ostatnie, jeszcze przez 2 minuty. To są dokładnie te dwie minuty, w których
     // operator wysyła recyklery, więc pasek stanu nie ma prawa wtedy zgasnąć.
@@ -5048,6 +5069,8 @@
           #ogx3-panel .jr.ATAK b,#ogx3-panel .jr.BŁĄD b{color:#ff6b6b}
           #ogx3-panel .jr.RATUNEK b,#ogx3-panel .jr.POWRÓT b,#ogx3-panel .jr.FS b{color:#6fcf97}
           #ogx3-panel .jr.EKO b{color:#e2b25d}   /* v3.77.0: ekonomia stoi — żółto, nie czerwono */
+          #ogx3-panel .imp.odwolany{opacity:.45}   /* v3.82.0: napastnik zawrócił — wpis zostaje, ale nie udaje uderzenia */
+          #ogx3-panel .imp.odwolany .cd{color:#6fcf97;font-weight:600}
           #ogx3-panel .imp{margin:5px 0;padding:4px 6px;background:rgba(231,76,60,.13);border-left:2px solid #e74c3c;border-radius:3px}
           #ogx3-panel .imp.spy{background:rgba(241,196,15,.10);border-left-color:#f1c40f}
           #ogx3-panel .imp .h{font-size:13px;font-weight:700;color:#ff9b9b;font-variant-numeric:tabular-nums;display:flex;justify-content:space-between;gap:6px}
@@ -5359,9 +5382,9 @@
         box.innerHTML = lista.map(v => {
           const l = Math.round((v.at - now) / 1000);
           const g = parseKey(v.dst);
-          const ost = v.attack && Impact.ostatnia(v);
-          return `<div class="imp${v.attack ? "" : " spy"}">`
-            + `<div class="h"><span>${Clock.hms(v.at)}</span><span class="cd">${l >= 0 ? "za " + mmss(l) : (l >= -120 ? "TERAZ" : "było")}</span></div>`
+          const ost = v.attack && !v.cancelled && Impact.ostatnia(v);
+          return `<div class="imp${v.attack ? "" : " spy"}${v.cancelled ? " odwolany" : ""}">`
+            + `<div class="h"><span>${Clock.hms(v.at)}</span><span class="cd">${v.cancelled ? "ODWOŁANY" : (l >= 0 ? "za " + mmss(l) : (l >= -120 ? "TERAZ" : "było"))}</span></div>`
             + `<div class="sub">${v.attack ? "atak" : "sonda"} → [${v.dst}] ${v.dstBody === "moon" ? "☾" : "◍"} ← [${v.src || "?"}]${v.precise ? "" : " ~"}</div>`
             + (ost ? `<div class="sub rk">recki ${Clock.hms(v.at + off)}${g ? ` · <a data-gal="${g.galaxy}:${g.system}">złom ↗</a>` : ""}</div>` : "")
             + `</div>`;
