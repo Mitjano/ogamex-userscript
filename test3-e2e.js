@@ -41,6 +41,7 @@ class Game {
     this.formMission = null;
     this.ghosts = 0;          // obce floty widoczne TYLKO na pasku (test slepego alarmu)
     this.hideBar = false;     // strona bez paska misji (formularz, blad, logowanie)
+    this.barTypeOverride = null;   // co pokazuje pole „Type:" przy najblizszym dolocie (np. "Spy")
     this.noSpeeds = false;    // formularz bez suwaka predkosci
     // Lista z ŻYWEJ GRY (zrzut formularza floty na Genesis, 11.09) — NIE zmyślać jej:
     // to od niej zależy, czy ucieczka poleci 3% (wisi i da się zawrócić), czy 100% (ląduje).
@@ -109,7 +110,10 @@ class Game {
     const hostile = this.threats.length + this.ghosts;
     const own = this.sent.filter(s => s.inFlight).length;
     if (!hostile && !own) return `<div id="bar">No fleet movement</div>`;
-    return `<div id="bar">${hostile + own} Missions: ${own} Own ${hostile} Hostile Next: 05:00 Type: ${hostile ? "Attack" : "Deploy"}</div>`;
+    // v3.87.0: `barTypeOverride` pozwala scenariuszowi powiedzieć, CO pokazuje pole „Type:"
+    // przy najbliższym dolocie (np. „Spy" dla roju sond) — od tego zależy, czy alarm o parze
+    // uciszonej przez listę budzi właściciela, czy zostaje spokojną linią w logu.
+    return `<div id="bar">${hostile + own} Missions: ${own} Own ${hostile} Hostile Next: 05:00 Type: ${this.barTypeOverride || (hostile ? "Attack" : "Deploy")}</div>`;
   }
   rowsHtml(onlyActive) {
     return this.threats.filter(t => !onlyActive || t.dst === this.active.key).map(t =>
@@ -2437,8 +2441,31 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const { logs } = await run(g, { cfg, loads: 10, ticksPerLoad: 3 });
     check("nadwyżka potwierdzona, ale lista (z własnym wierszem pary domu) nie widzi obcych przy domu → flota ZOSTAJE",
       g.sent.filter(s => s.mission !== "Expedition").length === 0, JSON.stringify(g.sent));
-    check("bot mówi, że nadwyżka dotyczy innej kolonii", logs.some(m => /nadwyżka dotyczy innej kolonii/.test(m)),
+    // v3.87.0: gdy uciszona para trzyma NAJWIĘKSZĄ flotę konta, cisza listy przestaje być
+    // cichym wpisem w logu — fork gubi ataki z własnego układu (R4), a baza ekspedycyjna ma
+    // własne wiersze non stop, więc to jest dokładnie miejsce, w którym bot może nie zobaczyć
+    // nadlatującego ataku. Decyzja o locie bez zmian; budzimy właściciela.
+    check("bot mówi wprost, że zostawia w domu największą flotę konta", logs.some(m => /ZOSTAWIAM W DOMU NAJWIĘKSZĄ FLOTĘ KONTA/.test(m)),
       logs.filter(m => /OBRONA|pasek|ŚLEPY/.test(m)).slice(0, 5).join(" | "));
+    check("…i że cisza listy nie wyklucza ataku z własnego układu", logs.some(m => /ataku z WŁASNEGO UKŁADU/.test(m)),
+      logs.filter(m => /OBRONA|pasek/.test(m)).slice(0, 4).join(" | "));
+    check("…i że to trafia na telefon (wpis ATAK w dzienniku, nie sam log)",
+      JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => e.kind === "ATAK" && /NAJWIĘKSZĄ FLOTĘ KONTA/.test(e.msg || "")),
+      JSON.stringify(JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").slice(0, 3)));
+
+    // kontrola: na pasku sam rój sond (żadnego lotu bojowego) → stary, spokojny komunikat
+    // i ŻADNEGO budzenia właściciela — szum uczy ignorowania kanału alarmowego
+    const gm = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });
+    gm.barTypeOverride = "Spy";
+    gm.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:16", toBody: "planet", mission: "Expedition", type: "EXPEDITION", ships: { LIGHT_FIGHTER: 10 }, inFlight: true, eta: 1800 });
+    gm.ghosts = 3;
+    await run(gm, { cfg, loads: 3, ticksPerLoad: 2 });
+    advance(gm, 70e3);
+    const rm = await run(gm, { cfg, loads: 10, ticksPerLoad: 3 });
+    check("mniejsza uciszona para → stary komunikat „nadwyżka dotyczy innej kolonii”", rm.logs.some(m => /nadwyżka dotyczy innej kolonii/.test(m)),
+      rm.logs.filter(m => /OBRONA|pasek|ŚLEPY/.test(m)).slice(0, 5).join(" | "));
+    check("…i żadnego budzenia właściciela o tej parze", !JSON.parse(gm.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => /NAJWIĘKSZĄ FLOTĘ KONTA/.test(e.msg || "")),
+      JSON.stringify(JSON.parse(gm.store.get("genesis.ogamex.net:ogx3_journal") || "[]").slice(0, 3)));
 
     // kontrola: bez własnego wiersza (brak dowodu, że lista dotyczy tej pary) → ratunek w ciemno jak w sc. 10
     const g2 = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 300 } } });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.86.0
+// @version      3.87.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.86.0";
+  const VERSION = "3.87.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -2105,7 +2105,27 @@
         .sort((a, b) => b.f.total - a.f.total);
       const spared = candidates.filter(x => listQuiet(x.k));
       const withFleet = candidates.filter(x => !listQuiet(x.k));
-      for (const x of spared) alerts.push({ key: x.k, level: "warn", throttleMs: 10 * 60e3, msg: `pasek widzi ${s.barExcess.count} obcych lotów bez celu, ale lista ruchów (świeża, z własnym wierszem tej pary) nie pokazuje przy [${x.k}] żadnego obcego lotu — nadwyżka dotyczy innej kolonii, flota (${x.f.total.toLocaleString("pl-PL")} szt.) zostaje w domu` });
+      // v3.87.0 (pytanie właściciela 11.09 wieczorem: „czy flota zostanie obroniona?"):
+      // cisza listy przy parze z WŁASNYM wierszem jest dowodem słabym dokładnie tam, gdzie
+      // najbardziej boli. Fork gubi na liście ataki z WŁASNEGO UKŁADU (R4 z AUDYT-FLOTA,
+      // potwierdzone stratą floty 12.08 na Athenie), a baza ekspedycyjna ma własne wiersze
+      // non stop — więc `listQuiet` ucisza ją ZAWSZE, także wtedy, gdy niewidoczny atak leci
+      // z sąsiedniej pozycji tego samego układu. Trasy ratunku to NIE zmienia: v3.72.0
+      // pokazała, czym kończy się heurystyka na nadwyżce (pełna ewakuacja po zwykłym skanie).
+      // Zmienia jedno — gdy bot zostawia w domu NAJWIĘKSZĄ flotę konta, właściciel dowiaduje
+      // się o tym NA TELEFONIE, a nie z logu po fakcie. Pierwsze użycie flagi `push`
+      // przygotowanej w v3.68.3 („alarm deklaruje: to musi obudzić właściciela").
+      // Zawężenie wymuszone przez testy (61f1 + E2E 59b): „największa uciszona para" to
+      // w praktyce prawie każda uciszona para, bo bot zna hangary tylko części kolonii —
+      // budzenie właściciela na każdą nadwyżkę zrobiłoby z kanału alarmowego szum (rój sond
+      // 08.09), a szum uczy ignorowania kanału, którym idzie prawdziwy atak. Dlatego telefon
+      // dzwoni tylko wtedy, gdy pasek pokazuje przy tym lot BOJOWY (`attackType` z v3.68.9):
+      // sondy nie budzą, Attack/Destroy/Bomb bez rozpoznanego celu — owszem.
+      const spareTop = spared.length && candidates[0] && candidates[0].k === spared[0].k && s.bar && s.bar.attackType ? spared[0].k : null;
+      for (const x of spared) alerts.push({ key: x.k, level: x.k === spareTop ? "error" : "warn", push: x.k === spareTop, throttleMs: 10 * 60e3,
+        msg: x.k === spareTop
+          ? `pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu, a lista ruchów przy [${x.k}] jest cicha — ZOSTAWIAM W DOMU NAJWIĘKSZĄ FLOTĘ KONTA (${x.f.total.toLocaleString("pl-PL")} szt.). Cisza listy NIE wyklucza ataku z WŁASNEGO UKŁADU, bo fork takich lotów na liście nie pokazuje. Sprawdź grę i ratuj ręcznie, jeśli coś leci.`
+          : `pasek widzi ${s.barExcess.count} obcych lotów bez celu, ale lista ruchów (świeża, z własnym wierszem tej pary) nie pokazuje przy [${x.k}] żadnego obcego lotu — nadwyżka dotyczy innej kolonii, flota (${x.f.total.toLocaleString("pl-PL")} szt.) zostaje w domu` });
       if (withFleet.length) {
         const t = withFleet[0];
         alerts.push({ key: t.k, level: "error", blind: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });

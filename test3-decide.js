@@ -2490,6 +2490,18 @@ console.log("\n── 61. RÓJ SOND ≠ ATAK: trwałość nadwyżki z DRUGIEGO o
   check("61f: lista (świeża, z dowodem) widzi dom floty bez obcych → ślepy alarm NIE ewakuuje", !rQ.actions.some(a => a.kind === "fly"), JSON.stringify(rQ.actions));
   check("61f1: …i mówi dlaczego (nadwyżka dotyczy innej kolonii), bez pushu „nie wiem, gdzie stoi flota”",
     rQ.alerts.some(a => /innej kolonii/.test(a.msg)) && !rQ.alerts.some(a => /nie wiem, gdzie stoi flota/.test(a.msg)), JSON.stringify(rQ.alerts.map(a => a.msg)));
+  // v3.87.0 (pytanie właściciela 11.09: „czy flota zostanie obroniona?"): fork gubi na liście
+  // ataki z WŁASNEGO UKŁADU (R4), a baza ekspedycyjna ma własne wiersze non stop — więc cisza
+  // listy ucisza ją ZAWSZE. Trasy to nie zmienia (v3.72.0), ale gdy pasek pokazuje przy tym lot
+  // BOJOWY, a bot zostawia w domu największą flotę konta, właściciel ma dostać push.
+  const rBojowy = decide(base({ ...sQuiet, bar: { total: 3, own: 0, foreign: 3, counter: true, attackType: true, at: NOW - 10e3 } }), CFG, NOW);
+  check("61f2: pasek pokazuje lot BOJOWY, a lista przy domu milczy → alarm budzi właściciela (push)",
+    rBojowy.alerts.some(a => a.push && /NAJWIĘKSZĄ FLOTĘ KONTA/.test(a.msg) && /WŁASNEGO UKŁADU/.test(a.msg)), JSON.stringify(rBojowy.alerts.map(a => `${a.push ? "PUSH " : ""}${a.msg}`)));
+  check("61f3: …i nadal NIE rusza flotą (to alarm dla człowieka, nie nowa heurystyka ewakuacji)",
+    !rBojowy.actions.some(a => a.kind === "fly"), JSON.stringify(rBojowy.actions));
+  const rSonda = decide(base({ ...sQuiet, bar: { total: 3, own: 0, foreign: 3, counter: true, attackType: false, spyType: true, at: NOW - 10e3 } }), CFG, NOW);
+  check("61f4: sam rój sond na pasku NIE budzi telefonu (szum uczy ignorowania kanału)",
+    !rSonda.alerts.some(a => a.push) && rSonda.alerts.some(a => /innej kolonii/.test(a.msg)), JSON.stringify(rSonda.alerts.map(a => `${a.push ? "PUSH " : ""}${a.msg}`)));
   const rNoProof = decide(base({ ...sQuiet, listSeen: { key: "3:272:7", foreign: 0, proven: false, at: NOW - 10e3 } }), CFG, NOW);
   check("61g: lista BEZ dowodu (żadnego własnego wiersza tej pary) → ratunek w ciemno jak dotąd", rNoProof.actions.some(a => a.kind === "fly" && a.blind), JSON.stringify(rNoProof.actions));
   const rForeign = decide(base({ ...sQuiet, listSeen: { key: "3:272:7", foreign: 1, proven: true, at: NOW - 10e3 } }), CFG, NOW);
