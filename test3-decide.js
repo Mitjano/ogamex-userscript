@@ -530,8 +530,10 @@ console.log("\n── 19b. KSIĘGOWOŚĆ LOTÓW (incydent na żywo 30.08, v3.39.
   // Wycofane. Ten test PILNUJE, żeby cisza nie generowała nawigacji.
   const poEta = { ...lecialo, pending: false, sentAt: NOW - 300e3 };
   const cisza = decide(base({ hangars: {}, threats: [], flights: [poEta] }), CFG, NOW);
-  check("cisza + lot po ETA → ŻADNEJ akcji nawigującej (rekonesans/lot)",
-    !(cisza.actions || []).some(a => a.kind === "recon" || a.kind === "fly"), JSON.stringify(cisza.actions));
+  check("cisza + lot po ETA → ŻADNEJ akcji NAWIGUJĄCEJ (lot albo GŁOŚNY rekonesans)",
+    !(cisza.actions || []).some(a => a.kind === "fly" || (a.kind === "recon" && !a.quiet)), JSON.stringify(cisza.actions));
+  // Cichy rekonesans (fetch w tle, zakaz nawigacji — v3.46.0) jest dozwolony i POTRZEBNY:
+  // bez niego lot bez zawrotu nie ma czym się domknąć i blokuje ekonomię przez 30 min (v3.83.0).
   check("w szczególności: bez rekonesansu „powinien już wylądować” (wycofane w 3.39.1)",
     !(cisza.actions || []).some(a => /powinien już wylądować/.test(a.why || "")), JSON.stringify(cisza.actions));
 
@@ -1403,7 +1405,7 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
 // ── v3.55.0: puls do strażnika (watchdog) — wzorce w źródle ──
 {
   check("puls do strażnika: localhost w @connect, throttle 60 s, ping tylko z karty-lidera (w defenceTick po TabLock)", /@connect\s+127\.0\.0\.1/.test(src) && /hb_last", 0\) \|\| 0\) < 60e3\) return;/.test(src) && /Heartbeat\.ping\(\);\s*\n\s*confirmPendingSend\(\);/.test(src));
-  check("brak strażnika = log zmiany stanu + wpis w gotowości, nigdy błąd", /hb_ok", null\) !== false/.test(src) && /strażnik \(watchdog\) nie odpowiada/.test(src));
+  check("brak strażnika = log zmiany stanu + wpis w gotowości, nigdy błąd", /hb_ok", null\) !== false/.test(src) && /strażnik \(watchdog\) PRZESTAŁ odpowiadać/.test(src) && /na tej maszynie nie ma strażnika/.test(src));
   // v3.70.1 (utrata floty 08.09): martwy strażnik NIE może być tylko wpisem w dzienniku —
   // push na telefon natychmiast, powtarzany co godzinę (flotę można stracić w godzinę),
   // a powrót strażnika zeruje dławik.
@@ -2818,6 +2820,79 @@ console.log("\n── 69. ZEGAR DOLOTU: odwołany atak przestaje udawać uderzen
     /const ost = v\.attack && !v\.cancelled && Impact\.ostatnia\(v\)/.test(src));
   check("69h: (źródło) wpis ZOSTAJE w historii — tylko wygaszony, nie skasowany",
     /imp\.odwolany\{opacity/.test(src) && !/delete m\[id\]/.test(src));
+}
+
+
+console.log("\n── 70. LOT BEZ ZAWROTU MA SIĘ DOMKNĄĆ, A NIE BLOKOWAĆ EKONOMII PRZEZ 30 MIN (log 11.09 13:04) ──");
+{
+  // Właściciel: „dlaczego bot nie wysyła nowych fal na ekspedycje?". W stanie siedział wpis
+  // lotu [2:220:7] planeta→księżyc, rodzaj „home", faza „launched", czas lotu 37 SEKUND,
+  // wysłany 15 minut wcześniej. Lot bez zawrotu domyka się dowodem z hangaru CELU, a lądowania
+  // bot zna tylko z listy ruchów (AKTYWNA para) i rejestru powrotów (ekonomia) — lot OBRONY
+  // nie trafia do żadnego z nich. Na nieaktywnej parze nikt nie zaglądał do hangaru celu, więc
+  // wpis dożywał twardego sufitu 30 min. Przez ten czas ekspedycje stały („ratunek w powietrzu"),
+  // Obrona DZIAŁAŁA — od v3.75.0 każda flota pod uderzeniem dostaje własny lot, także gdy z pary
+  // trwa już inny (potwierdzone na żywo 11.09 12:08:28). Zegar ma tu prosić o SPOJRZENIE, nie zamykać wpisu.
+  const swiat = (wyslanyPrzed, flightMs, recallAt) => base({
+    hangars: {
+      "3:272:7|planet": { total: 0, at: NOW - 60e3, ships: [] },
+      "3:272:7|moon": { total: 1000, at: NOW - 20 * 60e3, ships: [] },   // odczyt SPRZED lądowania
+    },
+    threats: [],
+    flights: [{ kind: "home", fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:7", toBody: "moon",
+      sentAt: NOW - wyslanyPrzed, flightMs, phase: "launched", ...(recallAt ? { recallAt } : {}) }],
+  });
+  const reconLadowania = (st) => decide(st, CFG, NOW).actions.find(a => a.kind === "recon" && /wróciła własna flota/.test(a.why || ""));
+
+  const poLadowaniu = reconLadowania(swiat(120e3, 37e3, null));
+  check("70a: po wylądowaniu bot idzie POPATRZEĆ w hangar celu (to on domyka wpis)", !!poLadowaniu, JSON.stringify(decide(swiat(120e3, 37e3, null), CFG, NOW).actions));
+  check("70b: patrzy na CIAŁO DOCELOWE lotu, nie gdziekolwiek", !!poLadowaniu && poLadowaniu.key === "3:272:7" && poLadowaniu.body === "moon", JSON.stringify(poLadowaniu));
+  check("70c: cicho — fetch w tle, bez przestawiania planety operatorowi", !!poLadowaniu && poLadowaniu.quiet === true, JSON.stringify(poLadowaniu));
+
+  check("70d: dopóki flota LECI, nikt nigdzie nie zagląda (10 s z 37 s lotu)",
+    !reconLadowania(swiat(10e3, 37e3, null)), JSON.stringify(reconLadowania(swiat(10e3, 37e3, null))));
+  check("70e: lot Z ZAWROTEM domyka hangar ŹRÓDŁA — ta ścieżka go nie dotyczy",
+    !reconLadowania(swiat(120e3, 37e3, NOW + 600e3)), JSON.stringify(reconLadowania(swiat(120e3, 37e3, NOW + 600e3))));
+  check("70f: bez znanego czasu lotu nie zgadujemy, kiedy wylądował",
+    !reconLadowania(swiat(120e3, 0, null)), JSON.stringify(reconLadowania(swiat(120e3, 0, null))));
+  check("70g: (źródło) zegar prosi o SPOJRZENIE, nie zamyka wpisu — sufit 30 min zostaje",
+    /!f\.recallAt && now - f\.sentAt > 30 \* 60e3/.test(src));
+}
+
+console.log("\n── 71. STRAŻNIK: alarm po ŚMIERCI, nie po nieobecności (właściciel 11.09) ──");
+{
+  // Właściciel gra na przemian na dwóch maszynach; strażnik jest tylko na Macu. Na Windowsie
+  // bot co godzinę pushował „Strażnik karty NIE DZIAŁA" — alarm o braku czegoś, czego tu nigdy
+  // nie zainstalowano. Ta sama choroba co „⚠️ Obrona: BŁĄD" przy stojącej ekspedycji: kanał
+  // pełen nieszkodliwych alarmów przestaje być czytany, a tym samym kanałem idzie ATAK.
+  // Lekcja z 08.09 (strażnik wyłączony w launchd → karta zamarła → ZNIKŁA CAŁA FLOTA) zostaje:
+  // gdy strażnik KIEDYŚ tu odpowiadał i przestał, push leci jak dotąd.
+  const zbuduj = (hbEver) => {
+    const magazyn = { hb_ever: hbEver, hb_ok: null, hb_down_push: 0 };
+    const pushe = [], logi = [];
+    const Store = { get: (k, d) => (magazyn[k] === undefined ? d : magazyn[k]), set: (k, v) => { magazyn[k] = v; } };
+    const down = new Function("Store", "log", "Notifier", "return function () {" + bodyOf("down() {") + "};")(
+      Store, (m) => logi.push(String(m)), { push: (t, m) => pushe.push(t) });
+    return { down, pushe, logi, magazyn };
+  };
+
+  const macBezStraznika = zbuduj(false);
+  macBezStraznika.down();
+  check("71a: maszyna bez strażnika NIE budzi telefonu", macBezStraznika.pushe.length === 0, JSON.stringify(macBezStraznika.pushe));
+  check("71b: …ale mówi wprost w logu, jak jest", macBezStraznika.logi.some(m => /nie ma \(nigdy nie odpowiedział\)/.test(m)), JSON.stringify(macBezStraznika.logi));
+
+  const straznikPadl = zbuduj(true);
+  straznikPadl.down();
+  check("71c: strażnik, który KIEDYŚ odpowiadał i przestał, budzi telefon (lekcja 08.09)",
+    straznikPadl.pushe.some(t => /Strażnik karty NIE DZIAŁA/.test(t)), JSON.stringify(straznikPadl.pushe));
+  check("71d: …i nazywa rzecz po imieniu: PRZESTAŁ odpowiadać", straznikPadl.logi.some(m => /PRZESTAŁ odpowiadać/.test(m)), JSON.stringify(straznikPadl.logi));
+
+  straznikPadl.down();
+  check("71e: powtórka nie pushuje częściej niż raz na godzinę", straznikPadl.pushe.length === 1, JSON.stringify(straznikPadl.pushe));
+  check("71f: (źródło) udana odpowiedź strażnika zostawia trwały ślad na tej maszynie",
+    /Store\.set\("hb_ever", true\)/.test(src));
+  check("71g: (źródło) pasek gotowości rozróżnia „nie ma” od „przestał”",
+    /na tej maszynie nie ma strażnika/.test(src) && /PRZESTAŁ odpowiadać/.test(src));
 }
 
 console.log("");

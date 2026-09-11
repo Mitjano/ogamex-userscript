@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.82.0
+// @version      3.83.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.82.0";
+  const VERSION = "3.83.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -120,7 +120,7 @@
       Store.set("hb_last", now);
       try {
         GM_xmlhttpRequest({ method: "GET", url: this.URL, timeout: 4000,
-          onload: () => { Store.set("hb_down_push", 0); if (Store.get("hb_ok", null) !== true) { Store.set("hb_ok", true); log("[WATCHDOG] strażnik odpowiada — zawieszona karta zostanie ożywiona automatycznie (restart Firefoksa + push).", "success"); } },
+          onload: () => { Store.set("hb_down_push", 0); Store.set("hb_ever", true); if (Store.get("hb_ok", null) !== true) { Store.set("hb_ok", true); log("[WATCHDOG] strażnik odpowiada — zawieszona karta zostanie ożywiona automatycznie (restart Firefoksa + push).", "success"); } },
           onerror: () => this.down(), ontimeout: () => this.down() });
       } catch { this.down(); }
     },
@@ -132,9 +132,25 @@
     // na telefon NATYCHMIAST i powtarza się co godzinę, dopóki strażnik nie
     // wstanie — flotę można tu stracić w godzinę (owner 08.09), więc powtórka
     // rzadsza niż okno straty nie ma sensu.
+    // v3.83.0 (właściciel 11.09: „dostałem powiadomienie, że watchdog na Macu nie odpowiada
+    // — jak jestem w pracy, to OGame w domu na Macu jest wyłączone i odwrotnie"): strażnik
+    // istnieje TYLKO na Macu, a gra chodzi na przemian na dwóch maszynach. Na Windowsie bot
+    // co godzinę pushował „Strażnik karty NIE DZIAŁA" — alarm o braku czegoś, czego na tej
+    // maszynie nigdy nie zainstalowano. To ta sama choroba co „⚠️ Obrona: BŁĄD" przy stojącej
+    // ekspedycji (v3.77.0): kanał, na którym większość alarmów okazuje się nieszkodliwa,
+    // przestaje być czytany — a tym samym kanałem przychodzi jedyny sygnał o utracie floty.
+    // Lekcja z 08.09 (strażnik wyłączony w launchd, karta zamarła, ZNIKŁA CAŁA FLOTA) zostaje
+    // nienaruszona: pushujemy, gdy strażnik KIEDYŚ tu odpowiadał i PRZESTAŁ. Gdy nie odpowiadał
+    // nigdy, to nie awaria, tylko maszyna bez strażnika — zostaje wpis w logu i pasek gotowości.
     down() {
-      if (Store.get("hb_ok", null) !== false) { Store.set("hb_ok", false); log("[WATCHDOG] strażnik nie odpowiada (LaunchAgent wyłączony?) — po zawieszeniu karty NIE będzie auto-restartu.", "warn"); }
-      if (Date.now() - (Store.get("hb_down_push", 0) || 0) >= 3600e3) {
+      const bylKiedys = Store.get("hb_ever", false) === true;
+      if (Store.get("hb_ok", null) !== false) {
+        Store.set("hb_ok", false);
+        log(bylKiedys
+          ? "[WATCHDOG] strażnik PRZESTAŁ odpowiadać (LaunchAgent wyłączony?) — po zawieszeniu karty NIE będzie auto-restartu."
+          : "[WATCHDOG] na tej maszynie strażnika nie ma (nigdy nie odpowiedział) — nie alarmuję. Zawieszona karta nie zostanie tu ożywiona automatycznie.", "warn");
+      }
+      if (bylKiedys && Date.now() - (Store.get("hb_down_push", 0) || 0) >= 3600e3) {
         Store.set("hb_down_push", Date.now());
         Notifier.push("🩺 Strażnik karty NIE DZIAŁA (Genesis)", "Watchdog na Macu nie odpowiada — zawieszona karta NIE zostanie ożywiona i obrona może umrzeć po cichu. Napraw: bash watchdog/install.sh w repo ogamex-userscript.", "high", "warning");
       }
@@ -1396,7 +1412,7 @@
       }
       if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny, a lot [${f.fromKey}]→[${f.toKey}] jest W POWIETRZU (${f.phase}) — to powroty/lądowania, nie ratunek; wpis ZOSTAJE (zawrót planowo).`, "info");
     }
-    if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis, para znów pod pełną obroną.`, "warn"); return false; }
+    if (!f.recallAt && now - f.sentAt > 30 * 60e3) { log(`[LOT] ${f.kind} [${f.fromKey}]→[${f.toKey}] przeterminowany (30 min) — zdejmuję wpis (obrona działała przez cały ten czas: od v3.75.0 każda flota pod uderzeniem dostaje własny lot; wpis blokował tylko ekonomię).`, "warn"); return false; }
     if (now - f.sentAt > 12 * 3600e3) return false;
     return true;
   }
@@ -1610,6 +1626,22 @@
           if (!lk.startsWith(k + "|")) continue;
           const past = (list || []).filter(t => t <= now && now - t < 30 * 60e3).pop();
           if (past) landCands.push([lk, past]);
+        }
+        // v3.83.0 (log właściciela 13:04: „dlaczego bot nie wysyła nowych fal na ekspedycje?")
+        // — CO SIĘ PSUŁO: lot BEZ zawrotu (dom/swap — u właściciela 37-sekundowy skok
+        // planeta→księżyc po ratunku) domyka się dopiero wtedy, gdy bot ZOBACZY flotę
+        // w hangarze CELU. Lądowania zna z dwóch źródeł: listy ruchów (tylko AKTYWNA para)
+        // i rejestru powrotów (tylko ekonomia) — a lot OBRONY nie trafia do żadnego z nich.
+        // Na nieaktywnej parze nikt więc nie zaglądał do hangaru celu i wpis dożywał twardego
+        // sufitu 30 minut. Przez te 30 minut ekspedycje STAŁY („ratunek w powietrzu"), a para
+        // nie była pod pełną obroną — wszystko za 37 sekund faktycznego lotu.
+        // Zegar NIE zamyka tu wpisu (zasada: stan lotu zamyka hangar, nie zegar) — zegar mówi
+        // wyłącznie „idź POPATRZEĆ"; wpis zamyka dalej dowód z hangaru celu.
+        for (const lot of (s.flights || [])) {
+          if (!lot || lot.recallAt || lot.phase === "done" || !(lot.flightMs > 0)) continue;
+          if (lot.toKey !== k) continue;
+          const wyladowal = (lot.sentAt || 0) + lot.flightMs;
+          if (wyladowal <= now) landCands.push([`${lot.toKey}|${lot.toBody}`, wyladowal]);
         }
         for (const [lk, at] of landCands) {
           const [lkey, lbody] = lk.split("|");
@@ -4425,7 +4457,7 @@
     if (s.listUntrusted) braki.push("sesja gry stoi na obcej kolonii (nie udało się przywrócić Twojej planety) — lista ruchów pokazuje ZŁĄ parę");
     if (!s.bar || now - (s.bar.at || 0) > (CFG.barMaxAgeMs || 3 * 60e3)) braki.push(`pasek misji ${s.bar ? `sprzed ${Math.round((now - (s.bar.at || 0)) / 60000)} min` : "nieodczytany"} — ślepy alarm (ataki z własnego układu) NIE działa`);
     if (Object.keys(s.pairs || {}).length < 2) braki.push("jedna kolonia — nie ma dokąd uciec");
-    if (Store.get("hb_ok", null) === false) braki.push("strażnik (watchdog) nie odpowiada — zawieszona karta nie zostanie ożywiona");
+    if (Store.get("hb_ok", null) === false) braki.push(Store.get("hb_ever", false) === true ? "strażnik (watchdog) PRZESTAŁ odpowiadać — zawieszona karta nie zostanie ożywiona" : "na tej maszynie nie ma strażnika — zawieszona karta nie zostanie ożywiona (na Macu jest)");
     return braki;
   }
 
