@@ -580,14 +580,14 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
   // domknięciu wpisu lotu decide() wystawiał ten sam lot bez końca, a bramka
   // anty-duplikat ścinała go po jednej nawigacji na obrót.
   check("po potwierdzonej wysyłce hangar ŹRÓDŁA jest zerowany",
-    /function emptySourceHangar\(fromKey, fromBody, why, keepTypes\)/.test(src) &&
+    /function emptySourceHangar\(fromKey, fromBody, why, keepTypes, capTypes\)/.test(src) &&
     (src.match(/emptySourceHangar\(/g) || []).length >= 4);
   // v3.68.1 (audyt): zerowanie NIE MOŻE być pomijane przy `excludeTypes` — hangar
   // udawałby wtedy pełną flotę przez 48 h. Zamiast pomijać, zostawiamy wykluczone typy,
   // i to na WSZYSTKICH trzech ścieżkach domknięcia wysyłki.
   check("zerowanie hangaru zostawia typy celowo pominięte, zamiast być pomijane",
     !/!\(m\.excludeTypes && m\.excludeTypes\.length\)\) emptySourceHangar/.test(src) &&
-    (src.match(/emptySourceHangar\([^)]*(?:m|f)\.excludeTypes\)/g) || []).length >= 3);
+    (src.match(/emptySourceHangar\([^)]*(?:m|f)\.excludeTypes(?:, (?:m|f)\.capTypes)?\)/g) || []).length >= 3);
   check("bramka anty-duplikat wysyła trasę w karencję (koniec pętli nawigacji)",
     /blG\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\] = ls\.at \+ guardMs/.test(src));
   check("karencja NIE dotyczy ekspedycji (fale lecą tą samą trasą co 60–90 s)",
@@ -2135,14 +2135,14 @@ console.log("\n── 56. AUDYT 04.09 (partia stan-lotu): wpis lotu ma odzwierci
   // (f) `leftHome` musi być NAPRAWDĘ zapisywane przy wysyłce — inaczej próg z 56b jest
   // martwy. Uruchamiamy emptySourceHangar wycięte ze źródła.
   {
-    const empty = new Function("fromKey", "fromBody", "why", "keepTypes", "Situation", "log",
-      bodyOf("function emptySourceHangar(fromKey, fromBody, why, keepTypes) {"));
+    const empty = new Function("fromKey", "fromBody", "why", "keepTypes", "capTypes", "Situation", "log",
+      bodyOf("function emptySourceHangar(fromKey, fromBody, why, keepTypes, capTypes) {"));
     const stan = {
       hangars: { "3:272:7|moon": { total: 5_020_983, ships: [{ type: "BATTLESHIP", qty: 5_000_000 }, { type: "RECYCLER", qty: 20983 }], at: NOW } },
       flights: [{ kind: "air", fs: true, fromKey: "3:272:7", fromBody: "moon", toKey: "5:100:4", sentAt: NOW, phase: "launched" },
         { kind: "air", fromKey: "3:272:7", fromBody: "planet", toKey: "5:100:4", sentAt: NOW, phase: "launched" }],
     };
-    empty("3:272:7", "moon", "wysyłka potwierdzona", ["RECYCLER"], { load: () => stan, save: () => {} }, () => {});
+    empty("3:272:7", "moon", "wysyłka potwierdzona", ["RECYCLER"], null, { load: () => stan, save: () => {} }, () => {});
     check("56f: emptySourceHangar zapisuje na wpisie lotu, ile statków ZOSTAŁO w domu",
       stan.flights[0].leftHome === 20983, JSON.stringify(stan.flights[0]));
     check("56f2: … i nie dopisuje tego wpisowi lotu z DRUGIEGO ciała pary",
@@ -2593,6 +2593,117 @@ console.log("\n── 62. PUSH Z EMOJI PRZECHODZI PRZEZ CHROME (noc 09/10.09: 42
   check("62g: (źródło) Title I Tags idą przez hdrSafe, nie surowe",
     /headers:\s*\{\s*Title:\s*hdrSafe\(title\),\s*Priority:\s*priority,\s*Tags:\s*hdrSafe\(tags\)\s*\}/.test(src),
     (src.match(/headers:\s*\{[^}]*\}/) || [""])[0]);
+}
+
+
+console.log("\n── 65. KANAŁ ALARMOWY: stały temat ntfy + ekonomia poza rodzajem BŁĄD (HANDOFF 11.09, pkt 1 i 4) ──");
+{
+  // (1) Temat ntfy był LOSOWANY i trzymany w schowku Tampermonkeya — a schowek jest per
+  // przeglądarka. Po przesiadce na Chrome bot wylosował nowy temat, telefon słuchał starego
+  // i przez dobę żaden alarm o ataku nie miał dokąd dojść (panel pokazywał przy tym push ON).
+  const TEL = "ogamex3-d0zjvhl9eiho";   // temat, który subskrybuje telefon właściciela
+  const sety = [];
+  const fakeStore = { get: (k, d) => (k === "ntfy_topic" ? "ogamex3-6wjps7yzsw7t" : d), set: (k, v) => sety.push([k, v]) };
+  const topicFn = new Function("Store", "log", "return function () {" + bodyOf("topic() {") + "};")(fakeStore, () => {});
+  const wynik = topicFn.call({ TOPIC: TEL });
+  check("65a: temat ntfy jest własnością KODU — schowek z innej przeglądarki go nie zmienia", wynik === TEL, String(wynik));
+  check("65b: rozjechany temat ze schowka jest NADPISYWANY (narzędzia czytające stan z dysku widzą prawdę)",
+    sety.some(([k, v]) => k === "ntfy_topic" && v === TEL), JSON.stringify(sety));
+  check("65c: (źródło) nie ma już losowania tematu przy pierwszym starcie",
+    !/ntfy_topic[\s\S]{0,200}?Math\.random/.test(src), (src.match(/topic\(\)[\s\S]{0,200}/) || [""])[0].slice(0, 160));
+  const stala = (src.match(/TOPIC:\s*"([^"]+)"/) || [])[1];
+  check("65d: stała w kodzie to temat telefonu, nie wylosowany śmieć", stala === TEL, String(stala));
+  const wd = fs.readFileSync(path.join(__dirname, "watchdog", "ogx-watchdog.py"), "utf8");
+  const wdTopic = (wd.match(/OGX_WD_NTFY",\s*"([^"]+)"/) || [])[1];
+  check("65e: bot i strażnik mówią na TEN SAM temat (telefon ma jedną subskrypcję)", stala === wdTopic, `bot=${stala} strażnik=${wdTopic}`);
+
+  // (2) Zatrzymana ekspedycja szła pushem "⚠️ Obrona: BŁĄD" z priorytetem high — tym samym
+  // kanałem i tą samą wagą co realny ostrzał. Kanał pełen nieszkodliwych alarmów przestaje
+  // być czytany, więc ekonomia dostaje własny rodzaj wpisu.
+  check("65f: rodzaj EKO ma własny tytuł pusha i NIE udaje awarii obrony",
+    /kind === "EKO"[\s\S]{0,200}?this\.push\("🧰[^"]*"/.test(src) && !/kind === "EKO"[\s\S]{0,200}?Obrona: BŁĄD/.test(src),
+    (src.match(/kind === "EKO"[\s\S]{0,200}/) || [""])[0].slice(0, 160));
+  check("65g: EKO idzie niskim priorytetem (nie budzi w nocy jak ATAK)",
+    /kind === "EKO"[\s\S]{0,200}?this\.push\([\s\S]{0,80}?, "low", /.test(src),
+    (src.match(/kind === "EKO"[\s\S]{0,200}/) || [""])[0].slice(0, 160));
+  check("65h: EKO ma własny dławik (te same kłopoty wracają falami)", /EKO:\s*\d+\s*\*\s*60e3/.test(src));
+  check("65i: zastój ekspedycji to wpis EKO, nie BŁĄD",
+    /Journal\.add\("EKO", `Ekspedycje stoją od/.test(src) && !/Journal\.add\("BŁĄD", `Ekspedycje stoją od/.test(src));
+  check("65j: nieczytelny link ekspedycji to też EKO",
+    /Journal\.add\("EKO", `Nie umiem odczytać id misji ekspedycji/.test(src));
+  check("65k: przerwany lot dzieli rodzaj po ECO_KIND — obrona dalej dzwoni, ekonomia nie",
+    /Journal\.add\(ECO_KIND\(m\.kind\) \? "EKO" : "BŁĄD", `Lot \[/.test(src),
+    (src.match(/Journal\.add\([^\n]{0,120}przerwany/) || [""])[0]);
+  const eco = new Function("k", "return (" + (src.match(/const ECO_KIND = (\(k\) => [^;]+);/) || [])[1] + ")(k);");
+  check("65l: ECO_KIND zna ekspedycję, miner i złom", eco("expedition") && eco("asteroid") && eco("debris"));
+  check("65m: ECO_KIND NIE obejmuje ratunku ani Fleet Save (te muszą krzyczeć)",
+    !eco("rescue") && !eco("fs") && !eco(undefined),
+    JSON.stringify([eco("rescue"), eco("fs"), eco(undefined)]));
+  check("65n: start lotu korzysta z TEJ SAMEJ listy (dwie listy by się rozjechały)",
+    /if \(!ECO_KIND\(a\.kind\)\) Journal\.add\(a\.fs \? "FS" : "RATUNEK"/.test(src));
+}
+
+
+console.log("\n── 66. DESTROY MÓWI, ŻE CELEM JEST KSIĘŻYC (doktryna 11.09, pkt 4.2) ──");
+{
+  // Trasa ratunku przy DESTROY zostaje ta sama co przy ATTACK (decyzja właściciela), ale
+  // komunikat nie: „ATTACK" znaczy „stracisz flotę, jeśli nie ucieknie", a „DESTROY" znaczy
+  // „stracisz KSIĘŻYC, nawet jeśli flota ucieknie". Push o trzeciej w nocy ma to powiedzieć.
+  check("66a: wpis ATAK rozpoznaje DESTROY/DESTRUCT osobno", /DESTRUCT\|DESTROY\/i\.test\(String\(t\.type/.test(src));
+  check("66b: i pisze wprost, że celem jest księżyc", /CELEM JEST KSIĘŻYC \(DESTROY\)/.test(src));
+  check("66c: zwykły ATTACK nie dostaje tego zdania (inaczej zdanie nic nie znaczy)",
+    /wKsiezyc \? "CELEM JEST KSIĘŻYC/.test(src));
+  // Prędkość ucieczki: właściciel prosił o „możliwie najmniejszą, może być 3%".
+  check("66d: domyślna prędkość ucieczki to 3%", /airSpeedPct: 3,/.test(src),
+    (src.match(/airSpeedPct: \d+/) || [""])[0]);
+  check("66e: zapisany config jest migrowany (sam DEFAULT przegrywa z zapisem z panelu)",
+    /migr_air_speed_min_v378/.test(src) && /CFG\.airSpeedPct = 3/.test(src));
+  check("66f: wybór prędkości bierze najwyższą NIE SZYBSZĄ od żądanej…",
+    /nieSzybsze\s*=\s*dostepne\.filter\(x => x\.pct <= m\.speed\)/.test(src));
+  check("66g: …a gdy żądana niższa od wszystkiego — najniższą dostępną, nigdy domyślnych 100%",
+    /dostepne\.reduce\(\(a, b\) => \(b\.pct < a\.pct \? b : a\)\)/.test(src));
+  check("66h: lista opcji forka trafia do logu (bez tego nie wiemy, czy Genesis ma 3%)",
+    /lista prędkości forka/.test(src));
+}
+
+
+console.log("\n── 67. JEDNA GWIAZDA ŚMIERCI W KAŻDEJ UCIECZCE (właściciel 11.09) ──");
+{
+  // GS jest najwolniejszym statkiem, więc JEDNA sztuka spowalnia cały lot — a wolny lot
+  // to ten, który zdąży się zawrócić (doktryna DESTROY, krok 4). Właściciel ma ich mało
+  // (~30), a fale wracające z ekspedycji uciekają co kilka minut, więc GS musi być
+  // RACJONOWANA: jedna na lot, reszta zostaje w domu na następne fale. Gdyby pierwsza
+  // ucieczka zabrała wszystkie, każda następna leciałaby szybko i wylądowała.
+  const st = base({
+    hangars: { "3:272:7|moon": H(1_000_000) },
+    threats: [{ id: "t1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 300e3, attack: true, seenAt: NOW - 60e3, source: "list" }],
+  });
+  const p = decide(st, CFG, NOW);
+  const lot = p.actions.find(a => a.kind === "fly" && a.rescue);
+  check("67a: ucieczka w ogóle wychodzi (warunek wstępny)", !!lot, JSON.stringify(p.actions));
+  check("67b: i niesie sufit na Gwiazdę Śmierci", !!lot && lot.capTypes && lot.capTypes.DEATH_STAR === 1, JSON.stringify(lot && lot.capTypes));
+  check("67c: to SUFIT, nie wykluczenie — reszta hangaru leci jak dotąd",
+    !!lot && !(lot.excludeTypes && lot.excludeTypes.length), JSON.stringify(lot && lot.excludeTypes));
+
+  // Ewakuacja z gołej planety po utracie księżyca leci NA 100% i jednorazowo — spowalnianie
+  // jej Gwiazdą Śmierci działałoby przeciwko celowi (im krócej widoczna, tym lepiej).
+  const stEwak = base({
+    pairs: { "3:272:7": { hasMoon: false, galaxy: 3, system: 272, position: 7 }, "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 } },
+    hangars: { "3:272:7|planet": H(500_000) },
+    moonLost: { "3:272:7": NOW - 60e3 },
+    threats: [],
+  });
+  const pEwak = decide(stEwak, CFG, NOW);
+  const ewak = pEwak.actions.find(a => a.kind === "fly" && a.evac);
+  check("67d: (warunek wstępny) ewakuacja z gołej planety powstaje", !!ewak, JSON.stringify(pEwak.actions));
+  check("67e: ewakuacja NIE dostaje sufitu GS (leci 100%, ma być krótka)", !!ewak && !ewak.capTypes, JSON.stringify(ewak && ewak.capTypes));
+  check("67f: (źródło) sufit jest własnością KODU, nie pola w panelu", /const CAP_RATUNKU = \{ DEATH_STAR: 1 \};/.test(src));
+  check("67g: (źródło) Fleet Save dalej zabiera CAŁĄ flotę — bez sufitu (decyzja z 07.09)",
+    !/fs: true[^\n]{0,200}capTypes/.test(src));
+  check("67h: (źródło) formularz bierze min(ile mam, sufit), a wykluczenie nadal zeruje typ",
+    /excl\.has\(type\) \? 0 : \(cap\.has\(type\) \? Math\.min\(have, cap\.get\(type\)\) : have\)/.test(src));
+  check("67i: (źródło) hangar źródła zostawia RESZTĘ typu z sufitem (nie udaje, że poleciały wszystkie)",
+    /const zostalo = Math\.max\(0, \(x\.qty \|\| 0\) - cap\.get\(t\)\)/.test(src));
 }
 
 console.log("");

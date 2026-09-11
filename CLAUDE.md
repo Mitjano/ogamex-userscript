@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.37.0, ~2400 linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.77.0, ~5,5k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
@@ -24,7 +24,7 @@ Kolejność czytania: `START-3.0.md` → `AUDYT-3.0-2026-08-28.md` → kod.
 7. **Żaden wpis stanu nie może być wieczny.** Każde pole (`pending`, `flights`, `fly_block`, `bar`, `slots`) ma termin ważności — wpis bez terminu zamienia się w ciche wyłączenie obrony (defekt P0, 28.08). Jedna definicja „ten lot już nic nie znaczy" = `flightStale()`; używają jej obrona, ekonomia i rekonesans.
 8. **Ekonomia nigdy nie stoi na drodze ratunku** — trwająca ekspedycja/mining/złom jest przerywana przy alarmie, a jej loty nie trafiają do `situation.flights`.
 
-Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane ciało · jedna ucieczka na parę · **stan lotu zamyka hangar, nie zegar** · nieznany markup → zrzut, nie zgadywanie.
+Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane ciało · **KAŻDA flota pod uderzeniem dostaje własny ratunek** (reguła „jedna ucieczka na parę" obowiązywała do v3.74 i 10.09 kosztowała ~152 mln statków — nie przywracać jej w żadnej postaci) · **stan lotu zamyka hangar, nie zegar** · nieznany markup → zrzut, nie zgadywanie · **kanał push budzi TYLKO obroną** — kłopoty ekonomii mają rodzaj „EKO" (v3.77.0), bo kanał pełen nieszkodliwych alarmów przestaje być czytany.
 
 ## Testy
 - 3.x: `node test3-all.js` (164 asercje decyzyjne + 77 sprawdzeń E2E / 24 scenariusze na sztucznej grze w jsdom + 19 sprawdzeń panelu + składnia; scenariusz 25 = pętla nawigacji). Wymaga `npm install jsdom` w katalogu repo (node_modules nie jest commitowane). **Nowe zachowanie obrony = nowy scenariusz w `test3-e2e.js`**, nie tylko regex w `test3-decide.js` — regexy pilnują, żeby poprawka nie zniknęła, ale niczego nie wykonują. **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).

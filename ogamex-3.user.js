@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.76.0
+// @version      3.79.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -27,12 +27,14 @@
    4. Fly — jeden wykonawca lotu (Deploy) + Recall; misja wielostronicowa w
       jednym kluczu z krokiem.
    Reguły twarde: dom = księżyc, gdy para go ma; rezerwa deuteru; stan lotu
-   zamykany HANGAREM, nie zegarem; jedna ucieczka na parę; nic nie leci NA
-   atakowane ciało; nieznany markup → zrzut do logu, nie zgadywanie.
+   zamykany HANGAREM, nie zegarem; KAŻDA flota pod uderzeniem ma własny ratunek
+   (do v3.74 była „jedna ucieczka na parę" — to ona kosztowała 152 mln statków
+   10.09); nic nie leci NA atakowane ciało; nieznany markup → zrzut do logu,
+   nie zgadywanie; kanał alarmowy = tylko obrona (ekonomia rodzajem „EKO").
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.76.0";
+  const VERSION = "3.79.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -80,6 +82,10 @@
     go(url, why) { try { Store.set("nav_last", { at: Date.now(), to: String(url), why }); } catch {} flushLog(); location.replace(url); },
     click(el, why) { try { Store.set("nav_last", { at: Date.now(), to: "klik: " + why, why }); } catch {} flushLog(); el.click(); },
   };
+  // v3.77.0: JEDNA lista rodzajów misji, które są EKONOMIĄ, a nie obroną. Używa jej i start
+  // lotu (nie dopisuje „RATUNEK"), i przerwanie lotu (dopisuje „EKO", nie „BŁĄD") — dopisanie
+  // kolejnego modułu zarobkowego w jednym miejscu zamiast w dwóch rozjeżdżających się listach.
+  const ECO_KIND = (k) => k === "expedition" || k === "asteroid" || k === "debris";
   const Journal = {
     add(kind, msg) {
       const j = Store.get("journal", []) || [];
@@ -161,8 +167,37 @@
     // Rutynowy Fleet Save (codziennie, o dowolnej porze) szedł tym samym pushem co realna
     // ucieczka spod ostrzału — „🛟 Flota ewakuowana". Właściciel uczył się w ten sposób
     // ignorować kanał, którym przychodzi jedyny sygnał o utracie floty.
-    THROTTLE: { ATAK: 5 * 60e3, RATUNEK: 2 * 60e3, POWRÓT: 5 * 60e3, BŁĄD: 5 * 60e3, FS: 10 * 60e3 },
-    topic() { let t = Store.get("ntfy_topic", ""); if (!t) { t = "ogamex3-" + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); Store.set("ntfy_topic", t); } return t; },
+    // v3.77.0 (HANDOFF-2026-09-11, pkt 4): rodzaj „EKO" wydzielony z „BŁĄD" — ta sama
+    // lekcja co przy „FS" wyżej. Zatrzymana ekspedycja, przerwana fala mineru czy zbiórka
+    // złomu to KŁOPOT EKONOMII: nie ma godziny, o której musi obudzić, i nie wymaga żadnej
+    // reakcji w minutę. Szły jednak tytułem „⚠️ Obrona: BŁĄD (Genesis)", z priorytetem
+    // `high`, czyli tym samym kanałem i tą samą wagą co jedyny sygnał o realnym ostrzale —
+    // a kanał, na którym większość alarmów okazuje się nieszkodliwa, przestaje się czytać.
+    // Dzwonek zostaje przy obronie; ekonomia dostaje własny tytuł, niski priorytet i rzadszy
+    // dławik (30 min — te same kłopoty powtarzają się falami).
+    THROTTLE: { ATAK: 5 * 60e3, RATUNEK: 2 * 60e3, POWRÓT: 5 * 60e3, BŁĄD: 5 * 60e3, FS: 10 * 60e3, EKO: 30 * 60e3 },
+    // v3.77.0 (HANDOFF-2026-09-11, pkt 1 — P0) — CO SIĘ PSUŁO: temat ntfy był LOSOWANY
+    // przy pierwszym uruchomieniu i zapamiętywany w schowku Tampermonkeya, a schowek jest
+    // PER PRZEGLĄDARKA/URZĄDZENIE. Po przesiadce z Firefoksa na Chrome (09/10.09) bot
+    // wylosował sobie nowy temat („ogamex3-6wjps7yzsw7t"), telefon dalej słuchał starego —
+    // przez dobę ŻADEN alarm o ataku nie miał dokąd dojść, a panel przy tym pokazywał
+    // „push ON" i test pusha „przechodził" (szedł w pustkę, którą nikt nie subskrybuje).
+    // Losowy temat ma sens dla wielu niezależnych instalacji; tu jest JEDEN właściciel
+    // i JEDEN telefon, więc kanał alarmowy musi być WŁASNOŚCIĄ KODU — ten sam wzorzec co
+    // `pinCodeOwned` dla wykluczeń ekspedycji. Temat jest wspólny ze strażnikiem
+    // (`watchdog/ogx-watchdog.py`, `watchdog/ogx-heal.sh`), więc telefon ma JEDNĄ
+    // subskrypcję na bota i na strażnika, i żadna nowa przeglądarka nie rozjedzie kanału.
+    // Zmiana tematu = edycja TEJ stałej + strażnika + bump. Gdyby kiedyś powstało pole
+    // w panelu, trzeba zdjąć przypięcie — inaczej schowek znów zacznie kłamać.
+    TOPIC: "ogamex3-d0zjvhl9eiho",
+    topic() {
+      const t = Store.get("ntfy_topic", "");
+      if (t !== this.TOPIC) {
+        Store.set("ntfy_topic", this.TOPIC);   // trzymamy w schowku dla narzędzi czytających stan z dysku
+        if (t) log(`[PUSH] temat ntfy z tej przeglądarki (${t}) był inny niż kanał telefonu — od teraz ${this.TOPIC}.`, "warn");
+      }
+      return this.TOPIC;
+    },
     enabled() { return Store.get("ntfy_on", true) !== false; },
     // v3.33.0 (audyt T2 + pytanie właściciela 29.08: „czy alarm o ataku dojdzie?"):
     // dławik liczył się po RODZAJU zdarzenia, więc atak na drugą kolonię w ciągu
@@ -189,6 +224,7 @@
       else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK", m)) return; this.push("🛟 Flota ewakuowana (Genesis)", m, "default", "shield"); }
       else if (kind === "FS" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("FS", m)) return; this.push("🌙 Fleet Save (Genesis)", m, "min", "crescent_moon"); }
       else if (kind === "BŁĄD") { if (this.throttled("BŁĄD", m)) return; this.push("⚠️ Obrona: BŁĄD (Genesis)", m, "high", "warning"); }
+      else if (kind === "EKO") { if (this.throttled("EKO", m)) return; this.push("🧰 Ekonomia stoi (Genesis)", m, "low", "gear"); }
       else if (kind === "POWRÓT" && /wróci|wysłan/i.test(m)) { if (this.throttled("POWRÓT", m)) return; this.push("✅ Flota w domu (Genesis)", m, "min", "white_check_mark"); }
     },
   };
@@ -205,7 +241,7 @@
     // gdy to BOT wywiózł flotę z tej pary, wolno mu ją przywieźć z powrotem.
     homeToMoon: false,
     deutReserve: 0,         // zostaje na ciele przy każdym locie (Athena: 100 mld; Genesis start: 0)
-    airSpeedPct: 10,        // ucieczka w powietrze: prędkość
+    airSpeedPct: 3,         // ucieczka w powietrze: prędkość (v3.78.0 — możliwie najwolniej; Fly bierze najniższą dostępną, gdy fork nie ma 3%)
     confirmMs: 20000,       // potwierdzenie zagrożenia przed ruchem (artefakty paska)
     tooLateSec: 40,         // dolot krótszy = nie zdążymy z formularzem (tylko alarm)
     recallBufferSec: 90,    // zawrót: ostatni dolot + bufor
@@ -426,6 +462,15 @@
   if (!Store.get("migr_debris_on_v356", false)) {
     Store.set("migr_debris_on_v356", true);
     if (!CFG.debris.enabled) { CFG.debris.enabled = true; saveCfg(); }
+  }
+  // v3.78.0 (decyzja właściciela 11.09, DOKTRYNA-DESTROY-2026-09-11): ucieczka ma lecieć
+  // „możliwie najmniejszą prędkością, może być 3%" — flota ma WISIEĆ w locie w chwili
+  // uderzenia, żeby dało się ją zawrócić (zawrócone stacjonuj jest niewidoczne na falandze).
+  // Sam nowy DEFAULT by nie wystarczył: zapisany CFG z panelu ma własne `airSpeedPct` i wygrywa
+  // ze zmianą domyślnej. Jeśli fork nie ma 3%, `Fly` weźmie najniższą dostępną (nie 100%).
+  if (!Store.get("migr_air_speed_min_v378", false)) {
+    Store.set("migr_air_speed_min_v378", true);
+    if ((CFG.airSpeedPct || 0) > 3) { log(`[CFG] prędkość ucieczki ${CFG.airSpeedPct}% → 3% (decyzja właściciela 11.09: możliwie najwolniej, żeby dało się zawrócić).`, "warn"); CFG.airSpeedPct = 3; saveCfg(); }
   }
   // v3.67.0 (audyt przed push, krytyczne P0): CFG bootstrap (linia ~286) scala PER
   // POLE, więc zapisany `saved.moon` (KAŻDY zapis z panelu zapisuje CAŁY CFG —
@@ -1383,6 +1428,17 @@
   function decide(s, cfg, now) {
     const actions = [], alerts = [];
     const pairs = s.pairs || {};
+    // v3.79.0 (właściciel 11.09: „mam Gwiazdę Śmierci, ale w małej ilości; jak uciekamy przed
+    // obcą flotą, bot zawsze może wziąć JEDNĄ sztukę GS — wtedy flota leci wolno. Mam 30 GS na
+    // księżycu, więc gdy ucieka falami wracającymi z ekspedycji co kilka minut, musi brać
+    // zawsze 1 sztukę na slot floty"). Gwiazda Śmierci jest najwolniejszym statkiem, więc
+    // JEDNA sztuka spowalnia CAŁY lot — a wolny lot to ten, który zdąży się zawrócić
+    // (doktryna DESTROY, krok 4: zawrócone „stacjonuj" jest niewidoczne na falandze).
+    // SUFIT, nie wykluczenie: ucieczka dalej zabiera cały hangar, tylko GS jest racjonowana
+    // po jednej na lot. Gdyby pierwsza fala zabrała wszystkie 30, każda następna — a fale
+    // wracają z ekspedycji co kilka minut — leciałaby SZYBKO i wylądowała, zanim padnie zawrót.
+    // Sufit jest własnością KODU (nie ma go w CFG): to reguła fizyki gry, nie preferencja.
+    const CAP_RATUNKU = { DEATH_STAR: 1 };
     // v3.68.0 wykluczała przy Fleet Save miner/recykler „po fladze" (mining/złom ON) — jako port
     // z Atheny. v3.68.1 (audyt) zawęziła to do samego FS i sama przyznała, że logika jest
     // odwrócona: statek, który FAKTYCZNIE pracuje, jest w locie i nie ma go w formularzu, więc
@@ -1426,7 +1482,7 @@
     const fleetsAt = (k) => ["moon", "planet"]
       .map(b => ({ body: b, h: (b === "moon" && pairs[k] && pairs[k].hasMoon === false) ? null : (s.hangars || {})[`${k}|${b}`] }))
       .filter(x => x.h && (x.h.total || 0) > 0 && now - (x.h.at || 0) < 48 * 3600e3)
-      .map(x => ({ body: x.body, total: x.h.total, at: x.h.at }));
+      .map(x => ({ body: x.body, total: x.h.total, at: x.h.at, ships: x.h.ships || [] }));
     const neighbourMoon = (k) => { const c = pairs[k]; if (!c) return null; for (const [ok, o] of Object.entries(pairs)) { if (ok !== k && o.hasMoon && o.galaxy === c.galaxy && o.system === c.system && attackedBodies(ok).size === 0) return ok; } return null; };
     // v3.67.0 (audyt 29.08, K3: „zero księżyców łamie hierarchię ucieczki — każdy
     // ratunek spada do PIERWSZEJ nieatakowanej kolonii z listy, bez sprawdzenia
@@ -1849,6 +1905,18 @@
       // więc „w następnym przebiegu", i tym razem to jest prawda, a nie obietnica bez pokrycia.
       if (hitBodies.length > 1) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3, msg: `flota na OBU ciałach [${k}] pod atakiem — teraz ratuję ${src0.body} (${src0.total.toLocaleString("pl-PL")} szt.), ${hitBodies[1].body} (${hitBodies[1].total.toLocaleString("pl-PL")} szt.) idzie osobnym lotem w następnym przebiegu` });
       fleet.body = src0.body; fleet.total = src0.total;
+      // v3.79.0 (decyzja właściciela 11.09, po tym jak E2E sc. 63 pokazało OSIEM lotów po
+      // jednej sztuce): Gwiazdy Śmierci stojące w domu są REZERWĄ — każda kolejna fala
+      // wracająca z ekspedycji zabiera z niej jedną sztukę, żeby lecieć wolno i dać się
+      // zawrócić. Lot złożony z SAMEJ rezerwy niczego nie ratuje: wywozi spowalniacze,
+      // pali slot floty, a przy następnym przebiegu decide() wystawia go znowu. Zostawiamy
+      // ją w domu świadomie — właściciel wybrał rezerwę na księżycu, nie jej ewakuację.
+      const stoiWDomu = (src0.ships || []).filter(x => (x.qty || 0) > 0);
+      if (stoiWDomu.length > 0 && stoiWDomu.every(x => CAP_RATUNKU[String(x.type).toUpperCase()] !== undefined)) {
+        alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3,
+          msg: `atak na ${src0.body} [${k}], ale stoi tam już TYLKO rezerwa spowalniająca (${stoiWDomu.map(x => `${x.type}×${x.qty.toLocaleString("pl-PL")}`).join(", ")}) — zostawiam ją w domu, żeby kolejne fale miały czym zwolnić ucieczkę` });
+        continue;
+      }
       if (now - firstSeen < cfg.confirmMs && secs > cfg.tooLateSec + cfg.confirmMs / 1000) { alerts.push({ key: k, level: "warn", msg: `atak na [${k}] za ${secs}s — potwierdzam ${Math.round((cfg.confirmMs - (now - firstSeen)) / 1000)}s` }); continue; }
       if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }
       // wybór ucieczki: sąsiedni księżyc w układzie → drugie ciało pary (nieatakowane) → inna kolonia
@@ -1870,16 +1938,16 @@
       // — drugie ciało TEJ SAMEJ pary jest zawsze najtańszą opcją (prawie zerowy dystans).
       const rf = ((s.rescueFail || {})[`${k}>${nb}`]) || null;
       const nbBlocked = !!nb && !!rf && rf.count >= 2 && now - (rf.at || 0) < 10 * 60e3;
-      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, capTypes: CAP_RATUNKU, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       const other = fleet.body === "moon" ? "planet" : "moon";
       if ((other === "planet" || pairs[k].hasMoon) && !bodies.has(other) && !bodies.has("unknown")) {
         actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: k, toBody: other,
           why: nbBlocked ? `sąsiedni księżyc [${nb}] nie chce wystartować (${rf.count}× nieudane, pewnie deuter) → drugie ciało pary, wolniej` : `atak w ${fleet.body} [${k}] → drugie ciało`,
-          speed: nbBlocked ? cfg.airSpeedPct : 100, recall: false, rescue: true, etaMs, saveTotal });
+          speed: nbBlocked ? cfg.airSpeedPct : 100, recall: false, rescue: true, capTypes: CAP_RATUNKU, etaMs, saveTotal });
         continue;
       }
       const ref = anyRefuge(k, nbBlocked ? nb : null);
-      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, capTypes: CAP_RATUNKU, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
       alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
     }
     // ── FLEET SAVE: JEDEN lot na przebieg i rezerwa slotów ──────────────────
@@ -1947,7 +2015,7 @@
         const dest = nb ? { key: nb, body: "moon" } : anyRefuge(t.k);
         // v3.68.5: `saveTotal` bez `etaMs` — ślepy alarm nie zna zegara uderzenia, więc
         // w kolejce staje ZA ratunkami o znanym dolocie, ale przed każdym lotem dobrowolnym.
-        if (dest) actions.push({ kind: "fly", fromKey: t.k, fromBody: t.f.body, toKey: dest.key, toBody: dest.body, why: "ŚLEPY ALARM (pasek widzi atak, listy brak)", speed: cfg.airSpeedPct, recall: true, air: true, blind: true, saveTotal: t.f.total, recallAt: now + 10 * 60e3 });
+        if (dest) actions.push({ kind: "fly", fromKey: t.k, fromBody: t.f.body, toKey: dest.key, toBody: dest.body, why: "ŚLEPY ALARM (pasek widzi atak, listy brak)", speed: cfg.airSpeedPct, recall: true, air: true, blind: true, capTypes: CAP_RATUNKU, saveTotal: t.f.total, recallAt: now + 10 * 60e3 });
         else alerts.push({ key: t.k, level: "error", msg: "ŚLEPY ALARM, ale nie mam dokąd uciec — reaguj ręcznie" });
       } else if (!spared.length) {
         // v3.68.9 (audyt 04.09, obrona-wykrywanie#1): ten wariant nie miał ŻADNEJ flagi
@@ -2434,7 +2502,7 @@
           const n = (Store.get("expo_link_fail", 0) || 0) + 1;
           Store.set("expo_link_fail", n);
           log(`[EXPO] wiersz 16 ma link /fleet BEZ parametru mission (${href}) — nie zapisuję niepełnego linku (próba ${n}). Markup: ${item.innerHTML.replace(/\s+/g, " ").slice(0, 600)}`, "warn");
-          if (n >= 3 && !Once.said("expo_link_fail", 6 * 3600e3)) Journal.add("BŁĄD", `Nie umiem odczytać id misji ekspedycji z wiersza 16 galaktyki (${n} prób) — ekspedycje STOJĄ. Zrzut markupu jest w logu.`);
+          if (n >= 3 && !Once.said("expo_link_fail", 6 * 3600e3)) Journal.add("EKO", `Nie umiem odczytać id misji ekspedycji z wiersza 16 galaktyki (${n} prób) — ekspedycje STOJĄ. Zrzut markupu jest w logu.`);
           return;
         }
         Store.set("expo_link", { href, mission: parseInt(mission), at: Date.now() });
@@ -2622,7 +2690,7 @@
       const limit = p.stuck ? 30 * 60e3 : 6 * 3600e3;
       if (now - since < limit) return;
       if (Once.said("expo_stall_alarm", 6 * 3600e3)) return;
-      Journal.add("BŁĄD", `Ekspedycje stoją od ${Math.round((now - since) / 60e3)} min: ${p.skip}. To priorytet nr 2 — sprawdź, gdzie stoi flota.`);
+      Journal.add("EKO", `Ekspedycje stoją od ${Math.round((now - since) / 60e3)} min: ${p.skip}. To priorytet nr 2 — sprawdź, gdzie stoi flota.`);
     },
     // v3.48.0 (owner 31.08: „przed chwilą znowu przeskoczył"): fale ekspedycji MUSZĄ
     // przestawić aktywne ciało (formularz floty tego wymaga), ale po domknięciu serii
@@ -3147,7 +3215,7 @@
       Store.set("mission", { ...a, step: "switch", startedAt: Date.now() });
       // v3.68.10 (testy-architektura#1): Fleet Save ma własny rodzaj wpisu — rutynowy lot
       // nocny nie może iść tym samym kanałem push co ucieczka spod ostrzału.
-      if (a.kind !== "expedition" && a.kind !== "asteroid" && a.kind !== "debris") Journal.add(a.fs ? "FS" : "RATUNEK", `Start lotu: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody} (${a.why})`);
+      if (!ECO_KIND(a.kind)) Journal.add(a.fs ? "FS" : "RATUNEK", `Start lotu: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody} (${a.why})`);
       log(`[LOT] ${a.why}: [${a.fromKey}] ${a.fromBody} → [${a.toKey}] ${a.toBody}, ${a.speed}%`, "warn");
       return true;
     },
@@ -3159,7 +3227,9 @@
       try { const sA = Situation.load(); const n0 = (sA.flights || []).length; sA.flights = (sA.flights || []).filter(f => !(f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending)); if ((sA.flights || []).length !== n0) Situation.save(sA); } catch {}
       if (opts.quiet) { log(`[LOT] przerwany: ${why}`, "warn"); const blq = Store.get("fly_block", {}) || {}; blq[`${m.fromKey}>${m.toKey}`] = Date.now() + 3 * 60e3; Store.set("fly_block", blq); return; }
       log(`[LOT] przerwany: ${why}`, "error");
-      Journal.add("BŁĄD", `Lot [${m.fromKey}]→[${m.toKey}] przerwany: ${why}`);
+      // v3.77.0 (HANDOFF-2026-09-11, pkt 4): przerwana fala ekspedycji/mineru/złomu to
+      // kłopot ekonomii, nie awaria obrony — ten sam podział rodzajów co w `start()` wyżej.
+      Journal.add(ECO_KIND(m.kind) ? "EKO" : "BŁĄD", `Lot [${m.fromKey}]→[${m.toKey}] przerwany: ${why}`);
       // v3.67.0 (owner 04.09): zliczamy nieudane próby KONKRETNIE dla ratunku
       // moon→moon (rescue+air+toBody:moon) — nie zgadujemy, czy powodem jest deuter
       // (nieznany markup forka), ale po 2 nieudanych próbach na tę samą trasę w 10 min
@@ -3214,7 +3284,7 @@
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
         if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
-          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
         }
       }
       // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
@@ -3231,7 +3301,7 @@
       // w trakcie pracy), hangar NIE jest pusty — zerowanie skłamałoby "nic tu nie ma"
       // aż do następnego realnego odczytu, a to akurat wtedy, gdyby przyszedł atak,
       // ukryłoby zostawioną flotę przed obroną zamiast jej bronić.
-      if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona", m.excludeTypes);
+      if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona", m.excludeTypes, m.capTypes);
       // v3.68.1: udana wysyłka zwalnia budżet prób FS — sufit 3/h dotyczy PORAŻEK.
       if (m.fs) { try { const ft = Store.get("fs_try", {}) || {}; delete ft[`${m.fromKey}>${m.toKey}`]; Store.set("fs_try", ft); } catch {} }
       // v3.68.11 (obrona-wykonanie#4): tak samo dla ewakuacji — sufit 3/h liczy PORAŻKI,
@@ -3405,7 +3475,7 @@
             // wyżej dowodzi, iż stempel pochodzi z TEJ misji (rodzaj + trasa z ciałami +
             // `startedAt`) — nigdy z lotu innego rodzaju o tych samych współrzędnych.
             if (!ECO_KINDS.includes(m.kind)) {
-              emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat", m.excludeTypes);
+              emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat", m.excludeTypes, m.capTypes);
               try { const blG = Store.get("fly_block", {}) || {}; blG[`${m.fromKey}>${m.toKey}`] = ls.at + guardMs; Store.set("fly_block", blG); } catch {}
             }
             Store.del("mission"); return;
@@ -3527,10 +3597,32 @@
       // NIE wystawia już wykluczeń przy Fleet Save — `excl` bywa niepuste tylko w testach
       // mechanizmu (53b/56b); każdy lot obrony bierze dziś cały hangar.
       const excl = new Set((m.excludeTypes || []).map(t => String(t).toUpperCase()));
+      // v3.79.0: `capTypes` = SUFIT sztuk danego typu w tym locie (dziś: jedna Gwiazda Śmierci
+      // w ucieczce — spowalnia lot, a reszta GS zostaje na następne fale). Inaczej niż
+      // `excludeTypes`, który zeruje typ w całości: tu bierzemy min(ile mam, sufit).
+      const cap = new Map(Object.entries(m.capTypes || {}).map(([t, n]) => [String(t).toUpperCase(), Math.max(0, parseInt(n, 10) || 0)]));
+      // v3.79.0 (złapane przez E2E sc. 63, potem decyzja właściciela): sufit ma sens TYLKO
+      // jako dodatek do ratowanej floty. Gdy w hangarze nie ma już nic poza typem z sufitem,
+      // „zabierz jedną" znaczy „wyślij lot z jedną GS" — a decide() przy następnym przebiegu
+      // widzi resztę na atakowanym ciele i wystawia kolejny taki lot. W teście bot wysłał
+      // OSIEM lotów po jednej Gwieździe Śmierci, paląc slot floty na każdą z nich.
+      // `decide()` nie wystawia już takiego ratunku (rezerwa zostaje w domu — wybór
+      // właściciela 11.09), a to jest siatka bezpieczeństwa na wypadek, gdy decide nie zna
+      // składu hangaru (świeża para, odczyt bez listy statków) i mimo wszystko go wystawi.
+      if (cap.size && !want) {
+        const jestCosPoza = els.some(el => {
+          const t = String(el.dataset.shipType || "").toUpperCase();
+          return (parseInt(el.dataset.shipQuantity || "0") || 0) > 0 && !excl.has(t) && !cap.has(t);
+        });
+        if (!jestCosPoza) {
+          log(`[LOT] w hangarze ${m.fromBody} [${m.fromKey}] nie ma nic poza rezerwą (${[...cap.keys()].join(", ")}) — nie wywożę jej po sztuce, zostaje w domu na kolejne fale.`, "warn");
+          return this.abort("w hangarze sama rezerwa spowalniająca — zostaje w domu", { quiet: true });
+        }
+      }
       for (const el of els) {
         const type = String(el.dataset.shipType || "").toUpperCase();
         const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
-        const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : have);
+        const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
         if (qty <= 0) continue;
         const item = el.closest(".ship-item") || el.parentElement;
         const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
@@ -3546,7 +3638,7 @@
           for (const el of els) {
             const type = String(el.dataset.shipType || "").toUpperCase();
             const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
-            const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : have);
+            const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
             if (qty <= 0) continue;
             const item = el.closest(".ship-item") || el.parentElement;
             const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
@@ -3610,15 +3702,35 @@
       if (btn) { btn.click(); log(`[LOT] cel: ${m.toBody === "moon" ? "KSIĘŻYC" : m.toBody === "debris" ? "ZŁOM" : "PLANETA"}`, "info"); await sleep(jitter(500, 900)); }
       else { log(`[LOT DOM] brak przełącznika ciała (data-planet-type=${wantType}); panel celu: ${(document.getElementById("target_planet_type_container") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1200)}`, "warn"); }
       if (m.speed && m.speed !== 100) {
-        let ok = false; const txt = (e) => (e.textContent || "").trim();
+        // v3.78.0 (DOKTRYNA-DESTROY-2026-09-11, pkt 4.1) — CO SIĘ PSUŁO: bot szukał w rzędzie
+        // prędkości elementu o tekście DOKŁADNIE równym żądanej liczbie. Gdy fork takiej opcji
+        // nie ma (właściciel prosi o „możliwie najmniejszą, może być 3%", a fork może dawać
+        // same dziesiątki), nie klikał NICZEGO i lot szedł z domyślną prędkością — czyli 100%.
+        // To nie jest drobiazg: cały sens ucieczki przed DESTROY polega na tym, żeby flota
+        // WISIAŁA w locie w chwili uderzenia i dała się zawrócić. Przy 100% dolatuje i ląduje,
+        // a zawracać nie ma już czego. Teraz czytamy RZECZYWISTĄ listę opcji i bierzemy
+        // najwyższą, która nie jest szybsza od żądanej (a gdy żądana jest niższa niż wszystko,
+        // co fork oferuje — po prostu najniższą dostępną). Lista trafia do logu, więc pytanie
+        // „czy Genesis ma 3%?" rozstrzygnie pierwszy lot, bez zgadywania markupu.
+        let ok = false, wybrana = null, dostepne = [];
+        const txt = (e) => (e.textContent || "").trim();
         for (const h of [...document.querySelectorAll("a, span, button, div, td, li")].filter(e => txt(e) === "100" && e.offsetParent !== null && !e.closest("#ogx3-panel"))) {
           const kids = [...(h.parentElement?.children || [])]; const texts = kids.map(txt);
           if (!(texts.includes("10") && texts.includes("50"))) continue;
-          const t = kids.find(k => txt(k) === String(m.speed)); if (t) { t.click(); ok = true; } break;
+          dostepne = kids.map(k => ({ el: k, pct: /^\d{1,3}$/.test(txt(k)) ? parseInt(txt(k), 10) : null }))
+            .filter(x => x.pct !== null && x.pct > 0 && x.pct <= 100);
+          const nieSzybsze = dostepne.filter(x => x.pct <= m.speed);
+          const wybor = nieSzybsze.length
+            ? nieSzybsze.reduce((a, b) => (b.pct > a.pct ? b : a))
+            : (dostepne.length ? dostepne.reduce((a, b) => (b.pct < a.pct ? b : a)) : null);
+          if (wybor) { wybor.el.click(); ok = true; wybrana = wybor.pct; m.speedUsed = wybrana; }
+          break;
         }
+        if (ok && wybrana !== m.speed) log(`[LOT] prędkości ${m.speed}% nie ma na liście forka (są: ${dostepne.map(x => x.pct).join(", ")}) — lecę najbliższą NIE SZYBSZĄ: ${wybrana}%.`, "warn");
+        else if (ok) log(`[LOT] lista prędkości forka: ${dostepne.map(x => x.pct).join(", ")}.`, "info");
         // v3.9.0 (audyt): powolny lot to CAŁY sens ucieczki i FS — przy 100% flota
         // dolatuje i ląduje zamiast wisieć. Nieustawiona prędkość to nie drobiazg.
-        log(`[LOT] prędkość ${m.speed}%: ${ok ? "ustawiona" : "NIE USTAWIONA — lecę z domyślną, lot będzie krótki"}`, ok ? "info" : "error");
+        log(`[LOT] prędkość ${m.speed}%: ${ok ? `ustawiona (${wybrana}%)` : "NIE USTAWIONA — lecę z domyślną, lot będzie krótki"}`, ok ? "info" : "error");
         if (!ok && !Once.said("speed_fail", 30 * 60e3)) { Journal.add("BŁĄD", `Nie znalazłem suwaka prędkości — lot [${m.fromKey}]→[${m.toKey}] leci z domyślną prędkością (krótko). Sprawdź zrzut w logu.`); log(`[LOT DOM] okolica suwaka prędkości: ${(document.querySelector("#target_planet_type_container")?.closest("form") || document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 2000)}`, "error"); }
         await sleep(jitter(700, 1100));
       }
@@ -3781,7 +3893,7 @@
         // Kasowanie śladu po flocie, która jest w powietrzu, nie może być CICHE — to jest
         // dokładnie ten moment, w którym bot traci zdolność zawrócenia tamtego lotu.
         for (const f of zdjete) Journal.add("BŁĄD", `Nadpisuję wpis lotu [${f.fromKey}] ${f.fromBody} → [${f.toKey}] (${f.kind}/${f.phase}) nowym lotem z tego samego ciała — zawrotu tamtej floty bot już NIE kliknie. Sprowadź ją ręcznie.`);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
       // v3.62.0: skład floty w stemplu — po przeładowaniu to jedyne źródło dla logu „fala wysłana"
@@ -4183,14 +4295,23 @@
   // wywołań, więc na ścieżce normalnej (fork przeładowuje stronę po „Send fleet")
   // i tak zerował `confirmPendingSend`. Teraz zerujemy ZAWSZE, ale zostawiamy to,
   // co naprawdę zostało — hangar nie kłamie w żadną stronę.
-  function emptySourceHangar(fromKey, fromBody, why, keepTypes) {
+  function emptySourceHangar(fromKey, fromBody, why, keepTypes, capTypes) {
     try {
       const s = Situation.load();
       const hk = `${fromKey}|${fromBody}`;
       const h = s.hangars[hk];
       if (!h || (h.total || 0) === 0) return;
       const keep = new Set((keepTypes || []).map(t => String(t).toUpperCase()));
-      const left = keep.size ? (h.ships || []).filter(x => keep.has(String(x.type).toUpperCase()) && (x.qty || 0) > 0) : [];
+      // v3.79.0: lot z SUFITEM na typ (jedna Gwiazda Śmierci przy ucieczce) zostawia w domu
+      // RESZTĘ tego typu — hangar nie może twierdzić, że poleciały wszystkie 30 GS, bo wtedy
+      // następna fala nie miałaby czym zwolnić lotu, a bot „nie widziałby" floty, która tam stoi.
+      const cap = new Map(Object.entries(capTypes || {}).map(([t, n]) => [String(t).toUpperCase(), Math.max(0, parseInt(n, 10) || 0)]));
+      const left = (keep.size || cap.size) ? (h.ships || []).map(x => {
+        const t = String(x.type).toUpperCase();
+        if (keep.has(t)) return (x.qty || 0) > 0 ? x : null;
+        if (cap.has(t)) { const zostalo = Math.max(0, (x.qty || 0) - cap.get(t)); return zostalo > 0 ? { ...x, qty: zostalo } : null; }
+        return null;
+      }).filter(Boolean) : [];
       const total = left.reduce((x, sh) => x + (sh.qty || 0), 0);
       s.hangars[hk] = { total, ships: left, at: Date.now() };
       // v3.68.8 (audyt 04.09, obrona-stan-lotu#2 P0): ile statków zostało w domu CELOWO.
@@ -4223,7 +4344,7 @@
       Situation.save(s);
       if (f) {
         log(`[LOT] wysyłka [${f.fromKey}]→[${f.toKey}] potwierdzona przez grę po przeładowaniu — wpis nie czeka na timeout.`, "success");
-        emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu", f.excludeTypes);
+        emptySourceHangar(f.fromKey, f.fromBody, "potwierdzenie po przeładowaniu", f.excludeTypes, f.capTypes);
       }
     } catch {}
   }
@@ -4312,7 +4433,17 @@
         }
       }
       const attacks = (s.threats || []).filter(t => t.attack && t.arriveAt > Date.now());
-      if (attacks.length) { const k = `atak|${attacks.map(t => t.id || t.dst).join(",")}`; if (!Once.said(k, 10 * 60e3)) Journal.add("ATAK", attacks.map(t => `${t.type} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - Date.now()) / 1000)}s (${t.source})`).join("; ")); }
+      // v3.78.0 (DOKTRYNA-DESTROY-2026-09-11, pkt 4.2): DESTROY dzieli wór z ATTACK i trasa
+      // ratunku ma zostać ta sama (decyzja właściciela) — ale NIE komunikat. „ATTACK" znaczy
+      // „stracisz flotę, jeśli nie ucieknie"; „DESTROY" znaczy „stracisz KSIĘŻYC, nawet jeśli
+      // flota ucieknie", a to zmienia to, czego właściciel ma się spodziewać po przebudzeniu:
+      // wróci do pary bez księżyca, z flotą w powietrzu i odbudową w toku. Push o 3 w nocy
+      // ma to mówić wprost, zamiast zostawiać człowieka z samym słowem DESTROY w nawiasie.
+      if (attacks.length) {
+        const k = `atak|${attacks.map(t => t.id || t.dst).join(",")}`;
+        const wKsiezyc = attacks.some(t => /DESTRUCT|DESTROY/i.test(String(t.type || "")));
+        if (!Once.said(k, 10 * 60e3)) Journal.add("ATAK", (wKsiezyc ? "CELEM JEST KSIĘŻYC (DESTROY) — uciekam „stacjonuj” najwolniej jak fork pozwala i zawrócę flotę, gdy minie; jeśli księżyc padnie, odbuduję go. " : "") + attacks.map(t => `${t.type} → [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - Date.now()) / 1000)}s (${t.source})`).join("; "));
+      }
       // v3.10.2 (audyt E2E): lot EKONOMICZNY w toku blokował cały przebieg obrony
       // (`if (Fly.mission()) return`) aż do timeoutu 5 min — tyle, ile trwa typowy
       // dolot ataku. Ekonomia nigdy nie może stać na drodze ratunku: przy realnym
@@ -4887,6 +5018,7 @@
           #ogx3-panel .jr b{color:#5dade2;font-weight:600}
           #ogx3-panel .jr.ATAK b,#ogx3-panel .jr.BŁĄD b{color:#ff6b6b}
           #ogx3-panel .jr.RATUNEK b,#ogx3-panel .jr.POWRÓT b,#ogx3-panel .jr.FS b{color:#6fcf97}
+          #ogx3-panel .jr.EKO b{color:#e2b25d}   /* v3.77.0: ekonomia stoi — żółto, nie czerwono */
           #ogx3-panel .imp{margin:5px 0;padding:4px 6px;background:rgba(231,76,60,.13);border-left:2px solid #e74c3c;border-radius:3px}
           #ogx3-panel .imp.spy{background:rgba(241,196,15,.10);border-left-color:#f1c40f}
           #ogx3-panel .imp .h{font-size:13px;font-weight:700;color:#ff9b9b;font-variant-numeric:tabular-nums;display:flex;justify-content:space-between;gap:6px}
@@ -5464,7 +5596,10 @@
       const j = (Store.get("journal", []) || []).filter(x => (x.at || 0) >= ostatni);
       const ile = (k) => j.filter(x => x.kind === k).length;
       if (j.length) {
-        log(`[PODSUMOWANIE] bot milczał ${godz} h. W dzienniku obrony z tego czasu: ${ile("ATAK")} × ATAK, ${ile("RATUNEK")} × ratunek, ${ile("POWRÓT")} × powrót, ${ile("BŁĄD")} × błąd.`, ile("ATAK") ? "error" : "info");
+        // v3.77.0: „EKO" doliczone osobno — po wydzieleniu rodzaju zatrzymana ekspedycja
+        // zniknęłaby z bilansu po przerwie, a to jest właśnie moment, w którym warto wiedzieć,
+        // że przez noc nic nie latało. Rozwinięcie niżej zostaje przy obronie (ATAK/BŁĄD).
+        log(`[PODSUMOWANIE] bot milczał ${godz} h. W dzienniku obrony z tego czasu: ${ile("ATAK")} × ATAK, ${ile("RATUNEK")} × ratunek, ${ile("POWRÓT")} × powrót, ${ile("BŁĄD")} × błąd, ${ile("EKO")} × ekonomia.`, ile("ATAK") ? "error" : "info");
         for (const x of j.filter(x => x.kind === "ATAK" || x.kind === "BŁĄD").slice(0, 6)) {
           log(`[PODSUMOWANIE] ${new Date(x.at).toLocaleString("pl-PL")} ${x.kind}: ${x.msg}`, "warn");
         }

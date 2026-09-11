@@ -1924,10 +1924,14 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     advance(g2, 45 * 60e3);                                  // ...i trwa 45 minut
     const r2 = await run(g2, { cfg, loads: 4, ticksPerLoad: 2 });
     const dz = JSON.parse(g2.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
-    check("po pół godzinie zastoju leci wpis „BŁĄD” do dziennika (a nie kolejne ciche „info”)",
-      dz.some(e => e.kind === "BŁĄD" && /Ekspedycje stoją od/.test(e.msg || "")), JSON.stringify(dz.slice(0, 3)) + " | " + r2.logs.filter(m => /EXPO/.test(m)).slice(0, 4).join(" | "));
-    check("… i budzi telefon (push „Obrona: BŁĄD”)",
-      (g2.pushes || []).some(p => /ntfy\.sh/.test(String(p.url)) && /BŁĄD/.test(String(p.title)) && /Ekspedycje stoją/.test(String(p.body))),
+    // v3.77.0 (HANDOFF 11.09, pkt 4): wpis nadal MUSI powstać i nadal MUSI iść na telefon —
+    // zmienia się tylko kanał. Zastój ekspedycji to kłopot ekonomii: własny tytuł i niski
+    // priorytet, żeby „⚠️ Obrona: BŁĄD" znaczyło wyłącznie „coś się dzieje z flotą".
+    check("po pół godzinie zastoju leci wpis „EKO” do dziennika (a nie kolejne ciche „info”)",
+      dz.some(e => e.kind === "EKO" && /Ekspedycje stoją od/.test(e.msg || "")), JSON.stringify(dz.slice(0, 3)) + " | " + r2.logs.filter(m => /EXPO/.test(m)).slice(0, 4).join(" | "));
+    check("… i daje znać na telefon, ale kanałem ekonomii, nie alarmem obrony",
+      (g2.pushes || []).some(p => /ntfy\.sh/.test(String(p.url)) && /Ekonomia/.test(String(p.title)) && /Ekspedycje stoją/.test(String(p.body)))
+      && !(g2.pushes || []).some(p => /Obrona: BŁĄD/.test(String(p.title)) && /Ekspedycje stoją/.test(String(p.body))),
       JSON.stringify((g2.pushes || []).map(p => [p.title, String(p.body).slice(0, 60)])));
   }
 
@@ -1989,7 +1993,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       r.logs.some(m => /\[EXPO\] fala wysłana/.test(m)), r.logs.filter(m => /LOT|EXPO/.test(m)).slice(-8).join(" | "));
     check("… żadnego „wysyłka NIE potwierdzona” i żadnego fałszywego BŁĘDU w dzienniku",
       !r.logs.some(m => /wysyłka NIE potwierdzona/.test(m))
-      && !JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => e.kind === "BŁĄD" && /przerwany/.test(e.msg || "")),
+      // v3.77.0: przerwana fala ma dziś rodzaj „EKO", nie „BŁĄD" — sprawdzamy OBA, żeby
+      // wydzielenie kanału ekonomii nie zamieniło tego warunku w spełniony zawsze.
+      && !JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => (e.kind === "BŁĄD" || e.kind === "EKO") && /przerwany/.test(e.msg || "")),
       r.logs.filter(m => /NIE potwierdzona|przerwany/.test(m)).join(" | "));
     const stE = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("… a wpis w rejestrze powrotów PRZEŻYŁ (bez niego fala wraca „znikąd”)",
@@ -2434,6 +2440,103 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // v3.76.0 (owner 11.09: „bot obronił wszystkie fale, ale jednej nie zawrócił"):
     // OBA loty muszą wrócić. Wiersze obu wyglądają identycznie ([2:224:7]→[2:224:10] Deploy),
     // więc „jakiś wiersz wraca" NIE jest dowodem, że wraca akurat TEN lot.
+  }
+
+
+  console.log("\n── 61. PRĘDKOŚĆ UCIECZKI: żądane 3%, a fork daje same dziesiątki (doktryna DESTROY 11.09) ──");
+  {
+    // Właściciel 11.09: ucieczka przed DESTROY ma iść „możliwie najmniejszą prędkością,
+    // może być 3%" — flota ma WISIEĆ w locie w chwili uderzenia, żeby dało się ją zawrócić
+    // (zawrócone stacjonuj jest niewidoczne na falandze). Do v3.77 bot szukał elementu
+    // o tekście DOKŁADNIE „3"; gdy fork takiej opcji nie ma, nie klikał NICZEGO i lot szedł
+    // domyślną prędkością, czyli 100% — flota dolatywała, lądowała i nie było czego zawracać.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1, airSpeedPct: 3 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.moonLinks = true;                       // jest sąsiedni księżyc, więc ucieczka ma dokąd lecieć
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("61a: ratunek wyszedł", g.sent.length === 1, JSON.stringify(g.sent));
+    check("61b: bot NIE poleciał domyślną setką — wziął najniższą dostępną (10 z listy 10/50/100)",
+      g.formSpeed === 10, `formSpeed=${g.formSpeed}`);
+    check("61c: powiedział wprost, że żądanej prędkości nie ma i czym leci",
+      logs.some(m => /prędkości 3% nie ma na liście forka/.test(m) && /10, 50, 100/.test(m)),
+      logs.filter(m => /prędko/i.test(m)).slice(0, 4).join(" | "));
+    check("61d: żadnego „NIE USTAWIONA” — to była ścieżka prowadząca do lotu na 100%",
+      !logs.some(m => /NIE USTAWIONA/.test(m)), logs.filter(m => /prędko/i.test(m)).slice(0, 4).join(" | "));
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const f = (st.flights || [])[0];
+    check("61e: lot jest zapisany jako wiszący w powietrzu (ma termin zawrotu)",
+      !!f && f.recallAt > 0, JSON.stringify(f));
+  }
+
+
+  console.log("\n── 62. DESTROY: push o trzeciej w nocy mówi wprost, że celem jest KSIĘŻYC ──");
+  {
+    // 11.09 03:42–03:48 na [2:224:7] poszły trzy misje DESTROY i cztery ATTACK. Flota ocalała,
+    // ale w pushu „DESTROY" było tylko słowem w nawiasie obok typu misji. Różnica jest zasadnicza:
+    // ATTACK znaczy „stracisz flotę, jeśli nie ucieknie", DESTROY — „stracisz KSIĘŻYC, nawet jeśli
+    // ucieknie". Właściciel po przebudzeniu ma wiedzieć, że wróci do pary bez księżyca.
+    const cfg = { autoRescue: false, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 300 } },
+      threats: [{ id: "d1", src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300, type: "DESTROY" }],
+    });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 3 });
+    const atak = (g.pushes || []).filter(p => /ATAK/.test(p.title || ""));
+    check("62a: push o ataku wyszedł", atak.length >= 1, JSON.stringify((g.pushes || []).map(p => p.title)));
+    check("62b: …i mówi wprost, że celem jest księżyc",
+      atak.some(p => /CELEM JEST KSIĘŻYC/.test(String(p.body || ""))), JSON.stringify(atak.map(p => String(p.body).slice(0, 120))));
+    check("62c: …nie gubiąc przy tym typu misji i koordów",
+      atak.some(p => /DESTROY/.test(String(p.body || "")) && /1:100:5/.test(String(p.body || ""))), JSON.stringify(atak.map(p => String(p.body).slice(0, 120))));
+
+    // Kontrola: zwykły ATTACK NIE może dostać tego zdania — inaczej zdanie przestaje cokolwiek znaczyć.
+    const g2 = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 300 } },
+      threats: [{ id: "a1", src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }],
+    });
+    await run(g2, { cfg, loads: 8, ticksPerLoad: 3 });
+    const atak2 = (g2.pushes || []).filter(p => /ATAK/.test(p.title || ""));
+    check("62d: zwykły ATTACK dostaje push BEZ zdania o księżycu",
+      atak2.length >= 1 && !atak2.some(p => /CELEM JEST KSIĘŻYC/.test(String(p.body || ""))),
+      JSON.stringify(atak2.map(p => String(p.body).slice(0, 120))));
+  }
+
+
+  console.log("\n── 63. GWIAZDA ŚMIERCI: jedna na lot, reszta czeka na następną falę (właściciel 11.09) ──");
+  {
+    // Właściciel ma ~30 GS i fale wracające z ekspedycji co kilka minut. Jedna Gwiazda Śmierci
+    // spowalnia CAŁY lot, więc ucieczka z nią zdąży się zawrócić (doktryna DESTROY, krok 4).
+    // Gdyby pierwsza ucieczka zabrała wszystkie 30, każda następna fala leciałaby szybko
+    // i wylądowała, zanim padnie zawrót — dlatego to SUFIT, nie „zabierz wszystko".
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600, DEATH_STAR: 30 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.moonLinks = true;
+    const { logs: logi } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("63a: wyszła DOKŁADNIE jedna ucieczka (a nie lot na każdą sztukę rezerwy)",
+      g.sent.length === 1, JSON.stringify(g.sent.map(x => x.ships)));
+    check("63a2: żaden lot nie składa się z samej rezerwy — to sączyłoby hangar po sztuce",
+      !g.sent.some(x => Object.keys(x.ships || {}).length === 1 && (x.ships || {}).DEATH_STAR),
+      JSON.stringify(g.sent.map(x => x.ships)));
+    const wys = g.sent[0];
+    check("63b: zabrała DOKŁADNIE jedną Gwiazdę Śmierci (spowalnia lot, reszta zostaje)",
+      !!wys && wys.ships.DEATH_STAR === 1, JSON.stringify(wys && wys.ships));
+    check("63c: …i całą resztę hangaru — sufit dotyczy TYLKO GS, to nie wykluczenie",
+      !!wys && wys.ships.BATTLESHIP === 600, JSON.stringify(wys && wys.ships));
+    const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const h = (st.hangars || {})["1:100:5|moon"];
+    check("63d: stan hangaru nie kłamie — zostaje 29 GS na następną falę",
+      !!h && (h.ships || []).some(x => String(x.type).toUpperCase() === "DEATH_STAR" && x.qty === 29), JSON.stringify(h));
+    check("63e: …i nic poza nimi (reszta floty naprawdę wyleciała)", !!h && h.total === 29, JSON.stringify(h));
+    check("63f: bot mówi wprost, że rezerwa zostaje w domu (a nie milczy o porzuconej flocie)",
+      logi.some(m => /tylko rezerwa spowalniająca/i.test(m)), logi.filter(m => /rezerw|ATAK/i.test(m)).slice(0, 4).join(" | "));
+    const dz = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+    check("63g: dziennik nie jest zasypany startami lotów ratunkowych",
+      dz.filter(e => /Start lotu/.test(e.msg || "")).length <= 2, JSON.stringify(dz.slice(0, 4)));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
