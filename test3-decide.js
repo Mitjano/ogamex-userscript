@@ -2895,6 +2895,36 @@ console.log("\n── 71. STRAŻNIK: alarm po ŚMIERCI, nie po nieobecności (w�
     /na tej maszynie nie ma strażnika/.test(src) && /PRZESTAŁ odpowiadać/.test(src));
 }
 
+
+console.log("\n── 72. ODBUDOWA KSIĘŻYCA: nieudane podejście TEŻ jest próbą (log 11.09 13:11) ──");
+{
+  // Bot sam zgłosił to w logu: „[TEMPO] ten sam powód 4× w ostatniej minucie: «księżyc:
+  // formularz dla [2:23» — to wygląda na pętlę". Porzucenie podejścia po 4 nawigacjach
+  // kasowało bieżącą próbę, ale NIE zapisywało jej w rejestrze prób — a karencja 10 minut
+  // opiera się właśnie na nim. Następny przebieg (20 s później) zaczynał od zera: przełącz
+  // planetę, otwórz formularz, porzuć. W logu cztery takie cykle w piętnaście sekund,
+  // w trakcie których właściciel sam klikał po grze — czyli bot wyrywał mu planetę.
+  const canTry = new Function("CFG", "return function (st, k) {" + bodyOf("canTry(st, k) {") + "};")({ moon: { maxTries24h: 3 } });
+  const noteTry = new Function("return function (st, k) {" + bodyOf("noteTry(st, k) {") + "};")();
+  const zapisz = { save: () => {} };
+
+  const st = {};
+  check("72a: pierwsze podejście wolno zrobić od razu", canTry(st, "2:231:11") === true);
+  const n1 = noteTry.call(zapisz, st, "2:231:11");
+  check("72b: zapisana próba to próba numer 1", n1 === 1, String(n1));
+  check("72c: zaraz po niej NIE wolno zaczynać kolejnej (10 min ciszy)", canTry(st, "2:231:11") === false, JSON.stringify(st));
+
+  const stDawno = { tries: { "2:231:11": { n: 1, at: Date.now() - 11 * 60e3 } } };
+  check("72d: po 11 minutach wolno spróbować ponownie", canTry(stDawno, "2:231:11") === true);
+  const stSufit = { tries: { "2:231:11": { n: 3, at: Date.now() - 11 * 60e3 } } };
+  check("72e: sufit 3 prób na dobę obowiązuje mimo upływu karencji", canTry(stSufit, "2:231:11") === false);
+
+  check("72f: (źródło) porzucenie po 4 nawigacjach ZAPISUJE próbę, zamiast kasować ją po cichu",
+    /if \(\(m\.navs \|\| 0\) >= 4\) \{[\s\S]{0,200}?this\.noteTry\(st, m\.key\)/.test(src));
+  check("72g: (źródło) i mówi wprost, że czeka, żeby nie przestawiać planety w kółko",
+    /żeby nie przestawiać planety w kółko/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

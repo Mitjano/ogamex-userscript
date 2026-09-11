@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.83.0
+// @version      3.84.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.83.0";
+  const VERSION = "3.84.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -2329,7 +2329,22 @@
           } catch (e) { log(`[KSIĘŻYC] zwóz po odbudowie nie wyszedł: ${e.message}`, "warn"); }
           return false;
         }
-        if ((m.navs || 0) >= 4) { st.m = null; this.save(st); log(`[KSIĘŻYC] 4 nawigacje bez efektu przy [${m.key}] — odpuszczam do następnej próby.`, "warn"); return false; }
+        // v3.84.0 (log właściciela 13:11, [TEMPO] sam to zgłosił: „ten sam powód 4× w ostatniej
+        // minucie: «księżyc: formularz dla [2:23» — to wygląda na pętlę") — CO SIĘ PSUŁO:
+        // porzucenie próby po 4 nawigacjach kasowało `st.m`, ale NIE liczyło się jako próba.
+        // Karencja 10 min (`canTry`) opiera się na `tries`, więc następny przebieg — 20 sekund
+        // później — zaczynał wszystko od nowa: przełącz planetę, otwórz formularz, porzuć.
+        // W logu 13:11:17–13:11:32 to cztery takie cykle w piętnaście sekund, w trakcie
+        // których właściciel sam klikał po grze — czyli bot WYRYWAŁ MU PLANETĘ, a to jego
+        // najstarsza i najczęściej zgłaszana pretensja. Nieudane podejście jest teraz PRÓBĄ:
+        // liczy się do sufitu 3/24 h i uruchamia te same 10 minut ciszy co próba zakończona
+        // odczytem ceny. Sama odbudowa nic nie traci — księżyc nie ucieknie przez 10 minut.
+        if ((m.navs || 0) >= 4) {
+          const n = this.noteTry(st, m.key);
+          st.m = null; this.save(st);
+          log(`[KSIĘŻYC] 4 nawigacje bez efektu przy [${m.key}] — odpuszczam (próba ${n}/${CFG.moon.maxTries24h || 3}) i czekam 10 min, żeby nie przestawiać planety w kółko.`, "warn");
+          return false;
+        }
       } else if (m) { st.m = null; this.save(st); }
       // v3.68.10 (audyt 04.09, obrona-fs#5): odbudowa księżyca nie wysyła ŻADNEGO statku,
       // więc trwający Fleet Save jej nie dotyczy — a właśnie w trakcie FS napastnik
