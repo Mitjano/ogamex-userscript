@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.84.0
+// @version      3.85.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.84.0";
+  const VERSION = "3.85.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1859,7 +1859,19 @@
       // TABLICĄ i spokojnie mieści drugi wpis (własny fromKey+sentAt, własny recallAt).
       // Od teraz: cokolwiek STOI na atakowanym ciele, dostaje własny ratunek, nawet jeśli
       // z tej pary już coś leci. Owner 10.09: „ma pilnować KAŻDEJ floty, która wraca".
-      const drugiLot = !!f && hitBodies.length > 0;
+      // v3.85.0 (próba alarmu na żywo 11.09 13:36–13:38) — CO SIĘ PSUŁO: na atakowanym
+      // księżycu stała już TYLKO rezerwa spowalniająca (42 Gwiazdy Śmierci), a bot i tak
+      // krzyczał ERROR-em z pushem „wysyłam DRUGI lot ratunkowy" — po czym świadomie go nie
+      // wysyłał, bo rezerwa ma zostać w domu (decyzja właściciela z tego samego dnia).
+      // Zachowanie było poprawne, komunikat kłamał. To trzeci dziś przypadek tej samej choroby:
+      // kanał, na którym alarmy okazują się nieprawdziwe, przestaje być czytany — a tym samym
+      // kanałem przychodzi jedyny sygnał o realnym ataku. „Drugi lot" liczy się więc teraz
+      // tylko wtedy, gdy pod uderzeniem stoi COKOLWIEK poza rezerwą.
+      const stojiWDomu = ((hitBodies[0] && hitBodies[0].ships) || []).filter(x => (x.qty || 0) > 0);
+      const tylkoRezerwa = stojiWDomu.length > 0 && stojiWDomu.every(x => CAP_RATUNKU[String(x.type).toUpperCase()] !== undefined);
+      if (tylkoRezerwa) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3,
+        msg: `atak na ${hitBodies[0].body} [${k}], ale stoi tam już TYLKO rezerwa spowalniająca (${stojiWDomu.map(x => `${x.type}×${x.qty.toLocaleString("pl-PL")}`).join(", ")}) — zostawiam ją w domu, żeby kolejne fale miały czym zwolnić ucieczkę` });
+      const drugiLot = !!f && hitBodies.length > 0 && !tylkoRezerwa;
       if (drugiLot && f.fs) alerts.push({ key: k, level: "error", push: true, throttleMs: 10 * 60e3,
         msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — ratuję ${hitBodies[0].body} (${hitBodies[0].total.toLocaleString("pl-PL")} szt.) osobnym lotem` });
       else if (drugiLot) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
@@ -1957,12 +1969,7 @@
       // zawrócić. Lot złożony z SAMEJ rezerwy niczego nie ratuje: wywozi spowalniacze,
       // pali slot floty, a przy następnym przebiegu decide() wystawia go znowu. Zostawiamy
       // ją w domu świadomie — właściciel wybrał rezerwę na księżycu, nie jej ewakuację.
-      const stoiWDomu = (src0.ships || []).filter(x => (x.qty || 0) > 0);
-      if (stoiWDomu.length > 0 && stoiWDomu.every(x => CAP_RATUNKU[String(x.type).toUpperCase()] !== undefined)) {
-        alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3,
-          msg: `atak na ${src0.body} [${k}], ale stoi tam już TYLKO rezerwa spowalniająca (${stoiWDomu.map(x => `${x.type}×${x.qty.toLocaleString("pl-PL")}`).join(", ")}) — zostawiam ją w domu, żeby kolejne fale miały czym zwolnić ucieczkę` });
-        continue;
-      }
+      if (tylkoRezerwa) continue;   // komunikat poszedł wyżej, przy liczeniu odpowiedzi
       if (now - firstSeen < cfg.confirmMs && secs > cfg.tooLateSec + cfg.confirmMs / 1000) { alerts.push({ key: k, level: "warn", msg: `atak na [${k}] za ${secs}s — potwierdzam ${Math.round((cfg.confirmMs - (now - firstSeen)) / 1000)}s` }); continue; }
       if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }
       // wybór ucieczki: sąsiedni księżyc w układzie → drugie ciało pary (nieatakowane) → inna kolonia

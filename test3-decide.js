@@ -2925,6 +2925,39 @@ console.log("\n── 72. ODBUDOWA KSIĘŻYCA: nieudane podejście TEŻ jest pr�
     /żeby nie przestawiać planety w kółko/.test(src));
 }
 
+
+console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (próba na żywo 11.09 13:36) ──");
+{
+  // Próbny alarm na [2:224:7]: ucieczka poszła, w domu została rezerwa (42 Gwiazdy Śmierci).
+  // Bot trzy razy z rzędu krzyczał ERROR-em z pushem „wysyłam DRUGI lot ratunkowy" i za
+  // każdym razem świadomie go NIE wysyłał, bo rezerwa ma zostać w domu. Zachowanie było
+  // poprawne, komunikat kłamał — a to trzeci tego dnia przypadek tej samej choroby:
+  // kanał z nieprawdziwymi alarmami przestaje być czytany.
+  const zZagrozeniem = (shipsWDomu) => base({
+    hangars: { "3:272:7|moon": { total: shipsWDomu.reduce((a, x) => a + x.qty, 0), at: NOW - 30e3, ships: shipsWDomu } },
+    threats: [{ id: "t1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 300e3, attack: true, seenAt: NOW - 60e3, source: "list" }],
+    flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+      sentAt: NOW - 60e3, flightMs: 600e3, recallAt: NOW + 200e3, phase: "launched" }],
+  });
+  const alarmy = (st) => decide(st, CFG, NOW).alerts.map(a => a.msg).join(" || ");
+
+  const samaRezerwa = alarmy(zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]));
+  check("73a: gdy stoi sama rezerwa, bot NIE obiecuje drugiego lotu", !/wysyłam DRUGI lot ratunkowy/.test(samaRezerwa), samaRezerwa.slice(0, 200));
+  check("73b: …tylko mówi wprost, że zostawia ją w domu", /TYLKO rezerwa spowalniająca/.test(samaRezerwa), samaRezerwa.slice(0, 200));
+
+  const realnaFala = alarmy(zZagrozeniem([{ type: "BATTLESHIP", qty: 1_000_000 }, { type: "DEATH_STAR", qty: 42 }]));
+  check("73c: gdy pod uderzeniem stoi PRAWDZIWA flota, obietnica drugiego lotu zostaje",
+    /wysyłam DRUGI lot ratunkowy/.test(realnaFala), realnaFala.slice(0, 200));
+  check("73d: …i wtedy nie ma mowy o zostawianiu rezerwy", !/TYLKO rezerwa spowalniająca/.test(realnaFala), realnaFala.slice(0, 200));
+
+  const akcje = decide(zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]), CFG, NOW).actions;
+  check("73e: zawrót lotu, który JUŻ leci, jest dalej przesuwany za uderzenie (flota nie wraca pod ostrzał)",
+    akcje.some(a => a.kind === "extend"), JSON.stringify(akcje));
+  check("73f: …i żaden nowy lot z rezerwą nie wychodzi", !akcje.some(a => a.kind === "fly"), JSON.stringify(akcje));
+  check("73g: (źródło) „drugi lot” liczy się dopiero, gdy stoi coś poza rezerwą",
+    /const drugiLot = !!f && hitBodies\.length > 0 && !tylkoRezerwa;/.test(src));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
