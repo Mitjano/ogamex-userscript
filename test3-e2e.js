@@ -2430,6 +2430,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       zPary.length === 2 && zPary.every(f => f.recallAt > 0), JSON.stringify(zPary.map(f => [f.sentAt, f.recallAt])));
     check("60g: bot powiedzial wprost, ze wysyla drugi lot", logs.some(m => /DRUGI lot ratunkowy/.test(m)),
       logs.filter(m => /ATAK|ratun/i.test(m)).slice(0, 4).join(" | "));
+
+    // v3.76.0 (owner 11.09: „bot obronił wszystkie fale, ale jednej nie zawrócił"):
+    // OBA loty muszą wrócić. Wiersze obu wyglądają identycznie ([2:224:7]→[2:224:10] Deploy),
+    // więc „jakiś wiersz wraca" NIE jest dowodem, że wraca akurat TEN lot.
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

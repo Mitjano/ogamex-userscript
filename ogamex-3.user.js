@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.75.0
+// @version      3.76.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -32,7 +32,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.75.0";
+  const VERSION = "3.76.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1491,20 +1491,21 @@
         // spóźniony zawrót, FS nocny trwa 8 h).
         const wszystkieLoty = (s.flights || []).filter(x => x.fromKey === k && x.kind === "air" && ["launched", "recall_clicked"].includes(x.phase));
         const f = inFlightFrom(k) || wszystkieLoty[0];
-        for (const g of wszystkieLoty.slice(1)) {
-          if (g.phase === "launched" && g.recallAt && now >= g.recallAt) actions.push({ kind: "recall", flight: g, why: "ataki minęły — zawrót ucieczki (kolejny lot tej pary)" });
-          else if (g.phase === "launched" && !g.fs && g.recallAt && s.hostileClear && now - (s.hostileClear.since || now) >= 60e3) actions.push({ kind: "recall", flight: g, why: "napastnik zawrócił — wcześniejszy zawrót (kolejny lot tej pary)" });
-          else if (g.phase === "recall_clicked" && now - (g.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: g, why: "zawrót bez potwierdzenia — ponawiam (kolejny lot tej pary)" });
+        // v3.76.0 (owner 11.09: „kilku fal nie zawrócił") — CO SIĘ PSUŁO: podział na
+        // `f` (z inFlightFrom) i `wszystkieLoty.slice(1)` zakładał, że `f` to zawsze
+        // PIERWSZY wpis. `inFlightFrom` pomija loty „ślepe" (po terminie zawrotu), więc
+        // przy dwóch lotach, z których pierwszy zdążył zblednąć, `f` wskazywał DRUGI —
+        // ten sam, który obsługiwała pętla — a pierwszy nie dostawał zawrotu NIGDY.
+        // Jedna pętla po WSZYSTKICH lotach pary: żaden nie ma prawa wypaść.
+        // v3.53.0: „napastnik zawrócił" (pasek czysty ≥60 s) nie dotyczy FS nocnego —
+        // on jedzie zegarem nocy, a nie atakiem, i w nocy pasek jest czysty niemal zawsze.
+        // v3.10.2: klik bez potwierdzenia wierszem powrotnym ponawiamy po 2 min.
+        for (const lot of wszystkieLoty) {
+          const kolejny = lot !== f ? " (kolejny lot tej pary)" : "";
+          if (lot.phase === "launched" && lot.recallAt && now >= lot.recallAt) actions.push({ kind: "recall", flight: lot, why: "ataki minęły — zawrót ucieczki" + kolejny });
+          else if (lot.phase === "launched" && !lot.fs && lot.recallAt && s.hostileClear && now - (s.hostileClear.since || now) >= 60e3) actions.push({ kind: "recall", flight: lot, why: "napastnik zawrócił (pasek czysty ≥60 s) — wcześniejszy zawrót ucieczki" + kolejny });
+          else if (lot.phase === "recall_clicked" && now - (lot.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: lot, why: "zawrót bez potwierdzenia — ponawiam" + kolejny });
         }
-        if (f && f.kind === "air" && f.phase === "launched" && f.recallAt && now >= f.recallAt) actions.push({ kind: "recall", flight: f, why: "ataki minęły — zawrót ucieczki" });
-        // v3.53.0: napastnik zawrócił (pasek misji globalnie czysty ≥60 s, zagrożenia
-        // zdjęte w refresh) → nie czekamy do martwego terminu dolotu. NIGDY dla FS
-        // nocnego (f.fs) — on jest sterowany zegarem nocy, nie atakiem, a w nocy
-        // pasek jest czysty niemal zawsze.
-        else if (f && f.kind === "air" && f.phase === "launched" && !f.fs && f.recallAt && s.hostileClear && now - (s.hostileClear.since || now) >= 60e3) actions.push({ kind: "recall", flight: f, why: "napastnik zawrócił (pasek czysty ≥60 s) — wcześniejszy zawrót ucieczki" });
-        // v3.10.2: klik zawrotu bez potwierdzenia (brak wiersza powrotnego) ponawiamy
-        // po 2 min — inaczej jeden nieskuteczny klik zostawiał flotę w powietrzu.
-        else if (f && f.kind === "air" && f.phase === "recall_clicked" && now - (f.recalledAt || 0) > 2 * 60e3) actions.push({ kind: "recall", flight: f, why: "zawrót bez potwierdzenia — ponawiam" });
         // v3.34.0 (po postawieniu księżyca 29.08 20:28): reguła pytała `fleetAt()`,
         // czyli JEDNO „gdzie mieszka flota" — a to zwraca ciało z większym (albo
         // świeżej odczytanym) hangarem. Gdy gros floty stoi już na księżycu, wracające
@@ -3183,6 +3184,16 @@
       Store.set("fly_block", bl);
     },
     // Zawrót ma sens tylko dla lotu, który JESZCZE LECI w terminie zawrotu.
+    // v3.76.0: własny identyfikator wpisu lotu. Klucz (skąd, dokąd, sentAt) przestał być
+    // unikalny, gdy z jednej pary wychodzi kilka ratunków na ten sam księżyc.
+    newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); },
+    // v3.76.0 (strata zawrotow 11.09): czy wiersz powrotny na liscie ruchow dowodzi, ze
+    // wraca WLASNIE TEN lot. Przy kilku ratunkach z tej samej pary na ten sam ksiezyc
+    // wiersze sa nieodroznialne, wiec dowodem jest dopiero NADWYZKA wierszy powrotnych
+    // nad naszymi lotami, ktore juz maja zawrot za soba (klikniety albo potwierdzony).
+    // Do v3.75.0 wystarczal JEDEN wiersz powrotny i bot oznaczal wszystkie pozostale loty
+    // jako "juz WRACA" bez klikniecia — floty leacaly dalej, a dziennik pokazywal sukces.
+    zawrotPotwierdzony(wierszyPowrotnych, juzZawroconych) { return (wierszyPowrotnych || 0) > (juzZawroconych || 0); },
     recallOf(mm) {
       const r = mm.recallAt || 0;
       if (!r || !mm.flightMs) return r;
@@ -3203,7 +3214,7 @@
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
         if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
-          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
         }
       }
       // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
@@ -3770,7 +3781,7 @@
         // Kasowanie śladu po flocie, która jest w powietrzu, nie może być CICHE — to jest
         // dokładnie ten moment, w którym bot traci zdolność zawrócenia tamtego lotu.
         for (const f of zdjete) Journal.add("BŁĄD", `Nadpisuję wpis lotu [${f.fromKey}] ${f.fromBody} → [${f.toKey}] (${f.kind}/${f.phase}) nowym lotem z tego samego ciała — zawrotu tamtej floty bot już NIE kliknie. Sprowadź ją ręcznie.`);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
       // v3.62.0: skład floty w stemplu — po przeładowaniu to jedyne źródło dla logu „fala wysłana"
@@ -3839,7 +3850,11 @@
       // nie trafiały na dysk. Efekt: zawrót klikany w kółko, lot nigdy nie domknięty.
       // Pracujemy na obiekcie z ZAPISYWANEGO stanu.
       const s = Situation.load();
-      let f = (s.flights || []).find(x => x.fromKey === f0.fromKey && x.toKey === f0.toKey && (x.sentAt === f0.sentAt || !f0.sentAt));
+      // v3.76.0: wpisy lotów mają WŁASNY id. Do v3.75.0 jedynym rozróżnieniem była trójka
+      // (skąd, dokąd, sentAt) — a od kiedy z jednej pary leci kilka ratunków na ten sam cel,
+      // dwa wpisy potrafią mieć te same koordy i (przy szybkich wysyłkach) tę samą sekundę.
+      // Wtedy KAŻDY zawrót trafiał w ten sam, pierwszy wpis, a pozostałe floty zostawały w powietrzu.
+      let f = (s.flights || []).find(x => (f0.id && x.id === f0.id) || (!f0.id && x.fromKey === f0.fromKey && x.toKey === f0.toKey && (x.sentAt === f0.sentAt || !f0.sentAt)));
       // v3.10.2: fallback `|| f0` przywracal dokladnie ten blad, ktory naprawialismy —
       // mutacje na obiekcie spoza `s`, ktore nigdy nie trafialy na dysk. Jesli lotu nie
       // ma w stanie, DOPISUJEMY go, zeby zapis mial co utrwalic.
@@ -3887,8 +3902,17 @@
       const doc = new DOMParser().parseFromString(html, "text/html");
       const trs = [...doc.querySelectorAll("tr[class*='row-mission-type-']")];
       const ours = trs.filter(tr => /DEPLOY|STATION/i.test(tr.className) && (tr.textContent || "").includes(`[${f.toKey}]`) && (tr.textContent || "").includes(`[${f.fromKey}]`));
-      const back = ours.find(tr => /return/i.test(tr.className));
-      if (back) { f.phase = "recalled"; f.recalledAt = f.recalledAt || Date.now(); Situation.save(s); log(`[ZAWRÓT] ✅ lot [${f.fromKey}]→[${f.toKey}] już WRACA.`, "success"); Journal.add("POWRÓT", `Zawrót potwierdzony: flota wraca na [${f.fromKey}].`); return; }
+      // v3.76.0 (owner 11.09: „bot obronił wszystkie fale, ale kilku nie zawrócił") — CO SIĘ
+      // PSUŁO: od v3.75.0 z jednej pary leci KILKA ratunków na ten sam cel, a ich wiersze na
+      // liście ruchów są NIEODRÓŻNIALNE (ten sam Deploy, te same koordy). Warunek „jest wśród
+      // nich wiersz powrotny" spełniał się wtedy dla KAŻDEGO z nich, więc po zawróceniu
+      // pierwszego lotu wszystkie pozostałe bot oznaczał jako „już WRACA" — bez jednego
+      // kliknięcia. W dzienniku wyglądało to jak seria udanych zawrotów, a floty leciały dalej.
+      // Dowodem zawrotu TEGO lotu jest dopiero NADWYŻKA wierszy powrotnych nad naszymi lotami,
+      // które już mają zawrót za sobą (albo kliknięty, albo potwierdzony).
+      const wracaRows = ours.filter(tr => /return/i.test(tr.className)).length;
+      const juzZawrocone = (s.flights || []).filter(x => x !== f && x.fromKey === f.fromKey && x.toKey === f.toKey && ["recalled", "recall_clicked"].includes(x.phase)).length;
+      if (Fly.zawrotPotwierdzony(wracaRows, juzZawrocone)) { f.phase = "recalled"; f.recalledAt = f.recalledAt || Date.now(); Situation.save(s); log(`[ZAWRÓT] ✅ lot [${f.fromKey}]→[${f.toKey}] już WRACA (wierszy powrotnych ${wracaRows}, wcześniej zawróconych ${juzZawrocone}).`, "success"); Journal.add("POWRÓT", `Zawrót potwierdzony: flota wraca na [${f.fromKey}].`); return; }
       const row = ours.find(tr => !/return/i.test(tr.className));
       if (!row) { f.tries = (f.tries || 0) + 1; f.recalledAt = Date.now(); if (f.tries >= 5) { f.phase = "recall_failed"; Journal.add("BŁĄD", `Nie widzę lotu [${f.fromKey}]→[${f.toKey}] na liście — zawróć ręcznie.`); } Situation.save(s); log(`[ZAWRÓT] brak wiersza lotu (${f.tries}/5). Wiersze: ${trs.map(tr => tr.className.replace(/\s+/g, " ") + " :: " + (tr.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100)).join(" || ").slice(0, 1200)}`, "warn"); return; }
       const id = row.getAttribute("data-fleet-id") || "";

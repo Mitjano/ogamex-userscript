@@ -2553,6 +2553,28 @@ console.log("\n── 63. FALA Z POWROTU POD UDERZENIEM DOSTAJE WŁASNY RATUNEK 
     JSON.stringify(r3.actions.map(a => [a.kind, a.why])));
 }
 
+console.log("\n── 64. WIERSZ POWROTNY DOWODZI ZAWROTU TYLKO JEDNEGO LOTU (strata zawrotow 11.09) ──");
+{
+  // 11.09: z ksiezyca bazy poszlo kilka ratunkow na ten sam ksiezyc. Ich wiersze na liscie
+  // ruchow sa nieodroznialne (ten sam Deploy, te same koordy). Bot sprawdzal "czy jest wsrod
+  // nich wiersz powrotny" — po zawroceniu PIERWSZEGO lotu warunek spelnial sie dla kazdego
+  // nastepnego, wiec oznaczal je jako "juz WRACA" bez jednego klikniecia. W dzienniku
+  // wygladalo to jak seria udanych zawrotow (5 wpisow przy 2 realnych), a trzy floty
+  // leacaly dalej na [2:224:10] i owner sprowadzal je recznie.
+  const zp = new Function("wierszyPowrotnych", "juzZawroconych", bodyOf("zawrotPotwierdzony(wierszyPowrotnych, juzZawroconych) {"));
+  check("64a: jeden wiersz powrotny, nic jeszcze nie zawrocone → to jest NASZ zawrot", zp(1, 0) === true);
+  check("64b: jeden wiersz powrotny, ale inny nasz lot juz wraca → to NIE dowod (tu byl blad)", zp(1, 1) === false);
+  check("64c: dwa wiersze powrotne przy jednym zawroconym → drugi to nasz", zp(2, 1) === true);
+  check("64d: zero wierszy powrotnych → nie ma czego potwierdzac", zp(0, 0) === false);
+  check("64e: trzy loty, dwa juz wracaja, wierszy powrotnych dwa → trzeci NIE jest potwierdzony", zp(2, 2) === false);
+  check("64f: (zrodlo) recall uzywa tej reguly, a nie golego find(return)",
+    /Fly\.zawrotPotwierdzony\(wracaRows, juzZawrocone\)/.test(src) && !/const back = ours\.find\(tr => \/return/.test(src), "wciaz stary warunek");
+  check("64g: (zrodlo) wpisy lotow dostaja wlasny id (klucz skad-dokad-sentAt nie jest unikalny)",
+    /id: Fly\.newId\(\)/.test(src) && /f0\.id && x\.id === f0\.id/.test(src));
+  check("64h: (zrodlo) zawrot iteruje WSZYSTKIE loty pary, bez podzialu na f i reszte",
+    /for \(const lot of wszystkieLoty\)/.test(src) && !/for \(const \w+ of wszystkieLoty\.slice\(1\)\)/.test(src));
+}
+
 console.log("\n── 62. PUSH Z EMOJI PRZECHODZI PRZEZ CHROME (noc 09/10.09: 422 nieudane, 0 udanych) ──");
 {
   // Nagłówki HTTP są latin-1. Każdy tytuł zaczyna się od emoji, więc w Chrome GM_xmlhttpRequest
