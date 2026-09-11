@@ -573,6 +573,12 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
     /WERDYKTY OSTATECZNE/.test(src) && !/PARAMETR DZIAŁA/.test(src) && !/mv_probe", \{/.test(src));
   check("bonus online zwolniony z bramki „grasz” (jeden klik w menu, nie przełączanie planety)",
     /&& !\/grasz —\/\.test\(why\)/.test(src));
+  // v3.88.0: przerwa „rytm człowieka" blokowała bonus tak samo, jak cisza nocna przed v3.14.0
+  // (log 11.09 20:44–20:50: dostępny bonus, bot nie bierze, bo „przerwa (~7 min)").
+  check("bonus online: przerwa „rytm człowieka” też nie blokuje, gdy operator klika po grze",
+    /playing && \/godziny ciszy\|okno nocne\|przerw\/i\.test\(why\)/.test(src));
+  check("…ale to ustępstwo wisi na fladze `playing` — śpiące konto dalej czeka",
+    /const playing = Date\.now\(\) - \(Store\.get\("manual_at", 0\) \|\| 0\) < 10 \* 60e3;/.test(src));
   check("dławik alertów nie liczy odliczania sekund jako nowego alertu",
     /a\.msg\.replace\(\/\\d\+\/g, "#"\)\.slice\(0, 60\)/.test(src));
   check("kolonie poza rekonesansem czytane CICHO, bez nawigacji",

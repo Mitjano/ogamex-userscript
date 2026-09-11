@@ -1254,6 +1254,22 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     await run(g3, { cfg: cfgQ, loads: 10, ticksPerLoad: 2 });
     check("w ciszy nocnej, ale gdy GRASZ — bonus jest odbierany", g3.bonusClaims === 1, "odbiorów: " + g3.bonusClaims);
 
+    // v3.88.0 (pytanie właściciela 11.09 20:50): PRZERWA „rytm człowieka" blokowała bonus
+    // dokładnie tak samo jak cisza nocna przed v3.14.0. Log z tego wieczoru: o 20:44–20:50
+    // bot patrzył na dostępny bonus i nie brał go, bo trwała przerwa — a właściciel w tych
+    // minutach sam klikał po grze, więc konto było jawnie online.
+    const cfgB = { ...cfg, human: { breaks: true, economyAtNight: true, breakEveryMinMin: 35, breakEveryMaxMin: 65, breakLenMinMin: 5, breakLenMaxMin: 15 } };
+    const g3b = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 10 } } });
+    g3b.bonus = true;
+    g3b.store.set("genesis.ogamex.net:ogx3_break_until", JSON.stringify(Date.now() + 8 * 60e3));   // trwa przerwa
+    g3b.store.set("genesis.ogamex.net:ogx3_manual_at", JSON.stringify(Date.now()));                // …a operator klika po grze
+    await run(g3b, { cfg: cfgB, loads: 10, ticksPerLoad: 2 });
+    check("w przerwie rytmu człowieka, ale gdy GRASZ — bonus jest odbierany", g3b.bonusClaims === 1, "odbiorów: " + g3b.bonusClaims);
+
+    // Kontrola „przerwa i NIKT nie klika → bonus czeka" NIE da się zrobić w tym symulatorze
+    // (każde przeładowanie bez powodu bota jest tu kliknięciem operatora, patrz akapit niżej),
+    // więc pilnuje jej test źródłowy w test3-decide.js: ustępstwo wisi na fladze `playing`.
+
     // Ustępstwo dotyczy WYŁĄCZNIE ciszy nocnej. Inne bramki (tu: sufit nawigacji/h)
     // nadal wstrzymują odbiór — i od teraz mówią o tym w logu, zamiast milczeć.
     // (Symulator nie potrafi udać „konto śpi": każde przeładowanie bez powodu bota

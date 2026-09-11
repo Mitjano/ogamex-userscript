@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.87.0
+// @version      3.88.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.87.0";
+  const VERSION = "3.88.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -2564,7 +2564,15 @@
         // ONLINE — a to jest jeden klik w link w menu gry, nie przełączanie planety,
         // i wpada rzadko (antymateria + punkty Akademii). Skoro operator i tak klika,
         // konto jest jawnie online i ten klik niczego nie kosztuje. Zwolniony z bramki.
-        if (!(playing && /godziny ciszy|okno nocne/.test(why)) && !/grasz —/.test(why)) {
+        // v3.88.0 (pytanie właściciela 11.09 20:50 + pamięć `bonus` z dysku): bonus wraca co
+        // ~3 h i był brany regularnie, ale 11.09 między 07:48 a 17:38 wypadła dziura na 10 h,
+        // a o 20:44–20:50 bot patrzył na dostępny bonus i nie brał go, bo trwała PRZERWA
+        // („rytm człowieka", 5–15 min co 35–65 min). Przerwa ma sprawiać, że konto wygląda na
+        // śpiące — ale w tych minutach właściciel sam klikał po grze (dziesiątki wpisów
+        // „otwarte ręcznie"), więc konto było jawnie online i udawanie przerwy niczego nie
+        // chroniło, a kosztowało antymaterię i punkty Akademii. To ten sam argument, którym
+        // v3.14.0 zwolniła bonus z ciszy nocnej, a v3.43.1 z bramki „grasz".
+        if (!(playing && /godziny ciszy|okno nocne|przerw/i.test(why)) && !/grasz —/.test(why)) {
           if (!Once.said("bonus_wait|" + why.slice(0, 14), 60 * 60e3)) log(`[BONUS] nie odbieram teraz: ${why}.`, "info");
           return false;
         }
