@@ -31,6 +31,10 @@ Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane cia
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst
+- **`HANDOFF-2026-09-11.md` — CZYTAĆ NAJPIERW.** Stan po naprawach 09–11.09 (v3.73–v3.76),
+  przesiadka na Chrome, lista rzeczy OTWARTYCH (m.in. temat ntfy, przez który alarmy nie
+  dochodzą na telefon) i temat na dalej: obrona przed zniszczeniem księżyców [2:224:7]
+  i [2:224:10]. Zawiera też dwie moje pomyłki z tych dni, żeby ich nie powtórzyć.
 - `STAN-I-PLAN.md` — dziennik 2.x (ostatnie sekcje = 27.08: brama, ucieczka na sąsiedni księżyc, pamięć ataku, 7 błędów stanu).
 - `AUDYT-3.0-2026-08-28.md` — dlaczego 3.0 i co przenosimy.
 - `AUDYT-3.x-2026-08-29.md` — pełny audyt czterech warstw (obrona/ekonomia/testy/panel) z listą otwartych P0.
