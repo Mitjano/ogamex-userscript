@@ -2105,16 +2105,53 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // Odkąd wiek jest uczciwy, pasek naprawdę się starzeje (3 min) szybciej, niż keepalive
     // przeładowuje stronę (10 min). Bez tej drugiej połowy poprawki bot po prostu traciłby
     // ślepy alarm w nocy — czyli w klasie ataku, dla której ten alarm powstał.
+    // v3.86.0: przeładowanie strony to DRUGA próba — pierwszą jest cichy fetch /home
+    // (scenariusz 51b), więc tutaj sieć musi go położyć, żeby doszło do nawigacji.
     const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
     const g = new Game();
     await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
     g.hideBar = true;                       // strona bez paska: stary odczyt zostaje w stanie
+    g.homeFetchFail = true;                 // …i cicha droga (fetch /home) nie działa
     advance(g, 12 * 60e3);
     const przed = g.navigations.length;
     const { logs } = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
     check("bot przeładowuje stronę po świeży pasek", g.navigations.length > przed && g.navigations.some(n => /\/home/.test(String(n))), JSON.stringify(g.navigations.slice(-4)));
     check("i mówi w logu, PO CO tam idzie (żadna nawigacja nie jest cicha)", logs.some(m => /idę po świeży wzrok/.test(m)), logs.filter(m => /bot:|OBRONA/.test(m)).slice(0, 5).join(" | "));
     check("mimo braku wzroku nie ewakuuje floty na ślepo", g.sent.length === 0, JSON.stringify(g.sent));
+  }
+
+  console.log("\n── 51b. BEZCZYNNY BOT NIE ŚLEPNIE: pasek odświeżany fetchem, bez kręcenia stroną (v3.86.0) ──");
+  {
+    // Incydent 10–11.09 (pamięć `once` z dysku): pasek bywał stary 3–11 min o 22:44, 01:09,
+    // 01:51, 02:18, 03:07, 05:30, 07:22, 19:35 i 19:57 — w nocy, w której dziennik notuje
+    // ataki o 01:19, 02:08 i 06:22. Przyczyna: wiek paska = wiek RENDERU strony, a bot stoi
+    // w miejscu, gdy ekonomia nie ma co robić (ekspedycje 11/11) i gdy operator śpi.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false };
+    const g = new Game();
+    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    g.hideBar = true;                       // strona stoi i nie renderuje paska
+    advance(g, 5 * 60e3);                   // …a snapshot ma już 5 minut
+    const nawPrzed = g.navigations.length;
+    await run(g, { cfg, loads: 1, ticksPerLoad: 3 });
+    const bar = (JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "null") || {}).bar || {};
+    check("pasek jest znowu świeży (młodszy niż barMaxAgeMs)", Date.now() - (bar.at || 0) < 3 * 60e3, JSON.stringify(bar));
+    check("…i przyszedł fetchem /home, nie z renderu strony", bar.src === "fetch" && (g.fetches || []).some(u => /^\/home(\?|$)/.test(u)), `${bar.src} | ${JSON.stringify((g.fetches || []).slice(-4))}`);
+    check("bot NIE kręcił stroną operatora", g.navigations.length === nawPrzed, JSON.stringify(g.navigations.slice(nawPrzed)));
+    check("cichy odczyt nie rusza flotą", g.sent.length === 0, JSON.stringify(g.sent));
+
+    // kontrola: operator GRA (klika) — cicha droga i tak działa, bo nie wyrywa mu strony
+    const g2 = new Game();
+    await run(g2, { cfg, loads: 3, ticksPerLoad: 2 });
+    g2.hideBar = true;
+    advance(g2, 5 * 60e3);
+    const inst2 = load(g2, { cfg });
+    await new Promise(r => setTimeout(r, 200));                                          // startowy przebieg ma się skończyć
+    g2.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now()));        // operator właśnie kliknął
+    const naw2 = g2.navigations.length;
+    await inst2.api.Situation.refresh();
+    const bar2 = inst2.api.Situation.load().bar || {};
+    check("gdy operator gra, pasek też się odświeża (fetch nie wyrywa strony)", Date.now() - (bar2.at || 0) < 3 * 60e3 && bar2.src === "fetch", JSON.stringify(bar2));
+    check("…i nadal zero nawigacji bota", g2.navigations.length === naw2, JSON.stringify(g2.navigations.slice(naw2)));
   }
 
   console.log("\n── 52. AWARIA LISTY RUCHÓW NIE MOŻE BYĆ CICHA (v3.68.9, obrona-wykrywanie#1 P1) ──");

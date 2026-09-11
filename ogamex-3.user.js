@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.85.0
+// @version      3.86.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.85.0";
+  const VERSION = "3.86.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -285,6 +285,10 @@
     // odczytu ≠ spokój (flotę 08.09 ~05:10 zabrała cisza bota, nie jego nadgorliwość).
     barConfirmGraceMs: 60e3,
     barMaxAgeMs: 3 * 60e3,  // pasek starszy niż to nie jest dowodem na nic (strona bez paska)
+    // v3.86.0: po tylu milisekundach bez świeżego renderu bot sam bierze pasek fetchem /home,
+    // zanim ten przekroczy `barMaxAgeMs` i zgasi ślepy alarm. Musi być WYRAŹNIE mniejsze od
+    // `barMaxAgeMs`, żeby zostawało miejsce na jedną nieudaną próbę (sieć).
+    barKeepFreshMs: 100e3,
     barSpyHoldMs: 5 * 60e3, // gdy pasek mówi „Type: Spy" — dłużej (sondy wracają w minuty)
     barSpyMaxExcess: 1,     // …ale tylko dla nadwyżki, którą ta jedna sonda tłumaczy w CAŁOŚCI
     // v3.68.9: świeży pasek prosto z odpowiedzi listy ruchów (zero nawigacji). WYŁĄCZONE,
@@ -1089,6 +1093,26 @@
       // v3.9.1 (audyt): PASEK JAKO TRZECIE ŹRÓDŁO PRAWDY. Fork gubi na liście ataki
       // z własnego układu — pasek widzi je jako goły licznik. Nadwyżka „pasek minus
       // rozpoznane wiersze" utrzymująca się dłużej niż próg = atak, którego nie widzimy.
+      // v3.86.0 (dowód z dysku, doba 10–11.09): PASEK NIE MOŻE SIĘ ZESTARZEĆ TYLKO DLATEGO,
+      // ŻE BOT NIE NAWIGUJE. Odkąd wiek paska = wiek RENDERU strony (v3.68.9), każda dłuższa
+      // chwila bez przeładowania gasi ślepy alarm — a bot stoi w miejscu dokładnie wtedy, gdy
+      // ekonomia nie ma co robić (ekspedycje 11/11) i gdy operator śpi. Pamięć `once` pokazuje
+      // okna ślepoty na 3–11 min o 22:44, 01:09, 01:51, 02:18, 03:07, 05:30, 07:22, 19:35 i
+      // 19:57 — czyli w nocy, w której dziennik notuje ataki o 01:19, 02:08 i 06:22. Jedynym
+      // lekarstwem było kręcenie stroną (`bar_nav` w defenceTick): 150 s karencji, sufit 3 prób
+      // i cisza, gdy operator gra — więc lekarstwo milczało w połowie przypadków. Odtąd PIERWSZĄ
+      // drogą jest ten sam cichy fetch /home, którym od v3.71.0 potwierdzamy nadwyżkę: bez
+      // nawigacji i bez `?planet=`, więc działa też przy operatorze na stronie i w nocy.
+      // Nawigacja zostaje DRUGĄ próbą — gdy fetch nie oddaje paska (sieć, wylogowanie), bo
+      // wtedy stronę trzeba realnie przeładować. Dławik 45 s: przebieg chodzi co 20 s.
+      if (CFG.barExcess && now - ((s.bar && s.bar.at) || 0) > (CFG.barKeepFreshMs || 100e3) && !Once.said("bar_keep", 45e3)) {
+        const kb = await Bar.fetchFresh();
+        if (kb) {
+          const tk = Date.now();
+          s.bar = { ...kb, at: tk, readAt: tk, src: "fetch" };
+          if (!Once.said("bar_keep_log", 30 * 60e3)) log(`[OBRONA] pasek misji odświeżony w tle (fetch /home, bez przeładowania strony): ${kb.foreign} obcych lotów — ślepy alarm nie gaśnie, gdy bot stoi bezczynnie.`, "info");
+        }
+      }
       s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), now, CFG);
       // v3.71.0: nadwyżka po progu bez drugiego odczytu → świeży pasek fetchem /home (bez
       // nawigacji i bez `?planet=`, więc sesja operatora zostaje na jego planecie). Dławik 20 s.
@@ -4736,10 +4760,12 @@
       // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0, druga połowa poprawki): odkąd wiek
       // paska jest UCZCIWY, snapshot naprawdę starzeje się szybciej (3 min), niż keepalive
       // przeładowuje stronę (10 min) — bez tego bot po prostu tracił ślepy alarm zamiast
-      // stać na kłamstwie. To jest DZIŚ jedyne źródło świeżości: tańsza droga (pasek prosto
-      // z odpowiedzi listy ruchów, Rows.barFrom) czeka wyłączona za `CFG.barFromList`, aż
-      // potwierdzimy na żywo, że tamten licznik jest globalny. Mechanizm z 2.x („ślepy
-      // alarm sam idzie po wzrok"), ale
+      // stać na kłamstwie. v3.86.0: to już NIE jest pierwsza droga — pasek starszy niż
+      // `barKeepFreshMs` bierze cichy fetch /home w `Situation.refresh()`, a tu schodzimy
+      // dopiero wtedy, gdy tamten fetch nie oddał paska (sieć, wylogowanie) i wiek przekroczył
+      // `barMaxAgeMs`. Trzecia, najtańsza droga (pasek prosto z odpowiedzi listy ruchów,
+      // Rows.barFrom) czeka wyłączona za `CFG.barFromList`, aż potwierdzimy na żywo, że tamten
+      // licznik jest globalny. Mechanizm z 2.x („ślepy alarm sam idzie po wzrok"), ale
       // wyzwalany WIEKIEM strony, nie brakiem paska. Sufit: 3 próby, potem pół godziny
       // przerwy i jedno głośne zdanie — pętla nawigacji musi mieć koniec (CLAUDE.md).
       const barAge = Date.now() - ((s.bar && s.bar.at) || 0);
