@@ -2702,6 +2702,27 @@ console.log("\n── 67. JEDNA GWIAZDA ŚMIERCI W KAŻDEJ UCIECZCE (właścicie
     !/fs: true[^\n]{0,200}capTypes/.test(src));
   check("67h: (źródło) formularz bierze min(ile mam, sufit), a wykluczenie nadal zeruje typ",
     /excl\.has\(type\) \? 0 : \(cap\.has\(type\) \? Math\.min\(have, cap\.get\(type\)\) : have\)/.test(src));
+  // Zerowanie hangaru wołają CELOWO trzy ścieżki domknięcia wysyłki. Przy `keepTypes` filtr
+  // dawał ten sam wynik za każdym razem, ale SUFIT odejmuje — więc drugie wywołanie zjadało
+  // kolejną sztukę rezerwy (E2E sc. 63: 28 GS zamiast 29). Uruchamiamy funkcję DWA RAZY.
+  {
+    const empty = new Function("fromKey", "fromBody", "why", "keepTypes", "capTypes", "Situation", "log",
+      bodyOf("function emptySourceHangar(fromKey, fromBody, why, keepTypes, capTypes) {"));
+    const stan = {
+      hangars: { "3:272:7|moon": { total: 630, ships: [{ type: "BATTLESHIP", qty: 600 }, { type: "DEATH_STAR", qty: 30 }], at: NOW } },
+      flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", sentAt: NOW, phase: "launched" }],
+    };
+    const S = { load: () => stan, save: () => {} };
+    empty("3:272:7", "moon", "wysyłka potwierdzona", null, { DEATH_STAR: 1 }, S, () => {});
+    const poPierwszym = stan.hangars["3:272:7|moon"].total;
+    empty("3:272:7", "moon", "potwierdzenie po przeładowaniu", null, { DEATH_STAR: 1 }, S, () => {});
+    const poDrugim = stan.hangars["3:272:7|moon"].total;
+    check("67j: po wysyłce z sufitem w domu zostaje reszta rezerwy (30 − 1)", poPierwszym === 29, String(poPierwszym));
+    check("67k: drugie wywołanie NIE zjada kolejnej sztuki (trzy ścieżki domknięcia, jeden lot)",
+      poDrugim === 29, `po pierwszym ${poPierwszym}, po drugim ${poDrugim}`);
+    check("67l: wpis lotu pamięta, ile zostało w domu (inaczej powrót floty domknie się fałszywie)",
+      stan.flights[0].leftHome === 29, JSON.stringify(stan.flights[0]));
+  }
   check("67i: (źródło) hangar źródła zostawia RESZTĘ typu z sufitem (nie udaje, że poleciały wszystkie)",
     /const zostalo = Math\.max\(0, \(x\.qty \|\| 0\) - cap\.get\(t\)\)/.test(src));
 }

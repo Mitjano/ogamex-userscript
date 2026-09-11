@@ -109,10 +109,19 @@ ratunku, gdy w domu stoi już TYLKO rezerwa (alert co 30 min mówi o tym wprost)
 ma na to siatkę bezpieczeństwa na wypadek nieznanego składu hangaru. Świadomy koszt:
 GS są na księżycu w chwili uderzenia.
 
-## 5. Pytanie otwarte do żywej gry
+## 5. ROZSTRZYGNIĘTE 11.09 zrzutem z gry: Genesis MA 3%
 
-**Czy formularz lotu na Genesis ma w ogóle 3%?** Bot wybiera prędkość, klikając element
-o tekście równym żądanej liczbie w rzędzie, w którym są „10", „50" i „100". Jeśli fork
-daje tylko dziesiątki, „możliwie najmniejsza" znaczy 10% i tak zostaje. Odpowiedź
-przyjdzie sama z logu po pierwszej ucieczce/FS po wdrożeniu punktu 4.1 — nie zgadujemy
-markupu (zasada z `CLAUDE.md`).
+Formularz lotu (zrzut właściciela, [2:224:7] → księżyc, dystans 5) pokazuje pełną listę:
+
+```
+3  5  10  20  30  40  50  60  70  80  90  100
+```
+
+Czyli „możliwie najmniejsza prędkość" znaczy **naprawdę 3%**, a nie „najbliżej jak się da".
+Skala problemu: ten sam lot przy **100% trwa 2 min 15 s** (czyli ląduje, zanim ktokolwiek
+zdąży go zawrócić), przy 3% — około **75 minut w powietrzu**. Dlatego defekt z pkt 4.1
+(brak trafienia w opcję → lot z prędkością domyślną) był groźny: zabierał całą dźwignię.
+
+Atrapa E2E dostała tę samą listę (`Game.speeds`), więc testy prędkości sprawdzają świat,
+który istnieje. Scenariusz 61 pilnuje trafienia w 3%, a 61b — zachowania, gdyby fork
+kiedyś tę opcję zabrał (najniższa dostępna, nigdy domyślne 100%).

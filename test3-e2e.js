@@ -42,6 +42,9 @@ class Game {
     this.ghosts = 0;          // obce floty widoczne TYLKO na pasku (test slepego alarmu)
     this.hideBar = false;     // strona bez paska misji (formularz, blad, logowanie)
     this.noSpeeds = false;    // formularz bez suwaka predkosci
+    // Lista z ŻYWEJ GRY (zrzut formularza floty na Genesis, 11.09) — NIE zmyślać jej:
+    // to od niej zależy, czy ucieczka poleci 3% (wisi i da się zawrócić), czy 100% (ląduje).
+    this.speeds = [3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
     this.deadNext = 0;        // ile razy krok 2 ma byc BEZ przycisku „Next"
     this.hijackForm = false;  // operator przelacza planete w srodku formularza
     this.formSpeed = null;    // ostatnio klinieta predkosc
@@ -132,7 +135,7 @@ class Game {
         <input id="fleet2_target_x" value=""><input id="fleet2_target_y" value=""><input id="fleet2_target_z" value="">
         <a data-planet-type="1" class="planet-icon">Planet</a><a data-planet-type="2" class="moon-icon">Moon</a><a data-planet-type="3">Debris</a>
       </div>
-      ${this.noSpeeds ? "" : '<div class="speeds"><a>10</a><a>50</a><a>100</a></div>'}
+      ${this.noSpeeds ? "" : '<div class="speeds">' + this.speeds.map((v) => "<a>" + v + "</a>").join("") + "</div>"}
       <div>Cargo space: 0 / ${(Object.entries(this.formShips).reduce((a, [ty, q]) => a + (ty === "ASTEROID_MINER" ? q * this.cargoPerMiner : q * 5000), 0)).toLocaleString("de-DE")}</div>
       <div>Duration of flight (one way): ${((sec) => sec >= 3600
         ? `${String(Math.floor(sec / 3600)).padStart(2, "0")}:${String(Math.floor(sec % 3600 / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`
@@ -2443,13 +2446,13 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
   }
 
 
-  console.log("\n── 61. PRĘDKOŚĆ UCIECZKI: żądane 3%, a fork daje same dziesiątki (doktryna DESTROY 11.09) ──");
+  console.log("\n── 61. PRĘDKOŚĆ UCIECZKI 3%: fork ją ma i bot ma w nią trafić (zrzut z gry 11.09) ──");
   {
     // Właściciel 11.09: ucieczka przed DESTROY ma iść „możliwie najmniejszą prędkością,
     // może być 3%" — flota ma WISIEĆ w locie w chwili uderzenia, żeby dało się ją zawrócić
-    // (zawrócone stacjonuj jest niewidoczne na falandze). Do v3.77 bot szukał elementu
-    // o tekście DOKŁADNIE „3"; gdy fork takiej opcji nie ma, nie klikał NICZEGO i lot szedł
-    // domyślną prędkością, czyli 100% — flota dolatywała, lądowała i nie było czego zawracać.
+    // (zawrócone stacjonuj jest niewidoczne na falandze). Zrzut formularza floty z Genesis
+    // rozstrzygnął, że fork daje 3 5 10 20 … 100, więc 3% jest osiągalne NAPRAWDĘ, a nie
+    // „najbliżej jak się da". Przy 100% ten sam lot na sąsiedni księżyc trwa 2 min 15 s.
     const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1, airSpeedPct: 3 };
     const g = new Game({
       hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
@@ -2458,11 +2461,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g.moonLinks = true;                       // jest sąsiedni księżyc, więc ucieczka ma dokąd lecieć
     const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
     check("61a: ratunek wyszedł", g.sent.length === 1, JSON.stringify(g.sent));
-    check("61b: bot NIE poleciał domyślną setką — wziął najniższą dostępną (10 z listy 10/50/100)",
-      g.formSpeed === 10, `formSpeed=${g.formSpeed}`);
-    check("61c: powiedział wprost, że żądanej prędkości nie ma i czym leci",
-      logs.some(m => /prędkości 3% nie ma na liście forka/.test(m) && /10, 50, 100/.test(m)),
-      logs.filter(m => /prędko/i.test(m)).slice(0, 4).join(" | "));
+    check("61b: poleciał DOKŁADNIE na 3% — nie na domyślnej setce", g.formSpeed === 3, `formSpeed=${g.formSpeed}`);
+    check("61c: bot wypisał listę prędkości forka (bez niej nie wiemy, czym naprawdę leci)",
+      logs.some(m => /lista prędkości forka: 3, 5, 10/.test(m)), logs.filter(m => /prędko/i.test(m)).slice(0, 4).join(" | "));
     check("61d: żadnego „NIE USTAWIONA” — to była ścieżka prowadząca do lotu na 100%",
       !logs.some(m => /NIE USTAWIONA/.test(m)), logs.filter(m => /prędko/i.test(m)).slice(0, 4).join(" | "));
     const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
@@ -2471,6 +2472,26 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       !!f && f.recallAt > 0, JSON.stringify(f));
   }
 
+  console.log("\n── 61b. …a gdy żądanej prędkości NIE MA na liście, bot nie leci setką ──");
+  {
+    // Siatka bezpieczeństwa na wypadek, gdyby fork kiedyś zmienił listę (albo gdyby ktoś
+    // wpisał w panelu wartość spoza niej). Do v3.77 bot klikał element o tekście DOKŁADNIE
+    // równym żądanej liczbie — brak trafienia znaczył lot z prędkością domyślną, czyli 100%,
+    // a wtedy flota dolatuje, LĄDUJE i nie ma czego zawracać.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1, airSpeedPct: 3 };
+    const g = new Game({
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400 }],
+    });
+    g.moonLinks = true;
+    g.speeds = [10, 50, 100];                 // fork bez 3% — hipotetyczny, ale kod ma to przeżyć
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("61b1: ratunek i tak wyszedł", g.sent.length === 1, JSON.stringify(g.sent));
+    check("61b2: wziął najniższą dostępną (10), a nie domyślną setkę", g.formSpeed === 10, `formSpeed=${g.formSpeed}`);
+    check("61b3: i powiedział wprost, że żądanej prędkości nie ma i czym leci",
+      logs.some(m => /prędkości 3% nie ma na liście forka/.test(m) && /10, 50, 100/.test(m)),
+      logs.filter(m => /prędko/i.test(m)).slice(0, 4).join(" | "));
+  }
 
   console.log("\n── 62. DESTROY: push o trzeciej w nocy mówi wprost, że celem jest KSIĘŻYC ──");
   {

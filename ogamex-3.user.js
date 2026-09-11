@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.79.0
+// @version      3.79.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.79.0";
+  const VERSION = "3.79.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -241,7 +241,7 @@
     // gdy to BOT wywiózł flotę z tej pary, wolno mu ją przywieźć z powrotem.
     homeToMoon: false,
     deutReserve: 0,         // zostaje na ciele przy każdym locie (Athena: 100 mld; Genesis start: 0)
-    airSpeedPct: 3,         // ucieczka w powietrze: prędkość (v3.78.0 — możliwie najwolniej; Fly bierze najniższą dostępną, gdy fork nie ma 3%)
+    airSpeedPct: 3,         // ucieczka w powietrze: prędkość — fork MA 3% (zrzut 11.09: 3 5 10 20…100); Fly bierze najniższą dostępną, gdyby zniknęła
     confirmMs: 20000,       // potwierdzenie zagrożenia przed ruchem (artefakty paska)
     tooLateSec: 40,         // dolot krótszy = nie zdążymy z formularzem (tylko alarm)
     recallBufferSec: 90,    // zawrót: ostatni dolot + bufor
@@ -3710,8 +3710,10 @@
         // WISIAŁA w locie w chwili uderzenia i dała się zawrócić. Przy 100% dolatuje i ląduje,
         // a zawracać nie ma już czego. Teraz czytamy RZECZYWISTĄ listę opcji i bierzemy
         // najwyższą, która nie jest szybsza od żądanej (a gdy żądana jest niższa niż wszystko,
-        // co fork oferuje — po prostu najniższą dostępną). Lista trafia do logu, więc pytanie
-        // „czy Genesis ma 3%?" rozstrzygnie pierwszy lot, bez zgadywania markupu.
+        // co fork oferuje — po prostu najniższą dostępną). Lista trafia do logu.
+        // ROZSTRZYGNIĘTE zrzutem z gry 11.09: Genesis daje 3 5 10 20 30 40 50 60 70 80 90 100,
+        // więc 3% jest osiągalne naprawdę. Skala: lot na sąsiedni księżyc (dystans 5) trwa
+        // 2 min 15 s przy 100% i ~75 min przy 3% — o tyle właśnie chodzi w „zawróć stacjonuj".
         let ok = false, wybrana = null, dostepne = [];
         const txt = (e) => (e.textContent || "").trim();
         for (const h of [...document.querySelectorAll("a, span, button, div, td, li")].filter(e => txt(e) === "100" && e.offsetParent !== null && !e.closest("#ogx3-panel"))) {
@@ -4301,6 +4303,15 @@
       const hk = `${fromKey}|${fromBody}`;
       const h = s.hangars[hk];
       if (!h || (h.total || 0) === 0) return;
+      // v3.79.0 (złapane przez E2E sc. 63: w hangarze zostawało 28 GS zamiast 29) — CO SIĘ
+      // PSUŁO: tę funkcję woła CELOWO każda z trzech ścieżek domknięcia wysyłki (potwierdzenie,
+      // bramka anty-duplikat, potwierdzenie po przeładowaniu). Przy samych `keepTypes` było to
+      // niegroźne, bo filtr daje ten sam wynik za każdym razem. SUFIT jest inny: ODEJMUJE, więc
+      // drugie wywołanie zjadało kolejną sztukę rezerwy, trzecie następną — stan gubił floty,
+      // której nikt nigdzie nie wysłał. Wpis lotu pamięta, ile zostało; jeśli hangar już tyle
+      // pokazuje, robota jest zrobiona.
+      const lot = (s.flights || []).filter(x => x.fromKey === fromKey && x.fromBody === fromBody && x.phase !== "done").sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+      if (lot && lot.leftHome !== undefined && (h.total || 0) === lot.leftHome) return;
       const keep = new Set((keepTypes || []).map(t => String(t).toUpperCase()));
       // v3.79.0: lot z SUFITEM na typ (jedna Gwiazda Śmierci przy ucieczce) zostawia w domu
       // RESZTĘ tego typu — hangar nie może twierdzić, że poleciały wszystkie 30 GS, bo wtedy
@@ -4318,10 +4329,7 @@
       // Bez tego pola pierwszy odczyt hangaru źródła po Fleet Save („20 983 recyklery")
       // wyglądał jak POWRÓT floty i domykał wpis lotu — razem z jedyną drogą do zawrotu.
       // Zapisujemy na wpisie tego lotu, który właśnie z tego ciała wystartował.
-      {
-        const f = (s.flights || []).filter(x => x.fromKey === fromKey && x.fromBody === fromBody && x.phase !== "done").sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
-        if (f) f.leftHome = total;
-      }
+      if (lot) lot.leftHome = total;
       Situation.save(s);
       log(total
         ? `[LOT] hangar ${fromBody} [${fromKey}]: flota wyleciała, w domu zostaje ${total.toLocaleString("pl-PL")} szt. celowo pominiętych (${left.map(x => x.type).join(", ")}) — ${why}.`
