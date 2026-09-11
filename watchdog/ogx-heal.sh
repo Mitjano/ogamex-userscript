@@ -22,7 +22,7 @@ LABEL="com.mch.ogx-watchdog"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 APPDIR="$HOME/Library/Application Support/ogx-watchdog"
 LOG="$HOME/Library/Logs/ogx-heal.log"
-NTFY_TOPIC="${OGX_WD_NTFY:-ogamex3-d0zjvhl9eiho}"
+NTFY_TOPIC="${OGX_WD_NTFY:-ogx-4wrgtgf1zknuoa}"
 STAMP="$APPDIR/.heal-push-stamp"
 U="$(id -u)"
 

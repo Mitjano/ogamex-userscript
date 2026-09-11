@@ -2601,7 +2601,7 @@ console.log("\n── 65. KANAŁ ALARMOWY: stały temat ntfy + ekonomia poza rod
   // (1) Temat ntfy był LOSOWANY i trzymany w schowku Tampermonkeya — a schowek jest per
   // przeglądarka. Po przesiadce na Chrome bot wylosował nowy temat, telefon słuchał starego
   // i przez dobę żaden alarm o ataku nie miał dokąd dojść (panel pokazywał przy tym push ON).
-  const TEL = "ogamex3-d0zjvhl9eiho";   // temat, który subskrybuje telefon właściciela
+  const TEL = "ogx-4wrgtgf1zknuoa";   // temat, który subskrybuje telefon właściciela
   const sety = [];
   const fakeStore = { get: (k, d) => (k === "ntfy_topic" ? "ogamex3-6wjps7yzsw7t" : d), set: (k, v) => sety.push([k, v]) };
   const topicFn = new Function("Store", "log", "return function () {" + bodyOf("topic() {") + "};")(fakeStore, () => {});

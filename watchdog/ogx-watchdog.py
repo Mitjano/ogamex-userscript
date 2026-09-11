@@ -39,7 +39,7 @@ SLEEP_GAP = 120                                                      # s luki ze
 STARTUP_GRACE = int(os.environ.get("OGX_WD_GRACE", str(6 * 60)))     # s po starcie strażnika
 MAX_RESTARTS_H = 3
 DRYRUN = os.environ.get("OGX_WD_DRYRUN") == "1"
-NTFY_TOPIC = os.environ.get("OGX_WD_NTFY", "ogamex3-d0zjvhl9eiho")
+NTFY_TOPIC = os.environ.get("OGX_WD_NTFY", "ogx-4wrgtgf1zknuoa")
 GAME_URL = os.environ.get("OGX_WD_URL", "https://genesis.ogamex.net/")
 # Godziny ciszy „S-E" (np. "1-7"): w tym oknie strażnik NIE restartuje, tylko
 # pushuje — restart o 4 w nocy w 2 min wzmacnia wzorzec „konto nigdy nie znika".

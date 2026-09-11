@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.79.1
+// @version      3.80.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.79.1";
+  const VERSION = "3.80.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -189,7 +189,7 @@
     // subskrypcję na bota i na strażnika, i żadna nowa przeglądarka nie rozjedzie kanału.
     // Zmiana tematu = edycja TEJ stałej + strażnika + bump. Gdyby kiedyś powstało pole
     // w panelu, trzeba zdjąć przypięcie — inaczej schowek znów zacznie kłamać.
-    TOPIC: "ogamex3-d0zjvhl9eiho",
+    TOPIC: "ogx-4wrgtgf1zknuoa",
     topic() {
       const t = Store.get("ntfy_topic", "");
       if (t !== this.TOPIC) {
