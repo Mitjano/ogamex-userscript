@@ -2200,6 +2200,36 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     await inst.api.Situation.refresh();
     check("gdy lista znów odpowiada, stempel udanego odczytu jest świeży", Date.now() - (inst.api.Situation.load().listOkAt || 0) < 5000, String(inst.api.Situation.load().listOkAt));
     check("… i licznik porażek jest skasowany", JSON.parse(g.store.get("genesis.ogamex.net:ogx3_list_fail") || "null") === null, g.store.get("genesis.ogamex.net:ogx3_list_fail"));
+
+    // v3.89.0 (log właściciela 11.09 21:48:10): keepalive przeładował stronę, przeglądarka
+    // ubiła WŁASNY trwający fetch listy („Failed to fetch"), a bot ogłosił awarię GŁÓWNEGO
+    // detektora ataków. Gra była sprawna — udany odczyt wrócił dwie minuty później.
+    const gN = new Game();
+    const instN = load(gN, { cfg });
+    await new Promise(r => setTimeout(r, 200));
+    const logiN = () => (JSON.parse(gN.store.get("genesis.ogamex.net:ogx3_log") || "[]"));
+    gN.store.set("genesis.ogamex.net:ogx3_log", "[]");
+    instN.api.Store.set("nav_last", { at: Date.now(), to: "/home", why: "keepalive: 10 min bez nawigacji" });
+    instN.api.Rows.listFail("brak odpowiedzi (Failed to fetch)");
+    await new Promise(r => setTimeout(r, 80));
+    check("błąd fetcha zbiegły z WŁASNYM przeładowaniem nie jest ogłaszany jako awaria detektora",
+      !logiN().some(e => e.type === "error" && /GŁÓWNY detektor/.test(e.msg || "")), JSON.stringify(logiN().slice(0, 3)));
+    check("…ale zostaje po nim ślad w logu (cisza też uczy złych nawyków)",
+      logiN().some(e => /przerwany WŁASNYM przeładowaniem/.test(e.msg || "")), JSON.stringify(logiN().slice(0, 3)));
+    check("…i nie liczy się jako porażka listy", JSON.parse(gN.store.get("genesis.ogamex.net:ogx3_list_fail") || "null") === null,
+      gN.store.get("genesis.ogamex.net:ogx3_list_fail"));
+
+    // kontrola: ta sama chwila, ale przyczyna INNA niż sieć przy wyjściu → alarm jak dotąd
+    const gH = new Game();
+    const instH = load(gH, { cfg });
+    await new Promise(r => setTimeout(r, 200));
+    gH.store.set("genesis.ogamex.net:ogx3_log", "[]");
+    instH.api.Store.set("nav_last", { at: Date.now(), to: "/home", why: "keepalive: 10 min bez nawigacji" });
+    instH.api.Rows.listFail("HTTP 503");
+    await new Promise(r => setTimeout(r, 80));
+    check("HTTP 503 podczas nawigacji NADAL krzyczy (wyciszamy tylko sieć przy wyjściu ze strony)",
+      JSON.parse(gH.store.get("genesis.ogamex.net:ogx3_log") || "[]").some(e => e.type === "error" && /GŁÓWNY detektor/.test(e.msg || "")),
+      JSON.stringify(JSON.parse(gH.store.get("genesis.ogamex.net:ogx3_log") || "[]").slice(0, 3)));
   }
 
   console.log("\n── 53. NIEUDANE PRZYWRÓCENIE PLANETY OPERATORA (v3.68.9, obrona-wykrywanie#4 P1) ──");

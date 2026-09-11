@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.88.0
+// @version      3.89.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.88.0";
+  const VERSION = "3.89.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -74,13 +74,19 @@
   // pętli nawigacji była wtedy niemożliwa. Test E2E tego nie łapał, bo skraca
   // setTimeout 150× (800 ms → 5 ms), więc debounce zawsze zdążył.
   function flushLog() { try { if (logTimer) { clearTimeout(logTimer); logTimer = null; } Store.set("log", logEntries); } catch {} }
-  try { window.addEventListener("pagehide", flushLog); window.addEventListener("beforeunload", flushLog); } catch {}
+  // v3.89.0 (log właściciela 11.09 21:48:10): strona, która właśnie się przeładowuje, ubija
+  // WŁASNE trwające fetche — przeglądarka zwraca wtedy „Failed to fetch". Bot meldował to
+  // jako awarię GŁÓWNEGO detektora ataków, choć przyczyną było jego własne keepalive
+  // sekundę wcześniej. Ta flaga mówi „to my wychodzimy ze strony", żeby kanał alarmowy
+  // nie krzyczał o awarii, której nie ma (fałszywy alarm uczy ignorowania kanału).
+  let leavingPage = false;
+  try { window.addEventListener("pagehide", () => { leavingPage = true; flushLog(); }); window.addEventListener("beforeunload", () => { leavingPage = true; flushLog(); }); } catch {}
   // Każda nawigacja bota zostawia ślad: PO CO poszedł. Następne uruchomienie skryptu
   // mówi to wprost — bez tego nie da się odróżnić „bot kręci stroną w pętli" od
   // „operator sam klika po grze".
   const Nav = {
-    go(url, why) { try { Store.set("nav_last", { at: Date.now(), to: String(url), why }); } catch {} flushLog(); location.replace(url); },
-    click(el, why) { try { Store.set("nav_last", { at: Date.now(), to: "klik: " + why, why }); } catch {} flushLog(); el.click(); },
+    go(url, why) { try { Store.set("nav_last", { at: Date.now(), to: String(url), why }); } catch {} flushLog(); leavingPage = true; location.replace(url); },
+    click(el, why) { try { Store.set("nav_last", { at: Date.now(), to: "klik: " + why, why }); } catch {} flushLog(); leavingPage = true; el.click(); },
   };
   // v3.77.0: JEDNA lista rodzajów misji, które są EKONOMIĄ, a nie obroną. Używa jej i start
   // lotu (nie dopisuje „RATUNEK"), i przerwanie lotu (dopisuje „EKO", nie „BŁĄD") — dopisanie
@@ -696,6 +702,21 @@
     // godzinami, a [GOTOWOŚĆ] meldował „obrona gotowa". Do tego `Session.tried()` stało ZA
     // bramką `res.ok`, więc nieudana próba nie liczyła się nawet jako próba sesji.
     listFail(powod) {
+      // v3.89.0 (log właściciela 11.09 21:48:10) — CO SIĘ PSUŁO: keepalive przeładował stronę
+      // („[KEEPALIVE] przeładowanie (10 min bez nawigacji)" w TEJ SAMEJ sekundzie), przeglądarka
+      // ubiła trwający fetch listy, a bot ogłosił ERROR-em, że GŁÓWNY detektor ataków nie widzi
+      // NIC. Gra i sieć były sprawne — `list_ok_at` pokazywał udany odczyt dwie minuty później.
+      // Taki alarm nie opisuje żadnej awarii, a jest najgroźniejszym zdaniem w całym logu:
+      // przeczytany kilka razy przy zwykłym przeładowaniu, uczy przewijać go wzrokiem.
+      // Przerwany własnym wyjściem ze strony odczyt nie jest więc awarią — nowa strona czyta
+      // listę od razu. Wyciszamy WYŁĄCZNIE błąd sieciowy zbiegły z naszą nawigacją (5 s);
+      // HTTP 503, timeout i każda inna przyczyna krzyczą jak dotąd.
+      const nl = Store.get("nav_last", null);
+      const nasze = leavingPage || (nl && Date.now() - (nl.at || 0) < 5e3);
+      if (nasze && /Failed to fetch|NetworkError|abort/i.test(String(powod))) {
+        if (!Once.said("list_fail_nav", 30 * 60e3)) log(`[LOTY] odczyt listy ruchów przerwany WŁASNYM przeładowaniem strony (${powod}) — to nie awaria gry; nowa strona czyta listę od razu.`, "info");
+        return;
+      }
       const st = Store.get("list_fail", null) || { since: Date.now(), n: 0 };
       Store.set("list_fail", { since: st.since || Date.now(), n: (st.n || 0) + 1, at: Date.now(), why: powod });
       if (!Once.said("list_fail", 5 * 60e3)) log(`[LOTY] lista ruchów flot nie odpowiada (${powod}) — GŁÓWNY detektor ataków nie widzi NIC; zostaje sam licznik na pasku misji (60 s zwłoki, bez celu).`, "error");

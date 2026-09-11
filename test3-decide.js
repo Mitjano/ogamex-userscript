@@ -929,7 +929,18 @@ console.log("── 28. ODPORNOŚĆ PĘTLI (v3.7.3) ──");
   check("ekonomia w osobnym try — jej błąd nie wywala obrony", /catch \(e\) \{ log\(`\[EKONOMIA\] błąd modułu/.test(src));
   check("3 błędy rdzenia z rzędu → push na telefon", /if \(n === 3\) Journal\.add\("BŁĄD"/.test(src));
   check("licznik błędów zerowany po udanym przebiegu", /Store\.set\("tick_fails", 0\);/.test(src));
-  check("log zapisuje się przed nawigacją (inaczej powody nawigacji giną)", /function flushLog\(\)/.test(src) && /addEventListener\("pagehide", flushLog\)/.test(src) && /go\(url, why\) \{[\s\S]{0,200}?flushLog\(\); location\.replace\(url\)/.test(src));
+  // v3.89.0: `pagehide`/`beforeunload` robią teraz DWIE rzeczy (zapis logu + znacznik „to my
+  // wychodzimy"), więc wzorzec dopuszcza handler w nawiasach — ale nadal WYMAGA, żeby flushLog
+  // stał przed `location.replace`, bo o to w tym teście chodzi.
+  check("log zapisuje się przed nawigacją (inaczej powody nawigacji giną)", /function flushLog\(\)/.test(src) && /addEventListener\("pagehide", (flushLog|\(\) => \{[^}]*flushLog\(\))/.test(src) && /go\(url, why\) \{[\s\S]{0,200}?flushLog\(\);[^;]{0,40};? ?location\.replace\(url\)/.test(src));
+  // v3.89.0 (log właściciela 11.09 21:48:10): keepalive przeładował stronę, ta ubiła własny
+  // trwający fetch listy, a bot ogłosił awarię GŁÓWNEGO detektora ataków. Kanał alarmowy nie
+  // może krzyczeć o awarii, której nie ma — ale wyciszamy WYŁĄCZNIE błąd sieciowy zbiegły
+  // z naszym wyjściem ze strony; każda inna przyczyna alarmuje jak dotąd.
+  check("własne przeładowanie strony jest oznaczone (leavingPage w Nav.go i na pagehide)",
+    /let leavingPage = false;/.test(src) && /leavingPage = true; location\.replace\(url\)/.test(src) && /"pagehide", \(\) => \{ leavingPage = true;/.test(src));
+  check("awaria listy ruchów rozróżnia sieć-przy-wyjściu od prawdziwej awarii",
+    /const nasze = leavingPage \|\| \(nl && Date\.now\(\) - \(nl\.at \|\| 0\) < 5e3\);/.test(src) && /if \(nasze && \/Failed to fetch\|NetworkError\|abort\/i\.test\(String\(powod\)\)\)/.test(src));
   check("każda nawigacja bota zostawia powód (nav_last)", /Store\.set\("nav_last"/.test(src) && !/(?<!__)\blocation\.replace\(/.test(src.replace(/go\(url, why\)[^\n]*\n/, "")));
   check("pętla wchodzenia na formularz przerywa misję, nie kręci stroną", /function navGuard\(m, fly\)/.test(src) && /tries >= 3[\s\S]{0,200}?fly\.abort/.test(src));
   check("misja ma sufit nawigacji (ping-pong przełączania ciał)", /m\.navs/.test(src) && /navMax|NAV_MAX/.test(src));
