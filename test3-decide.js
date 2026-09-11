@@ -2727,6 +2727,62 @@ console.log("\n── 67. JEDNA GWIAZDA ŚMIERCI W KAŻDEJ UCIECZCE (właścicie
     /const zostalo = Math\.max\(0, \(x\.qty \|\| 0\) - cap\.get\(t\)\)/.test(src));
 }
 
+
+console.log("\n── 68. DESTROY: nie lądujemy na planecie pod ginącym księżycem (decyzja właściciela 11.09) ──");
+{
+  // Scenariusz, którego właściciel się spodziewa: napastnik bierze na cel OBA księżyce
+  // w układzie ([2:224:7] i [2:224:10]). Wtedy „sąsiedni wolny księżyc" nie istnieje i bot
+  // schodził na PLANETĘ tej samej pary — 100%, bez zawrotu, czyli lądowanie w miejscu
+  // widocznym dla falangi. Przy zwykłym ATTACK to najtańsza sensowna opcja (cel zaraz będzie
+  // pusty), ale przy DESTROY księżyc może przestać istnieć i flota i tak będzie się wynosić.
+  const swiat = (typZagrozenia) => base({
+    pairs: {
+      "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 },
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },   // sąsiad w układzie — TEŻ atakowany
+      "4:100:1": { hasMoon: true, galaxy: 4, system: 100, position: 1 },   // spokojna kolonia z księżycem
+      "5:100:4": { hasMoon: false, galaxy: 5, system: 100, position: 4 },  // dalej i bez księżyca
+    },
+    hangars: { "3:272:7|moon": H(1_000_000) },
+    threats: [
+      { id: "d1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 300e3, attack: true, seenAt: NOW - 60e3, source: "list", type: typZagrozenia },
+      { id: "d2", dst: "3:272:2", dstBody: "moon", arriveAt: NOW + 300e3, attack: true, seenAt: NOW - 60e3, source: "list", type: typZagrozenia },
+    ],
+  });
+
+  const lotD = decide(swiat("DESTROY"), CFG, NOW).actions.find(a => a.kind === "fly" && a.rescue);
+  check("68a: przy DESTROY flota NIE ląduje na planecie własnej pary", !!lotD && !(lotD.toKey === "3:272:7" && lotD.toBody === "planet"), JSON.stringify(lotD));
+  check("68b: …tylko leci na najbliższą spokojną kolonię z księżycem", !!lotD && lotD.toKey === "4:100:1" && lotD.toBody === "moon", JSON.stringify(lotD));
+  check("68c: …lotem z zawrotem, na minimalnej prędkości (ma wisieć, nie lądować)",
+    !!lotD && lotD.air === true && lotD.recall === true && lotD.speed === CFG.airSpeedPct, JSON.stringify(lotD));
+  check("68d: …i z rezerwą GS jak każda ucieczka", !!lotD && lotD.capTypes && lotD.capTypes.DEATH_STAR === 1, JSON.stringify(lotD && lotD.capTypes));
+
+  // Zwykły ATTACK ma zostać przy starej, tańszej regule — inaczej każdy drobny atak
+  // kosztowałby dalekie loty i deuter.
+  const lotA = decide(swiat("ATTACK"), CFG, NOW).actions.find(a => a.kind === "fly" && a.rescue);
+  check("68e: przy zwykłym ATTACK bot dalej schodzi na planetę pary (tanio i szybko)",
+    !!lotA && lotA.toKey === "3:272:7" && lotA.toBody === "planet", JSON.stringify(lotA));
+
+  // Reguła właściciela z 04.09: gdy skok na sąsiedni księżyc dwa razy nie wyszedł (deuter),
+  // planeta pod spodem jest JEDYNĄ opcją, na którą stać — DESTROY tego nie unieważnia.
+  const stanDeuter = swiat("DESTROY");
+  stanDeuter.pairs["3:272:2"] = { hasMoon: true, galaxy: 3, system: 272, position: 2 };
+  stanDeuter.threats = [stanDeuter.threats[0]];                         // sąsiad JUŻ nieatakowany → nb istnieje
+  stanDeuter.rescueFail = { "3:272:7>3:272:2": { count: 2, at: NOW - 60e3 } };
+  const lotDeu = decide(stanDeuter, CFG, NOW).actions.find(a => a.kind === "fly" && a.rescue);
+  check("68f: dwa nieudane starty na sąsiedni księżyc (deuter) → planeta pary, mimo DESTROY",
+    !!lotDeu && lotDeu.toKey === "3:272:7" && lotDeu.toBody === "planet", JSON.stringify(lotDeu));
+
+  // Brak jakiegokolwiek refugium nie może zostawić floty w miejscu: gorszy schron bije brak schronu.
+  const stanBezSchronu = base({
+    pairs: { "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 } },
+    hangars: { "3:272:7|moon": H(1_000_000) },
+    threats: [{ id: "d1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 300e3, attack: true, seenAt: NOW - 60e3, source: "list", type: "DESTROY" }],
+  });
+  const lotBS = decide(stanBezSchronu, CFG, NOW).actions.find(a => a.kind === "fly" && a.rescue);
+  check("68g: gdy nie ma dokąd uciec, DESTROY i tak schodzi na planetę pary (nie zostawia floty)",
+    !!lotBS && lotBS.toKey === "3:272:7" && lotBS.toBody === "planet", JSON.stringify(lotBS));
+}
+
 console.log("");
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

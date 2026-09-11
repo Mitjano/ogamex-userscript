@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.80.0
+// @version      3.81.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.80.0";
+  const VERSION = "3.81.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1939,6 +1939,27 @@
       const rf = ((s.rescueFail || {})[`${k}>${nb}`]) || null;
       const nbBlocked = !!nb && !!rf && rf.count >= 2 && now - (rf.at || 0) < 10 * 60e3;
       if (nb && !nbBlocked) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: nb, toBody: "moon", why: `atak w ${fleet.body} [${k}] → sąsiedni księżyc`, rescue: true, capTypes: CAP_RATUNKU, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
+      // v3.81.0 (decyzja właściciela 11.09, po audycie łańcucha DESTROY) — CO BYŁO NIE TAK:
+      // gdy w układzie nie ma WOLNEGO sąsiedniego księżyca (bo napastnik bierze na cel OBA —
+      // dokładnie ten scenariusz, którego właściciel się spodziewa dla [2:224:7] i [2:224:10]),
+      // bot schodził o poziom niżej i przerzucał flotę na PLANETĘ tej samej pary: prędkość 100%,
+      // bez zawrotu, czyli LĄDOWANIE w miejscu widocznym dla falangi. Przy zwykłym ATTACK to
+      // sensowna, najtańsza opcja — cel ataku (księżyc) za chwilę będzie pusty. Przy DESTROY nie:
+      // księżyc może przestać istnieć, więc flota i tak będzie się stamtąd wynosić, tylko już
+      // z gołej planety i pod okiem napastnika. Przy DESTROY idziemy więc od razu do najbliższej
+      // spokojnej kolonii — lot „stacjonuj" z zawrotem, na minimalnej prędkości.
+      // WYJĄTEK: `nbBlocked` (2 nieudane starty na sąsiedni księżyc = prawie na pewno deuter)
+      // zostawia regułę właściciela z 04.09 — wtedy planeta pod spodem jest JEDYNĄ opcją,
+      // na którą stać. Brak refugium też cofa nas do planety: gorszy schron bije brak schronu.
+      const wKsiezycDestroy = th.some(t => /DESTRUCT|DESTROY/i.test(String(t.type || "")));
+      const refDestroy = (wKsiezycDestroy && !nbBlocked) ? anyRefuge(k, null) : null;
+      if (refDestroy) {
+        actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: refDestroy.key, toBody: refDestroy.body,
+          why: `DESTROY w ${fleet.body} [${k}], brak wolnego księżyca w układzie → najbliższa spokojna kolonia [${refDestroy.key}] (księżyc może przestać istnieć — nie ląduję na planecie pod nim)`,
+          rescue: true, capTypes: CAP_RATUNKU, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true,
+          recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 });
+        continue;
+      }
       const other = fleet.body === "moon" ? "planet" : "moon";
       if ((other === "planet" || pairs[k].hasMoon) && !bodies.has(other) && !bodies.has("unknown")) {
         actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: k, toBody: other,
