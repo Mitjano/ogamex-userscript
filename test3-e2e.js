@@ -1849,6 +1849,39 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       JSON.stringify(g.sent.map(x => ({ to: x.to, toBody: x.toBody, mission: x.mission }))) + " | " + logs.filter(m => /KSIĘŻYC|zwożę/.test(m)).slice(0, 4).join(" | "));
   }
 
+  console.log("\n── 43b. KSIĘŻYCE OFF: nowych nie stawia, ale ZNISZCZONY odbudowuje (właściciel 12.09) ──");
+  {
+    // Właściciel zakłada trzy nowe kolonie i nie chce, żeby bot wydawał na nie metal.
+    // Ale wyłącznik nie może zabrać odbudowy księżyca zestrzelonego przez napastnika:
+    // to krok 5 doktryny DESTROY — bez księżyca wracająca flota ląduje na gołej planecie,
+    // widocznej dla falangi.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false },
+      aster: { enabled: false }, debris: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      moon: { enabled: false, maxMetalShare: 0.25, minKm: 1000, maxTries24h: 3 } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },
+        { key: "1:100:8", name: "Stara kolonia", moon: true },    // straci księżyc w trakcie
+        { key: "1:100:9", name: "Nowa kolonia", moon: false },    // nigdy go nie miała — ma zostać nietknięta
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 10 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.metal = 2_000_000_000;
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("43b-a: przy OFF bot NIE stawia księżyca nowej kolonii", !g.moonBuilt, JSON.stringify(g.moonBuilt));
+
+    // napastnik niszczy księżyc starej kolonii — bot ma to zauważyć sam (moonLost)
+    g.pairs.find(p => p.key === "1:100:8").moon = false;
+    const { logs } = await run(g, { cfg, loads: 30, ticksPerLoad: 2 });
+    check("43b-b: …ale ZNISZCZONY księżyc odbudowuje mimo wyłączonego modułu",
+      !!g.moonBuilt && g.moonBuilt.key === "1:100:8", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+    check("43b-c: …i mówi wprost, dlaczego to robi mimo OFF",
+      logs.some(m => /moduł jest WYŁĄCZONY, ale \[1:100:8\] straciła księżyc/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+    check("43b-d: nowa kolonia [1:100:9] dalej bez księżyca (wyłącznik działa)",
+      g.pairs.find(p => p.key === "1:100:9").moon === false, JSON.stringify(g.pairs));
+  }
+
   console.log("\n── 44. ZŁOM NA WŁASNEJ POZYCJI BAZY NIE MOŻE ZJEŚĆ RATUNKU (v3.68.6, audyt 04.09 obrona-stan-lotu#1) ──");
   {
     // Pole szczątków po bitwie obronnej leży na WŁASNEJ pozycji bazy, więc wysyłka

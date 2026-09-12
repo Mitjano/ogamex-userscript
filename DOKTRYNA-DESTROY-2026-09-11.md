@@ -53,6 +53,12 @@ czego zawracać, krok 4 przestaje istnieć, a flota stoi w miejscu, które napas
   dostaje lot na najbliższe refugium (`evac: true`, sufit 3 prób/h).
 - **Odbudowa księżyca** — moduł `Moon` (`/home/moonformation`, `cfg.moon.enabled`
   domyślnie `true`, `maxMetalShare 0.25`) sam bierze na cel każdą parę bez księżyca.
+  **v3.90.0 (decyzja właściciela 12.09, przy zakładaniu trzech nowych kolonii):** przycisk
+  „Księżyce OFF" w panelu zatrzymuje stawianie księżyców na koloniach, które nigdy go nie
+  miały, ale **NIE zatrzymuje odbudowy księżyca zniszczonego przez atak** — to krok 5 tej
+  doktryny, czyli obrona, a obrona nie chowa się za włącznikiem ekonomii. Rozróżnia je
+  `s.moonLost[key]`, zapalane wyłącznie przy przejściu „miała księżyc → nie ma".
+  Panel mówi wprost, co zostaje włączone; scenariusz E2E 43b pilnuje obu stron.
 - **Zwóz na nowy księżyc** — po potwierdzeniu odbudowy `Moon.tick` sam startuje lot
   `kind:"home"` planeta → nowy księżyc (v3.67.0, prośba właściciela z 04.09).
 

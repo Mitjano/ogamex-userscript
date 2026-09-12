@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.89.0
+// @version      3.90.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.89.0";
+  const VERSION = "3.90.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -2364,19 +2364,34 @@
       input.blur();
       await sleep(jitter(500, 900));
     },
+    // v3.90.0 (decyzja właściciela 12.09, przy zakładaniu trzech nowych kolonii): przycisk
+    // „Księżyce OFF" ma zatrzymać WYDAWANIE METALU na kolonie, które księżyca nigdy nie
+    // miały — ale nie może wyłączać ODBUDOWY księżyca zestrzelonego przez napastnika.
+    // Odbudowa to krok 5 doktryny DESTROY (DOKTRYNA-DESTROY-2026-09-11): dopóki para stoi
+    // bez księżyca, wracająca flota ląduje na gołej planecie, widocznej dla falangi — czyli
+    // to obrona, a obrona nie chowa się za włącznikiem ekonomii. Znacznikiem jest
+    // `s.moonLost[key]`: zapala się WYŁĄCZNIE przy przejściu „miała księżyc → nie ma"
+    // (Situation.refresh) i gaśnie, gdy para znów go ma. Nowa kolonia nigdy go nie dostanie.
+    rebuildOnly() { return !CFG.moon.enabled; },
+    doOdbudowy(s) { return Object.keys(s.moonLost || {}).some(k => !((s.pairs || {})[k] || {}).hasMoon); },
     target(s, st) {
       // v3.67.0 (E7): pomiń pary, których nie wolno teraz próbować (limit 3/24h
       // albo karencja 10 min po nieudanej próbie) — inaczej pierwsza zablokowana
       // para wstrzymywała odbudowę WSZYSTKICH pozostałych bezksiężycowych par.
+      const tylkoOdbudowa = this.rebuildOnly();
       for (const [k, p] of Object.entries(s.pairs || {})) {
         if (p.hasMoon) continue;
+        if (tylkoOdbudowa && !((s.moonLost || {})[k])) continue;
         if (st && !this.canTry(st, k)) continue;
         return k;
       }
       return null;
     },
     async tick(s) {
-      if (!CFG.moon.enabled || Fly.mission()) return false;
+      if (Fly.mission()) return false;
+      // v3.90.0: wyłączony moduł budzi się WYŁĄCZNIE do odbudowy (patrz `target`). Bez tej
+      // bramki każdy przebieg schodziłby do wyboru celu i wracał z niczym.
+      if (this.rebuildOnly() && !this.doOdbudowy(s) && !this.st().m) return false;
       const now = Date.now();
       if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
       const st = this.st();
@@ -2433,6 +2448,15 @@
           : "[KSIĘŻYC] każda planeta ma już księżyc — nie ma co stawiać.", "info");
         return false;
       }
+      // v3.90.0: gdy właściciel wyłączy moduł W TRAKCIE próby na koloniach bez historii
+      // księżyca, porzucamy tę próbę zamiast dokończyć wydatek, którego już nie chce.
+      if (this.rebuildOnly() && !((s.moonLost || {})[key0])) {
+        cur.m = null; this.save(cur);
+        if (!Once.said("moon_off_drop|" + key0, 6 * 3600e3)) log(`[KSIĘŻYC] moduł wyłączony — porzucam próbę przy [${key0}]. Odbudowa księżyca ZNISZCZONEGO przez atak działa dalej.`, "info");
+        return false;
+      }
+      if (this.rebuildOnly() && !Once.said("moon_rebuild_off|" + key0, 6 * 3600e3))
+        log(`[KSIĘŻYC] moduł jest WYŁĄCZONY, ale [${key0}] straciła księżyc — odbudowuję mimo to, bo wracająca flota lądowałaby na gołej planecie widocznej dla falangi. Pozostałe kolonie dalej pomijam.`, "warn");
       if (!cur.m && !this.canTry(cur, key0)) return false;
       const act = s.active;
       // krok 1: stanąć na planecie, przy której stawiamy księżyc
@@ -5324,7 +5348,7 @@
       $("ogx3-quiet").onclick = () => { CFG.stealth.enabled = !CFG.stealth.enabled; saveCfg(); log(CFG.stealth.enabled ? `Tryb cichy ON — kolonie odpytywane raz na ${CFG.stealth.colonyHours || 8} h (mniej śladów aktywności w galaktyce).` : "Tryb cichy OFF — zwiad kolonii co 45 min (świeższe hangary, więcej śladów).", "info"); this.renderStatus(); };
       $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-bonus").onclick = () => { CFG.bonus.enabled = !CFG.bonus.enabled; saveCfg(); log(`Bonus online ${CFG.bonus.enabled ? "ON — bot odbiera antymaterię i punkty Akademii" : "OFF"}`, "info"); this.renderStatus(); };
-      $("ogx3-moon").onclick = () => { CFG.moon.enabled = !CFG.moon.enabled; saveCfg(); log(`Stawianie księżyców ${CFG.moon.enabled ? `ON — bot WYDA do ${Math.round(CFG.moon.maxMetalShare * 100)}% metalu na księżyc` : "OFF"}`, CFG.moon.enabled ? "warn" : "info"); this.renderStatus(); };
+      $("ogx3-moon").onclick = () => { CFG.moon.enabled = !CFG.moon.enabled; saveCfg(); log(`Stawianie księżyców ${CFG.moon.enabled ? `ON — bot WYDA do ${Math.round(CFG.moon.maxMetalShare * 100)}% metalu na księżyc` : "OFF — nowych księżyców nie stawiam; odbuduję tylko ten ZNISZCZONY przez atak (flota nie może wracać na gołą planetę)"}`, CFG.moon.enabled ? "warn" : "info"); this.renderStatus(); };
       $("ogx3-moon-share").value = String(Math.round((CFG.moon.maxMetalShare || .25) * 100));
       $("ogx3-moon-share").onchange = (e) => { CFG.moon.maxMetalShare = Math.max(0.01, Math.min(1, (parseInt(e.target.value) || 25) / 100)); saveCfg(); this.renderStatus(); };
       // v3.14.0: ekspedycje domyślnie startują z AKTYWNEJ planety — a to znaczy
@@ -5577,8 +5601,13 @@
       $("ogx3-bonus").textContent = `Bonus ${CFG.bonus.enabled ? "ON" : "OFF"}`; $("ogx3-bonus").style.background = CFG.bonus.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       { const b0 = Bonus.st(); $("ogx3-bonus-st").textContent = CFG.bonus.enabled ? `bonus online: dziś ${Bonus.today(b0)}${b0.claims && b0.claims.length ? ` · ostatni ${new Date(b0.claims[b0.claims.length - 1]).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""; }
       $("ogx3-moon").textContent = `Księżyce ${CFG.moon.enabled ? "ON" : "OFF"}`; $("ogx3-moon").style.background = CFG.moon.enabled ? "#5a4a1e" : "rgba(255,255,255,.1)";
+      // v3.90.0: OFF nie jest ciszą absolutną — panel ma powiedzieć wprost, co zostaje
+      // włączone, żeby właściciel nie odkrywał tego dopiero po wydanym metalu.
       { const s1 = Situation.load(); const bez = Object.entries(s1.pairs || {}).filter(([, p]) => !p.hasMoon).length;
-        $("ogx3-moon-st").textContent = CFG.moon.enabled ? `planet bez księżyca: ${bez} · WYDAJE METAL` : `planet bez księżyca: ${bez} (moduł wyłączony)`; }
+        const doOdb = Object.keys(s1.moonLost || {}).filter(k => !((s1.pairs || {})[k] || {}).hasMoon).length;
+        $("ogx3-moon-st").textContent = CFG.moon.enabled
+          ? `planet bez księżyca: ${bez} · WYDAJE METAL`
+          : `planet bez księżyca: ${bez} · nowych nie stawiam${doOdb ? ` · ODBUDOWUJĘ ${doOdb} zniszczony(ch)` : " · odbuduję tylko księżyc zniszczony przez atak"}`; }
       $("ogx3-quiet").textContent = `Cisza nocna ${CFG.quietHours.enabled ? "ON" : "OFF"}`; $("ogx3-quiet").style.background = CFG.quietHours.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       // v3.50.1: pełna etykieta — owner szukał „przerwy kawowej" i nie kojarzył skrótu „Przerwy".
       $("ogx3-breaks").textContent = `Przerwy kawowe ${CFG.human.breaks ? "ON" : "OFF"}`; $("ogx3-breaks").style.background = CFG.human.breaks ? "#1e6b3a" : "rgba(255,255,255,.1)";
