@@ -2379,6 +2379,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       hangars: { "1:100:5|planet": { BATTLESHIP: 5000 } },
       active: { key: "1:100:5", body: "planet" },
     });
+    // v3.91.0: od v3.90.0 bot ODBUDOWUJE zniszczony księżyc nawet przy `moon.enabled:false`
+    // (decyzja właściciela 12.09 — to obrona, nie ekonomia). Odbudowa kończy stan „flota na
+    // gołej planecie", czyli dokładnie ten, który bada ten scenariusz. Pustym skarbcem
+    // odcinamy odbudowę u źródła: bot próbuje, nie stać go, flota zostaje na planecie.
+    // (Do v3.90.0 test przechodził przypadkiem — odbudowa po prostu nie zdążała.)
+    g.metal = 1000;
     await run(g, { cfg, loads: 8, ticksPerLoad: 2 });       // bot poznaje pary i hangar planety bazy
     const K = "genesis.ogamex.net:ogx3_situation";
     const st0 = JSON.parse(g.store.get(K) || "{}");
@@ -2590,6 +2596,74 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // więc „jakiś wiersz wraca" NIE jest dowodem, że wraca akurat TEN lot.
   }
 
+
+  console.log("\n── 60b. REZERWA W HANGARZE NIE MOŻE UNIEWAŻNIAĆ RATUNKU (noc 12/13.09, ~1,64 mld statków) ──");
+  {
+    // CO SIĘ STAŁO: o 04:30 bot ewakuował księżyc i zapisał hangar źródła „zostaje 43
+    // DEATH_STAR" (rezerwa spowalniająca, v3.79.0). Przez następne 68 minut wracały fale
+    // ekspedycji po 115–164 mln statków. Bot je widział w rejestrze powrotów i co minutę
+    // pisał „fala z powrotu JUŻ stoi na atakowanym ciele… każda dostanie własny lot
+    // ratunkowy" — ale decyzję podejmował na migawce hangaru SPRZED ewakuacji, gdzie stały
+    // same Gwiazdy Śmierci. `tylkoRezerwa` gasiło `drugiLot` przy każdym przebiegu i nie
+    // wyszedł ani jeden ratunek. Właściciel uratował flotę ręcznym Fleet Save o 05:44.
+    // UWAGA: DOWODEM na tę poprawkę są testy decyzyjne 73j–73l, nie ten scenariusz. Atrapa
+    // oddaje świeży hangar zbyt chętnie (bot i tak kręci się po /fleet, wysyłając loty), więc
+    // 60b przechodzi także z WYŁĄCZONĄ poprawką — sprawdzone mutacyjnie, dwa razy. Zostaje
+    // jako test integracyjny: pilnuje, że cały łańcuch (rejestr powrotów → decyzja → wysyłka)
+    // działa end-to-end i że rezerwa nie wyjeżdża z domu bez powodu.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false },
+      aster: { enabled: false }, debris: { enabled: false }, human: { breaks: false, economyAtNight: true } };
+    const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 1800 }] });
+    await run(g, { cfg, loads: 8, ticksPerLoad: 3 });
+    check("60b-a: (warunek wstępny) pierwsza ewakuacja poszła", g.sent.length === 1, JSON.stringify(g.sent.map(x => [x.from, x.fromBody])));
+
+    // stan PO ewakuacji: w hangarze została sama rezerwa — i taki zapis leży w pamięci bota
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const st = JSON.parse(g.store.get(K) || "{}");
+    // WARUNEK KRYTYCZNY, bez którego scenariusz nie odtwarza tamtej nocy: pierwszy ratunek
+    // ma WISIEĆ W POWIETRZU przez cały czas. Dopóki `inFlightFrom` widzi ten lot, główna
+    // ścieżka ratunku jest zamknięta i wszystko zależy od `drugiLot` — a to właśnie ono
+    // było gaszone przez „tylko rezerwa". Gdy lot zdąży się domknąć, bot ratuje zwykłą
+    // drogą i defekt znika z pola widzenia (pierwsza wersja tego testu przechodziła
+    // nawet z WYŁĄCZONĄ poprawką — wykrył to dopiero test mutacyjny).
+    st.flights = [{ kind: "air", fs: false, excludeTypes: null, capTypes: { DEATH_STAR: 1 },
+      fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", id: "test-air-1",
+      sentAt: Date.now() - 5 * 60e3, flightMs: 60 * 60e3, recallAt: Date.now() + 45 * 60e3, phase: "launched", tries: 0 }];
+    st.hangars["1:100:5|moon"] = { total: 43, at: Date.now() - 6 * 60e3, ships: [{ type: "DEATH_STAR", qty: 43 }] };
+    // …a rejestr powrotów mówi, że PO tym odczycie wylądowała fala z ekspedycji
+    st.expected = [{ fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:16", sentAt: Date.now() - 40 * 60e3,
+      returnAt: Date.now() - 60e3, flightMs: 10 * 60e3, total: 25_000_000, pending: false }];
+    g.store.set(K, JSON.stringify(st));
+    g.hangars["1:100:5|moon"] = { BATTLESHIP: 25000000, DEATH_STAR: 43 };   // w grze fala NAPRAWDĘ stoi
+
+    const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const drugi = g.sent[1];
+    check("60b-b: fala, która wylądowała po odczycie hangaru, DOSTAJE własny ratunek",
+      g.sent.length >= 2 && !!drugi, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, Object.values(x.ships || {}).reduce((a, b) => a + b, 0)])));
+    check("60b-c: …i zabiera realną flotę, nie samą rezerwę",
+      !!drugi && (drugi.ships.BATTLESHIP || 0) === 25000000, JSON.stringify(drugi && drugi.ships));
+    check("60b-d: …i mówi wprost, że wysyła DRUGI lot ratunkowy",
+      logs.some(m => /wysyłam DRUGI lot ratunkowy/.test(m)), logs.filter(m => /rezerw|DRUGI/.test(m)).slice(0, 4).join(" | "));
+    check("60b-e: …i mimo trwającego alarmu poszedł sprawdzić, ile naprawdę stoi w hangarze",
+      logs.some(m => /fala wylądowała po ostatnim odczycie hangaru|sprawdzam hangar|hangar nieznany|odczytany w tle|odczyt hangaru/.test(m)),
+      logs.filter(m => /hangar|odczyt/.test(m)).slice(0, 4).join(" | "));
+
+    // kontrola: gdy NIC nie wylądowało po odczycie, rezerwa dalej zostaje w domu (v3.79.0)
+    const g2 = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 1800 }] });
+    await run(g2, { cfg, loads: 8, ticksPerLoad: 3 });
+    const st2 = JSON.parse(g2.store.get(K) || "{}");
+    st2.flights = [{ kind: "air", fs: false, excludeTypes: null, capTypes: { DEATH_STAR: 1 },
+      fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", id: "test-air-2",
+      sentAt: Date.now() - 5 * 60e3, flightMs: 60 * 60e3, recallAt: Date.now() + 45 * 60e3, phase: "launched", tries: 0 }];
+    st2.hangars["1:100:5|moon"] = { total: 43, at: Date.now(), ships: [{ type: "DEATH_STAR", qty: 43 }] };
+    st2.expected = [];
+    g2.store.set(K, JSON.stringify(st2));
+    g2.hangars["1:100:5|moon"] = { DEATH_STAR: 43 };
+    const r2 = await run(g2, { cfg, loads: 15, ticksPerLoad: 3 });
+    check("60b-f: (kontrola) bez lądowania rezerwa NADAL zostaje w domu — v3.79.0 nietknięta",
+      g2.sent.length === 1 && r2.logs.some(m => /TYLKO rezerwa spowalniająca/.test(m)),
+      JSON.stringify(g2.sent.map(x => x.ships)) + " | " + r2.logs.filter(m => /rezerw/.test(m)).slice(0, 2).join(" | "));
+  }
 
   console.log("\n── 61. PRĘDKOŚĆ UCIECZKI 3%: fork ją ma i bot ma w nią trafić (zrzut z gry 11.09) ──");
   {

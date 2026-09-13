@@ -2974,6 +2974,31 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
   check("73a: gdy stoi sama rezerwa, bot NIE obiecuje drugiego lotu", !/wysyłam DRUGI lot ratunkowy/.test(samaRezerwa), samaRezerwa.slice(0, 200));
   check("73b: …tylko mówi wprost, że zostawia ją w domu", /TYLKO rezerwa spowalniająca/.test(samaRezerwa), samaRezerwa.slice(0, 200));
 
+  // v3.91.0 — NOC 12/13.09, ~1,64 MLD statków uratowanych WYŁĄCZNIE ręcznym Fleet Save
+  // właściciela o 05:44. Po ewakuacji o 04:30 w pamięci bota został hangar „43 DEATH_STAR",
+  // a przez następne 68 minut lądowały tam fale ekspedycji po 115–164 mln statków. Rejestr
+  // powrotów o nich wiedział (bot co minutę pisał „fala z powrotu JUŻ stoi"), ale decyzja
+  // szła po migawce hangaru SPRZED ewakuacji — więc `tylkoRezerwa` gasiło ratunek za każdym
+  // razem. Stan hangaru starszy niż lądowanie NIE JEST dowodem, że w domu nic nie stoi.
+  const poLadowaniu = base({
+    hangars: { "3:272:7|moon": { total: 43, at: NOW - 30e3, ships: [{ type: "DEATH_STAR", qty: 43 }] } },
+    threats: [{ id: "t1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 300e3, attack: true, seenAt: NOW - 60e3, source: "list" }],
+    flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+      sentAt: NOW - 60e3, flightMs: 600e3, recallAt: NOW + 200e3, phase: "launched" }],
+    expected: [{ fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:16", sentAt: NOW - 40 * 60e3,
+      returnAt: NOW - 10e3, flightMs: 10 * 60e3, total: 115_780_047, pending: false }],
+  });
+  const rPoLadowaniu = decide(poLadowaniu, CFG, NOW);
+  check("73j: fala, która wylądowała PO odczycie hangaru, dostaje ratunek mimo „samej rezerwy” w migawce",
+    rPoLadowaniu.actions.some(a => a.kind === "fly" && a.fromKey === "3:272:7"),
+    JSON.stringify(rPoLadowaniu.actions.map(a => [a.kind, a.fromKey, a.why])).slice(0, 300));
+  check("73k: …i bot NIE twierdzi już, że stoi tam sama rezerwa",
+    !/TYLKO rezerwa spowalniająca/.test(rPoLadowaniu.alerts.map(a => a.msg).join(" || ")),
+    rPoLadowaniu.alerts.map(a => a.msg).join(" || ").slice(0, 250));
+  check("73l: …i prosi o świeży odczyt hangaru mimo trwającego alarmu",
+    rPoLadowaniu.actions.some(a => a.kind === "recon" && a.alarm && a.key === "3:272:7"),
+    JSON.stringify(rPoLadowaniu.actions.map(a => [a.kind, a.alarm, a.key])).slice(0, 250));
+
   const realnaFala = alarmy(zZagrozeniem([{ type: "BATTLESHIP", qty: 1_000_000 }, { type: "DEATH_STAR", qty: 42 }]));
   check("73c: gdy pod uderzeniem stoi PRAWDZIWA flota, obietnica drugiego lotu zostaje",
     /wysyłam DRUGI lot ratunkowy/.test(realnaFala), realnaFala.slice(0, 200));
@@ -2984,7 +3009,16 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
     akcje.some(a => a.kind === "extend"), JSON.stringify(akcje));
   check("73f: …i żaden nowy lot z rezerwą nie wychodzi", !akcje.some(a => a.kind === "fly"), JSON.stringify(akcje));
   check("73g: (źródło) „drugi lot” liczy się dopiero, gdy stoi coś poza rezerwą",
-    /const drugiLot = !!f && hitBodies\.length > 0 && !tylkoRezerwa;/.test(src));
+    /const drugiLot = !!f && \(hitBodies\.length > 0 \|\| swiezoWyladowalo\) && !tylkoRezerwa;/.test(src));
+  // v3.91.0 (noc 12/13.09, ~1,64 mld statków uratowane ręcznie przez właściciela):
+  // „tylko rezerwa" liczone z migawki hangaru SPRZED lądowania fali blokowało każdy kolejny
+  // ratunek. Odczyt starszy niż lądowanie nie jest dowodem, że w domu nic nie stoi.
+  check("73h: (źródło) rezerwa nie unieważnia ratunku, gdy po odczycie hangaru wylądowała fala",
+    /const swiezoWyladowalo = \[\.\.\.bodies\][\s\S]{0,160}landedSince\(k, b, \(\(s\.hangars \|\| \{\}\)\[`\$\{k\}\|\$\{b\}`\] \|\| \{\}\)\.at \|\| 0\)\)/.test(src)
+    && /const tylkoRezerwa = !swiezoWyladowalo &&/.test(src));
+  check("73i: (źródło) przy alarmie bot dopytuje o hangar, zamiast ufać starej migawce",
+    /kind: "recon", key: k, body: hitRef\.body, quiet: true, alarm: true/.test(src)
+    && /a\.alarm \? 60e3 : 5 \* 60e3/.test(src));
 }
 
 console.log("");

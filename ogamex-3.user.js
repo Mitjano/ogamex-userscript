@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.90.0
+// @version      3.91.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.90.0";
+  const VERSION = "3.91.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1912,15 +1912,40 @@
       // kanał, na którym alarmy okazują się nieprawdziwe, przestaje być czytany — a tym samym
       // kanałem przychodzi jedyny sygnał o realnym ataku. „Drugi lot" liczy się więc teraz
       // tylko wtedy, gdy pod uderzeniem stoi COKOLWIEK poza rezerwą.
+      // v3.91.0 (NOC 12/13.09 — strata ~1,64 MLD statków, uniknięta WYŁĄCZNIE ręcznym
+      // Fleet Save właściciela o 05:44) — CO SIĘ PSUŁO. O 04:30 bot poprawnie ewakuował
+      // księżyc [3:279:1] i zapisał hangar źródła: „zostaje 43 DEATH_STAR" (rezerwa
+      // spowalniająca, v3.79.0). Potem przez 68 minut wracały fale ekspedycji po 115–164 mln
+      // statków. Bot je WIDZIAŁ — co minutę pisał „fala z powrotu JUŻ stoi na atakowanym
+      // ciele… każda z nich dostanie własny lot ratunkowy" — ale decyzję o locie podejmował
+      // na `s.hangars`, czyli na migawce SPRZED ewakuacji. Tam stały same Gwiazdy Śmierci,
+      // więc `tylkoRezerwa` (v3.85.0) gasiło `drugiLot` przy KAŻDYM przebiegu i nie wyszedł
+      // ani jeden ratunek. Hangar nie mógł się odświeżyć, bo cały mechanizm „wróciła własna
+      // flota → sprawdzam hangar" siedzi w gałęzi `if (!th.length)`, czyli działa wyłącznie
+      // wtedy, gdy na parę NIC nie leci (druga połowa poprawki, niżej).
+      // ZASADA: stan hangaru starszy niż ostatnie lądowanie NIE JEST dowodem na to, że w domu
+      // nic nie stoi — a już na pewno nie dowodem pozwalającym ODMÓWIĆ ratunku. `landedSince`
+      // to ta sama funkcja, którą bot pisał swoje alarmy, więc obie ścieżki widzą wreszcie
+      // ten sam świat: koniec przebiegu, w którym alarm mówi „fala stoi", a decyzja „nie ma nic".
+      const swiezoWyladowalo = [...bodies].filter(b => b !== "unknown")
+        .some(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
       const stojiWDomu = ((hitBodies[0] && hitBodies[0].ships) || []).filter(x => (x.qty || 0) > 0);
-      const tylkoRezerwa = stojiWDomu.length > 0 && stojiWDomu.every(x => CAP_RATUNKU[String(x.type).toUpperCase()] !== undefined);
+      const tylkoRezerwa = !swiezoWyladowalo && stojiWDomu.length > 0 && stojiWDomu.every(x => CAP_RATUNKU[String(x.type).toUpperCase()] !== undefined);
       if (tylkoRezerwa) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3,
         msg: `atak na ${hitBodies[0].body} [${k}], ale stoi tam już TYLKO rezerwa spowalniająca (${stojiWDomu.map(x => `${x.type}×${x.qty.toLocaleString("pl-PL")}`).join(", ")}) — zostawiam ją w domu, żeby kolejne fale miały czym zwolnić ucieczkę` });
-      const drugiLot = !!f && hitBodies.length > 0 && !tylkoRezerwa;
+      const drugiLot = !!f && (hitBodies.length > 0 || swiezoWyladowalo) && !tylkoRezerwa;
+      // ciało, o które toczy się gra: znane z hangaru, a gdy hangar jest przestarzały — to,
+      // na które właśnie wylądowała fala (inaczej komunikaty sięgałyby po `hitBodies[0]`, którego nie ma)
+      const hitRef = hitBodies[0] || { body: [...bodies].find(b => b !== "unknown") || (pairs[k] && pairs[k].hasMoon ? "moon" : "planet"), total: 0 };
+      // …i wymuś ŚWIEŻY odczyt tego hangaru mimo trwającego alarmu: cicho, fetchem, bez
+      // przełączania planety operatora. Bez tego bot leci „w ciemno" albo — jak tej nocy —
+      // nie leci wcale, bo migawka twierdzi, że w domu został sam złom.
+      if (swiezoWyladowalo) actions.push({ kind: "recon", key: k, body: hitRef.body, quiet: true, alarm: true,
+        why: `ATAK na [${k}] — fala wylądowała po ostatnim odczycie hangaru, sprawdzam ile naprawdę stoi` });
       if (drugiLot && f.fs) alerts.push({ key: k, level: "error", push: true, throttleMs: 10 * 60e3,
-        msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — ratuję ${hitBodies[0].body} (${hitBodies[0].total.toLocaleString("pl-PL")} szt.) osobnym lotem` });
+        msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — ratuję ${hitRef.body} (${hitRef.total ? hitRef.total.toLocaleString("pl-PL") + " szt." : "świeżo wylądowaną falę"}) osobnym lotem` });
       else if (drugiLot) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
-        msg: `ATAK na [${k}] za ${secs}s: z tej pary już leci ratunek (${f.kind}/${f.phase} → [${f.toKey}]), ale na ${hitBodies[0].body} STOI ${hitBodies[0].total.toLocaleString("pl-PL")} szt. (fala z powrotu) — wysyłam DRUGI lot ratunkowy` });
+        msg: `ATAK na [${k}] za ${secs}s: z tej pary już leci ratunek (${f.kind}/${f.phase} → [${f.toKey}]), ale na ${hitRef.body} ${hitRef.total ? "STOI " + hitRef.total.toLocaleString("pl-PL") + " szt." : "WŁAŚNIE WYLĄDOWAŁA fala (hangar starszy niż lądowanie)"} — wysyłam DRUGI lot ratunkowy` });
       if (f && drugiLot && f.kind === "air" && f.phase === "launched" && f.recallAt) {
         // zawrót pierwszego lotu i tak trzeba przesunąć za ostatnią falę — to niżej robi
         // gałąź `!drugiLot`, więc przy drugim ratunku powtarzamy to tutaj.
@@ -1994,7 +2019,9 @@
         }
         actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona` }); continue;
       }
-      const src0 = hitBodies[0];
+      // v3.91.0: gdy hangar jest starszy niż lądowanie, `hitBodies` bywa puste, a mimo to
+      // ratować JEST co — źródłem jest wtedy ciało, na które fala właśnie spadła.
+      const src0 = hitRef;
       // v3.68.4 (audyt 04.09, obrona-decide#1 P0): komunikat obiecywał „drugie ciało w
       // następnym przebiegu", a ten przebieg nigdy nie mógł nic zrobić — wpis lotu jest
       // JEDEN na parę, więc kolejne przebiegi trafiały na `inFlightFrom(k)` i robiły
@@ -4717,7 +4744,9 @@
             // przestawia sesję po stronie serwera — Error „Planet change" 31.08 10:12).
             if (Human.playing()) continue;
             const bq = a.body || "planet";
-            if (!Once.said(`qrecon|${a.key}|${bq}`, 5 * 60e3)) {
+            // v3.91.0: przy trwającym ALARMIE dławik 5 min jest za wolny — fale z ekspedycji
+            // wracają co 1–2 minuty, a każda taka fala to miliony statków pod uderzeniem.
+            if (!Once.said(`qrecon|${a.key}|${bq}`, a.alarm ? 60e3 : 5 * 60e3)) {
               const got = await Hangar.scanRemote(a.key, bq);
               log(`[OBRONA] ${a.why} — ${got ? `odczytany w tle (${got.total.toLocaleString("pl-PL")} szt.), bez przełączania planety` : "cichy odczyt nie wyszedł, poczekam na naturalny odczyt hangaru"}.`, "info");
             }
