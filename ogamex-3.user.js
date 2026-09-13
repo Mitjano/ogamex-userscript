@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.92.0
+// @version      3.93.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.92.0";
+  const VERSION = "3.93.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1650,7 +1650,7 @@
     for (const k of Object.keys(pairs)) {
       const th = threatsFor(k);
       const all = fleetsAt(k);
-      const fleet = Situation.fleetAt(s, k, now);
+      let fleet = Situation.fleetAt(s, k, now);
       // v3.92.0: ciała pod atakiem i pewność hangaru liczone NA WEJŚCIU pętli — używa ich
       // także gałąź „flota już wyleciała" (wyżej niż dawne miejsce deklaracji).
       const bodies = attackedBodies(k);
@@ -1909,6 +1909,24 @@
       // żeby operator (i push) wiedział, co konkretnie wpada pod atak.
       const inc = incomingBefore(k, soonest);
       const incTxt = inc.length ? ` UWAGA: ${inc.length === 1 ? "własny powrót ląduje" : inc.length + " własne powroty lądują"} PRZED uderzeniem (pierwszy ${hhmmss(inc[0].returnAt)}, ~${inc[0].total.toLocaleString("pl-PL")} szt.).` : "";
+      // v3.93.0 (macierz bojowa, 672 scenariusze) — NAJGROŹNIEJSZA Z POZOSTAŁYCH ŚCIEŻEK:
+      // po własnej ucieczce `emptySourceHangar` zeruje hangar źródła, więc `fleetAt` zwraca
+      // null i para wpada w gałąź „nie wiem, gdzie stoi flota" — która NIGDY nie lata, tylko
+      // zwiaduje. Tymczasem rejestr powrotów wie, że na to ciało spadła fala z ekspedycji.
+      // To ta sama noc 13.09, tylko dla pary BEZ rezerwy w hangarze (przy 43 Gwiazdach
+      // Śmierci `total > 0` i kod schodził niżej). Gdy do uderzenia zostało ≤ 3 min, zwiad
+      // nie zdąży: budujemy flotę z rejestru i idziemy normalną ścieżką ratunku. Ile naprawdę
+      // stoi, policzy formularz przy wysyłce — a gdy nic nie wróciło, lot po prostu nie wyjdzie.
+      if (!fleet && th.length && secs <= 180) {
+        const lad = [...bodies].filter(b => b !== "unknown").find(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0))
+          || (bodies.has("unknown") ? ["moon", "planet"].filter(b => b === "planet" || pairs[k].hasMoon)
+              .find(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0)) : null);
+        if (lad) {
+          fleet = { body: lad, total: 0, at: now };
+          alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
+            msg: `atak na [${k}] za ${secs}s — migawka hangaru jest pusta, ale rejestr powrotów mówi, że właśnie wylądowała tam fala. RATUJĘ bez czekania na odczyt (formularz policzy, ile stoi).` });
+        }
+      }
       if (!fleet) {
         // v3.39.0 (test na żywo 30.08 09:18): ta gałąź krzyczała „nie wiem, gdzie stoi
         // flota" SZEŚĆ razy pod rząd w trakcie alarmu — choć bot minutę wcześniej sam
@@ -2082,7 +2100,20 @@
         // czyli gdy pod uderzeniem nic nie stoi. Stojącą flotę ratuje teraz drugi lot.
         continue;
       }
-      if (!hitBodies.length) {
+      // v3.93.0 (macierz bojowa, 672 scenariusze) — CO ZOSTAŁO: przy pustej migawce hangaru
+      // i świeżym lądowaniu bot potrafił tylko ZWIADOWAĆ. „Sprawdzę i zdecyduję w następnym
+      // przebiegu" przy uderzeniu za 45–120 s znaczy po prostu „nie zdążę", a rejestr powrotów
+      // już mówi, że coś tam spadło. Ratunek ładuje hangar odczytany ze strony w chwili
+      // wysyłki, więc gdy fala jednak nie wróciła, lot zwyczajnie nie wyjdzie — lepszy pusty
+      // formularz niż stracona flota. Przy ≤ 3 min omijamy więc całą gałąź „nie wiem" i
+      // idziemy normalną ścieżką ratunku, z ciałem wskazanym przez rejestr.
+      const ladowaniePilne = secs <= 180 && bodiesReal.find(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
+      if (!hitBodies.length && ladowaniePilne && fleet) {
+        alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
+          msg: `atak na [${k}] ${ladowaniePilne === "moon" ? "księżyc" : "planetę"} za ${secs}s, a rejestr powrotów mówi, że właśnie wylądowała tam fala — RATUJĘ bez czekania na odczyt hangaru (formularz policzy, ile naprawdę stoi).` });
+        fleet.body = ladowaniePilne; fleet.total = 0;
+      }
+      if (!hitBodies.length && !ladowaniePilne) {
         // v3.52.0 (audyt powrotów 31.08, snajperka powrotów — ścieżka A5 z Atheny):
         // „bezpieczna strona" bywała wnioskiem z odczytu SPRZED lądowania fali —
         // atakowane ciało mogło właśnie przyjąć miliony statków z powrotu ekspedycji,
@@ -2092,6 +2123,7 @@
         const landedHit = [...bodies].filter(b => b !== "unknown").find(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
         if (landedHit) {
           alerts.push({ key: k, level: "error", msg: `atak na [${k}] ${landedHit === "moon" ? "księżyc" : "planetę"} za ${secs}s, a PO ostatnim odczycie hangaru wylądowała tam fala z rejestru powrotów — sprawdzam, czy jest co ratować` });
+          actions.push({ kind: "recon", key: k, body: landedHit, quiet: true, alarm: true, why: `atak, a na ${landedHit === "moon" ? "księżycu" : "planecie"} [${k}] właśnie wylądowała fala — sprawdzam hangar` });
           if (secs > 90) actions.push({ kind: "recon", key: k, body: landedHit, why: `atak, a na ${landedHit === "moon" ? "księżycu" : "planecie"} [${k}] właśnie wylądowała fala — sprawdzam hangar` });
           continue;
         }
@@ -2154,7 +2186,7 @@
       // ją w domu świadomie — właściciel wybrał rezerwę na księżycu, nie jej ewakuację.
       if (tylkoRezerwa) continue;   // komunikat poszedł wyżej, przy liczeniu odpowiedzi
       if (now - firstSeen < cfg.confirmMs && secs > cfg.tooLateSec + cfg.confirmMs / 1000) { alerts.push({ key: k, level: "warn", msg: `atak na [${k}] za ${secs}s — potwierdzam ${Math.round((cfg.confirmMs - (now - firstSeen)) / 1000)}s` }); continue; }
-      if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz` }); continue; }
+      if (secs < cfg.tooLateSec) { alerts.push({ key: k, level: "error", push: true, pushKey: "bezradny", msg: `atak na [${k}] za ${secs}s — ZA PÓŹNO na formularz, nie zdążę wysłać floty. Ratuj ręcznie, jeśli możesz.` }); continue; }
       // wybór ucieczki: sąsiedni księżyc w układzie → drugie ciało pary (nieatakowane) → inna kolonia
       // v3.68.5 (audyt 04.09, obrona-decide#4 P0): PILNOŚĆ jedzie razem z akcją. Klucz
       // sortowania w pętli wykonawczej znał wyłącznie RODZAJ akcji, więc dwa ratunki miały
@@ -2205,7 +2237,7 @@
       }
       const ref = anyRefuge(k, nbBlocked ? nb : null);
       if (ref) { actions.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: ref.key, toBody: ref.body, why: `atak na oba ciała [${k}] → powietrze do [${ref.key}]${nbBlocked ? ` (nie ${nb}, ${rf.count}× nieudane)` : ""}`, rescue: true, capTypes: CAP_RATUNKU, etaMs, saveTotal, speed: cfg.airSpeedPct, recall: true, air: true, recallAt: Math.max(...th.map(t => t.arriveAt)) + cfg.recallBufferSec * 1000 }); continue; }
-      alerts.push({ key: k, level: "error", msg: `atak na [${k}] — brak jakiegokolwiek refugium` });
+      alerts.push({ key: k, level: "error", push: true, pushKey: "bezradny", msg: `atak na [${k}] — NIE MAM DOKĄD uciec (każde ciało jest atakowane albo nie ma innej kolonii). Flota zostaje pod uderzeniem — reaguj ręcznie.` });
     }
     // ── FLEET SAVE: JEDEN lot na przebieg i rezerwa slotów ──────────────────
     // v3.68.10 (audyt 04.09, obrona-fs#2 P1) — CO SIĘ PSUŁO: reguła FS siedzi w pętli po

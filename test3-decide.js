@@ -1608,7 +1608,7 @@ console.log("\n── 48. AUDYT PRZED PUSH: jak wyżej, ale BRAK innej kolonii p
   });
   const { actions, alerts } = decide(s, CFG, NOW);
   check("ŻADNEGO lotu na zablokowaną trasę", !actions.some(a => a.kind === "fly"), JSON.stringify(actions));
-  check("alarm: brak jakiegokolwiek refugium (nie ślepe ponowienie)", alerts.some(al => /brak jakiegokolwiek refugium/.test(al.msg)), JSON.stringify(alerts));
+  check("alarm: NIE MAM DOKĄD uciec (nie ślepe ponowienie)", alerts.some(al => /NIE MAM DOKĄD uciec/.test(al.msg)), JSON.stringify(alerts));
 }
 
 console.log("\n── 49. AUDYT PRZED PUSH: regresyjne strażniki dla poprawek spoza decide() (CFG.moon migracja, Moon navs, s.landings, Recon moonLost) ──");

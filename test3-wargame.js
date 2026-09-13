@@ -91,7 +91,7 @@ console.log("\n── W4. WSZYSTKO atakowane → brak refugium = alarm, flota ni
   });
   const r = decide(s, CFG, NOW);
   check("W4: zero lotów (nic nie leci pod uderzenie)", flyOf(r).length === 0, JSON.stringify(r.actions));
-  check("W4: alarm „brak refugium\"", r.alerts.some(a => /brak jakiegokolwiek refugium/.test(a.msg)), JSON.stringify(r.alerts.map(a => a.msg)));
+  check("W4: alarm „brak refugium\"", r.alerts.some(a => /NIE MAM DOKĄD uciec/.test(a.msg)), JSON.stringify(r.alerts.map(a => a.msg)));
 }
 
 console.log("\n── W5. Dolot 30 s (wykryty za późno) → ZA PÓŹNO, tylko alarm ──");
