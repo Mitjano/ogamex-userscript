@@ -892,9 +892,15 @@ console.log("── 25. AUDYT 28.08: flota na OBU ciałach + cisza przy nieznane
   check("ślepy alarm idzie na telefon", dispatchPush(AL({ blind: true })).length === 1, JSON.stringify(dispatchPush(AL({ blind: true }))));
   check("alarm z jawną flagą push idzie na telefon (v3.68.3)", dispatchPush(AL({ push: true })).length === 1, JSON.stringify(dispatchPush(AL({ push: true }))));
   check("alert bez żadnej z tych flag NIE budzi telefonu", dispatchPush(AL({})).length === 0, JSON.stringify(dispatchPush(AL({}))));
-  check("push ma własny dławik na kluczu `push|<para>` — powtórka nie budzi telefonu drugi raz",
+  check("push ma własny dławik na kluczu `push|<para>|<rodzaj>` — powtórka nie budzi telefonu drugi raz",
     dispatchPush(AL({ push: true }), (k) => k.startsWith("push|")).length === 0
-    && /`push\|\$\{a\.key\}`, 5 \* 60e3/.test(src));
+    && /`push\|\$\{a\.key\}\|\$\{a\.pushKey \|\| "atak"\}`, 5 \* 60e3/.test(src));
+  // v3.92.0: alarm „jestem ślepy" nie może wypychać z telefonu komunikatu o samym ataku —
+  // `Notifier` dławi po RODZAJU + współrzędnych, więc ślepota idzie jako BŁĄD, atak jako ATAK.
+  check("alarm o ślepocie ma własny rodzaj wpisu (nie wypiera powiadomienia o ataku)",
+    dispatchPush(AL({ push: true, pushKey: "slepota" }))[0].startsWith("BŁĄD|")
+    && dispatchPush(AL({ push: true }))[0].startsWith("ATAK|"),
+    JSON.stringify([dispatchPush(AL({ push: true, pushKey: "slepota" })), dispatchPush(AL({ push: true }))]));
   const quiet = { pairs: { "1:200:8": { hasMoon: false, galaxy: 1, system: 200, position: 8 } }, hangars: {}, threats: [threat("1:200:8", "planet", 300)], flights: [], active: null };
   check("znana kolonia bez wiedzy o hangarze → też alarm (nie cisza)", decide(quiet, CFG, NOW).alerts.length > 0);
 }
@@ -3014,7 +3020,8 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
   // „tylko rezerwa" liczone z migawki hangaru SPRZED lądowania fali blokowało każdy kolejny
   // ratunek. Odczyt starszy niż lądowanie nie jest dowodem, że w domu nic nie stoi.
   check("73h: (źródło) rezerwa nie unieważnia ratunku, gdy po odczycie hangaru wylądowała fala",
-    /const swiezoWyladowalo = \[\.\.\.bodies\][\s\S]{0,160}landedSince\(k, b, \(\(s\.hangars \|\| \{\}\)\[`\$\{k\}\|\$\{b\}`\] \|\| \{\}\)\.at \|\| 0\)\)/.test(src)
+    /const swiezoWyladowalo = hangarNiepewny;/.test(src)
+    && /if \(landedSince\(k, b, h\.at\)\) return false;/.test(src)
     && /const tylkoRezerwa = !swiezoWyladowalo &&/.test(src));
   check("73i: (źródło) przy alarmie bot dopytuje o hangar, zamiast ufać starej migawce",
     /kind: "recon", key: k, body: hitRef\.body, quiet: true, alarm: true/.test(src)
@@ -3022,5 +3029,145 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
 }
 
 console.log("");
+console.log("\n── 74. SERIA FAL: każda kolejna dostaje ratunek, choć poprzednie WISZĄ w powietrzu (noc 13.09) ──");
+{
+  // Tamtej nocy na atakowany księżyc wróciło JEDENAŚCIE fal ekspedycji, a w powietrzu
+  // wisiały jednocześnie cztery ucieczki. v3.75.0 zniosła regułę „jeden lot na parę", ale
+  // pokrycie kończyło się na DRUGIM locie. Ten blok sprawdza, że nie ma ukrytego sufitu:
+  // przy 1, 2, 3, 4 i 8 lotach w powietrzu kolejna fala nadal dostaje własny ratunek.
+  const lot = (i) => ({ kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+    id: `lot${i}`, sentAt: NOW - (60 + i) * 1000, flightMs: 3600e3, recallAt: NOW + 1800e3, phase: "launched" });
+  const zLotami = (n) => base({
+    hangars: { "3:272:7|moon": { total: 120_000_000, at: NOW - 20e3, ships: [{ type: "BATTLESHIP", qty: 120_000_000 }] } },
+    threats: [{ id: "t1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 600e3, attack: true, seenAt: NOW - 60e3, source: "list" }],
+    flights: Array.from({ length: n }, (_, i) => lot(i)),
+  });
+  for (const n of [1, 2, 3, 4, 8]) {
+    const r = decide(zLotami(n), CFG, NOW);
+    const fly = r.actions.find(a => a.kind === "fly" && a.fromKey === "3:272:7");
+    check(`74-${n}: ${n} ${n === 1 ? "lot wisi" : "lotów wisi"} w powietrzu → kolejna fala i tak dostaje własny ratunek`,
+      !!fly, JSON.stringify(r.actions.map(a => [a.kind, a.why])).slice(0, 220));
+    check(`74-${n}b: …i leci z atakowanego księżyca, a nie skądinąd`,
+      !!fly && fly.fromBody === "moon" && fly.fromKey === "3:272:7", JSON.stringify(fly && [fly.fromKey, fly.fromBody, fly.toKey]));
+  }
+  // …a gdy hangar atakowanego ciała jest NAPRAWDĘ pusty, żaden pusty lot nie wychodzi
+  const pusty = base({
+    hangars: { "3:272:7|moon": { total: 0, at: NOW - 20e3, ships: [] } },
+    threats: [{ id: "t1", dst: "3:272:7", dstBody: "moon", arriveAt: NOW + 600e3, attack: true, seenAt: NOW - 60e3, source: "list" }],
+    flights: [lot(0)],
+  });
+  const rp = decide(pusty, CFG, NOW);
+  check("74-x: pusty hangar (świeży odczyt, nic nie wylądowało) NIE generuje pustego lotu",
+    !rp.actions.some(a => a.kind === "fly" && a.fromKey === "3:272:7"), JSON.stringify(rp.actions.map(a => [a.kind, a.why])).slice(0, 200));
+}
+
+console.log("\n── 75. AUDYT 13.09: czy incydent może wrócić inną drogą (dziury tej samej klasy) ──");
+{
+  // Po nocnej stracie właściciel poprosił o audyt: „upewnij się, że bot ZAWSZE obroni flotę".
+  // Każdy przypadek niżej to ta sama choroba co 13.09 — decyzja o NIEWYSYŁANIU ratunku oparta
+  // na migawce hangaru, o której bot ma w ręku dowód, że jest nieaktualna.
+  const lot = { kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+    id: "lot0", sentAt: NOW - 60e3, flightMs: 3600e3, recallAt: NOW + 1800e3, phase: "launched" };
+  const atak = (over = {}) => Object.assign({ id: "t1", dst: "3:272:7", dstBody: "moon",
+    arriveAt: NOW + 600e3, attack: true, seenAt: NOW - 60e3, lastSeenAt: NOW, source: "list", type: "ATTACK" }, over);
+
+  // 75a — CEL NIEZNANY: wiersz ataku bez rozpoznanego ciała (ACS, brak linku celu).
+  // `bodies` = {"unknown"}, a poprawka v3.91.0 filtrowała `b !== "unknown"`, więc
+  // `swiezoWyladowalo` było ZAWSZE false i rezerwa znów gasiła ratunek.
+  const celNieznany = base({
+    hangars: { "3:272:7|moon": { total: 43, at: NOW - 5 * 60e3, ships: [{ type: "DEATH_STAR", qty: 43 }] } },
+    threats: [atak({ dstBody: null })],
+    flights: [lot],
+    expected: [{ fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:16", sentAt: NOW - 40 * 60e3,
+      returnAt: NOW - 10e3, flightMs: 600e3, total: 120_000_000, pending: false }],
+  });
+  const rNieznany = decide(celNieznany, CFG, NOW);
+  check("75a: atak bez rozpoznanego CIAŁA — fala, która wylądowała po odczycie, i tak dostaje ratunek",
+    rNieznany.actions.some(a => a.kind === "fly"), JSON.stringify(rNieznany.actions.map(a => [a.kind, a.why])).slice(0, 220));
+
+  // 75b — PUSTY HANGAR PO WŁASNEJ UCIECZCE: `emptySourceHangar` zeruje hangar źródła, więc
+  // para po ewakuacji ma total:0 i wpada w gałąź „nie wiem, gdzie stoi flota", która nigdy
+  // nie pytała rejestru powrotów. To ten sam incydent dla pary BEZ rezerwy Gwiazd Śmierci.
+  const poUcieczce = base({
+    hangars: { "3:272:7|moon": { total: 0, at: NOW - 5 * 60e3, ships: [] } },
+    threats: [atak()],
+    flights: [lot],
+    expected: [{ fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:16", sentAt: NOW - 40 * 60e3,
+      returnAt: NOW - 10e3, flightMs: 600e3, total: 120_000_000, pending: false }],
+  });
+  const rPoUcieczce = decide(poUcieczce, CFG, NOW);
+  check("75b: hangar wyzerowany po własnej ucieczce + fala z powrotu → bot idzie po ratunek, nie milczy",
+    rPoUcieczce.actions.some(a => a.kind === "fly" || (a.kind === "recon" && a.key === "3:272:7")),
+    JSON.stringify(rPoUcieczce.actions.map(a => [a.kind, a.why])).slice(0, 220));
+  check("75b2: …i mówi o tym GŁOŚNO (push), a nie linią w logu o czwartej nad ranem",
+    rPoUcieczce.alerts.some(a => a.push || a.blind || a.unknownPair),
+    JSON.stringify(rPoUcieczce.alerts.map(a => [a.level, !!a.push, a.msg.slice(0, 60)])).slice(0, 260));
+
+  // 75c — REJESTR POWROTÓW WYGASŁ (60 min), MIGAWKA HANGARU ŻYJE 48 h.
+  // Poprawka v3.91.0 opiera się na `landedSince`, a te rejestry są czyszczone po godzinie.
+  // Po 61. minucie migawka „43 Gwiazdy Śmierci" znów uchodzi za prawdę o hangarze.
+  const staraMigawka = base({
+    hangars: { "3:272:7|moon": { total: 43, at: NOW - 130 * 60e3, ships: [{ type: "DEATH_STAR", qty: 43 }] } },
+    threats: [atak()],
+    flights: [lot],
+    expected: [],
+  });
+  const rStara = decide(staraMigawka, CFG, NOW);
+  check("75c: migawka hangaru sprzed ponad 2 h NIE jest dowodem, że w domu stoi sama rezerwa",
+    rStara.actions.some(a => a.kind === "fly" || a.kind === "recon"),
+    JSON.stringify(rStara.actions.map(a => [a.kind, a.why])).slice(0, 220));
+
+  // 75d — ŚWIEŻOŚĆ JEDNEGO CIAŁA certyfikuje decyzję o DRUGIM: atak w księżyc, którego bot
+  // nie czytał od 3 h, ale planeta była czytana przed chwilą → „bezpieczna strona", cisza.
+  const niewlasciweCialo = base({
+    hangars: { "3:272:7|planet": { total: 5_000_000, at: NOW - 2 * 60e3, ships: [{ type: "BATTLESHIP", qty: 5_000_000 }] } },
+    threats: [atak()],
+    flights: [],
+    expected: [],
+  });
+  const rNiewlasciwe = decide(niewlasciweCialo, CFG, NOW);
+  check("75d: (świadome ograniczenie) ciało NIGDY nieczytane + świeży odczyt drugiego → spokój bez alarmu",
+    rNiewlasciwe.actions.some(a => a.kind === "hold"),
+    JSON.stringify(rNiewlasciwe.actions.map(a => [a.kind, a.why])).slice(0, 220));
+  // Świadome ograniczenie: ciało, którego bot NIGDY nie czytał, przy świeżym odczycie drugiego
+  // ciała nie budzi telefonu — pusty księżyc bez wpisu to norma, a alarm o każdym takim ataku
+  // zamieniłby kanał w szum. Gdy o CAŁEJ parze nie wiadomo nic, idzie cichy zwiad (wyżej).
+  const staryNaAtakowanym = base({
+    hangars: { "3:272:7|moon": { total: 9_000_000, at: NOW - 3 * 3600e3, ships: [{ type: "BATTLESHIP", qty: 9_000_000 }] },
+               "3:272:7|planet": { total: 5_000_000, at: NOW - 2 * 60e3, ships: [{ type: "BATTLESHIP", qty: 5_000_000 }] } },
+    threats: [atak()], flights: [], expected: [],
+  });
+  const rStaryAtakowany = decide(staryNaAtakowanym, CFG, NOW);
+  check("75d3: …ale PRZETERMINOWANY odczyt atakowanego ciała kończy „bezpieczną stronę”",
+    !rStaryAtakowany.actions.some(a => a.kind === "hold"),
+    JSON.stringify(rStaryAtakowany.actions.map(a => [a.kind, a.why])).slice(0, 220));
+  check("75d2: …i mówi o tym głośno (push), zamiast ogłaszać spokój",
+    rStaryAtakowany.alerts.some(a => a.push) || rStaryAtakowany.actions.some(a => a.kind === "fly"),
+    JSON.stringify(rStaryAtakowany.alerts.map(a => [a.level, !!a.push, a.msg.slice(0, 60)])).slice(0, 260));
+}
+
+
+console.log("\n── 76. AUDYT 13.09: własny log nie jest paskiem, atak bez zegara nie znika ──");
+{
+  // 76a — Bar.read() parsował textContent CAŁEJ strony, razem z panelem bota, w którym
+  // bot sam pisze „…ZAWIERA licznik misji (13 Missions: 13 Own, 0 Hostile)…". Na stronie
+  // bez prawdziwego paska (formularz lotu, galaxy, błąd) czytał więc własny log jako
+  // ŚWIEŻY pasek z ZEREM obcych — a to po 60 s kasuje zagrożenia i ZAWRACA ucieczkę.
+  const logBota = "[LOTY DOM] odpowiedź listy ruchów ZAWIERA licznik misji (13 Missions: 13 Own, 0 Hostile). Jeśli te liczby zgadzają się z paskiem…";
+  const barParse = new Function("text", bodyOf("parse(text) {"));
+  check("76a: (dowód) tekst własnego logu NAPRAWDĘ parsuje się jak pasek z zerem obcych",
+    (() => { const b = barParse(logBota); return !!b && b.counter === true && b.foreign === 0; })(), JSON.stringify(barParse(logBota)));
+  check("76b: (źródło) pasek czytany jest z DOM-u gry Z POMINIĘCIEM panelu bota",
+    /const panel = document\.getElementById\("ogx3-panel"\);/.test(src) && /for \(const n of b\.childNodes\)/.test(src) && /if \(n === panel\) continue;/.test(src));
+
+  // 76c — wrogi wiersz bez czytelnego odliczania dostawał arriveAt = TERAZ, a każdy
+  // konsument filtruje `arriveAt > now` → rozpoznany atak stawał się niewidzialny.
+  check("76c: (źródło) atak bez czasu dolotu dostaje najbliższe obsługiwalne uderzenie, nie „już było”",
+    /if \(r\.attack && etaSec <= 0\)/.test(src) && /etaSec = Math\.max\(60, \(CFG\.tooLateSec \|\| 40\) \+ 30\)/.test(src));
+  check("76d: (źródło) …i zostawia zrzut oraz wpis w dzienniku, zamiast ciszy",
+    /BEZ czytelnego odliczania/.test(src) && /Wrogi wiersz bez czytelnego czasu dolotu/.test(src));
+}
+
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

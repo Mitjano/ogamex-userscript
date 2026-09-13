@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.91.0
+// @version      3.92.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.91.0";
+  const VERSION = "3.92.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -290,6 +290,10 @@
     // /home pada), po tej dodatkowej zwłoce bot działa na starym odczycie — brak świeżego
     // odczytu ≠ spokój (flotę 08.09 ~05:10 zabrała cisza bota, nie jego nadgorliwość).
     barConfirmGraceMs: 60e3,
+    // v3.92.0 (audyt po stracie 13.09): jak długo odczyt hangaru jest dowodem na to, co stoi
+    // w domu. Po tym czasie bot nie ma prawa ODMÓWIĆ ratunku na jego podstawie — ma najpierw
+    // sprawdzić. Migawki żyją w stanie do 48 h, ale to jest pamięć, nie dowód.
+    hangarTrustMs: 10 * 60e3,
     barMaxAgeMs: 3 * 60e3,  // pasek starszy niż to nie jest dowodem na nic (strona bez paska)
     // v3.86.0: po tylu milisekundach bez świeżego renderu bot sam bierze pasek fetchem /home,
     // zanim ten przekroczy `barMaxAgeMs` i zgasi ślepy alarm. Musi być WYRAŹNIE mniejsze od
@@ -634,7 +638,29 @@
       return { total, own: own || 0, foreign, barType, counter: true,
         spyType: /^(Spy|Espionage)/i.test(barType || ""), attackType };
     },
-    read() { return this.parse(document.body.textContent); },
+    // v3.92.0 (audyt po stracie 13.09) — CO GROZIŁO: `parse()` dostawał tekst CAŁEJ strony,
+    // razem z panelem bota, w którym żyje 400 linii własnego logu. A bot sam pisze do logu
+    // zdanie „…odpowiedź listy ruchów ZAWIERA licznik misji (13 Missions: 13 Own, 0 Hostile)…".
+    // Regex paska trafiał w ten tekst i czytał go jako ŚWIEŻY pasek z ZEREM obcych flot —
+    // na każdej stronie bez prawdziwego paska (formularz lotu, galaxy, strona błędu).
+    // Skutek szedłby lawiną: `hostileClear` po 60 s kasuje zagrożenia, których lista nie
+    // potwierdza, zegar uderzenia gaśnie, ślepy alarm umiera, a `decide()` ZAWRACA trwającą
+    // ucieczkę („napastnik zawrócił") — czyli bot sprowadza flotę prosto pod uderzenie,
+    // i jeszcze melduje „obrona gotowa". Pasek czytamy więc z DOM-u gry Z POMINIĘCIEM panelu.
+    read() {
+      try {
+        const b = document.body; if (!b) return null;
+        const panel = document.getElementById("ogx3-panel");
+        if (!panel) return this.parse(b.textContent);
+        let t = "";
+        for (const n of b.childNodes) {
+          if (n === panel) continue;
+          if (n.nodeType === 1 && n.contains && n.contains(panel)) continue;   // panel wstrzyknięty głębiej
+          t += " " + (n.textContent || "");
+        }
+        return this.parse(t);
+      } catch { try { return this.parse(document.body.textContent); } catch { return null; } }
+    },
     // v3.71.0: świeży pasek BEZ nawigacji — pełna strona /home (jak sonda bonusu: bez nagłówka
     // XMLHttpRequest fork oddaje całą stronę, z paskiem misji i paskiem planet). Bez `?planet=`,
     // więc sesja operatora zostaje na jego planecie. „No fleet movement" liczy się jako 0 obcych
@@ -1100,7 +1126,23 @@
           continue;
         }
         if (!r.attack && !r.spy) continue;
-        const arriveAt = (r.readAt || now) + (r.eta || 0) * 1000;
+        // v3.92.0 (audyt po stracie 13.09) — CO GROZIŁO: gdy wiersz nie niesie odliczania
+        // (`data-remaining-seconds` brak, napis nieparsowalny), `etaOf` zwraca 0, więc
+        // `arriveAt` wypada na TERAZ. A każdy konsument zagrożeń filtruje `arriveAt > now`:
+        // `threatsFor`, `anyAttack`, push na telefon, licznik żywych lotów w ślepym alarmie.
+        // Rozpoznany atak stawał się więc NIEWIDZIALNY — bez ratunku, bez pusha, bez wpisu
+        // w dzienniku, z jedną linią `[ATAK DOM]` w logu. Nieznane odliczanie traktujemy
+        // odtąd jako uderzenie NAJBLIŻSZE z możliwych do obsłużenia (zamiast „już było"),
+        // i mówimy o tym głośno — zasada domu: nieznany markup to zrzut, nie cisza.
+        let etaSec = r.eta || 0;
+        if (r.attack && etaSec <= 0) {
+          etaSec = Math.max(60, (CFG.tooLateSec || 40) + 30);
+          if (!Once.said(`noeta|${r.id || String(r.html).slice(0, 40)}`, 10 * 60e3)) {
+            log(`[ATAK DOM] wrogi wiersz BEZ czytelnego odliczania (${r.type}) — traktuję jak uderzenie za ${etaSec}s, żeby nie zniknął z obrony. Zrzut: ${r.html}`, "error");
+            Journal.add("ATAK", `Wrogi wiersz bez czytelnego czasu dolotu (${r.type} → [${r.dst || "?"}]) — ratuję tak, jakby uderzenie było tuż-tuż. Sprawdź grę.`);
+          }
+        }
+        const arriveAt = (r.readAt || now) + etaSec * 1000;
         const k = r.id || `${r.dst}|${r.attack ? "A" : "S"}|${Math.round(arriveAt / 20000)}`;
         const prev = seen.get(k);
         seen.set(k, { id: r.id || null, dst: r.dst, dstBody: r.dstBody || prev?.dstBody || null, arriveAt, attack: !!r.attack, spy: !!r.spy, src: r.src || prev?.src || null, srcBody: r.srcBody, type: r.type, seenAt: prev?.seenAt || now, lastSeenAt: now, source: r.source, html: r.html });
@@ -1609,6 +1651,37 @@
       const th = threatsFor(k);
       const all = fleetsAt(k);
       const fleet = Situation.fleetAt(s, k, now);
+      // v3.92.0: ciała pod atakiem i pewność hangaru liczone NA WEJŚCIU pętli — używa ich
+      // także gałąź „flota już wyleciała" (wyżej niż dawne miejsce deklaracji).
+      const bodies = attackedBodies(k);
+      // ── v3.92.0: ODMOWA RATUNKU WYMAGA ŚWIEŻEGO DOWODU ──────────────────────────
+      // Audyt po stracie z nocy 13.09 (właściciel: „upewnij się, że bot ZAWSZE obroni flotę")
+      // pokazał, że tamten defekt miał jeszcze trzy drogi powrotu, wszystkie tej samej klasy:
+      // decyzja o NIEWYSYŁANIU ratunku zapadała na migawce hangaru, o której bot miał w ręku
+      // dowód, że jest nieaktualna.
+      //  (a) cel bez rozpoznanego ciała (ACS, wiersz bez linku) dawał `bodies = {"unknown"}`,
+      //      a poprawka v3.91.0 filtrowała „unknown" — więc w ogóle nie działała;
+      //  (b) rejestry lądowań są czyszczone po 60 min, a `fleetsAt` przyjmuje migawki do 48 h:
+      //      po 61. minucie „43 Gwiazdy Śmierci" znów uchodziło za prawdę i cisza wracała;
+      //  (c) „bezpieczna strona" (`hold`) liczyła świeżość z ciała, które MA flotę — więc
+      //      świeży odczyt planety certyfikował milczenie o księżycu nieczytanym od godzin.
+      // Zasada zamiast trzech łatek: dopóki nie mam ŚWIEŻEGO odczytu atakowanego ciała, nie
+      // wolno mi twierdzić, że nie ma tam czego ratować. `hangarPewny` jest jedną definicją
+      // tej pewności dla wszystkich gałęzi niżej.
+      const bodiesReal = bodies.has("unknown") ? ["moon", "planet"].filter(b => b === "planet" || (pairs[k] && pairs[k].hasMoon)) : [...bodies];
+      // Pewność liczymy z SYGNAŁÓW ZMIANY, nie z samego braku danych: ciało, którego bot nigdy
+      // nie widział, zwykle po prostu nigdy nic nie miało (pusty księżyc) — alarmowanie o nim
+      // przy każdym ataku zamieniłoby kanał w szum. Niepewność powstaje, gdy: (a) po odczycie
+      // wylądowała tam fala, (b) odczyt pokazywał flotę i zdążył się przeterminować, albo
+      // (c) atak nie mówi, w które ciało leci (wtedy sprawdzamy oba).
+      const hangarPewny = (b) => {
+        const h = (s.hangars || {})[`${k}|${b}`];
+        if (!h || !h.at) return true;
+        if (landedSince(k, b, h.at)) return false;
+        if ((h.total || 0) > 0 && now - h.at > (cfg.hangarTrustMs || 10 * 60e3)) return false;
+        return true;
+      };
+      const hangarNiepewny = bodiesReal.some(b => !hangarPewny(b));
       if (!th.length) {
         // cisza: lot ucieczki z tej pary → zawrót po recallAt; brak zagrożeń i flota na planecie z księżycem → wróć na księżyc
         // v3.10.2: do ZAWROTU bierzemy lot niezaleznie od `flightStale` — porzucenie
@@ -1853,6 +1926,20 @@
             if (lastArrive + cfg.recallBufferSec * 1000 > fOut.recallAt) actions.push({ kind: "extend", flight: fOut, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" });
           }
           const land = (fOut.sentAt || 0) + (fOut.flightMs || 0);
+          // v3.92.0: „nie ma czego ratować" wolno powiedzieć TYLKO wtedy, gdy bot ma świeży
+          // dowód z atakowanego ciała. Po własnej ucieczce hangar źródła jest zerowany, więc
+          // ta gałąź łapała każdą parę, na którą wracały fale — i meldowała spokój, podczas
+          // gdy pod uderzeniem stało 120 mln statków (noc 13.09, druga droga tego samego błędu).
+          // v3.92.0: komunikat „flota wyleciała" zostaje (to normalny przebieg), ale gdy nie mam
+          // świeżego odczytu atakowanego ciała, dokładam OSOBNY alarm z pushem i cichy odczyt —
+          // po własnej ucieczce hangar źródła jest wyzerowany, więc to jest dokładnie ta gałąź,
+          // w którą wpada para, na którą wracają fale (noc 13.09).
+          if (hangarNiepewny) {
+            alerts.push({ key: k, level: "error", push: true, throttleMs: 5 * 60e3,
+              msg: `atak na [${k}] za ${secs}s — z pary leci już ${fOut.kind} → [${fOut.toKey}], ale NIE MAM świeżego odczytu atakowanego ciała: jeśli wróciła fala, stoi pod uderzeniem. Sprawdzam hangar, a Ty zerknij na grę.`, pushKey: "slepota" });
+            actions.push({ kind: "recon", key: k, body: bodiesReal.find(b => !hangarPewny(b)) || "planet", quiet: true, alarm: true,
+              why: `atak na [${k}] — po ucieczce nie wiem, czy coś wróciło do hangaru` });
+          }
           alerts.push({ key: k, level: "warn", throttleMs: 5 * 60e3,
             msg: `atak na [${k}] za ${secs}s — flota już wyleciała (${fOut.kind} → [${fOut.toKey}] ${fOut.toBody === "moon" ? "ksiezyc" : "planeta"}${fOut.flightMs ? `, ląduje ${new Date(land).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}), nie ma czego ratować.${incTxt}` });
         }
@@ -1861,7 +1948,9 @@
         // v3.39.0: rekonesans zostaje TAKŻE wtedy, gdy z pary trwa lot. „Coś stąd
         // wyleciało" nie znaczy „w hangarze nie ma nic" — mogły dojść nowe statki,
         // a ucieczka sprzed godzin nie jest dowodem na pusty dom.
-        else alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru).${incTxt}` });
+        // v3.92.0: „nie wiem, gdzie stoi flota" przy trwającym ataku to jeden z najgroźniejszych
+        // stanów, jakie bot potrafi zgłosić — a szedł jako cicha linia w logu. Teraz budzi telefon.
+        else alerts.push({ key: k, level: "error", push: true, throttleMs: 5 * 60e3, msg: `atak na [${k}] za ${secs}s — nie wiem, gdzie stoi flota (brak świeżego odczytu hangaru). Sprawdź grę.${incTxt}`, pushKey: "slepota" });
         // v3.9.2 (E2E): sprawdzamy ciało, w które leci atak (a gdy nieznane — najpierw
         // księżyc, bo tam zwykle mieszka flota). Wcześniej recon zawsze celował
         // w planetę: przy flocie na księżycu bot odczytywał pusty hangar i zostawał
@@ -1879,7 +1968,6 @@
         if (secs > 90) actions.push({ kind: "recon", key: k, body: want, why: `atak, a hangar nieznany — sprawdzam ${want === "moon" ? "księżyc" : "planetę"} [${k}]` });
         continue;
       }
-      const bodies = attackedBodies(k);
       // ratujemy z ciała, które JEST pod atakiem; przy dwóch takich — z większego
       // v3.68.4 (audyt 04.09): `hitBodies` liczone TU, PRZED bramką trwającego lotu.
       // Wcześniej powstawały dopiero za `continue` z gałęzi „z pary trwa lot", więc ta
@@ -1927,8 +2015,9 @@
       // nic nie stoi — a już na pewno nie dowodem pozwalającym ODMÓWIĆ ratunku. `landedSince`
       // to ta sama funkcja, którą bot pisał swoje alarmy, więc obie ścieżki widzą wreszcie
       // ten sam świat: koniec przebiegu, w którym alarm mówi „fala stoi", a decyzja „nie ma nic".
-      const swiezoWyladowalo = [...bodies].filter(b => b !== "unknown")
-        .some(b => landedSince(k, b, ((s.hangars || {})[`${k}|${b}`] || {}).at || 0));
+      // v3.92.0: „świeżo wylądowało" to dziś szczególny przypadek szerszego „nie mam pewności"
+      // (patrz `hangarNiepewny`) — obejmuje też cel bez rozpoznanego ciała i przeterminowaną migawkę.
+      const swiezoWyladowalo = hangarNiepewny;
       const stojiWDomu = ((hitBodies[0] && hitBodies[0].ships) || []).filter(x => (x.qty || 0) > 0);
       const tylkoRezerwa = !swiezoWyladowalo && stojiWDomu.length > 0 && stojiWDomu.every(x => CAP_RATUNKU[String(x.type).toUpperCase()] !== undefined);
       if (tylkoRezerwa) alerts.push({ key: k, level: "warn", throttleMs: 30 * 60e3,
@@ -2011,13 +2100,35 @@
         // wczorajszej wiedzy. Jeśli sam przestawiłeś flotę, bot uznawał atakowane
         // ciało za puste i milczał. Świeży odczyt (30 min) = decyzja; stary = alarm
         // z pushem i prośba o rekonesans, bo to jest dokładnie stan „nie wiem".
+        // v3.92.0 — CO BYŁO NIE TAK: `freshest` liczyło się z `all`, czyli z ciał, które MAJĄ
+        // flotę. Świeży odczyt planety certyfikował więc milczenie o księżycu, którego bot nie
+        // czytał od godzin — a to właśnie w atakowane ciało leci uderzenie. „Bezpieczna strona"
+        // wymaga odtąd świeżego dowodu Z ATAKOWANEGO CIAŁA (`hangarPewny`), nie z sąsiedniego.
+        // v3.92.0: próg zostaje 30-minutowy (jak od v3.29.0), ale wiek liczymy z ATAKOWANEGO
+        // ciała, nie z tego, które akurat ma flotę. Brak wpisu = „nie wiem", nie „pusto".
+        const hAt = (b) => { const h = (s.hangars || {})[`${k}|${b}`]; return h && h.at ? h.at : 0; };
+        // Warunek z v3.29.0 ZOSTAJE (najświeższy odczyt pary starszy niż 30 min = „nie wiem"),
+        // a v3.92.0 dokłada drugi: odczyt samego ATAKOWANEGO ciała też ma termin ważności.
+        // Wcześniej świeży odczyt planety certyfikował milczenie o księżycu sprzed godzin.
         const freshest = Math.max(...all.map(x => x.at || 0), 0);
-        if (now - freshest > 30 * 60e3) {
-          alerts.push({ key: k, level: "error", msg: `atak na [${k}] za ${secs}s — hangar czytany ${Math.round((now - freshest) / 60000)} min temu, NIE WIEM, czy flota nadal stoi po bezpiecznej stronie` });
-          if (secs > 90) actions.push({ kind: "recon", key: k, body: [...bodies][0] === "moon" ? "moon" : "planet", why: `atak, a dane o hangarze [${k}] sprzed ${Math.round((now - freshest) / 60000)} min — sprawdzam` });
+        const nieufne = bodiesReal.filter(b => hAt(b) && now - hAt(b) > 30 * 60e3);
+        // Gdy o CAŁEJ parze nie wiadomo nic (żadnego odczytu), a czas pozwala — cichy zwiad
+        // przed ogłoszeniem spokoju. Przy świeżym odczycie drugiego ciała nie robimy nic:
+        // pusty księżyc bez wpisu to norma, nie powód do alarmu.
+        if (!freshest && secs > 120) for (const b of bodiesReal) actions.push({ kind: "recon", key: k, body: b, quiet: true,
+          why: `atak na [${k}] — nie mam ŻADNEGO odczytu tej pary, sprawdzam przed uznaniem spokoju` });
+        if (nieufne.length || now - freshest > 30 * 60e3) {
+          const nieznane = nieufne.length ? nieufne : bodiesReal;
+          const wiek = (b) => { const h = (s.hangars || {})[`${k}|${b}`]; return h && h.at ? `${Math.round((now - h.at) / 60000)} min temu` : "NIGDY"; };
+          alerts.push({ key: k, level: "error", push: true,
+            msg: `atak na [${k}] za ${secs}s, a hangar ${nieznane.map(b => `${b === "moon" ? "księżyca" : "planety"} czytany ${wiek(b)}`).join(", ")} — NIE WIEM, czy flota nadal stoi po bezpiecznej stronie. Sprawdź grę.`, pushKey: "slepota" });
+          actions.push({ kind: "recon", key: k, body: nieznane[0] || "planet", quiet: true, alarm: true,
+            why: `atak na [${k}] — nie mam świeżego odczytu atakowanego ciała, sprawdzam` });
+          if (secs > 90) actions.push({ kind: "recon", key: k, body: nieznane[0] || "planet",
+            why: `atak, a dane o hangarze [${k}] są przeterminowane — sprawdzam` });
           continue;
         }
-        actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona` }); continue;
+        actions.push({ kind: "hold", key: k, why: `atak w ${[...bodies].join("/")}, flota na ${all.map(x => x.body).join("+") || fleet.body} — bezpieczna strona (odczyt atakowanego ciała świeży)` }); continue;
       }
       // v3.91.0: gdy hangar jest starszy niż lądowanie, `hitBodies` bywa puste, a mimo to
       // ratować JEST co — źródłem jest wtedy ciało, na które fala właśnie spadła.
@@ -4638,7 +4749,15 @@
         // deklaruje „to musi obudzić właściciela" niezależnie od tego, skąd pochodzi.
         // Żaden dzisiejszy alert tej flagi nie ustawia, więc zachowanie 3.68.2 jest
         // bit w bit takie samo — to przygotowanie pod alarmy z audytu 04.09.
-        if ((a.unknownPair || a.blind || a.push) && !Once.said(`push|${a.key}`, 5 * 60e3)) Journal.add("ATAK", a.msg);   // v3.7.0: nieznana kolonia → push na telefon
+        // v3.92.0: dławik pusha był kluczowany samą parą, więc nowy alarm „nie wiem, gdzie stoi
+        // flota" potrafił WYPRZEĆ z telefonu ważniejszy komunikat o ataku (np. że celem jest
+        // księżyc). Alarmy różnych rodzajów mają odtąd własne dławiki — `pushKey` je rozdziela.
+        if ((a.unknownPair || a.blind || a.push) && !Once.said(`push|${a.key}|${a.pushKey || "atak"}`, 5 * 60e3)) {
+          // Alarm „jestem ślepy" idzie jako BŁĄD, nie ATAK: `Notifier` dławi po rodzaju
+          // i współrzędnych, więc wspólny rodzaj sprawiał, że ostrzeżenie o ślepocie
+          // WYPYCHAŁO z telefonu ważniejszy komunikat o ataku (np. że celem jest księżyc).
+          Journal.add(a.pushKey === "slepota" ? "BŁĄD" : "ATAK", a.msg);
+        }
       }
       // Samokontrola to przegląd okresowy, nie sprawdzian na każdym przebiegu: raz na 5 minut.
       // (Pakiet E2E pokazał to od razu — dodatkowa praca w KAŻDYM ticku przesuwała czas
@@ -4732,6 +4851,25 @@
       // (`hasRescue` zostaje nietknięte dla rekonesansu: przy alarmie recon bywa jedyną
       // drogą do dowiedzenia się, GDZIE stoi flota — jego nie wolno gasić samym alarmem.)
       const alarmNow = hasRescue || (s.threats || []).some(t => t.attack && t.arriveAt > Date.now());
+      // v3.92.0 (audyt po stracie 13.09): cichy odczyt hangaru przy ALARMIE to czysty fetch
+      // w tle — a przegrywał wyścig z każdą inną akcją: `break` po pierwszym locie, bramka
+      // `hasRescue` i `if (Fly.mission()) return`. Przy nalocie na dwie pary druga nie miała
+      // więc jak odświeżyć hangaru, czyli gasł dokładnie ten mechanizm, którego brak kosztował
+      // 1,64 mld statków. Robimy go PRZED pętlą akcji, jeden na przebieg.
+      // Wyjątkiem zostaje operator przy klawiaturze: `scanRemote` przełącza aktywną planetę
+      // po stronie serwera (lekcja v3.47.0), a brak odczytu i tak nie blokuje już ratunku —
+      // `hangarNiepewny` w decide() wypuszcza lot bez czekania na hangar.
+      for (const a of actions) {
+        if (a.kind !== "recon" || !a.quiet || !a.alarm) continue;
+        if (Human.playing()) break;
+        const bq = a.body || "planet";
+        if (Once.said(`qrecon|${a.key}|${bq}`, 60e3)) break;
+        try {
+          const got = await Hangar.scanRemote(a.key, bq);
+          log(`[OBRONA] ${a.why} — ${got ? `odczytany w tle (${got.total.toLocaleString("pl-PL")} szt.), bez przełączania planety` : "cichy odczyt nie wyszedł — ratuję bez czekania na hangar"}.`, "info");
+        } catch (e) { log(`[OBRONA] cichy odczyt hangaru [${a.key}] nie wyszedł (${e.message}) — ratuję bez czekania.`, "warn"); }
+        break;
+      }
       for (const a of actions) {
         if (a.kind === "recon") {
           // rekonesans nawiguje, wiec nigdy nie wolno mu wyprzedzic ratunku
