@@ -3169,5 +3169,51 @@ console.log("\n── 76. AUDYT 13.09: własny log nie jest paskiem, atak bez ze
 }
 
 
+console.log("\n── 77. NOC 13.09: odtworzenie incydentu na PRAWDZIWYCH danych z logu ──");
+{
+  // Właściciel: „czy teraz bot obroni flotę, gdyby powtórzył się identyczny atak?".
+  // Ten blok odtwarza tamtą noc co do minuty, z danych odczytanych z logu i pamięci bota:
+  // ewakuacja o 04:30:03 zostawia w hangarze 43 Gwiazdy Śmierci, ucieczka wisi w powietrzu
+  // z zawrotem na 05:19:39, DESTROY uderza o 05:37:46, a między 04:41 a 05:17 wraca osiem
+  // fal ekspedycji po 115–164 mln statków. Na wersji z tamtej nocy bot nie wysłał ANI JEDNEGO
+  // ratunku przez 68 minut — flotę uratował właściciel ręcznym Fleet Save o 05:44.
+  const T = (h, m, sec = 0) => new Date(2026, 8, 13, h, m, sec).getTime();
+  const K = "3:279:1";
+  const FALE = [[4, 41, 52, 115780047], [4, 58, 44, 127308326], [5, 8, 52, 148528594], [5, 11, 50, 148664824],
+    [5, 13, 18, 138117526], [5, 14, 46, 131728686], [5, 16, 14, 127790804], [5, 17, 41, 164163819]];
+  const stanO = (now) => ({
+    pairs: { [K]: { hasMoon: true, galaxy: 3, system: 279, position: 1 },
+      "3:279:11": { hasMoon: true, galaxy: 3, system: 279, position: 11 },
+      "3:279:12": { hasMoon: true, galaxy: 3, system: 279, position: 12 } },
+    hangars: { [`${K}|moon`]: { total: 43, at: T(4, 30, 3), ships: [{ type: "DEATH_STAR", qty: 43 }] } },
+    own: [], bar: null, active: { key: K, body: "moon" },
+    threats: [{ id: "d1", dst: K, dstBody: "moon", arriveAt: T(5, 37, 46), attack: true,
+      seenAt: T(4, 29, 36), lastSeenAt: now, source: "list", type: "DESTROY" }],
+    flights: [{ kind: "air", fromKey: K, fromBody: "moon", toKey: "3:279:11", toBody: "moon",
+      id: "lot0", sentAt: T(4, 30, 3), flightMs: 85283e3, recallAt: T(5, 19, 39), phase: "launched" }],
+    expected: FALE.filter(([h, m, sec]) => T(h, m, sec) <= now).map(([h, m, sec, ile], i) => ({
+      fromKey: K, fromBody: "moon", toKey: "3:279:16", sentAt: T(h, m, sec) - 40 * 60e3,
+      returnAt: T(h, m, sec), flightMs: 763e3, total: ile, pending: false, id: `e${i}` })),
+  });
+  const CHWILE = [[4, 42], [4, 59], [5, 9], [5, 20], [5, 31], [5, 36]];
+  let zRatunkiem = 0, zPushem = 0;
+  for (const [h, m] of CHWILE) {
+    const now = T(h, m);
+    const r = decide(stanO(now), CFG, now);
+    if (r.actions.some(a => a.kind === "fly" && a.fromKey === K)) zRatunkiem++;
+    if (r.alerts.some(a => a.push || a.blind || a.unknownPair)) zPushem++;
+  }
+  check(`77a: w KAŻDEJ z ${CHWILE.length} chwil tamtej nocy bot wysyła ratunek (było: 0)`,
+    zRatunkiem === CHWILE.length, `ratunków: ${zRatunkiem}/${CHWILE.length}`);
+  check(`77b: …i w każdej budzi właściciela (tamtej nocy nie obudził ani razu)`,
+    zPushem === CHWILE.length, `pushy: ${zPushem}/${CHWILE.length}`);
+  // kontrola: gdy fale NIE wróciły, rezerwa dalej zostaje w domu — v3.79.0 nietknięta
+  const bezFal = stanO(T(4, 35)); bezFal.expected = [];
+  const rBez = decide(bezFal, CFG, T(4, 35));
+  check("77c: (kontrola) bez wróconych fal rezerwa Gwiazd Śmierci zostaje w domu",
+    !rBez.actions.some(a => a.kind === "fly" && a.fromKey === K),
+    JSON.stringify(rBez.actions.map(a => [a.kind, a.why])).slice(0, 200));
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
