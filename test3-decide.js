@@ -2244,7 +2244,7 @@ console.log("\n── 57. WYKRYWANIE (audyt 04.09, partia 'wykrywanie') ──")
   const cichy = base({ barExcess: { active: false, count: 1, since: NOW - 90e3, spyType: true, spyHold: true }, threats: [] });
   const rc = decide(cichy, CFG, NOW);
   check("57c: przez wydłużony próg 'Type: Spy' właściciel dostaje alarm na telefon, nie ciszę",
-    rc.alerts.some(a => a.push === true && /sonda/.test(a.msg)), JSON.stringify(rc.alerts.map(a => a.msg)));
+    rc.alerts.some(a => a.push === true && /sonda/i.test(a.msg) && a.pushKey === "sonda"), JSON.stringify(rc.alerts.map(a => [a.pushKey, a.msg])));
   check("57c2: …ale flotą jeszcze nie ruszamy", !rc.actions.some(a => a.kind === "fly"), JSON.stringify(rc.actions));
   const zaWczesnie = base({ barExcess: { active: false, count: 1, since: NOW - 30e3, spyType: true, spyHold: true }, threats: [] });
   check("57c3: przed zwykłym progiem (60 s) alarm jeszcze nie idzie", !decide(zaWczesnie, CFG, NOW).alerts.some(a => a.push === true), JSON.stringify(decide(zaWczesnie, CFG, NOW).alerts.map(a => a.msg)));
@@ -3213,6 +3213,23 @@ console.log("\n── 77. NOC 13.09: odtworzenie incydentu na PRAWDZIWYCH danych
   check("77c: (kontrola) bez wróconych fal rezerwa Gwiazd Śmierci zostaje w domu",
     !rBez.actions.some(a => a.kind === "fly" && a.fromKey === K),
     JSON.stringify(rBez.actions.map(a => [a.kind, a.why])).slice(0, 200));
+}
+
+console.log("\n── 78. SKAN TO NIE ATAK: tytuł powiadomienia ma mówić prawdę (zgłoszenie 13.09 14:54) ──");
+{
+  // Właściciel: „dostałem powiadomienie ATAK, sprawdziłem — ataków nie było, tylko skany".
+  // Treść alarmu była uczciwa („najbliższy dolot to sonda, flotą nie ruszam"), ale szła
+  // kanałem ATAK: tytuł „⚔️ ATAK (Genesis)", priorytet urgent, głos „Uwaga! Atak na bazę!".
+  // Tym samym kanałem przychodzi jedyne ostrzeżenie o realnym uderzeniu, więc fałszywy tytuł
+  // uczy go ignorować — ta sama choroba co v3.85.0 i v3.89.0.
+  check("78a: (źródło) alarm o sondzie ma własny kanał powiadomień, nie kanał ataku",
+    /pushKey: "sonda"/.test(src) && /kind === "SONDA"/.test(src) && /Skan \(Genesis\)/.test(src));
+  check("78b: (źródło) …i nie krzyczy głosem „Atak na bazę”",
+    !/kind === "SONDA"[\s\S]{0,200}?speak\(/.test(src));
+  check("78c: (źródło) rodzaj wpisu wybierany po pushKey (ślepota→BŁĄD, sonda→SONDA, reszta→ATAK)",
+    /a\.pushKey === "slepota" \? "BŁĄD" : a\.pushKey === "sonda" \? "SONDA" : "ATAK"/.test(src));
+  check("78d: (źródło) treść mówi wprost, że to skan i że flota zostaje",
+    /najbliższy dolot to SONDA \(skan\), więc flotą nie ruszam/.test(src));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");

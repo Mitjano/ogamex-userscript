@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.93.0
+// @version      3.94.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.93.0";
+  const VERSION = "3.94.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -246,6 +246,9 @@
       else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK", m)) return; this.push("🛟 Flota ewakuowana (Genesis)", m, "default", "shield"); }
       else if (kind === "FS" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("FS", m)) return; this.push("🌙 Fleet Save (Genesis)", m, "min", "crescent_moon"); }
       else if (kind === "BŁĄD") { if (this.throttled("BŁĄD", m)) return; this.push("⚠️ Obrona: BŁĄD (Genesis)", m, "high", "warning"); }
+      // v3.94.0: skan to NIE atak — własny tytuł, priorytet „default" i BEZ komunikatu
+      // głosowego. Tytuł „ATAK" ma znaczyć atak, inaczej przestaje znaczyć cokolwiek.
+      else if (kind === "SONDA") { if (this.throttled("SONDA", m)) return; this.push("🛰 Skan (Genesis) — flotą nie ruszam", m, "default", "satellite"); }
       else if (kind === "EKO") { if (this.throttled("EKO", m)) return; this.push("🧰 Ekonomia stoi (Genesis)", m, "low", "gear"); }
       else if (kind === "POWRÓT" && /wróci|wysłan/i.test(m)) { if (this.throttled("POWRÓT", m)) return; this.push("✅ Flota w domu (Genesis)", m, "min", "white_check_mark"); }
     },
@@ -2338,8 +2341,14 @@
     // nie ma prawa wstrzymać INFORMACJI. Po zwykłym progu (60 s) właściciel dostaje push,
     // więc pięć minut wstrzymania nigdy nie jest pięcioma minutami ciszy.
     else if (s.barExcess && s.barExcess.count > 0 && s.barExcess.spyHold && now - (s.barExcess.since || now) >= (cfg.barHoldMs || 60e3)) {
-      alerts.push({ key: "pasek", level: "error", push: true, throttleMs: 5 * 60e3,
-        msg: `pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — ratunku w ciemno JESZCZE nie wysyłam, bo najbliższy dolot na pasku to sonda. Jeśli za sondą idzie flota, ratuj ręcznie` });
+      // v3.94.0 (zgłoszenie właściciela 13.09 14:54: „dostałem ATAK, sprawdziłem — były tylko
+      // skany") — CO BYŁO NIE TAK: treść tego alarmu była UCZCIWA („to sonda, nie ruszam flotą"),
+      // ale szedł kanałem `ATAK`, czyli z tytułem „⚔️ ATAK (Genesis)", priorytetem `urgent`
+      // i komunikatem głosowym „Uwaga! Atak na bazę!". Właściciel sprawdzał grę, nie znajdował
+      // ataku i uczył się, że ten tytuł bywa nieprawdziwy — a tym samym kanałem przychodzi
+      // jedyne ostrzeżenie o realnym uderzeniu. Skan ma odtąd własny tytuł i niższy priorytet.
+      alerts.push({ key: "pasek", level: "warn", push: true, pushKey: "sonda", throttleMs: 5 * 60e3,
+        msg: `pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — najbliższy dolot to SONDA (skan), więc flotą nie ruszam. Jeśli za sondą idzie atak, zobaczysz osobny alarm; możesz też ratować ręcznie` });
     }
     // v3.7.0 (audyt 28.08): zagrożenie na kolonię, której NIE MA na pasku planet
     // (strona bez sidebara, świeża kolonia, literówka w koordach) nie może zniknąć
@@ -4788,7 +4797,7 @@
           // Alarm „jestem ślepy" idzie jako BŁĄD, nie ATAK: `Notifier` dławi po rodzaju
           // i współrzędnych, więc wspólny rodzaj sprawiał, że ostrzeżenie o ślepocie
           // WYPYCHAŁO z telefonu ważniejszy komunikat o ataku (np. że celem jest księżyc).
-          Journal.add(a.pushKey === "slepota" ? "BŁĄD" : "ATAK", a.msg);
+          Journal.add(a.pushKey === "slepota" ? "BŁĄD" : a.pushKey === "sonda" ? "SONDA" : "ATAK", a.msg);
         }
       }
       // Samokontrola to przegląd okresowy, nie sprawdzian na każdym przebiegu: raz na 5 minut.
