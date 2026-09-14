@@ -207,7 +207,12 @@ console.log("\n── 13. REKONESANS nie wchodzi w drogę obronie (v3.0.1) ─�
   check("rekonesans ma własny dławik (nie nawiguje co tick)", /now - \(st\.at \|\| 0\) < 90e3\) return false/.test(recon));
   // v3.68.1: bramka pomija akcje FS (te wiszą w `actions`, dopóki flota stoi w domu,
   // i gasiły ekonomię bezterminowo) oraz pyta o FAKTYCZNIE trwającą misję.
-  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu (FS nie blokuje ekonomii)", /if \(!Fly\.mission\(\) && !actions\.some\(a => \(a\.kind === "fly" && !a\.fs\) \|\| a\.kind === "recall"\)\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
+  // v3.95.0: warunek „ekonomia wolna" wyliczany raz do `ekoWolne` (ten sam kształt: lot
+  // ratunkowy albo zawrót blokują, Fleet Save nie), bo korzysta z niego także jednorazowe
+  // wywołanie księżyców stojące wyżej.
+  check("pętla woła rekonesans TYLKO gdy nie ma lotu/zawrotu (FS nie blokuje ekonomii)",
+    /const ekoWolne = !actions\.some\(a => \(a\.kind === "fly" && !a\.fs\) \|\| a\.kind === "recall"\);/.test(src)
+    && /if \(!moonRuszyl && !Fly\.mission\(\) && ekoWolne\) \{[\s\S]{0,200}?await Recon\.tick\(s\)/.test(src));
   check("hangar odczytywany przy każdej wizycie na /fleet", (src.match(/page\(\) === "fleet"\) Hangar\.scan\(\)/g) || []).length >= 2);
 }
 
@@ -834,7 +839,14 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("złom: dymek bez ilości (pole puste) = nie wysyłamy w ciemno", /hit\.viaTip && !\(hit\.amount > 0\)/.test(dm));
   check("złom: okno anty-duplikat 3 min, nie 20 s fal ekspedycji", /m\.kind === "debris" \? 3 \* 60e3/.test(src));
   check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
-  check("kolejność ekonomii: rekonesans → bonus → księżyce → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Moon\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  // v3.95.0: KSIĘŻYCE wyjęte z łańcucha ekonomii — odbudowa utraconego księżyca idzie także
+  // pod ostrzałem (to obrona: flota wraca na gołą planetę), a stawianie nowych czeka na ciszę
+  // jak dotąd. Moon wołany DOKŁADNIE RAZ na przebieg, przed resztą ekonomii.
+  check("kolejność ekonomii: rekonesans → bonus → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  check("księżyce: jedno wywołanie na przebieg, odbudowa nie czeka na ciszę obrony",
+    /let moonRuszyl = false;/.test(src)
+    && /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne\)\)/.test(src)
+    && /if \(!moonRuszyl && !Fly\.mission\(\) && ekoWolne\)/.test(src));
   check("księżyce: domyślnie WŁĄCZONE, cel NAJMNIEJSZA średnica (v3.67.0: koszt pomijalny, nie inwestycja)", /moon: \{ enabled: true, maxMetalShare: 0\.25, minKm: 1000/.test(src));
   check("księżyce: sufit udziału metalu, średnica NAJMNIEJSZA najpierw (rosnąco, nie w dół od największej)", /maxMetalShare/.test(src) && /KM: \[8944/.test(src) && /\.sort\(\(a, b\) => a - b\)/.test(src) && /c <= budget/.test(src));
   check("księżyce: limit prób na dobę i limit nawigacji na próbę", /maxTries24h/.test(src) && /navs \|\| 0\) >= 4/.test(src));
@@ -3230,6 +3242,27 @@ console.log("\n── 78. SKAN TO NIE ATAK: tytuł powiadomienia ma mówić praw
     /a\.pushKey === "slepota" \? "BŁĄD" : a\.pushKey === "sonda" \? "SONDA" : "ATAK"/.test(src));
   check("78d: (źródło) treść mówi wprost, że to skan i że flota zostaje",
     /najbliższy dolot to SONDA \(skan\), więc flotą nie ruszam/.test(src));
+}
+
+console.log("\n── 79. ODBUDOWA I SONDY POD OSTRZAŁEM (nalot 14.09 03:2x) ──");
+{
+  // (a) Właściciel: „lecą kolejne ataki i bot nie odbudował moona". Przy fali ataków w KAŻDYM
+  // przebiegu jest jakaś akcja lotu, więc `Moon.tick` — stojący za tą samą bramką co ekspedycje
+  // — nie startował ani razu. Para bez księżyca to stan OBRONNY: wracające fale lądują na gołej
+  // planecie widocznej dla falangi. Odbudowa idzie odtąd poza kolejką ekonomii; jedyny warunek
+  // to brak TRWAJĄCEJ misji lotu (przełączanie planety w środku ratunku wyrwałoby stronę).
+  check("79a: (źródło) odbudowa rusza także pod ostrzałem, nowe księżyce dopiero w ciszy",
+    /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne\)\) \{[\s\S]{0,160}?Moon\.tick\(s\)/.test(src));
+  check("79b: (źródło) …i nie podlega bramkom rytmu człowieka, którym podlegają nowe księżyce",
+    /if \(!this\.doOdbudowy\(s\) && Human\.economyAllowed\(s, "moon"\)\) return false;/.test(src));
+
+  // (b) Bot ewakuował kolonie, na które leciał wyłącznie SKAN. Wiersz sondy z zerowym licznikiem
+  // dostawał `arriveAt = teraz`, wypadał z `live` w barExcessState i liczył się jako
+  // NIEROZPOZNANA nadwyżka — napastnik skanujący pięć kolonii produkował pięć duchów.
+  check("79c: (źródło) sonda bez czytelnego odliczania też dostaje realny czas dolotu",
+    /else if \(r\.spy && etaSec <= 0\)/.test(src) && /etaSec = 60;/.test(src));
+  check("79d: (źródło) …i zostawia ślad, zamiast po cichu udawać nadwyżkę",
+    /żeby nie udawał nadwyżki na pasku/.test(src));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");

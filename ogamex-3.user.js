@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.94.0
+// @version      3.95.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.94.0";
+  const VERSION = "3.95.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1144,6 +1144,18 @@
             log(`[ATAK DOM] wrogi wiersz BEZ czytelnego odliczania (${r.type}) — traktuję jak uderzenie za ${etaSec}s, żeby nie zniknął z obrony. Zrzut: ${r.html}`, "error");
             Journal.add("ATAK", `Wrogi wiersz bez czytelnego czasu dolotu (${r.type} → [${r.dst || "?"}]) — ratuję tak, jakby uderzenie było tuż-tuż. Sprawdź grę.`);
           }
+        } else if (r.spy && etaSec <= 0) {
+          // v3.95.0 (nalot 14.09 03:2x, zgłoszenie właściciela „bot próbuje przenosić flotę ze
+          // WSZYSTKICH moonów") — CO SIĘ PSUŁO: v3.92.0 uratowała przed zniknięciem ATAKI bez
+          // czytelnego odliczania, ale SOND nie objęła. Wiersz sondy z `data-remaining-seconds="0"`
+          // dostawał `arriveAt = teraz`, więc wypadał z `live` w `barExcessState` — i choć bot
+          // miał go na liście, liczył go jako NIEROZPOZNANĄ nadwyżkę na pasku. Napastnik skanujący
+          // pięć kolonii naraz produkował więc pięć „obcych lotów bez celu", a ślepy alarm
+          // ewakuował kolonie, na które leciał wyłącznie SKAN. Sonda ma znany cel i znany rodzaj;
+          // brak licznika nie może z niej robić ducha.
+          etaSec = 60;
+          if (!Once.said(`noetaspy|${r.dst || "?"}`, 30 * 60e3))
+            log(`[LOTY] wiersz sondy (${r.type} → [${r.dst || "?"}]) bez czytelnego odliczania — liczę go jako rozpoznany lot, żeby nie udawał nadwyżki na pasku.`, "info");
         }
         const arriveAt = (r.readAt || now) + etaSec * 1000;
         const k = r.id || `${r.dst}|${r.attack ? "A" : "S"}|${Math.round(arriveAt / 20000)}`;
@@ -2615,7 +2627,12 @@
       // v3.68.10 (audyt 04.09, obrona-fs#5): odbudowa księżyca nie wysyła ŻADNEGO statku,
       // więc trwający Fleet Save jej nie dotyczy — a właśnie w trakcie FS napastnik
       // najchętniej strzela w księżyc (flota poza domem). Reszta pauz (przerwy, cisza) obowiązuje.
-      if (Human.economyAllowed(s, "moon")) return false;
+      // v3.95.0 (nalot 14.09, właściciel: „lecą kolejne ataki i bot nie odbudował moona"):
+      // ODBUDOWA utraconego księżyca nie jest ekonomią — dopóki para stoi bez księżyca,
+      // wracająca flota ląduje na gołej planecie widocznej dla falangi. Bramki rytmu
+      // człowieka (przerwy, cisza nocna, „grasz") dotyczą stawiania NOWYCH księżyców;
+      // odbudowa idzie mimo nich, tak samo jak od v3.90.0 idzie mimo wyłącznika w panelu.
+      if (!this.doOdbudowy(s) && Human.economyAllowed(s, "moon")) return false;
       const cur = this.st();
       const key0 = cur.m ? cur.m.key : this.target(s, cur);
       if (!key0) {
@@ -5066,8 +5083,24 @@
           return;
         }
       } else if (barAge < (CFG.barMaxAgeMs || 3 * 60e3) && (Store.get("bar_nav", null) || {}).n) Store.set("bar_nav", { at: 0, n: 0 });
-      if (!Fly.mission() && !actions.some(a => (a.kind === "fly" && !a.fs) || a.kind === "recall")) {
-        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Moon.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
+      // v3.95.0: ODBUDOWA KSIĘŻYCA NIE CZEKA NA KONIEC ALARMU. Nalot 14.09 03:2x pokazał, że
+      // przy fali ataków bot NIGDY nie dochodzi do ekonomii — w każdym przebiegu jest jakaś
+      // akcja lotu, więc `Moon.tick` (stojący za tą samą bramką co ekspedycje) nie startuje
+      // ani razu. Tyle że para bez księżyca to stan OBRONNY: wracające fale lądują na gołej
+      // planecie, widocznej dla falangi, i dokładnie po to powstała reguła z v3.90.0.
+      // Warunek zostaje jeden, twardy: nie wchodzimy w to, gdy trwa MISJA lotu — wtedy
+      // przełączanie planety wyrwałoby stronę w środku ratunku.
+      // Moon jest wołany DOKŁADNIE RAZ na przebieg i wyjęty z łańcucha ekonomii: odbudowa
+      // idzie także pod ostrzałem, stawianie nowych księżyców — dopiero gdy obrona nie ma nic
+      // do roboty. Dwa wywołania w jednym przebiegu zjadały limit prób i rwały sekwencję
+      // nawigacji formularza (złapane przez E2E 43b).
+      const ekoWolne = !actions.some(a => (a.kind === "fly" && !a.fs) || a.kind === "recall");
+      let moonRuszyl = false;
+      if (!Fly.mission() && (Object.keys(s.moonLost || {}).length || ekoWolne)) {
+        try { moonRuszyl = await Moon.tick(s); } catch (e) { log(`[KSIĘŻYC] odbudowa nie wyszła: ${e.message}`, "warn"); }
+      }
+      if (!moonRuszyl && !Fly.mission() && ekoWolne) {
+        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
         catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
       }
       Store.set("tick_fails", 0);
