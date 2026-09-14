@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.95.1
+// @version      3.95.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.95.1";
+  const VERSION = "3.95.2";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -586,9 +586,11 @@
   const PlanetBar = {
     _coords(el) { const m = (el?.textContent || "").replace(/\s+/g, " ").match(/(\d+):(\d+):(\d+)/); return m ? { galaxy: +m[1], system: +m[2], position: +m[3] } : null; },
     moonOf(planetEl) { let n = planetEl ? planetEl.nextElementSibling : null; while (n && !(n.classList && n.classList.contains("moon-select"))) { if (n.classList && n.classList.contains("planet-select")) return null; n = n.nextElementSibling; } return n || null; },
-    pairs() {
+    // v3.95.2 (audyt odbudowy, P1): parser przyjmuje DOWOLNY dokument, żeby dało się przeczytać
+    // pasek planet także ze strony pobranej w tle. Domyślnie — żywa strona, jak dotąd.
+    pairs(doc) {
       const out = [];
-      for (const p of document.querySelectorAll("a.planet-select, .planet-select")) {
+      for (const p of (doc || document).querySelectorAll("a.planet-select, .planet-select")) {
         const c = this._coords(p); if (!c) continue;
         out.push({ key: key(c), ...c, hasMoon: !!this.moonOf(p), name: (p.textContent || "").replace(/\[.*?\]/, "").replace(/\s+/g, " ").trim().slice(0, 30) });
       }
@@ -676,7 +678,14 @@
         const b = this.parse((doc.body && doc.body.textContent) || "");
         if (!b) return null;
         const fullPage = !!doc.querySelector("a.planet-select, .planet-select, #planetList");
-        return (b.counter || (fullPage && b.total === 0)) ? { ...b, counter: true } : null;
+        // v3.95.2 (audyt odbudowy, P1): ta sama odpowiedź niesie PASEK PLANET, a bot dotąd go
+        // wyrzucał. Utrata księżyca była więc zauważana dopiero przy realnym przeładowaniu
+        // strony — czyli nawet 10 minut później (keepalive), a w tym czasie nie szedł push,
+        // nie startowała ewakuacja z gołej planety ani odbudowa. Skoro i tak pobieramy pełną
+        // stronę co ~100 s, niech od razu powie, które pary mają księżyc.
+        let pary = null;
+        try { if (fullPage) pary = PlanetBar.pairs(doc); } catch {}
+        return (b.counter || (fullPage && b.total === 0)) ? { ...b, counter: true, pary } : null;
       } catch { return null; }
     },
   };
@@ -1189,6 +1198,21 @@
           const tk = Date.now();
           s.bar = { ...kb, at: tk, readAt: tk, src: "fetch" };
           if (!Once.said("bar_keep_log", 30 * 60e3)) log(`[OBRONA] pasek misji odświeżony w tle (fetch /home, bez przeładowania strony): ${kb.foreign} obcych lotów — ślepy alarm nie gaśnie, gdy bot stoi bezczynnie.`, "info");
+          // v3.95.2 (audyt odbudowy, P1): ta sama odpowiedź niesie pasek planet — wyłapujemy
+          // z niej UTRATĘ KSIĘŻYCA, nie czekając na przeładowanie strony. Bez tego znacznik
+          // `moonLost` potrafił powstać nawet 10 minut po zniszczeniu (keepalive), a przez ten
+          // czas nie szedł push, nie ruszała ewakuacja z gołej planety ani odbudowa.
+          // Tylko w tę stronę: „nagle ma księżyc" zostawiamy żywej stronie, żeby chwilowo
+          // niepełny pasek z odpowiedzi nie skasował trybu awaryjnego przedwcześnie.
+          for (const p of (kb.pary || [])) {
+            const had = s.pairs[p.key] && s.pairs[p.key].hasMoon;
+            if (had && !p.hasMoon && !s.moonLost[p.key]) {
+              s.moonLost[p.key] = tk;
+              s.pairs[p.key] = { ...s.pairs[p.key], hasMoon: false };
+              log(`[KSIĘŻYC] [${p.key}] stracił księżyc — zobaczyłem to w tle, bez przeładowania strony.`, "warn");
+              Journal.add("BŁĄD", `KSIĘŻYC ZNISZCZONY: [${p.key}] — flota wracająca na tę parę wyląduje na gołej planecie (widoczna dla falangi). Ewakuuję automatycznie.`);
+            }
+          }
         }
       }
       s.barExcess = barExcessState(s.bar, s.threats, Store.get("bar_excess", null), now, CFG);
@@ -2578,7 +2602,14 @@
       // v3.67.0 (E7): pomiń pary, których nie wolno teraz próbować (limit 3/24h
       // albo karencja 10 min po nieudanej próbie) — inaczej pierwsza zablokowana
       // para wstrzymywała odbudowę WSZYSTKICH pozostałych bezksiężycowych par.
-      const tylkoOdbudowa = this.rebuildOnly();
+      // v3.95.2 (audyt odbudowy, znalezione przez weryfikatora przy okazji P0): odkąd v3.95.1
+      // przepuszcza `tick` pod ostrzałem, sam filtr „tylko odbudowa" musi objąć TAKŻE przypadek
+      // włączonego modułu. Inaczej bot z `moon.enabled:true` dostawał pod ostrzałem zielone
+      // światło na wybór DOWOLNEJ bezksiężycowej pary i mógł wydać metal na NOWY księżyc
+      // w środku nalotu — wbrew temu, co deklaruje komentarz przy bramce. Pod atakiem
+      // obsługujemy wyłącznie pary, które księżyc STRACIŁY.
+      const podAtakiem = (s.threats || []).some(t => t.attack && t.arriveAt > Date.now());
+      const tylkoOdbudowa = this.rebuildOnly() || podAtakiem;
       for (const [k, p] of Object.entries(s.pairs || {})) {
         if (p.hasMoon) continue;
         if (tylkoOdbudowa && !((s.moonLost || {})[k])) continue;

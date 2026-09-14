@@ -3261,6 +3261,16 @@ console.log("\n── 79. ODBUDOWA I SONDY POD OSTRZAŁEM (nalot 14.09 03:2x) �
     /canTry\(st, k, odbudowa\)/.test(src)
     && /const limit = odbudowa \? 20 : \(CFG\.moon\.maxTries24h \|\| 3\);/.test(src)
     && /const karencja = odbudowa \? 60e3 : 10 \* 60e3;/.test(src));
+  check("79h: (źródło) cichy fetch /home wyłapuje utratę księżyca bez przeładowania strony",
+    /if \(fullPage\) pary = PlanetBar\.pairs\(doc\);/.test(src)
+    && /for \(const p of \(kb\.pary \|\| \[\]\)\) \{[\s\S]{0,300}?s\.moonLost\[p\.key\] = tk;/.test(src));
+  check("79i: (źródło) …ale TYLKO utratę — „nagle ma księżyc” zostaje przy żywej stronie",
+    (() => { const i = src.indexOf("for (const p of (kb.pary || []))"); if (i < 0) return false;
+      const blok = src.slice(i, i + 900);
+      return /had && !p\.hasMoon && !s\.moonLost\[p\.key\]/.test(blok) && !/delete s\.moonLost/.test(blok) && !/hasMoon: true/.test(blok); })());
+  check("79g: (źródło) pod ostrzałem bot obsługuje TYLKO pary, które księżyc straciły",
+    /const podAtakiem = \(s\.threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > Date\.now\(\)\);/.test(src)
+    && /const tylkoOdbudowa = this\.rebuildOnly\(\) \|\| podAtakiem;/.test(src));
   check("79b: (źródło) …i nie podlega bramkom rytmu człowieka, którym podlegają nowe księżyce",
     /if \(!this\.doOdbudowy\(s\) && Human\.economyAllowed\(s, "moon"\)\) return false;/.test(src));
 
