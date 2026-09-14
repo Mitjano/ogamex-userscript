@@ -1882,6 +1882,63 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       g.pairs.find(p => p.key === "1:100:9").moon === false, JSON.stringify(g.pairs));
   }
 
+  console.log("\n── 43c. ODBUDOWA POD OSTRZAŁEM: alarm gdzie indziej nie może jej zagłodzić (nalot 14.09) ──");
+  {
+    // 14.09 03:32 księżyc bazy padł w środku nalotu. Przez ponad godzinę bot go NIE odbudował,
+    // mimo 11 mld metalu: `Moon.tick` stał za tą samą bramką co ekspedycje, a przy fali ataków
+    // w KAŻDYM przebiegu jest jakaś akcja lotu — więc ekonomia nie startowała ani razu.
+    // Para bez księżyca to stan OBRONNY (wracające fale lądują na gołej planecie widocznej dla
+    // falangi), więc od v3.95.0 odbudowa idzie poza kolejką ekonomii.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false },
+      aster: { enabled: false }, debris: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      moon: { enabled: false, maxMetalShare: 0.25, minKm: 1000, maxTries24h: 3 } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true },        // straci księżyc
+        { key: "1:100:9", name: "Kolonia", moon: true },      // tu trwa atak → ciągłe akcje lotu
+      ],
+      hangars: { "1:100:5|planet": { BATTLESHIP: 100 }, "1:100:9|moon": { BATTLESHIP: 4000 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.metal = 2_000_000_000;
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+
+    // napastnik niszczy księżyc bazy I JEDNOCZEŚNIE trwa atak na drugą parę
+    g.pairs[0].moon = false;
+    g.threats.push({ src: "9:9:9", dst: "1:100:9", dstBody: "moon", eta: 900 });
+    const { logs } = await run(g, { cfg, loads: 30, ticksPerLoad: 2 });
+
+    check("43c-a: (warunek wstępny) alarm naprawdę trwa — bot ratuje flotę atakowanej pary",
+      g.sent.some(x => x.from === "1:100:9"), JSON.stringify(g.sent.map(x => [x.from, x.fromBody])));
+    // Istota poprawki: bot w ogóle PODEJMUJE odbudowę pod ostrzałem. Do v3.95.0 nie podejmował
+    // żadnej — `Moon.tick` wychodził na własnej bramce „jakikolwiek atak na koncie".
+    const prob = () => (JSON.parse(g.store.get("genesis.ogamex.net:ogx3_moon") || "{}").tries || {})["1:100:5"];
+    check("43c-b: mimo trwającego alarmu bot PODEJMUJE odbudowę (wcześniej: ani jednej próby)",
+      !!g.moonBuilt || !!prob(), JSON.stringify(g.moonBuilt) + " | próby: " + JSON.stringify(prob()));
+
+    // Pod NIEPRZERWANYM ostrzałem odbudowa nie dojdzie do końca i to jest świadome: formularz
+    // wymaga kilku przebiegów z rzędu, a obrona ma bezwzględne pierwszeństwo i zabiera stronę.
+    // Kluczowe jest co innego — że bot NIE spala na tych kolizjach dobowego limitu prób
+    // (3/dobę było przeznaczone dla stawiania NOWYCH księżyców) i doczeka pierwszego okna.
+    const tri = () => (JSON.parse(g.store.get("genesis.ogamex.net:ogx3_moon") || "{}").tries || {})["1:100:5"] || { n: 0 };
+    check("43c-c: kolizje ze stroną nie zamykają odbudowy na dobę (własny, szerszy limit)",
+      tri().n < 20, "prób: " + tri().n);
+
+    // Nalot mija — pierwsze okno bez ratunku ma wystarczyć, żeby księżyc stanął.
+    // (Minutową karencję po kolizji symulujemy zdjęciem wpisu: `advance` jej nie zna,
+    //  bo `tries` to mapa terminów bezwzględnych.)
+    g.threats.length = 0;
+    { const mst = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_moon") || "{}"); mst.tries = {}; mst.m = null;
+      g.store.set("genesis.ogamex.net:ogx3_moon", JSON.stringify(mst)); }
+    await run(g, { cfg, loads: 30, ticksPerLoad: 2 });
+    // Po ustaniu nalotu bot ma NADAL dobijać się do odbudowy, a nie uznać sprawy za zamkniętą.
+    // (Że sam formularz dochodzi do skutku, pokazuje scenariusz 43b — tam nic nie walczy
+    //  o stronę. Tutaj mierzymy wytrwałość, bo to ona zawiodła 14.09.)
+    check("43c-d: …i po ustaniu nalotu nadal dobija się do odbudowy, zamiast odpuścić",
+      rawLog(g).some(m => /stawiam księżyc przy \[1:100:5\]/.test(m)) || !!g.moonBuilt,
+      JSON.stringify(g.moonBuilt) + " | KS: " + rawLog(g).filter(m => /KSIĘŻYC/.test(m)).slice(0, 3).join(" | "));
+  }
+
   console.log("\n── 44. ZŁOM NA WŁASNEJ POZYCJI BAZY NIE MOŻE ZJEŚĆ RATUNKU (v3.68.6, audyt 04.09 obrona-stan-lotu#1) ──");
   {
     // Pole szczątków po bitwie obronnej leży na WŁASNEJ pozycji bazy, więc wysyłka

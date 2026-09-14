@@ -2951,7 +2951,9 @@ console.log("\n── 72. ODBUDOWA KSIĘŻYCA: nieudane podejście TEŻ jest pr�
   // opiera się właśnie na nim. Następny przebieg (20 s później) zaczynał od zera: przełącz
   // planetę, otwórz formularz, porzuć. W logu cztery takie cykle w piętnaście sekund,
   // w trakcie których właściciel sam klikał po grze — czyli bot wyrywał mu planetę.
-  const canTry = new Function("CFG", "return function (st, k) {" + bodyOf("canTry(st, k) {") + "};")({ moon: { maxTries24h: 3 } });
+  // v3.95.1: `canTry` przyjmuje trzeci argument (odbudowa) — własny, szerszy limit prób.
+  const canTryRaw = new Function("CFG", "return function (st, k, odbudowa) {" + bodyOf("canTry(st, k, odbudowa) {") + "};")({ moon: { maxTries24h: 3 } });
+  const canTry = (st, k) => canTryRaw(st, k, false);
   const noteTry = new Function("return function (st, k) {" + bodyOf("noteTry(st, k) {") + "};")();
   const zapisz = { save: () => {} };
 
@@ -3253,6 +3255,12 @@ console.log("\n── 79. ODBUDOWA I SONDY POD OSTRZAŁEM (nalot 14.09 03:2x) �
   // to brak TRWAJĄCEJ misji lotu (przełączanie planety w środku ratunku wyrwałoby stronę).
   check("79a: (źródło) odbudowa rusza także pod ostrzałem, nowe księżyce dopiero w ciszy",
     /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne\)\) \{[\s\S]{0,160}?Moon\.tick\(s\)/.test(src));
+  check("79e: (źródło) trwający ATAK nie blokuje odbudowy — blokuje tylko stawianie nowych",
+    /if \(!this\.doOdbudowy\(s\) && \(s\.threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > now\)\) return false;/.test(src));
+  check("79f: (źródło) odbudowa ma własny, szerszy limit prób i krótszą karencję niż nowe księżyce",
+    /canTry\(st, k, odbudowa\)/.test(src)
+    && /const limit = odbudowa \? 20 : \(CFG\.moon\.maxTries24h \|\| 3\);/.test(src)
+    && /const karencja = odbudowa \? 60e3 : 10 \* 60e3;/.test(src));
   check("79b: (źródło) …i nie podlega bramkom rytmu człowieka, którym podlegają nowe księżyce",
     /if \(!this\.doOdbudowy\(s\) && Human\.economyAllowed\(s, "moon"\)\) return false;/.test(src));
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.95.0
+// @version      3.95.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.95.0";
+  const VERSION = "3.95.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -2515,11 +2515,20 @@
     KM: [8944, 8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000],
     st() { const d = { tries: {}, m: null }; return { ...d, ...(Store.get("moon", d) || d) }; },
     save(v) { Store.set("moon", v); },
-    canTry(st, k) {
+    // v3.95.1 (E2E 43c): sufit 3 prób na dobę i 10-minutowa karencja powstały dla STAWIANIA
+    // nowych księżyców — to wydatek, więc ma być rzadki i ostrożny. ODBUDOWA jest czymś innym:
+    // nie wysyła floty, a para bez księżyca to stan obronny. Pod ostrzałem pierwsze próby
+    // często przegrywają walkę o stronę z ratunkiem (obrona ma bezwzględny priorytet i tak ma
+    // zostać), więc przy tamtych limitach trzy kolizje w kwadrans zamykały odbudowę na dobę —
+    // dokładnie to stało się 14.09. Odbudowa dostaje własny, szerszy limit i krótszą karencję,
+    // żeby zdążyła trafić w pierwsze okno bez ratunku.
+    canTry(st, k, odbudowa) {
       const e = (st.tries || {})[k];
       if (!e) return true;
       if (Date.now() - e.at > 24 * 3600e3) return true;
-      return e.n < (CFG.moon.maxTries24h || 3) && Date.now() - e.at > 10 * 60e3;
+      const limit = odbudowa ? 20 : (CFG.moon.maxTries24h || 3);
+      const karencja = odbudowa ? 60e3 : 10 * 60e3;
+      return e.n < limit && Date.now() - e.at > karencja;
     },
     noteTry(st, k) {
       const t = st.tries || (st.tries = {});
@@ -2573,7 +2582,7 @@
       for (const [k, p] of Object.entries(s.pairs || {})) {
         if (p.hasMoon) continue;
         if (tylkoOdbudowa && !((s.moonLost || {})[k])) continue;
-        if (st && !this.canTry(st, k)) continue;
+        if (st && !this.canTry(st, k, !!((s.moonLost || {})[k]))) continue;
         return k;
       }
       return null;
@@ -2584,7 +2593,17 @@
       // bramki każdy przebieg schodziłby do wyboru celu i wracał z niczym.
       if (this.rebuildOnly() && !this.doOdbudowy(s) && !this.st().m) return false;
       const now = Date.now();
-      if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
+      // v3.95.1 (nalot 14.09, złapane przez E2E 43c) — CO ZOSTAŁO PO v3.95.0: wyjęcie modułu
+      // z kolejki ekonomii nie wystarczyło, bo `tick` ma WŁASNĄ bramkę: przy jakimkolwiek ataku
+      // na koncie wychodził natychmiast. A księżyc ginie właśnie w trakcie nalotu — czyli
+      // bramka gasła dokładnie wtedy, kiedy odbudowa jest najbardziej potrzebna, i czekała
+      // do końca ostrzału (14.09: ponad godzina z 11 mld metalu w kasie).
+      // ODBUDOWA utraconego księżyca idzie mimo trwających ataków: nie wysyła ani jednego
+      // statku, a para bez księżyca to stan obronny (wracające fale lądują na gołej planecie
+      // widocznej dla falangi). Stawianie NOWYCH księżyców czeka na ciszę jak dotąd —
+      // to jest wydatek, nie obrona. `Fly.mission()` wyżej dalej chroni przed przełączaniem
+      // planety w środku ratunku.
+      if (!this.doOdbudowy(s) && (s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
       const st = this.st();
       const m = st.m;
       // ── weryfikacja poprzedniej próby: para ma już księżyc? ──
@@ -2618,9 +2637,10 @@
         // liczy się do sufitu 3/24 h i uruchamia te same 10 minut ciszy co próba zakończona
         // odczytem ceny. Sama odbudowa nic nie traci — księżyc nie ucieknie przez 10 minut.
         if ((m.navs || 0) >= 4) {
+          const odbudowa = !!((s.moonLost || {})[m.key]);
           const n = this.noteTry(st, m.key);
           st.m = null; this.save(st);
-          log(`[KSIĘŻYC] 4 nawigacje bez efektu przy [${m.key}] — odpuszczam (próba ${n}/${CFG.moon.maxTries24h || 3}) i czekam 10 min, żeby nie przestawiać planety w kółko.`, "warn");
+          log(`[KSIĘŻYC] 4 nawigacje bez efektu przy [${m.key}] — odpuszczam (próba ${n}) i czekam, żeby nie przestawiać planety w kółko. ${odbudowa ? "To ODBUDOWA po stracie: wrócę za minutę, aż trafię w okno bez ratunku." : `Limit ${CFG.moon.maxTries24h || 3}/dobę.`}`, "warn");
           return false;
         }
       } else if (m) { st.m = null; this.save(st); }
@@ -2653,7 +2673,7 @@
       }
       if (this.rebuildOnly() && !Once.said("moon_rebuild_off|" + key0, 6 * 3600e3))
         log(`[KSIĘŻYC] moduł jest WYŁĄCZONY, ale [${key0}] straciła księżyc — odbudowuję mimo to, bo wracająca flota lądowałaby na gołej planecie widocznej dla falangi. Pozostałe kolonie dalej pomijam.`, "warn");
-      if (!cur.m && !this.canTry(cur, key0)) return false;
+      if (!cur.m && !this.canTry(cur, key0, !!((s.moonLost || {})[key0]))) return false;
       const act = s.active;
       // krok 1: stanąć na planecie, przy której stawiamy księżyc
       if (!act || act.key !== key0 || act.body !== "planet") {
