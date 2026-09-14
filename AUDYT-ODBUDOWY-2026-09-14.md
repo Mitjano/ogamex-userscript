@@ -27,23 +27,23 @@ do ~100 s. Tylko utrata; „nagle ma księżyc" zostaje przy żywej stronie.
 
 ---
 
-## OTWARTE — P0
+## P0 — ZAMKNIĘTE w v3.96.0 (14.09 popołudnie, E2E 68 + decide 82)
 
-**Licznik prób nie jest kasowany po UDANEJ odbudowie.** Sukcesy zużywają tę samą dobową pulę
-co porażki, więc druga strata księżyca tego samego dnia może trafić na wyczerpany limit.
-Częściowo złagodzone w v3.95.1 (odbudowa ma własny limit 20 i karencję 60 s), ale samo
-kasowanie po sukcesie nadal nie istnieje.
+**Licznik prób nie jest kasowany po UDANEJ odbudowie.** → Sukces kasuje `st.tries[key]`;
+druga strata tego samego dnia idzie od razu (68a–c).
 
-**Jedna nieudana odbudowa potrafi zjeść cały limit w ~60 s.** Cztery nawigacje bez efektu =
-jedna „próba", a pod ostrzałem kolizje ze stroną idą jedna za drugą. Przy limicie 3 (nowe
-księżyce) zamyka parę na dobę. Dla odbudowy limit jest teraz 20, ale mechanizm zjadania został.
+**Jedna nieudana odbudowa potrafi zjeść cały limit w ~60 s.** → Po v3.95.1 (limit 20, karencja
+60 s dla odbudowy) i po rozpoznawaniu odrzuconego submitu (niżej) jedno podejście = jedna próba;
+mechanizm „4 nawigacje = próba" zostaje jako sufit kolizji ze stroną. Bez osobnej zmiany.
 
-**Odrzucony submit „Form a moon" nie jest rozpoznawany.** Bot uznaje próbę za wykonaną, choć
-gra jej nie przyjęła — nie ma odpowiednika weryfikacji, którą ma wysyłka floty.
+**Odrzucony submit „Form a moon" nie jest rozpoznawany.** → Kliknięcie z ustawionym `m.km`,
+strona formowania nadal stoi, księżyca nie ma = odmowa gry: liczona jako próba, tekst strony
+do logu, przy odbudowie wpis BŁĄD (push). Bez klikania w kółko (68d–g).
 
 **Potwierdzenie odbudowy i zwóz floty stoją za tą samą bramką, którą v3.95.0 miała ominąć.**
-Czyli nawet po udanym postawieniu księżyca krok „zwieź flotę z planety na nowy księżyc" może
-nie ruszyć pod ostrzałem. To jest krok 6 doktryny DESTROY.
+→ Weryfikacja „para ma już księżyc?" idzie PRZED bramką ataków; wołający daje modułowi przebieg
+także pod ostrzałem, gdy czeka weryfikacja albo zwóz (`Moon.pending()`); zwóz ma własny znacznik
+`st.zwoz`, który czeka na pierwszą ciszę (godzinę), zamiast przepaść (68h–m).
 
 ## OTWARTE — P1
 

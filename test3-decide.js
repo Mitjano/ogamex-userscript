@@ -592,19 +592,26 @@ console.log("\n── 19c. KONTROLE ŹRÓDŁA v3.39.0 ──");
   // zabiera cały hangar planety, ale zapis hangaru ŹRÓDŁA zostawał nietknięty, więc po
   // domknięciu wpisu lotu decide() wystawiał ten sam lot bez końca, a bramka
   // anty-duplikat ścinała go po jednej nawigacji na obrót.
+  // v3.96.0: ścieżki domknięcia wysyłki z DOWODEM (potwierdzenie po kliku, potwierdzenie po
+  // przeładowaniu z adresem sukcesu) zerują hangar jak dotąd; bramka anty-duplikat zeruje TYLKO
+  // po dowodzie z hangaru (`sendProof`) — a wtedy świeży odczyt już jest prawdą, więc nie ma
+  // trzeciego wywołania `emptySourceHangar` (HANDOFF 14.09, sekcja 6 pkt 1).
   check("po potwierdzonej wysyłce hangar ŹRÓDŁA jest zerowany",
     /function emptySourceHangar\(fromKey, fromBody, why, keepTypes, capTypes\)/.test(src) &&
-    (src.match(/emptySourceHangar\(/g) || []).length >= 4);
+    (src.match(/emptySourceHangar\(/g) || []).length >= 3 &&
+    /const dowod = await this\.sendProof\(m, ls\);/.test(src));
   // v3.68.1 (audyt): zerowanie NIE MOŻE być pomijane przy `excludeTypes` — hangar
   // udawałby wtedy pełną flotę przez 48 h. Zamiast pomijać, zostawiamy wykluczone typy,
-  // i to na WSZYSTKICH trzech ścieżkach domknięcia wysyłki.
+  // i to na OBU ścieżkach domknięcia wysyłki, które zerują z wyliczenia.
   check("zerowanie hangaru zostawia typy celowo pominięte, zamiast być pomijane",
     !/!\(m\.excludeTypes && m\.excludeTypes\.length\)\) emptySourceHangar/.test(src) &&
-    (src.match(/emptySourceHangar\([^)]*(?:m|f)\.excludeTypes(?:, (?:m|f)\.capTypes)?\)/g) || []).length >= 3);
+    (src.match(/emptySourceHangar\([^)]*(?:m|f)\.excludeTypes(?:, (?:m|f)\.capTypes)?\)/g) || []).length >= 2 &&
+    !/"bramka anty-duplikat", m\.excludeTypes/.test(src));
   check("bramka anty-duplikat wysyła trasę w karencję (koniec pętli nawigacji)",
     /blG\[`\$\{m\.fromKey\}>\$\{m\.toKey\}`\] = ls\.at \+ guardMs/.test(src));
   check("karencja NIE dotyczy ekspedycji (fale lecą tą samą trasą co 60–90 s)",
-    /if \(!ECO_KINDS\.includes\(m\.kind\)\) \{[\s\S]{0,400}?blG\[/.test(src));
+    /if \(ECO_KINDS\.includes\(m\.kind\)\) \{ log\(`\$\{juzPoszla\}\.`, "warn"\); zdejmijPending\(\); Store\.del\("mission"\); return; \}/.test(src)
+    && /const karencjaTrasy = \(\) => \{ try \{ const blG/.test(src));
   check("lista lotów: bot próbuje jawnego przycisku „Fleet movements” i nie poddaje się",
     /przycisk „Fleet movements”/.test(src) && /próbuję dalej co 10 min/.test(src) && !/ROZWIŃ JĄ RĘCZNIE RAZ/.test(src));
 }
@@ -845,7 +852,7 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("kolejność ekonomii: rekonesans → bonus → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
   check("księżyce: jedno wywołanie na przebieg, odbudowa nie czeka na ciszę obrony",
     /let moonRuszyl = false;/.test(src)
-    && /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne\)\)/.test(src)
+    && /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne \|\| Moon\.pending\(\)\)\)/.test(src)   // v3.96.0: + czekająca weryfikacja/zwóz
     && /if \(!moonRuszyl && !Fly\.mission\(\) && ekoWolne\)/.test(src));
   check("księżyce: domyślnie WŁĄCZONE, cel NAJMNIEJSZA średnica (v3.67.0: koszt pomijalny, nie inwestycja)", /moon: \{ enabled: true, maxMetalShare: 0\.25, minKm: 1000/.test(src));
   check("księżyce: sufit udziału metalu, średnica NAJMNIEJSZA najpierw (rosnąco, nie w dół od największej)", /maxMetalShare/.test(src) && /KM: \[8944/.test(src) && /\.sort\(\(a, b\) => a - b\)/.test(src) && /c <= budget/.test(src));
@@ -1036,7 +1043,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("lot obronny zapisany PRZED klikiem Send fleet", /pending: true \}\);[\s\S]{0,1600}?Nav\.click\(send/.test(src));
   check("stempel wysyłki blokuje powtórkę po przeładowaniu",
     /const ls = Store\.get\("last_send", null\);/.test(src)
-    && /if \(lsMine && Date\.now\(\) - ls\.at < guardMs\) \{\s*\n\s*log\(`\[LOT\] wysyłka do \[\$\{m\.toKey\}\] już poszła[\s\S]{0,120}?nie powtarzam/.test(src));
+    && /if \(lsMine && Date\.now\(\) - ls\.at < guardMs\) \{\s*\n\s*const juzPoszla = `\[LOT\] wysyłka do \[\$\{m\.toKey\}\] już poszła[\s\S]{0,120}?nie powtarzam/.test(src));
   // v3.68.6 (obrona-stan-lotu#1): stempel MUSI nieść ciała i `startedAt` — bez nich
   // wysyłka złomu na własną pozycję bazy była nie do odróżnienia od ratunku.
   check("stempel wysyłki niesie ciała i tożsamość misji (rodzaj + startedAt)",
@@ -1797,9 +1804,12 @@ console.log("\n── 51. AUDYT PRZED MERGE v3.68.1: strażniki dla poprawek spo
     /else if \(mNow && !mNow\.rescue && !mNow\.blind\)/.test(loop));
   // v3.68.5 (obrona-decide#4): jeden slot lotu to twarde ograniczenie gry — para odłożona
   // musi dostać własny sygnał na telefon, bo tylko właściciel może ją uratować ręcznie.
-  check("para odłożona przy dwóch atakach dostaje push „BEZ RATUNKU zostaje…”",
+  // v3.96.0: tekst przestał kłamać — para odłożona dostaje własny lot zaraz po tej wysyłce
+  // („W KOLEJCE"), a „ratuj ręcznie" zostaje tylko dla dolotu krótszego niż kolejka.
+  check("para odłożona przy dwóch atakach dostaje push „W KOLEJCE zaraz po tej wysyłce…”",
     /const odlozone = actions\.filter\(x => x !== a && x\.kind === "fly" && \(x\.rescue \|\| x\.blind\)\);/.test(loop)
-    && /Journal\.add\("ATAK", `Ratuję \[\$\{a\.fromKey\}\][\s\S]{0,300}?BEZ RATUNKU zostaje/.test(loop));
+    && /Journal\.add\("ATAK", `Ratuję \[\$\{a\.fromKey\}\][\s\S]{0,300}?W KOLEJCE zaraz po tej wysyłce/.test(loop)
+    && !/Journal\.add\("ATAK", `Ratuję[^`]*BEZ RATUNKU zostaje/.test(loop));
   check("FS nie przerywa trwającej ekspedycji (nie jest „urgent”)",
     /actions\.some\(a => \(a\.kind === "fly" && !a\.fs\) \|\| a\.kind === "recall"\)/.test(loop));
   check("FS ma własny sufit prób (3/h) niezależny od karencji ratunku",
@@ -2048,7 +2058,8 @@ console.log("\n── 55. AUDYT 04.09 (partia antyduplikat): bramka anty-duplika
     const s0 = src.slice(src.indexOf('Store.set("last_send", {'));
     return s0.slice(s0.indexOf("{"), s0.indexOf("});") + 1);
   })();
-  const stamp = (m, at) => new Function("m", "loaded", "loadedTotal", "Date", `return (${stampSrc});`)(m, [], 0, { now: () => at });
+  // v3.96.0: stempel niesie też `before` (stan hangaru sprzed kliknięcia) — dowód dla bramki.
+  const stamp = (m, at) => new Function("m", "loaded", "loadedTotal", "shipsBefore", "Date", `return (${stampSrc});`)(m, [], 0, 0, { now: () => at });
 
   check("55-0: bramka faktycznie korzysta z wyliczonego warunku (test nie bada martwego kodu)",
     /if \(lsMine && Date\.now\(\) - ls\.at < guardMs\) \{/.test(src));
@@ -3254,7 +3265,7 @@ console.log("\n── 79. ODBUDOWA I SONDY POD OSTRZAŁEM (nalot 14.09 03:2x) �
   // planecie widocznej dla falangi. Odbudowa idzie odtąd poza kolejką ekonomii; jedyny warunek
   // to brak TRWAJĄCEJ misji lotu (przełączanie planety w środku ratunku wyrwałoby stronę).
   check("79a: (źródło) odbudowa rusza także pod ostrzałem, nowe księżyce dopiero w ciszy",
-    /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne\)\) \{[\s\S]{0,160}?Moon\.tick\(s\)/.test(src));
+    /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne \|\| Moon\.pending\(\)\)\) \{[\s\S]{0,160}?Moon\.tick\(s\)/.test(src));
   check("79e: (źródło) trwający ATAK nie blokuje odbudowy — blokuje tylko stawianie nowych",
     /if \(!this\.doOdbudowy\(s\) && \(s\.threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > now\)\) return false;/.test(src));
   check("79f: (źródło) odbudowa ma własny, szerszy limit prób i krótszą karencję niż nowe księżyce",
@@ -3295,6 +3306,62 @@ console.log("\n── 80. REKONESANS PRZY ALARMIE NIE WYRYWA STRONY OPERATOROWI 
     /nie wyrywam Ci strony[\s\S]{0,200}?continue;/.test(src));
   check("80c: (źródło) odczyt hangaru idzie na czysty /fleet, a nie na formularz lotu z celem",
     /Nav\.go\("\/fleet", `odczyt hangaru/.test(src) && src.indexOf("/fleet?x=${g}&y=${sy}&z=${po}`, `odczyt hangaru") < 0);
+}
+
+console.log("\n── 81. DWA RATUNKI Z JEDNEJ PARY W POWIETRZU: dosłana fala przesuwa zawrót OBU (HANDOFF 14.09, sekcja 6 pkt 2) ──");
+{
+  // Odkąd każda wracająca fala dostaje własny ratunek (v3.75.0), z jednej pary wisi w powietrzu
+  // kilka lotów na ten sam księżyc (14.09: dziewięć). Do v3.95.3 `extend` szedł tylko do pierwszego
+  // wpisu z tablicy, a egzekutor i tak szukał po trasie — reszta wracała o czasie, pod ostatnią falę.
+  const fA = { id: "lot-A", kind: "air", fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 200e3, flightMs: 3600e3, recallAt: NOW + 30e3, phase: "launched", tries: 0 };
+  const fB = { ...fA, id: "lot-B", sentAt: NOW - 100e3, recallAt: NOW + 60e3 };
+  const want = NOW + 400e3 + CFG.recallBufferSec * 1000;
+  // (a) hangar po dwóch ewakuacjach pusty i ŚWIEŻY, atak dosłany na +400 s
+  const s = base({ hangars: { "3:272:7|moon": H(0) }, flights: [fA, fB], threats: [threat("3:272:7", "moon", 400)] });
+  const ext = decide(s, CFG, NOW).actions.filter(a => a.kind === "extend");
+  check("81a: OBA loty dostają extend (do v3.95.3: tylko pierwszy z tablicy)",
+    ext.length === 2 && ext.some(a => a.flight.id === "lot-A") && ext.some(a => a.flight.id === "lot-B"), JSON.stringify(ext));
+  check("81b: oba na ostatni dolot + bufor", ext.length === 2 && ext.every(a => a.recallAt === want), JSON.stringify(ext.map(a => a.recallAt)));
+  check("81c: żaden extend nie jest zdublowany", new Set(ext.map(a => a.flight.id)).size === ext.length);
+  // (b) z flotą w hangarze (drugi ratunek w drodze) — extend obu nadal, obok lotu ratunkowego
+  const s2 = base({ hangars: { "3:272:7|moon": H(5e8) }, flights: [fA, fB], threats: [threat("3:272:7", "moon", 400)] });
+  const r2 = decide(s2, CFG, NOW);
+  const ext2 = r2.actions.filter(a => a.kind === "extend");
+  check("81d: przy flocie w hangarze (kolejny ratunek) też OBA", ext2.length === 2 && ext2.every(a => a.recallAt === want), JSON.stringify(r2.actions));
+  check("81d2: …a ratunek stojącej floty nadal wychodzi", r2.actions.some(a => a.kind === "fly" && a.fromKey === "3:272:7"), JSON.stringify(r2.actions));
+  // (c) lot, który zawrót ma już ZA ostatnią falą, zostaje w spokoju
+  const s3 = base({ hangars: { "3:272:7|moon": H(0) }, flights: [fA, { ...fB, recallAt: NOW + 900e3 }], threats: [threat("3:272:7", "moon", 400)] });
+  const ext3 = decide(s3, CFG, NOW).actions.filter(a => a.kind === "extend");
+  check("81e: lot z zawrotem już za ostatnią falą nie dostaje extend", ext3.length === 1 && ext3[0].flight.id === "lot-A", JSON.stringify(ext3));
+  // (d) pierwszy wpis pary już W ZAWROCIE, drugi wciąż wisi — drugi ma dostać extend
+  const s4 = base({ hangars: { "3:272:7|moon": H(0) }, flights: [{ ...fA, phase: "recalled" }, fB], threats: [threat("3:272:7", "moon", 400)] });
+  const ext4 = decide(s4, CFG, NOW).actions.filter(a => a.kind === "extend");
+  check("81f: gdy pierwszy wpis pary już wraca, drugi (wciąż w locie) dostaje extend", ext4.length === 1 && ext4[0].flight.id === "lot-B" && ext4[0].recallAt === want, JSON.stringify(ext4));
+  // (e) egzekutor dopasowuje wpis po `id`
+  check("81g: (źródło) egzekutor dopasowuje wpis lotu po `id`, a nie po trasie",
+    /a\.kind === "extend"[\s\S]{0,260}?a\.flight\.id \? x\.id === a\.flight\.id/.test(src));
+  check("81h: (źródło) decide() nie ma już żadnego extend dla pojedynczego `f`/`fOut`",
+    !/flight: fOut, recallAt/.test(src) && !/flight: f, recallAt/.test(src) && (src.match(/extendAll\(k, th\)/g) || []).length >= 3);
+}
+
+console.log("\n── 82. ODBUDOWA KSIĘŻYCA — P0 z AUDYT-ODBUDOWY-2026-09-14 (źródło; zachowanie: E2E 68) ──");
+{
+  const moonSrc = src.slice(src.indexOf("const Moon = {"), src.indexOf("const Bonus = {"));
+  check("82a: (źródło) wołający daje modułowi przebieg pod ostrzałem także przy czekającej weryfikacji/zwozie",
+    /\(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne \|\| Moon\.pending\(\)\)/.test(src) && /pending\(\) \{ const st = this\.st\(\); return !!\(st\.m \|\| st\.zwoz\); \}/.test(moonSrc));
+  check("82b: (źródło) weryfikacja „para ma już księżyc?” stoi PRZED bramką „nie ma odbudowy, a trwa atak”",
+    moonSrc.indexOf("weryfikacja poprzedniej próby") > 0
+    && moonSrc.indexOf("weryfikacja poprzedniej próby") < moonSrc.indexOf("if (!this.doOdbudowy(s) && (s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;"));
+  check("82c: (źródło) udana odbudowa kasuje licznik prób pary", /if \(st\.tries && st\.tries\[m\.key\]\) delete st\.tries\[m\.key\];/.test(moonSrc));
+  check("82d: (źródło) odrzucony submit „Form a moon” jest rozpoznawany, liczony jako próba i meldowany",
+    /if \(m\.km && \/moonformation\/i\.test\(location\.pathname\)\) \{[\s\S]{0,900}?gra NIE przyjęła „Form a moon"/.test(moonSrc) && /Journal\.add\("BŁĄD", `Gra odrzuciła odbudowę księżyca/.test(moonSrc));
+  check("82e: (źródło) zwóz po odbudowie ma własny znacznik, który czeka na ciszę, a nie przepada",
+    /st\.zwoz = \{ key: m\.key, at: now \};/.test(moonSrc) && /zwóz floty z planety poczeka na ciszę/.test(moonSrc) && /now - z\.at > 60 \* 60e3/.test(moonSrc));
+  // (HANDOFF 14.09, sekcja 6 pkt 4) cichy odczyt hangaru przy alarmie: dławik JEDNEJ pary nie kończy
+  // pętli dla pozostałych (`continue`, nie `break`), a sufit to trzy odczyty na przebieg. Zachowanie: E2E 65.
+  const loopQ = src.slice(src.indexOf("let cicheOdczyty = 0;"), src.indexOf("let cicheOdczyty = 0;") + 900);
+  check("82f: (źródło) dławik pary = `continue` w pętli cichych odczytów, sufit 3 na przebieg",
+    /if \(Once\.said\(`qrecon\|\$\{a\.key\}\|\$\{bq\}`, 60e3\)\) continue;/.test(loopQ) && /if \(\+\+cicheOdczyty >= 3\) break;/.test(loopQ));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");

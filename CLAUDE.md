@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.77.0, ~5,5k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.96.0, ~6,4k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
@@ -27,11 +27,15 @@ Kolejność czytania: `START-3.0.md` → `AUDYT-3.0-2026-08-28.md` → kod.
 Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane ciało · **KAŻDA flota pod uderzeniem dostaje własny ratunek** (reguła „jedna ucieczka na parę" obowiązywała do v3.74 i 10.09 kosztowała ~152 mln statków — nie przywracać jej w żadnej postaci) · **stan lotu zamyka hangar, nie zegar** · nieznany markup → zrzut, nie zgadywanie · **kanał push budzi TYLKO obroną** — kłopoty ekonomii mają rodzaj „EKO" (v3.77.0), bo kanał pełen nieszkodliwych alarmów przestaje być czytany.
 
 ## Testy
-- 3.x: `node test3-all.js` (164 asercje decyzyjne + 77 sprawdzeń E2E / 24 scenariusze na sztucznej grze w jsdom + 19 sprawdzeń panelu + składnia; scenariusz 25 = pętla nawigacji). Wymaga `npm install jsdom` w katalogu repo (node_modules nie jest commitowane). **Nowe zachowanie obrony = nowy scenariusz w `test3-e2e.js`**, nie tylko regex w `test3-decide.js` — regexy pilnują, żeby poprawka nie zniknęła, ale niczego nie wykonują. **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
+- 3.x: `node test3-all.js` (decyzyjne + macierz bojowa 672 + war-game + E2E na sztucznej grze w jsdom + panel + zegar + składnia). Wymaga `npm install jsdom` w katalogu repo (node_modules nie jest commitowane). **Nowe zachowanie obrony = nowy scenariusz w `test3-e2e.js`**, nie tylko regex w `test3-decide.js` — regexy pilnują, żeby poprawka nie zniknęła, ale niczego nie wykonują. **Pipe zjada kod wyjścia** — sprawdzaj `echo $?` bez pipe'a (27.08 v2.108.0 poszła na produkcję z czerwonym testem przez `| tail -1`).
+- **Wolniejsza maszyna (laptop Windows): `OGX_SETTLE_MS=400 node test3-all.js`.** Harness E2E po każdym ticku czeka stałe 140 ms realnego czasu na osadzenie się asynchronicznej pracy bota; na laptopie to za mało i losowe scenariusze (8, 34, 39, 41, 47, 57…) mrugają czerwono — z oknem 400 ms ten sam kod przechodzi w całości (14.09, cztery przebiegi kontrolne, także na v3.95.1). Na Macu domyślne 140 ms zostaje. Czerwone E2E o ZMIENNYM zbiorze scenariuszy = najpierw sprawdź okno, dopiero potem szukaj regresji.
+- Trzy AUTOMATY-kontrakty (właściciel 14.09: „pilnuj, żeby przy update tego nie popsuć"): macierz `test3-matrix.js` 672/672, blok 77 w `test3-decide.js` (noc 13.09: 6/6 ratunków i pushy), E2E 60b/43b/43c.
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst
-- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW.** Pełny stan po dwóch dobach obrony floty:
+- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW** (sekcja 8 = sesja popołudniowa 14.09 na Windows, v3.96.0:
+  zamknięte cztery P0 warstwy wykonawczej i cztery P0 odbudowy księżyca, lekcje o harnessie E2E).
+  Pełny stan po dwóch dobach obrony floty:
   dwa incydenty (strata uniknięta ręcznie 13.09, nalot na trzy księżyce 14.09), wszystko, co
   poszło na produkcję v3.86→v3.95.3, TRZY AUTOMATY, których nie wolno popsuć (macierz 672
   scenariuszy, odtworzona noc 13.09, E2E fal wracających), zasady pracy z tej sesji, lista

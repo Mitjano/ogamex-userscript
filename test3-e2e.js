@@ -71,6 +71,8 @@ class Game {
     this.stickyBar = false;          // v3.68.11: klik w kotwicę paska planet PRZEŁADOWUJE stronę, ale NIE zmienia aktywnej pary (fork bez `.selected`)
     this.refuseSubmit = false;       // v3.68.11: gra przyjmuje formularz, ale „Send fleet” nic nie wysyła (brak slotu/deuteru)
     this.homeFetchFail = false;      // v3.71.0: fetch /home (świeży pasek misji) pada — sieć sypie się jak 08.09 03:26
+    this.blankFleet = 0;             // v3.96.0: tyle kolejnych odsłon /fleet fork odda BEZ kroku wyboru statków (strona nieczytelna)
+    this.refuseMoon = false;         // v3.96.0: „Form a moon” klika się, ale gra go nie przyjmuje (strona stoi, księżyca nie ma)
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
@@ -102,7 +104,7 @@ class Game {
       const pSel = sel && this.active.body === "planet" ? " selected" : "";
       const mSel = sel && this.active.body === "moon" ? " selected" : "";
       return `<li><a href="/fleet?planet=${this.uuidOf(p)}" class="planet-select${pSel}" data-key="${p.key}">${p.name} [${p.key}]</a>` +
-             (p.moon ? `<a href="${this.moonLinks ? "/fleet?planet=" + this.uuidOf(p) + "-moon" : "#"}" class="moon-select${mSel}" data-key="${p.key}">Moon</a>` : "") + `</li>`;
+             (p.moon ? `<a href="${this.moonLinks && !p.noMoonLink ? "/fleet?planet=" + this.uuidOf(p) + "-moon" : "#"}" class="moon-select${mSel}" data-key="${p.key}">Moon</a>` : "") + `</li>`;   // v3.96.0: `noMoonLink` = ten księżyc nie ma linku ?planet= (cichy odczyt zawsze zawodzi)
     }).join("") + `</ul>`;
   }
   missionBarHtml(force) {
@@ -124,6 +126,9 @@ class Game {
        </tr>`).join("");
   }
   fleetPageHtml() {
+    // v3.96.0: strona floty bez kroku wyboru statków (ani listy, ani „no ships”, ani „Next”) — tak
+    // wygląda /fleet, gdy fork odda spinner, stronę błędu albo obcy widok. Nie ma z niej hangaru.
+    if (this.blankFleet > 0) { this.blankFleet--; return `<div id="content"><div class="loading">Loading…</div></div>`; }
     const h = this.hangarOf();
     const ships = Object.entries(h).filter(([, q]) => q > 0).map(([t, q]) =>
       `<div class="ship-item"><span data-ship-type="${t}" data-ship-quantity="${q}"></span><input class="numberFormatInput" type="text" value="0"></div>`).join("");
@@ -330,7 +335,7 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       const inp = w.document.getElementById("diameter");
       const km = parseInt((inp && inp.value || "0").replace(/[^\d]/g, ""), 10) || 0;
       const cost = km * game.moonKmCost;
-      if (cost > game.metal) { game.moonRefused = (game.moonRefused || 0) + 1; return; }   // gra odmawia: za mało metalu
+      if (cost > game.metal || game.refuseMoon) { game.moonRefused = (game.moonRefused || 0) + 1; return; }   // gra odmawia: za mało metalu / inny warunek (strona stoi)
       game.metal -= cost;
       const p = game.pairs.find(x => x.key === game.active.key);
       if (p) p.moon = true;
@@ -420,6 +425,13 @@ function advance(game, ms) {
       game.store.set(K, JSON.stringify(st));
     }
   } catch {}
+  // v3.96.0: karencje tras (`fly_block`: trasa → termin bezwzględny) też muszą się przewinąć —
+  // bez tego scenariusz 18 („ratunek ponawiany po 45 s") przechodził wyłącznie dzięki artefaktowi
+  // harnessu (misję kasowała droga „hangar pusty", bez karencji), a nie dzięki 45-sekundowemu oknu.
+  try {
+    const fb = JSON.parse(game.store.get("genesis.ogamex.net:ogx3_fly_block") || "null");
+    if (fb && typeof fb === "object") { for (const rk of Object.keys(fb)) if (typeof fb[rk] === "number") fb[rk] -= ms; game.store.set("genesis.ogamex.net:ogx3_fly_block", JSON.stringify(fb)); }
+  } catch {}
   for (const k of [...game.store.keys()]) {
     if (!/ogx3_(mission|last_send|bar_excess|once|nav|human|session|aster|debris|expo|burst|errpage|last_)/.test(k)) continue;
     try {
@@ -455,7 +467,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
     // FAZE calego pakietu i deterministycznie psul inne scenariusze (17/18/21: misje-
     // zombie z martwych okien odswiezaly karencje tras w WSPOLNYM stanie). Wracamy do
     // historycznych 140 ms; mruganie sc. 28 pod obciazeniem to znany koszt.
-    await new Promise(r => setTimeout(r, 140));
+    await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
     try { inst.w.eval("if (typeof logEntries !== 'undefined') {}"); } catch {}
     if (process.env.DIAG2) {
       try { const st2 = inst.api.Situation.load(); console.log("      decyzja:", JSON.stringify(inst.api.decide(st2, inst.api.CFG, Date.now())).slice(0, 300), "| CFG.autoRescue:", inst.api.CFG.autoRescue, "| misja:", JSON.stringify(inst.api.Fly.mission()), "| eco:", JSON.stringify(inst.api.Human && inst.api.Human.economyAllowed(st2)), "| moonSt:", JSON.stringify(inst.api.Store.get("moon", null))); } catch (e) { console.log("      decyzja rzuciła:", e.message); }
@@ -1022,7 +1034,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       !!g.sent[0] && g.sent[0].from === "1:100:9", JSON.stringify(g.sent.map(x => `${x.from}→${x.to}`)));
     const dziennik = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
     check("… a para odłożona dostaje własny wpis w dzienniku (i push na telefon)",
-      dziennik.some(e => /BEZ RATUNKU zostaje/.test(e.msg) && /1:100:5/.test(e.msg)),
+      dziennik.some(e => /W KOLEJCE zaraz po tej wysyłce/.test(e.msg) && /1:100:5/.test(e.msg)),
       JSON.stringify(dziennik.slice(0, 6).map(e => e.msg.slice(0, 120))));
   }
 
@@ -1710,7 +1722,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     for (let i = 0; i < 12 && !planned && g.sent.length === 0; i++) {
       const inst = load(g, { cfg: cfgOn });
       try { await inst.tick(1); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
-      await new Promise(r => setTimeout(r, 140));
+      await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
       planned = (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
     }
     check("(warunek wstępny) misja zaplanowana, fala JESZCZE nie wysłana", planned && g.sent.length === 0, `misja=${String(g.store.get("genesis.ogamex.net:ogx3_mission")).slice(0, 120)}, wysyłek=${g.sent.length}`);
@@ -2846,6 +2858,273 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const dz = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
     check("63g: dziennik nie jest zasypany startami lotów ratunkowych",
       dz.filter(e => /Start lotu/.test(e.msg || "")).length <= 2, JSON.stringify(dz.slice(0, 4)));
+  }
+
+  const SETTLE = Number(process.env.OGX_SETTLE_MS || 140);
+  const KSIT = "genesis.ogamex.net:ogx3_situation";
+  const cfgObrona = () => ({ autoRescue: true, expo: { enabled: false }, aster: { enabled: false }, debris: { enabled: false },
+    moon: { enabled: false }, bonus: { enabled: false }, recon: false, human: { breaks: false, economyAtNight: true } });
+
+  console.log("\n── 64. DOSŁANA FALA PRZESUWA ZAWRÓT KAŻDEGO LOTU Z PARY, PO `id` (HANDOFF 14.09, sekcja 6 pkt 2) ──");
+  {
+    // Z jednej pary wiszą DWA ratunki na ten sam księżyc (jak 14.09: dziewięć). Do v3.95.3
+    // egzekutor `extend` szukał wpisu po trasie i trafiał zawsze w pierwszy — drugi wracał o czasie,
+    // prosto pod dosłaną falę. CAŁA maszyna: refresh → decide → egzekutor → stan.
+    const cfg = cfgObrona();
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Schron", moon: true }],
+      hangars: { "1:100:5|moon": {} }, active: { key: "1:100:5", body: "moon" },
+    });
+    await run(g, { cfg, loads: 3, ticksPerLoad: 2 });                       // pary, hangary
+    const st = JSON.parse(g.store.get(KSIT) || "{}");
+    const now = Date.now();
+    st.flights = [
+      { id: "e2e-A", kind: "air", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", sentAt: now - 120e3, flightMs: 3600e3, recallAt: now + 30e3, phase: "launched", tries: 0 },
+      { id: "e2e-B", kind: "air", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", sentAt: now - 60e3, flightMs: 3600e3, recallAt: now + 45e3, phase: "launched", tries: 0 },
+    ];
+    st.hangars["1:100:5|moon"] = { total: 0, ships: [], at: now - 10e3 };
+    g.store.set(KSIT, JSON.stringify(st));
+    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:9", toBody: "moon", mission: "Deploy", ships: { BATTLESHIP: 100 }, inFlight: true, eta: 3000 });
+    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:9", toBody: "moon", mission: "Deploy", ships: { BATTLESHIP: 200 }, inFlight: true, eta: 3000 });
+    g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400, id: "t64" });
+    const { logs } = await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    const st2 = JSON.parse(g.store.get(KSIT) || "{}");
+    const fa = (st2.flights || []).find(f => f.id === "e2e-A"), fb = (st2.flights || []).find(f => f.id === "e2e-B");
+    // (atrapa pokazuje w wierszu odliczanie „05:00”, więc uderzenie = ~300 s; zawrót ma być ZA nim + bufor 90 s,
+    //  czyli daleko za zasianymi +30 s / +45 s)
+    check("64a: zawrót lotu A przesunięty za ostatnią falę", !!fa && fa.recallAt > now + 250e3, JSON.stringify(fa));
+    check("64b: zawrót lotu B TEŻ przesunięty (do v3.95.3 egzekutor trafiał tylko w pierwszy wpis trasy)", !!fb && fb.recallAt > now + 250e3 && fb.recallAt === fa.recallAt, JSON.stringify(fb));
+    check("64c: bot zameldował przesunięcie obu", logs.filter(m => /przesunięty na/.test(m)).length >= 2, logs.filter(m => /zawrót/.test(m)).slice(0, 4).join(" | "));
+    check("64d: żadnego nowego lotu — hangar pusty, oba ratunki już lecą", g.sent.length === 2, JSON.stringify(g.sent.map(x => x.ships)));
+  }
+
+  console.log("\n── 65. NALOT NA TRZY PARY: cichy odczyt hangaru drugiej pary NIE czeka na dławik pierwszej (HANDOFF 14.09, sekcja 6 pkt 4) ──");
+  {
+    // A i B uciekły (loty w powietrzu), na obie leci atak; D ma flotę w domu i też jest atakowana,
+    // więc w przebiegu czeka gotowy RATUNEK — a wtedy główna pętla akcji pomija rekonesans i cichy
+    // odczyt hangaru zostaje TYLKO w przedpętli. Do v3.95.3 ta przedpętla robiła `break`, gdy dławik
+    // (60 s) pierwszej pary był ciepły. Scenariusz: A czytana w kroku 1; w kroku 2 (gdy A znów prosi,
+    // a D ma ratunek) B musi dostać odczyt w tym samym przebiegu.
+    // UWAGA (14.09): ten scenariusz dowodzi zachowania poprawionego kodu, ale NIE pada na mutacji
+    // `continue → break` — atrapa nie umie utrzymać ciepłego dławika A przy jednoczesnej prośbie A
+    // (po udanym odczycie A przestaje prosić, a przy zawodzącym odczycie schodzi do rekonesansu
+    // nawigującego). Samego `continue` i sufitu 3 pilnuje kontrola źródłowa 82f w test3-decide.js.
+    const cfg = cfgObrona();
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Druga", moon: true }, { key: "1:100:12", name: "Schron", moon: true }, { key: "1:100:14", name: "Czwarta", moon: true }],
+      hangars: { "1:100:5|moon": {}, "1:100:9|moon": { CRUISER: 200 }, "1:100:14|moon": { BATTLESHIP: 500 } },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 500, id: "t65a" }, { src: "9:9:8", dst: "1:100:9", dstBody: "moon", eta: 520, id: "t65b" }],
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.moonLinks = true;
+    const now = Date.now();
+    const lot = (k, id) => ({ id, kind: "air", fromKey: k, fromBody: "moon", toKey: "1:100:12", toBody: "moon", sentAt: now - 4 * 60e3, flightMs: 3600e3, recallAt: now + 20 * 60e3, phase: "launched", tries: 0 });
+    // krok 1: TYLKO A ma powód do cichego odczytu (migawka starsza niż lądowanie); B ma świeżą migawkę
+    g.store.set(KSIT, JSON.stringify({ pairs: {}, hangars: {
+      "1:100:5|moon": { total: 0, ships: [], at: now - 5 * 60e3 },
+      "1:100:9|moon": { total: 0, ships: [], at: now - 5e3 },
+    }, landings: { "1:100:5|moon": now - 60e3 },
+    threats: [], own: [], flights: [lot("1:100:5", "e65-a"), lot("1:100:9", "e65-b")], expected: [], bar: null, active: null, updatedAt: now }));
+    g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:12", toBody: "moon", mission: "Deploy", ships: { BATTLESHIP: 900 }, inFlight: true, eta: 3000 });
+    g.sent.push({ from: "1:100:9", fromBody: "moon", to: "1:100:12", toBody: "moon", mission: "Deploy", ships: { CRUISER: 900 }, inFlight: true, eta: 3000 });
+    const r1 = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    const cichy = (lg, k) => lg.some(m => new RegExp(`\\[OBRONA\\] atak na \\[${k}\\][^|]*odczytany w tle`, "i").test(m));
+    check("65a: (krok 1) para A dostała cichy odczyt, B jeszcze go nie potrzebowała", cichy(r1.logs, "1:100:5") && !cichy(r1.logs, "1:100:9"), r1.logs.filter(m => /OBRONA/.test(m)).slice(0, 6).join(" | "));
+    // krok 2: A znów prosi (nowe lądowanie po odczycie); B zaczyna prosić (wróciła fala);
+    // D dostaje potwierdzony atak i ma flotę w domu → w przebiegu czeka gotowy ratunek
+    {
+      const st = JSON.parse(g.store.get(KSIT) || "{}");
+      const t2 = Date.now();
+      st.landings = { "1:100:5|moon": t2, "1:100:9|moon": t2 };
+      st.hangars["1:100:9|moon"] = { total: 0, ships: [], at: t2 - 5 * 60e3 };
+      st.hangars["1:100:14|moon"] = { total: 500, ships: [{ type: "BATTLESHIP", qty: 500 }], at: t2 - 5e3 };
+      st.threats = [...(st.threats || []), { id: "t65d", dst: "1:100:14", dstBody: "moon", arriveAt: t2 + 400e3, attack: true, spy: false, seenAt: t2 - 60e3, lastSeenAt: t2, source: "list", type: "ATTACK" }];
+      g.store.set(KSIT, JSON.stringify(st));
+      g.threats.push({ src: "9:9:7", dst: "1:100:14", dstBody: "moon", eta: 400, id: "t65d" });
+    }
+    const r2 = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
+    const nowe = r2.logs.filter(m => !r1.logs.includes(m));   // wpisy dopiero z kroku 2 (log w schowku kumuluje się)
+    check("65b: (krok 2) w przebiegu czeka ratunek D — główna pętla pomija rekonesans", nowe.some(m => /\[LOT\] .*\[1:100:14\] moon → /.test(m)) || g.sent.some(x => x.from === "1:100:14"), nowe.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
+    check("65c: …a para B MIMO TO dostała cichy odczyt w tym samym przebiegu", cichy(nowe, "1:100:9"), nowe.filter(m => /OBRONA/.test(m)).slice(0, 8).join(" | "));
+    check("65d: …odczyt B niósł prawdziwą liczbę (200 szt.)", nowe.some(m => /atak na \[1:100:9\][^|]*odczytany w tle \(200 szt/i.test(m)), nowe.filter(m => /odczytany w tle/.test(m)).join(" | "));
+    const st2 = JSON.parse(g.store.get(KSIT) || "{}");
+    check("65e: migawka B w stanie odświeżona (nie sprzed pięciu minut)", !!st2.hangars["1:100:9|moon"] && Date.now() - st2.hangars["1:100:9|moon"].at < 60e3, JSON.stringify(st2.hangars["1:100:9|moon"]));
+  }
+
+  console.log("\n── 66. ODMOWA GRY PO „Send fleet” NIE JEST WYSYŁKĄ: bramka anty-duplikat żąda dowodu z hangaru (HANDOFF 14.09, sekcja 6 pkt 1) ──");
+  {
+    // Stempel `last_send` powstaje PRZED klikiem. Gdy gra odmówiła i oddała zwykły /fleet, bramka
+    // do v3.95.3 księgowała „kliknąłem" jako „gra przyjęła": zerowała hangar ciała pod atakiem,
+    // kasowała misję, stawiała karencję — cisza tej samej klasy co 13.09. Chirurgia stanu: misja
+    // ratunkowa w kroku „form" + stempel sprzed 5 s, gra oddała stronę bez sukcesu.
+    const KM = "genesis.ogamex.net:ogx3_mission", KL = "genesis.ogamex.net:ogx3_last_send";
+    const mk = () => { const g = new Game({ pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Schron", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 5000 } }, active: { key: "1:100:5", body: "moon" },
+      threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400, id: "t66" }] }); g.moonLinks = true; return g; };
+    const plant = (g, { refused, before = 5000, page = "fleet" } = {}) => {
+      const now = Date.now();
+      const m = { kind: "fly", rescue: true, air: true, speed: 3, recall: true, fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon",
+        why: "atak w moon [1:100:5] → sąsiedni księżyc", step: "form", startedAt: now - 15e3, navs: 1, recallAt: now + 500e3 };
+      if (refused) m.refused = refused;
+      g.store.set(KM, JSON.stringify(m));
+      const ls = { at: now - 5e3, toKey: "1:100:9", toBody: "moon", kind: "fly", from: "1:100:5", fromBody: "moon", startedAt: m.startedAt, loaded: "BATTLESHIP×5 000", total: 5000 };
+      if (before != null) ls.before = before;
+      g.store.set(KL, JSON.stringify(ls));
+      g.store.set(KSIT, JSON.stringify({ pairs: {}, hangars: { "1:100:5|moon": { total: 5000, ships: [{ type: "BATTLESHIP", qty: 5000 }], at: now - 20e3 } },
+        threats: [{ id: "t66", dst: "1:100:5", dstBody: "moon", arriveAt: now + 400e3, attack: true, spy: false, seenAt: now - 60e3, lastSeenAt: now, source: "list", type: "ATTACK" }],
+        own: [], flights: [{ id: "f66", kind: "air", fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", sentAt: now - 5e3, flightMs: 0, recallAt: now + 500e3, phase: "launched", tries: 0, pending: true }],
+        expected: [], bar: null, active: { key: "1:100:5", body: "moon" }, updatedAt: now }));
+      g.page = page; g.query = "";
+    };
+    const hangarStanu = (g) => ((JSON.parse(g.store.get(KSIT) || "{}").hangars || {})["1:100:5|moon"]);
+    const logi = (g) => JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg).reverse();   // chronologicznie
+    const settle = () => new Promise(r => setTimeout(r, SETTLE));
+    // (a) pierwsza odmowa: hangar pełny → bot rozpoznaje odmowę, NIE zeruje hangaru, ponawia formularz
+    {
+      const g = mk(); plant(g, {}); g.refuseSubmit = true;
+      const inst = load(g, { cfg: cfgObrona() }); await inst.tick(1); await settle();
+      const lg = logi(g);
+      const iOdm = lg.findIndex(m => /gra NIE przyjęła wysyłki/.test(m));
+      check("66a: bot rozpoznał odmowę po hangarze (stempel „kliknąłem” ≠ dowód)", iOdm >= 0, lg.filter(m => /LOT/.test(m)).slice(0, 6).join(" | "));
+      check("66b: hangar ciała POD ATAKIEM nie został wyzerowany ani zapomniany", (hangarStanu(g) || {}).total === 5000, JSON.stringify(hangarStanu(g)));
+      check("66c: żadnego „bramka anty-duplikat”/„wyzerowany” przed rozpoznaniem odmowy", iOdm >= 0 && !lg.slice(0, iOdm + 1).some(m => /wyzerowany|bramka anty-duplikat/.test(m)), lg.filter(m => /wyzerowany|anty-duplikat/.test(m)).join(" | "));
+      check("66d: …i ponowił formularz (klik „Send fleet” PO rozpoznaniu odmowy)", iOdm >= 0 && lg.findIndex(m => /Send fleet kliknięty/.test(m)) > iOdm, lg.filter(m => /LOT/.test(m)).slice(0, 8).join(" | "));
+      check("66d2: gra znów odmówiła → istniejąca droga „NIE potwierdzona” przerywa bez zerowania", lg.some(m => /wysyłka NIE potwierdzona/.test(m)) && (hangarStanu(g) || {}).total === 5000, lg.filter(m => /potwierdzon/.test(m)).join(" | "));
+    }
+    // (b) druga odmowa z rzędu: przerwanie z alarmem (BŁĄD = push), hangar nadal nietknięty
+    {
+      const g = mk(); plant(g, { refused: 1 });
+      const inst = load(g, { cfg: cfgObrona() }); await inst.tick(1); await settle();
+      const dz = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+      check("66e: druga odmowa = przerwanie z wpisem BŁĄD (push), nie cicha „wysyłka”", dz.some(e => e.kind === "BŁĄD" && /dwukrotnie odrzuciła/.test(e.msg || "")), JSON.stringify(dz.slice(0, 3)));
+      check("66f: hangar nadal 5000 — bot nie wpisał sobie „tu nic nie stoi”", (hangarStanu(g) || {}).total === 5000, JSON.stringify(hangarStanu(g)));
+      check("66g: misja sprzątnięta (bez pętli)", (g.store.get(KM) || "null") === "null", String(g.store.get(KM)).slice(0, 120));
+      check("66h: żadnego lotu w grze — gra odmawiała", g.sent.length === 0, JSON.stringify(g.sent));
+    }
+    // (c) wysyłka NAPRAWDĘ poszła, tylko strona sukcesu nie przyszła: hangar zmalał → księgujemy
+    {
+      const g = mk(); g.hangars["1:100:5|moon"] = {}; plant(g, { page: "home" });
+      const inst = load(g, { cfg: cfgObrona() }); await inst.tick(1); await settle();
+      const lg = logi(g);
+      check("66i: hangar źródła potwierdza wysyłkę → „już poszła”, misja domknięta", lg.some(m => /już poszła.*hangar źródła potwierdza/.test(m)) && (g.store.get(KM) || "null") === "null", lg.filter(m => /LOT/.test(m)).slice(0, 5).join(" | "));
+      const st = JSON.parse(g.store.get(KSIT) || "{}");
+      check("66j: wpis lotu przestał być `pending`", (st.flights || []).some(f => f.id === "f66" && !f.pending), JSON.stringify(st.flights));
+      check("66k: stan hangaru = świeży odczyt (0), nie stara migawka", (hangarStanu(g) || {}).total === 0, JSON.stringify(hangarStanu(g)));
+    }
+    // (d) stempel sprzed aktualizacji (bez `before`): brak dowodu → migawka NIETKNIĘTA, misja odpada
+    //     bez karencji, a decide() ponawia ratunek i formularz sam sprawdza, co stoi
+    {
+      const g = mk(); plant(g, { before: null, page: "home" });
+      const inst = load(g, { cfg: cfgObrona() }); await inst.tick(1); await settle();
+      const lg = logi(g);
+      check("66l: bez dowodu migawka hangaru zostaje (5000), nie jest zerowana", (hangarStanu(g) || {}).total === 5000, JSON.stringify(hangarStanu(g)));
+      {
+        // misja bez dowodu odpada, ale bez karencji — więc decide() w TYM SAMYM przebiegu ma prawo
+        // wystawić ratunek od nowa (nowa misja, nowszy `startedAt`). Sprawdzamy brak karencji i to,
+        // że ewentualna misja w schowku jest już NOWA, a nie tą zasianą.
+        const mNow = JSON.parse(g.store.get(KM) || "null");
+        const zasiana = JSON.parse(g.store.get(KL) || "{}").startedAt;
+        check("66m: …misja odpada bez karencji trasy (decide() ma prawo ponowić od razu)", (!mNow || mNow.startedAt > zasiana) && !((JSON.parse(g.store.get("genesis.ogamex.net:ogx3_fly_block") || "{}"))["1:100:5>1:100:9"]), JSON.stringify(mNow) + " blok=" + String(g.store.get("genesis.ogamex.net:ogx3_fly_block")));
+      }
+      check("66n: …log mówi wprost, że dowodu nie było", lg.some(m => /bez dowodu z hangaru/.test(m)), lg.filter(m => /LOT/.test(m)).slice(-4).join(" | "));
+      await run(g, { cfg: cfgObrona(), loads: 8, ticksPerLoad: 2 });
+      check("66o: ratunek poszedł ponownie i formularz wysłał flotę, która naprawdę stała (5000)", g.sent.length === 1 && g.sent[0].ships.BATTLESHIP === 5000, JSON.stringify(g.sent.map(x => x.ships)));
+    }
+  }
+
+  console.log("\n── 67. NIECZYTELNA STRONA FLOTY ≠ PUSTY HANGAR: ratunek nie ginie po cichu (HANDOFF 14.09, sekcja 6 pkt 3) ──");
+  {
+    // Do v3.95.3 `Fly.form` traktował `Hangar.scan() === null` (strona bez kroku wyboru statków)
+    // tak samo jak „hangar pusty": „nic do wysłania", misja skasowana, zero alarmu, zero sufitu.
+    const mk67 = () => new Game({ pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Schron", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700 } }, active: { key: "1:100:5", body: "moon" } });
+    // (a) fork oddaje nieczytelny /fleet RAZ — bot ponawia formularz i ratuje
+    {
+      const g = mk67(); g.page = "fleet";
+      await run(g, { cfg: cfgObrona(), loads: 2, ticksPerLoad: 1 });        // bot zna hangar (700)
+      g.page = "home"; g.query = "";                                          // pierwszą odsłonę /fleet ma dostać FORMULARZ ratunku, nie odświeżenie
+      g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400, id: "t67a" });
+      g.blankFleet = 1;
+      await run(g, { cfg: cfgObrona(), loads: 14, ticksPerLoad: 2 });
+      const lg = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg).reverse();   // chronologicznie
+      const iSend = lg.findIndex(m => /Send fleet kliknięty/.test(m));
+      check("67a: przed wysyłką nieczytelna strona NIE została uznana za pusty hangar", iSend > 0 && !lg.slice(0, iSend).some(m => /pusty — nic do wysłania/.test(m)), lg.filter(m => /pusty|nieczytelna|Send fleet/.test(m)).join(" | "));
+      check("67b: …bot ją zameldował i ponowił formularz", lg.some(m => /nieczytelna \(1\/3\)/.test(m)), lg.filter(m => /LOT/.test(m)).slice(0, 8).join(" | "));
+      check("67c: …i ratunek POSZEDŁ (700 pancerników)", g.sent.length === 1 && g.sent[0].ships.BATTLESHIP === 700, JSON.stringify(g.sent.map(x => x.ships)));
+    }
+    // (b) strona nieczytelna TRWALE — po trzech podejściach głośne przerwanie (BŁĄD = push), nie cicha pętla
+    {
+      const g = mk67(); g.page = "fleet";
+      await run(g, { cfg: cfgObrona(), loads: 2, ticksPerLoad: 1 });
+      g.page = "home"; g.query = "";
+      g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 400, id: "t67b" });
+      g.blankFleet = 99;
+      const { logs } = await run(g, { cfg: cfgObrona(), loads: 16, ticksPerLoad: 2 });
+      const dz = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+      check("67e: trzecie podejście kończy się wpisem BŁĄD (push), nie ciszą", dz.some(e => e.kind === "BŁĄD" && /nieczytelna/.test(e.msg || "")), JSON.stringify(dz.slice(0, 3)));
+      check("67f: żadnego „pusty — nic do wysłania” na nieczytelnej stronie", !logs.some(m => /pusty — nic do wysłania/.test(m)), logs.filter(m => /pusty/.test(m)).join(" | "));
+      const st = JSON.parse(g.store.get(KSIT) || "{}");
+      check("67g: stan hangaru NIE mówi „0” — bez odczytu nie ma dowodu", !st.hangars["1:100:5|moon"] || st.hangars["1:100:5|moon"].total === 700, JSON.stringify(st.hangars["1:100:5|moon"]));
+      check("67h: pętla ma sufit — co najwyżej kilka wejść na formularz", g.navigations.filter(n => /^\/fleet/.test(n)).length <= 8, JSON.stringify(g.navigations.slice(0, 12)));
+      check("67i: nic nie poleciało (nie było skąd odczytać hangaru)", g.sent.length === 0, JSON.stringify(g.sent));
+    }
+  }
+
+  console.log("\n── 68. ODBUDOWA KSIĘŻYCA: sukces kasuje licznik, odrzucony submit rozpoznany, potwierdzenie i zwóz nie stoją za bramką ataków (AUDYT-ODBUDOWY 14.09, P0) ──");
+  {
+    const KMOON = "genesis.ogamex.net:ogx3_moon";
+    const cfg68 = () => ({ autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, human: { breaks: false, economyAtNight: true }, moon: { enabled: true, maxMetalShare: 0.25, minKm: 1000, maxTries24h: 3 } });
+    const mk68 = () => { const g = new Game({ pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|planet": { BATTLESHIP: 100 }, "1:100:9|moon": { BATTLESHIP: 4000 } }, active: { key: "1:100:5", body: "planet" } }); g.metal = 2_000_000_000; return g; };
+    const tries = (g) => (JSON.parse(g.store.get(KMOON) || "{}").tries || {})["1:100:5"];
+    const ms = (g) => JSON.parse(g.store.get(KMOON) || "{}");
+    // (a) sukces kasuje licznik prób; druga strata tego samego dnia idzie od razu
+    {
+      const g = mk68();
+      await run(g, { cfg: cfg68(), loads: 4, ticksPerLoad: 2 });      // bot zna pary
+      g.pairs[0].moon = false;                                          // napastnik zestrzelił księżyc
+      await run(g, { cfg: cfg68(), loads: 30, ticksPerLoad: 2 });
+      check("68a: (warunek wstępny) księżyc odbudowany", !!g.moonBuilt && g.pairs[0].moon === true, JSON.stringify(g.moonBuilt));
+      check("68b: licznik prób pary SKASOWANY po sukcesie (do v3.95.3: n=1 zostawało w puli)", tries(g) === undefined, JSON.stringify(tries(g)));
+      g.moonBuilt = null; g.pairs[0].moon = false;                      // druga strata tego samego dnia
+      await run(g, { cfg: cfg68(), loads: 30, ticksPerLoad: 2 });
+      check("68c: druga odbudowa tego samego dnia idzie bez karencji z pierwszej", !!g.moonBuilt && g.pairs[0].moon === true, JSON.stringify(g.moonBuilt) + " tries=" + JSON.stringify(tries(g)));
+    }
+    // (b) odrzucony submit: rozpoznany, policzony jako próba, bez klikania w kółko; po zdjęciu odmowy księżyc staje
+    {
+      const g = mk68(); g.refuseMoon = true;
+      await run(g, { cfg: cfg68(), loads: 4, ticksPerLoad: 2 });
+      g.pairs[0].moon = false;
+      const { logs } = await run(g, { cfg: cfg68(), loads: 24, ticksPerLoad: 2 });   // klik „Form a moon”, gra odmawia (strona stoi)
+      { const r2 = await run(g, { cfg: cfg68(), loads: 3, ticksPerLoad: 2 }); logs.push(...r2.logs); }   // następny przebieg: weryfikacja próby
+      check("68d: bot ROZPOZNAŁ odrzucony „Form a moon” (strona stoi, księżyca nie ma)", logs.some(m => /gra NIE przyjęła „Form a moon"/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 6).join(" | "));
+      check("68e: …odrzucenie liczy się jako próba i nie klika w kółko", (g.moonRefused || 0) <= 2 && !!tries(g) && tries(g).n >= 1, `refused=${g.moonRefused} tries=${JSON.stringify(tries(g))}`);
+      const dz = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+      check("68f: …przy ODBUDOWIE właściciel dostaje wpis BŁĄD z tekstem strony", dz.some(e => e.kind === "BŁĄD" && /odrzuciła odbudowę/.test(e.msg || "")), JSON.stringify(dz.slice(0, 3)));
+      g.refuseMoon = false;
+      { const m0 = ms(g); m0.tries = {}; g.store.set(KMOON, JSON.stringify(m0)); }   // karencja (60 s realnego czasu) = zdjęcie wpisu, jak w 43c
+      await run(g, { cfg: cfg68(), loads: 30, ticksPerLoad: 2 });
+      check("68g: po zdjęciu odmowy księżyc staje", !!g.moonBuilt && g.pairs[0].moon === true, JSON.stringify(g.moonBuilt));
+    }
+    // (c) potwierdzenie i zwóz POD OSTRZAŁEM (chirurgia stanu: próba właśnie kliknięta, księżyc już stoi, na drugą parę leci atak)
+    {
+      const g = mk68();
+      g.threats.push({ src: "9:9:9", dst: "1:100:9", dstBody: "moon", eta: 900, id: "t68" });
+      await run(g, { cfg: cfg68(), loads: 8, ticksPerLoad: 2 });      // bot zna pary i hangary, ratuje [1:100:9]
+      const now = Date.now();
+      g.store.set(KMOON, JSON.stringify({ tries: { "1:100:5": { n: 1, at: now - 5e3 } }, m: { key: "1:100:5", at: now - 5e3, navs: 3, km: 1000, cost: 300_000_000 } }));
+      { const st = JSON.parse(g.store.get(KSIT) || "{}"); st.moonLost = { "1:100:5": now - 60e3 }; st.hangars["1:100:5|planet"] = { total: 100, ships: [{ type: "BATTLESHIP", qty: 100 }], at: now - 60e3 }; g.store.set(KSIT, JSON.stringify(st)); }
+      const r1 = await run(g, { cfg: cfg68(), loads: 8, ticksPerLoad: 2 });
+      check("68h: mimo trwającego ataku sukces został ZAKSIĘGOWANY (log ✅, wpis próby zdjęty)", r1.logs.some(m => /✅ \[1:100:5\] ma księżyc/.test(m)) && !ms(g).m, JSON.stringify(ms(g)) + " | " + r1.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 4).join(" | "));
+      check("68i: …licznik prób skasowany", !(ms(g).tries || {})["1:100:5"], JSON.stringify(ms(g).tries));
+      check("68j: …zwóz floty ODŁOŻONY na ciszę, nie zapomniany", !!ms(g).zwoz && ms(g).zwoz.key === "1:100:5" && r1.logs.some(m => /zwóz floty z planety poczeka na ciszę/.test(m)), JSON.stringify(ms(g).zwoz) + " | " + r1.logs.filter(m => /zwóz/.test(m)).join(" | "));
+      check("68k: …a pod ostrzałem żaden lot dobrowolny z [1:100:5] nie wyszedł", !g.sent.some(x => x.from === "1:100:5"), JSON.stringify(g.sent.map(x => [x.from, x.fromBody])));
+      g.threats.length = 0; advance(g, 1000e3);                          // nalot mija (atak w stanie żyje do `arriveAt` — przewijamy zegar)
+      await run(g, { cfg: cfg68(), loads: 12, ticksPerLoad: 2 });
+      check("68l: po ciszy zwóz rusza: Deploy planeta → księżyc [1:100:5]", g.sent.some(x => x.from === "1:100:5" && x.fromBody === "planet" && x.to === "1:100:5" && x.toBody === "moon"), JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody])));
+      check("68m: …znacznik zwozu zdjęty", !ms(g).zwoz, JSON.stringify(ms(g)));
+    }
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

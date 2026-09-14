@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.95.3
+// @version      3.96.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.95.3";
+  const VERSION = "3.96.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1627,6 +1627,30 @@
     // planowanego zawrotu.
     const flightBlind = (f) => flightStale(f, now);
     const inFlightFrom = (k) => (s.flights || []).find(f => f.fromKey === k && f.phase !== "done" && !flightBlind(f));
+    // v3.96.0 (HANDOFF 14.09, sekcja 6 pkt 2) — CO SIĘ PSUŁO: `extend` (zawrót przesunięty za
+    // dosłaną falę) był wystawiany dla JEDNEGO lotu z pary — tego, który `inFlightFrom` znalazł
+    // pierwszy w tablicy. Odkąd każda wracająca fala dostaje własny ratunek (v3.75.0), z jednej
+    // pary wisi w powietrzu kilka lotów na ten sam księżyc (14.09: dziewięć), a dosłana fala
+    // przesuwała zawrót tylko pierwszemu z nich — pozostałe wracały o czasie, prosto pod
+    // ostatnią falę. Do tego egzekutor szukał wpisu po trasie (skąd→dokąd+ciało), więc nawet
+    // dwie akcje trafiałyby w ten sam pierwszy wpis. Teraz: KAŻDY lot w powietrzu z tej pary,
+    // którego zawrót wypada przed ostatnim dolotem + bufor, dostaje własny `extend` (po `id`).
+    const extended = new Set();
+    const extendAll = (k, th) => {
+      if (!th || !th.length) return [];
+      const lastArrive = Math.max(...th.map(t => t.arriveAt));
+      const recallAt = lastArrive + cfg.recallBufferSec * 1000;
+      const out = [];
+      for (const x of (s.flights || [])) {
+        if (x.fromKey !== k || x.kind !== "air" || x.phase !== "launched" || !x.recallAt || flightBlind(x)) continue;
+        if (recallAt <= x.recallAt) continue;
+        const idx = x.id || `${x.fromKey}>${x.toKey}|${x.fromBody || ""}|${x.sentAt || 0}`;
+        if (extended.has(idx)) continue;
+        extended.add(idx);
+        out.push({ kind: "extend", flight: x, recallAt, why: "dosłana fala" });
+      }
+      return out;
+    };
     // v3.7.0 (audyt 28.08): flota potrafi stać na OBU ciałach pary naraz. fleetAt()
     // zwraca jedno miejsce, więc przy flocie na księżycu (50) i planecie (200 000)
     // oraz ataku w planetę bot mówił „bezpieczna strona" i zostawiał 200 000 pod
@@ -1978,10 +2002,8 @@
           // fala ataku trafiała TUTAJ — a przedłużanie zawrotu żyło tylko w gałęzi
           // z flotą w hangarze. Ucieczka wracała 90 s po PIERWSZEJ fali, prosto pod
           // drugą. Extend musi działać niezależnie od stanu hangaru.
-          if (fOut.kind === "air" && fOut.phase === "launched" && fOut.recallAt) {
-            const lastArrive = Math.max(...th.map(t => t.arriveAt));
-            if (lastArrive + cfg.recallBufferSec * 1000 > fOut.recallAt) actions.push({ kind: "extend", flight: fOut, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" });
-          }
+          // v3.96.0: KAŻDY lot z tej pary w powietrzu, nie tylko `fOut` (patrz `extendAll`).
+          actions.push(...extendAll(k, th));
           const land = (fOut.sentAt || 0) + (fOut.flightMs || 0);
           // v3.92.0: „nie ma czego ratować" wolno powiedzieć TYLKO wtedy, gdy bot ma świeży
           // dowód z atakowanego ciała. Po własnej ucieczce hangar źródła jest zerowany, więc
@@ -2092,11 +2114,11 @@
         msg: `ATAK na [${k}] za ${secs}s, a z tej pary trwa Fleet Save → [${f.toKey}]. FS jest lotem dobrowolnym, obrona ma pierwszeństwo — ratuję ${hitRef.body} (${hitRef.total ? hitRef.total.toLocaleString("pl-PL") + " szt." : "świeżo wylądowaną falę"}) osobnym lotem` });
       else if (drugiLot) alerts.push({ key: k, level: "error", push: true, throttleMs: 60e3,
         msg: `ATAK na [${k}] za ${secs}s: z tej pary już leci ratunek (${f.kind}/${f.phase} → [${f.toKey}]), ale na ${hitRef.body} ${hitRef.total ? "STOI " + hitRef.total.toLocaleString("pl-PL") + " szt." : "WŁAŚNIE WYLĄDOWAŁA fala (hangar starszy niż lądowanie)"} — wysyłam DRUGI lot ratunkowy` });
-      if (f && drugiLot && f.kind === "air" && f.phase === "launched" && f.recallAt) {
-        // zawrót pierwszego lotu i tak trzeba przesunąć za ostatnią falę — to niżej robi
+      if (f && drugiLot) {
+        // zawrót lotów już w powietrzu i tak trzeba przesunąć za ostatnią falę — to niżej robi
         // gałąź `!drugiLot`, więc przy drugim ratunku powtarzamy to tutaj.
-        const lastArrive = Math.max(...th.map(t => t.arriveAt));
-        if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" });
+        // v3.96.0: dla KAŻDEGO lotu z pary (patrz `extendAll`), nie tylko dla `f`.
+        actions.push(...extendAll(k, th));
       }
       // v3.52.0 (audyt powrotów 31.08) + v3.75.0: rejestr powrotów mówi wprost, co stoi albo
       // stanie pod uderzeniem — z zegarem. Alarm jest POZA gałęzią „z pary trwa lot", bo
@@ -2115,7 +2137,11 @@
         // prób, faza `recall_failed`, fałszywy push „nie widzę lotu — zawróć ręcznie", a wpis
         // przestawał domykać się hangarem CELU i wypadał spod czyszczenia 30-minutowego,
         // czyli zaślepiał parę dłużej, niż trzeba — w środku ataku.
-        if (f.kind === "air" && f.phase === "launched") { if (f.recallAt) { const lastArrive = Math.max(...th.map(t => t.arriveAt)); if (lastArrive + cfg.recallBufferSec * 1000 > f.recallAt) actions.push({ kind: "extend", flight: f, recallAt: lastArrive + cfg.recallBufferSec * 1000, why: "dosłana fala" }); } }
+        // v3.96.0: `extend` idzie dla KAŻDEGO lotu w powietrzu z tej pary (patrz `extendAll`) —
+        // także wtedy, gdy PIERWSZY wpis pary jest już w zawrocie, a drugi wciąż wisi z zawrotem
+        // wypadającym przed ostatnią falą. Warunek `recallAt` (v3.68.4) siedzi w `extendAll`.
+        actions.push(...extendAll(k, th));
+        if (f.kind === "air" && f.phase === "launched") { /* zawrót przesunięty wyżej */ }
         // v3.29.0 (audyt O1): wpis lotu kazał tu ROBIĆ `continue` — czyli atak na parę,
         // z której coś już leci, nie dawał ani alarmu, ani pusha. Fazy "done" nikt
         // nigdy nie ustawia, a faza "recalled" żyje aż do `recallAt + 60 min`, więc
@@ -2598,6 +2624,35 @@
     // (Situation.refresh) i gaśnie, gdy para znów go ma. Nowa kolonia nigdy go nie dostanie.
     rebuildOnly() { return !CFG.moon.enabled; },
     doOdbudowy(s) { return Object.keys(s.moonLost || {}).some(k => !((s.pairs || {})[k] || {}).hasMoon); },
+    // v3.96.0 (AUDYT-ODBUDOWY P0 #4): coś do domknięcia — próba czekająca na weryfikację albo
+    // odłożony zwóz floty. Wołający daje wtedy modułowi przebieg także pod ostrzałem, bo po UDANEJ
+    // odbudowie `moonLost` gaśnie i bez tego sukces nigdy nie byłby zaksięgowany w trakcie nalotu.
+    pending() { const st = this.st(); return !!(st.m || st.zwoz); },
+    // v3.67.0 (owner 04.09: „bot ma automatycznie odesłać flotę na nowy księżyc, a później
+    // standardowo wracamy do stałej pętli"): JEDNORAZOWY zwóz floty z planety, wywołany
+    // bezpośrednio przez odbudowę — NIE dotyka ogólnej reguły homeToMoon (zostaje OFF,
+    // decyzja ownera 30.08). Ten sam wzorzec co ręczny przycisk „powrót na księżyc":
+    // kind:"home" (Deploy, bierze surowce).
+    // v3.96.0: znacznik `st.zwoz` przeżywa przebiegi — pod ostrzałem lot dobrowolny i tak zostałby
+    // przerwany przez obronę, więc zwóz czeka na pierwszą ciszę zamiast przepaść razem z `st.m`.
+    // Formularz czyta hangar na żywo, więc stara migawka planety nie jest przeszkodą.
+    zwozTick(s, st, now) {
+      const z = st.zwoz; if (!z) return false;
+      if (now - z.at > 60 * 60e3 || !((s.pairs || {})[z.key] || {}).hasMoon) { delete st.zwoz; this.save(st); return false; }   // żaden wpis stanu nie jest wieczny; bez księżyca nie ma dokąd zwozić
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > now)) {
+        if (!Once.said("moon_zwoz_wait|" + z.key, 10 * 60e3)) log(`[KSIĘŻYC] [${z.key}] ma nowy księżyc, ale trwa atak — zwóz floty z planety poczeka na ciszę.`, "info");
+        return false;
+      }
+      delete st.zwoz; this.save(st);
+      try {
+        const hp2 = (s.hangars || {})[`${z.key}|planet`];
+        if (hp2 && (hp2.total || 0) > 0 && !Fly.mission()) {
+          log(`[KSIĘŻYC] księżyc [${z.key}] odbudowany, na planecie stoi flota (${hp2.total.toLocaleString("pl-PL")} szt.) — zwożę na nowy księżyc.`, "warn");
+          Fly.start({ kind: "home", fromKey: z.key, fromBody: "planet", toKey: z.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true });
+        }
+      } catch (e) { log(`[KSIĘŻYC] zwóz po odbudowie nie wyszedł: ${e.message}`, "warn"); }
+      return false;
+    },
     target(s, st) {
       // v3.67.0 (E7): pomiń pary, których nie wolno teraz próbować (limit 3/24h
       // albo karencja 10 min po nieudanej próbie) — inaczej pierwsza zablokowana
@@ -2620,10 +2675,12 @@
     },
     async tick(s) {
       if (Fly.mission()) return false;
+      const now = Date.now();
+      const st = this.st();
+      const m = st.m;
       // v3.90.0: wyłączony moduł budzi się WYŁĄCZNIE do odbudowy (patrz `target`). Bez tej
       // bramki każdy przebieg schodziłby do wyboru celu i wracał z niczym.
-      if (this.rebuildOnly() && !this.doOdbudowy(s) && !this.st().m) return false;
-      const now = Date.now();
+      if (this.rebuildOnly() && !this.doOdbudowy(s) && !m && !st.zwoz) return false;
       // v3.95.1 (nalot 14.09, złapane przez E2E 43c) — CO ZOSTAŁO PO v3.95.0: wyjęcie modułu
       // z kolejki ekonomii nie wystarczyło, bo `tick` ma WŁASNĄ bramkę: przy jakimkolwiek ataku
       // na koncie wychodził natychmiast. A księżyc ginie właśnie w trakcie nalotu — czyli
@@ -2634,27 +2691,36 @@
       // widocznej dla falangi). Stawianie NOWYCH księżyców czeka na ciszę jak dotąd —
       // to jest wydatek, nie obrona. `Fly.mission()` wyżej dalej chroni przed przełączaniem
       // planety w środku ratunku.
-      if (!this.doOdbudowy(s) && (s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
-      const st = this.st();
-      const m = st.m;
+      // (bramka „nie ma odbudowy, a trwa atak" jest NIŻEJ — v3.96.0 przesunęła ją za weryfikację)
       // ── weryfikacja poprzedniej próby: para ma już księżyc? ──
+      // v3.96.0 (AUDYT-ODBUDOWY P0 #4) — CO SIĘ PSUŁO: ten blok stał ZA bramką „nie ma odbudowy,
+      // a trwa atak". Po UDANEJ odbudowie `doOdbudowy` jest już false (para ma księżyc), więc pod
+      // ostrzałem sukces nigdy nie był księgowany: `st.m` wisiał do 10 min i znikał po cichu,
+      // licznik prób zostawał, zwóz floty z planety nie ruszał (krok 6 doktryny DESTROY).
       if (m && now - m.at < 10 * 60e3) {
         if ((s.pairs || {})[m.key]?.hasMoon) {
-          st.m = null; this.save(st);
+          st.m = null;
+          // v3.96.0 (AUDYT-ODBUDOWY P0 #1): UDANA odbudowa kasuje licznik prób tej pary — sukcesy nie
+          // zużywają dobowej puli porażek (druga strata tego samego dnia zastawała wyczerpany limit).
+          if (st.tries && st.tries[m.key]) delete st.tries[m.key];
+          st.zwoz = { key: m.key, at: now };
+          this.save(st);
           log(`[KSIĘŻYC] ✅ [${m.key}] ma księżyc (${m.km} km za ${(m.cost || 0).toLocaleString("pl-PL")} metalu).`, "success");
           Journal.add("POWRÓT", `Postawiony księżyc przy [${m.key}] — ${m.km} km.`);
-          // v3.67.0 (owner 04.09: „bot ma automatycznie odesłać flotę na nowy księżyc,
-          // a później standardowo wracamy do stałej pętli"): JEDNORAZOWY zwóz floty
-          // z planety, wywołany bezpośrednio przez odbudowę — NIE dotyka ogólnej
-          // reguły homeToMoon (zostaje OFF, decyzja ownera 30.08). Ten sam wzorzec co
-          // ręczny przycisk „powrót na księżyc": kind:"home" (Deploy, bierze surowce).
-          try {
-            const hp2 = (s.hangars || {})[`${m.key}|planet`];
-            if (hp2 && (hp2.total || 0) > 0 && now - (hp2.at || 0) < 30 * 60e3 && !Fly.mission()) {
-              log(`[KSIĘŻYC] księżyc świeżo odbudowany, na planecie [${m.key}] stoi flota (${hp2.total.toLocaleString("pl-PL")} szt.) — zwożę na nowy księżyc.`, "warn");
-              Fly.start({ kind: "home", fromKey: m.key, fromBody: "planet", toKey: m.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true });
-            }
-          } catch (e) { log(`[KSIĘŻYC] zwóz po odbudowie nie wyszedł: ${e.message}`, "warn"); }
+          return this.zwozTick(s, st, now);
+        }
+        // v3.96.0 (AUDYT-ODBUDOWY P0 #3): kliknęliśmy „Form a moon" (`m.km` ustawione), strona
+        // formowania nadal stoi, a księżyca nie ma — gra ODRZUCIŁA submit. Do tej pory bot uznawał
+        // próbę za wykonaną i klikał ponownie co przebieg, aż do sufitu 4 nawigacji. Odrzucenie liczy
+        // się jako próba (karencja), a powód (tekst strony) idzie do logu; przy ODBUDOWIE — także na
+        // telefon, bo para stoi bez księżyca i tylko właściciel może usunąć przyczynę.
+        if (m.km && /moonformation/i.test(location.pathname)) {
+          const odbudowa = !!((s.moonLost || {})[m.key]);
+          const n = this.noteTry(st, m.key);
+          const frag = ((document.querySelector(".alert, .error, .alert-danger, #content, .content") || document.body).textContent || "").replace(/\s+/g, " ").trim().slice(0, 240);
+          st.m = null; this.save(st);
+          log(`[KSIĘŻYC] gra NIE przyjęła „Form a moon" przy [${m.key}] (${m.km} km za ${(m.cost || 0).toLocaleString("pl-PL")} metalu) — strona formowania stoi, księżyca nie ma (próba ${n}). Tekst strony: ${frag}`, "error");
+          if (odbudowa && !Once.said("moon_reject|" + m.key, 30 * 60e3)) Journal.add("BŁĄD", `Gra odrzuciła odbudowę księżyca przy [${m.key}] (${m.km} km) — sprawdź metal i warunki w grze. Tekst: ${frag.slice(0, 120)}`);
           return false;
         }
         // v3.84.0 (log właściciela 13:11, [TEMPO] sam to zgłosił: „ten sam powód 4× w ostatniej
@@ -2675,6 +2741,11 @@
           return false;
         }
       } else if (m) { st.m = null; this.save(st); }
+      // odłożony zwóz floty na odbudowany księżyc (v3.96.0) — rusza przy pierwszej ciszy
+      if (st.zwoz) { this.zwozTick(s, st, now); if (Fly.mission()) return false; }
+      // ODBUDOWA utraconego księżyca idzie mimo trwających ataków (v3.95.1, komentarz wyżej);
+      // stawianie NOWYCH księżyców czeka na ciszę — to wydatek, nie obrona.
+      if (!this.doOdbudowy(s) && (s.threats || []).some(t => t.attack && t.arriveAt > now)) return false;
       // v3.68.10 (audyt 04.09, obrona-fs#5): odbudowa księżyca nie wysyła ŻADNEGO statku,
       // więc trwający Fleet Save jej nie dotyczy — a właśnie w trakcie FS napastnik
       // najchętniej strzela w księżyc (flota poza domem). Reszta pauz (przerwy, cisza) obowiązuje.
@@ -3702,6 +3773,28 @@
       if (!r || !mm.flightMs) return r;
       return (Date.now() + mm.flightMs < r) ? 0 : r;     // doleci wcześniej = wyląduje
     },
+    // v3.96.0 (HANDOFF 14.09, sekcja 6 pkt 1): DOWÓD wysyłki z hangaru źródła. Stempel `last_send`
+    // powstaje PRZED klikiem „Send fleet" i dowodzi tylko tyle, że bot kliknął. Tu pytamy hangar:
+    //   ok:true  — zmalał o załadunek (±10 %): flota wyleciała,
+    //   ok:false — stoi jak przed klikiem: gra ODMÓWIŁA (slot? deuter?), flota nadal w domu,
+    //   ok:null  — nie da się odczytać / zmalał tylko częściowo / stempel sprzed aktualizacji.
+    // Odczyt: własna strona /fleet, gdy na niej stoimy, inaczej cichy fetch (`scanRemote`,
+    // z przywróceniem planety operatora). Każdy udany odczyt zapisuje ŚWIEŻĄ migawkę hangaru.
+    async sendProof(m, ls) {
+      if (!ls || ls.before == null || !(ls.total > 0)) return { ok: null, why: "stempel bez stanu hangaru sprzed kliknięcia" };
+      let h = null;
+      try {
+        const act = PlanetBar.active();
+        if (page() === "fleet" && act && act.key === m.fromKey && act.body === m.fromBody) h = Hangar.scan();
+        if (!h) h = await Hangar.scanRemote(m.fromKey, m.fromBody);
+      } catch (e) { return { ok: null, why: `odczyt hangaru rzucił: ${e.message}` }; }
+      if (!h || typeof h.total !== "number") return { ok: null, why: "hangar źródła nieodczytany" };
+      const tol = Math.max(1, Math.floor(ls.total * 0.1));
+      const expectedLeft = Math.max(0, ls.before - ls.total);
+      if (h.total <= expectedLeft + tol) return { ok: true, total: h.total };
+      if (h.total >= ls.before - tol) return { ok: false, total: h.total };
+      return { ok: null, total: h.total, why: `hangar zmalał tylko częściowo (${h.total.toLocaleString("pl-PL")} z ${ls.before.toLocaleString("pl-PL")})` };
+    },
     // v3.62.0: JEDNO miejsce domykające wysyłkę — wołane po kliku (gdy strona jeszcze
     // stoi) ALBO po przeładowaniu z adresem fleetSendSuccessfully (na tym forku to
     // ścieżka normalna). Idempotentne: confirmPendingSend() mógł już zdjąć `pending`
@@ -3890,28 +3983,61 @@
             && (ECO_KINDS.includes(m.kind)
               || ((ls.at || 0) >= (m.startedAt || 0) && (ls.startedAt == null || ls.startedAt === m.startedAt)));
           if (lsMine && Date.now() - ls.at < guardMs) {
-            log(`[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam.`, "warn");
+            const juzPoszla = `[LOT] wysyłka do [${m.toKey}] już poszła ${Math.round((Date.now() - ls.at) / 1000)}s temu — nie powtarzam`;
             // v3.39.0: skoro wiemy, że wysyłka poszła, zdejmujemy `pending` z wpisu lotu.
             // Kod robiący to po kliku nie wykonał się, bo „Send fleet" przeładował stronę.
-            try {
-              const sD = Situation.load();
-              const fD = (sD.flights || []).find(x => x.fromKey === m.fromKey && (x.fromBody || m.fromBody) === m.fromBody && x.pending);   // v3.68.8: wpis lotu z DRUGIEGO ciała pary to nie nasza wysyłka
-              if (fD) { delete fD.pending; if (m.flightMs) fD.flightMs = m.flightMs; Situation.save(sD); log(`[LOT] wpis lotu [${fD.fromKey}]→[${fD.toKey}] potwierdzony (wysyłka już poszła).`, "success"); }
-            } catch {}
+            const zdejmijPending = () => {
+              try {
+                const sD = Situation.load();
+                const fD = (sD.flights || []).find(x => x.fromKey === m.fromKey && (x.fromBody || m.fromBody) === m.fromBody && x.pending);   // v3.68.8: wpis lotu z DRUGIEGO ciała pary to nie nasza wysyłka
+                if (fD) { delete fD.pending; if (m.flightMs) fD.flightMs = m.flightMs; Situation.save(sD); log(`[LOT] wpis lotu [${fD.fromKey}]→[${fD.toKey}] potwierdzony (wysyłka już poszła).`, "success"); }
+              } catch {}
+            };
             // v3.39.2: samo skasowanie misji NIE wystarczy — decide() wystawi tę samą
             // trasę w następnym przebiegu, bramka znów ją zetnie i tak w kółko, po jednej
             // nawigacji na obrót (sztorm 09:59). Trasa idzie w karencję na resztę okna
             // bramki: egzekutor mówi wtedy „w karencji — czekam" i NIE nawiguje.
             // TYLKO dla lotów obronnych: fale ekspedycji lecą tą samą trasą co 60–90 s,
             // więc karencja zjadłaby serię (złapane przez E2E „fala 2 też wyszła").
-            // v3.68.6: zerowanie hangaru jest tu dozwolone wyłącznie dlatego, że warunek
-            // wyżej dowodzi, iż stempel pochodzi z TEJ misji (rodzaj + trasa z ciałami +
-            // `startedAt`) — nigdy z lotu innego rodzaju o tych samych współrzędnych.
-            if (!ECO_KINDS.includes(m.kind)) {
-              emptySourceHangar(m.fromKey, m.fromBody, "bramka anty-duplikat", m.excludeTypes, m.capTypes);
-              try { const blG = Store.get("fly_block", {}) || {}; blG[`${m.fromKey}>${m.toKey}`] = ls.at + guardMs; Store.set("fly_block", blG); } catch {}
+            const karencjaTrasy = () => { try { const blG = Store.get("fly_block", {}) || {}; blG[`${m.fromKey}>${m.toKey}`] = ls.at + guardMs; Store.set("fly_block", blG); } catch {} };
+            if (ECO_KINDS.includes(m.kind)) { log(`${juzPoszla}.`, "warn"); zdejmijPending(); Store.del("mission"); return; }
+            // v3.96.0 (HANDOFF 14.09, sekcja 6 pkt 1) — CO SIĘ PSUŁO: dla lotów OBRONNYCH ta bramka
+            // księgowała stempel „kliknąłem" jako „gra przyjęła": zerowała hangar ciała POD ATAKIEM
+            // (`emptySourceHangar`), kasowała misję i stawiała karencję trasy — także wtedy, gdy gra
+            // ODMÓWIŁA wysyłki (brak slotu/deuteru, błąd forka) i oddała zwykłą stronę /fleet z całą
+            // flotą w hangarze. Następny przebieg widział „nie ma czego ratować" i milczał — ta sama
+            // klasa ciszy, która 13.09 kosztowała 1,64 mld statków. v3.68.6 dowodził tylko, że stempel
+            // pochodzi z TEJ misji; nie dowodził, że gra ją przyjęła. Teraz bramka żąda DOWODU z hangaru
+            // źródła (`sendProof`): zmalał → księgujemy; stoi jak przed klikiem → odmowa (ponawiamy
+            // formularz, druga odmowa z rzędu = przerwanie z alarmem); nie da się odczytać → dwa
+            // ponowne podejścia, a potem migawka hangaru staje się NIEZNANA — nigdy „pusta" bez dowodu.
+            const dowod = await this.sendProof(m, ls);
+            if (dowod.ok === false) {
+              const n = (m.refused || 0) + 1;
+              log(`[LOT] gra NIE przyjęła wysyłki [${m.fromKey}]→[${m.toKey}]: hangar ${m.fromBody} nadal ma ${dowod.total.toLocaleString("pl-PL")} szt. (przed klikiem ${(ls.before || 0).toLocaleString("pl-PL")}) — stempel „kliknąłem" to nie dowód wysyłki, hangaru NIE zeruję. ${n >= 2 ? "Druga odmowa z rzędu — przerywam i alarmuję." : "Ponawiam formularz."}`, "error");
+              if (n >= 2) return this.abort(`gra dwukrotnie odrzuciła wysyłkę ratunku [${m.fromKey}]→[${m.toKey}] — flota STOI na ${m.fromBody} [${m.fromKey}] (slot? deuter?), hangar nietknięty`);
+              m.refused = n; Store.set("mission", m);
+              // dalej zwykłą drogą do formularza (ponowienie): stempel zostaje jako ochrona przed
+              // podwójnym klikiem, ale dowodem wysyłki już nie jest
+            } else if (dowod.ok === true) {
+              log(`${juzPoszla} (hangar źródła potwierdza: zostało ${dowod.total.toLocaleString("pl-PL")} szt.).`, "warn");
+              zdejmijPending();
+              // świeży odczyt z `sendProof` JEST prawdą o hangarze — nie nadpisujemy go wyliczeniem ze
+              // starej migawki (`emptySourceHangar`); notujemy tylko, ile zostało celowo (v3.68.8 `leftHome`)
+              noteLeftHome(m.fromKey, m.fromBody, dowod.total);
+              karencjaTrasy();
+              Store.del("mission"); return;
+            } else {
+              // Bez dowodu NIE zerujemy i NIE „zapominamy" migawki (decide() traktuje brak migawki jak
+              // pewność — „flota już wyleciała, nie ma czego ratować" — czyli ciszę). Migawka sprzed
+              // kliknięcia zostaje, misja odpada BEZ karencji trasy: decide() wystawi ratunek jeszcze
+              // raz, a formularz odczyta hangar na żywo — flota jest (odmowa) → leci; nie ma (wysyłka
+              // poszła) → „hangar pusty" poprawia stan. Jeden zbędny obrót formularza kosztuje sekundy;
+              // wyzerowany hangar pod atakiem kosztował 13.09 flotę.
+              log(`${juzPoszla} (bez dowodu z hangaru: ${dowod.why} — migawki NIE zeruję, decide() sprawdzi formularzem, czy coś tu jeszcze stoi).`, "warn");
+              zdejmijPending();
+              Store.del("mission"); return;
             }
-            Store.del("mission"); return;
           }
           if (page() !== "fleet") { navGuard(m, this); return; }
           Store.set("form_nav", null);
@@ -4017,7 +4143,37 @@
       // krok 1: statki — wszystko (ratunek) albo plan (ekspedycja)
       const els = [...document.querySelectorAll("[data-ship-type]")];
       const snap = Hangar.scan();
-      if (!snap || snap.total === 0) { log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
+      // v3.96.0 (HANDOFF 14.09, sekcja 6 pkt 3) — CO SIĘ PSUŁO: `!snap` (strona floty NIECZYTELNA:
+      // nie krok wyboru statków, nierozpoznany pasek planet, strona błędu forka) szło tą samą gałęzią
+      // co „hangar naprawdę pusty" — misja RATUNKOWA kasowana po cichu, bez sufitu i bez alarmu.
+      // Nieczytelna strona to nie „nic do wysłania": ponawiamy formularz, a gdy nie da się go
+      // odczytać trzeci raz z rzędu — przerywamy GŁOŚNO (`abort` = wpis BŁĄD i push dla ratunku).
+      if (!snap) {
+        // Formularz JUŻ W TOKU (krok 2/3 — cel, prędkość, misja): to nie jest strona nieczytelna,
+        // tylko wypełnianie, którego nie wolno zacząć od nowa. Do v3.95.3 ta sytuacja też kończyła
+        // się „hangar pusty" i cichym skasowaniem misji (np. gdy operator sam stał w formularzu).
+        // Czekamy; gdy strona nie ruszy, misję domknie sufit 5 min (`abort`, głośno).
+        if (document.querySelector("#btn-next-fleet3, #btn-submit-fleet, #fleet2_target_x, .mission-item")) {
+          // Jeden przebieg czekamy (trwająca wysyłka zdąży się domknąć), potem PRZEŁADOWUJEMY
+          // formularz od kroku 1 (świeża nawigacja — tak samo wraca każdy ratunek po karencji),
+          // a czwarty przebieg z rzędu w cudzym/zawieszonym formularzu = głośne przerwanie.
+          // Nie czekamy do sufitu 5 min, gdy pod uderzeniem stoi flota.
+          const n = (m.formBusy || 0) + 1;
+          m.formBusy = n; Store.set("mission", m);
+          if (n >= 4) return this.abort(`formularz floty [${m.fromKey}] ${m.fromBody} stoi w kroku 2/3 mimo ${n - 1} przebiegów i przeładowań (ktoś go wypełnia albo fork utknął)`);
+          if (n === 1) { log(`[LOT] formularz floty [${m.fromKey}] jest już w toku (krok 2/3) — nie zaczynam od nowa, czekam jeden przebieg.`, "info"); return; }
+          log(`[LOT] formularz floty [${m.fromKey}] nadal w kroku 2/3 (${n}/3) — przeładowuję formularz od kroku 1.`, "warn");
+          Nav.go(this.url(m), `lot: formularz w toku od ${n} przebiegów, przeładowuję [${m.fromKey}]→[${m.toKey}]`);
+          return;
+        }
+        const n = (m.formUnreadable || 0) + 1;
+        if (n >= 3) return this.abort(`strona floty [${m.fromKey}] ${m.fromBody} nieczytelna ${n}× z rzędu (nie widzę kroku wyboru statków) — nie wiem, co stoi w hangarze; sprawdź grę`);
+        m.formUnreadable = n; this.bumpNav(m); Store.set("mission", m);
+        log(`[LOT] strona floty [${m.fromKey}] ${m.fromBody} nieczytelna (${n}/3) — to NIE jest pusty hangar; przeładowuję formularz.`, "warn");
+        Nav.go(this.url(m), `lot: formularz nieczytelny, ponawiam [${m.fromKey}]→[${m.toKey}]`);
+        return;
+      }
+      if (snap.total === 0) { log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
       const loaded = [];
       let loadedTotal = 0;   // v3.52.0: rejestr powrotów chce wiedzieć, ILE statków wraca
       const want = m.plan ? new Map(m.plan.map(p => [String(p.type).toUpperCase(), p.qty])) : null;
@@ -4335,7 +4491,9 @@
       // v3.68.6 (obrona-stan-lotu#1): stempel niesie też CIAŁA i `startedAt` misji. Bez nich
       // wysyłka złomu na własną pozycję bazy ([K]→[K] z księżyca) była nie do odróżnienia od
       // ratunku [K] planeta → [K] księżyc i bramka anty-duplikat zjadała ten ratunek.
-      Store.set("last_send", { at: Date.now(), toKey: m.toKey, toBody: m.toBody, kind: m.kind, from: m.fromKey, fromBody: m.fromBody, startedAt: m.startedAt, loaded: loaded.join(", "), total: loadedTotal });
+      // v3.96.0: `before` = ile stało w hangarze PRZED klikiem — bramka anty-duplikat porównuje z nim
+      // świeży odczyt i dopiero z tego wnioskuje, czy gra przyjęła wysyłkę (`Fly.sendProof`).
+      Store.set("last_send", { at: Date.now(), toKey: m.toKey, toBody: m.toBody, kind: m.kind, from: m.fromKey, fromBody: m.fromBody, startedAt: m.startedAt, loaded: loaded.join(", "), total: loadedTotal, before: shipsBefore });
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);
       // v3.62.0: klik przez Nav.click — przeładowanie po „Send fleet" ma w linii startowej
       // powód „bot: wysyłka", a nie „otwarte ręcznie" (i nie udaje klikania operatora).
@@ -4769,6 +4927,17 @@
         : `[LOT] hangar ${fromBody} [${fromKey}] wyzerowany — flota z niego wyleciała (${why}).`, "info");
     } catch {}
   }
+  // v3.96.0: po wysyłce potwierdzonej ŚWIEŻYM odczytem hangaru (Fly.sendProof) migawka jest prawdą —
+  // zapisujemy tylko `leftHome` na wpisie lotu (v3.68.8: ile zostało CELOWO), żeby pierwszy kolejny
+  // odczyt tej samej liczby nie udawał powrotu floty i nie domykał wpisu razem z drogą do zawrotu.
+  function noteLeftHome(fromKey, fromBody, total) {
+    try {
+      const s = Situation.load();
+      const lot = (s.flights || []).filter(x => x.fromKey === fromKey && x.fromBody === fromBody && x.phase !== "done").sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+      if (!lot) return;
+      lot.leftHome = total; Situation.save(s);
+    } catch {}
+  }
 
   function confirmPendingSend() {
     try {
@@ -4968,16 +5137,22 @@
       // Wyjątkiem zostaje operator przy klawiaturze: `scanRemote` przełącza aktywną planetę
       // po stronie serwera (lekcja v3.47.0), a brak odczytu i tak nie blokuje już ratunku —
       // `hangarNiepewny` w decide() wypuszcza lot bez czekania na hangar.
+      // v3.96.0 (HANDOFF 14.09, sekcja 6 pkt 4: „przy nalocie na 2+ par druga czeka cały przebieg")
+      // — CO SIĘ PSUŁO: pętla robiła `break` po PIERWSZEJ parze, także wtedy, gdy jej dławik 60 s
+      // był jeszcze ciepły — druga i trzecia para pod ostrzałem nie dostawały cichego odczytu
+      // w ogóle, dopóki pierwsza go blokowała. Nalot 14.09 szedł na trzy księżyce naraz.
+      // Teraz: dławik pary = `continue`, a sufit to trzy cichE odczyty na przebieg (jeden fetch każdy).
+      let cicheOdczyty = 0;
       for (const a of actions) {
         if (a.kind !== "recon" || !a.quiet || !a.alarm) continue;
         if (Human.playing()) break;
         const bq = a.body || "planet";
-        if (Once.said(`qrecon|${a.key}|${bq}`, 60e3)) break;
+        if (Once.said(`qrecon|${a.key}|${bq}`, 60e3)) continue;
         try {
           const got = await Hangar.scanRemote(a.key, bq);
           log(`[OBRONA] ${a.why} — ${got ? `odczytany w tle (${got.total.toLocaleString("pl-PL")} szt.), bez przełączania planety` : "cichy odczyt nie wyszedł — ratuję bez czekania na hangar"}.`, "info");
         } catch (e) { log(`[OBRONA] cichy odczyt hangaru [${a.key}] nie wyszedł (${e.message}) — ratuję bez czekania.`, "warn"); }
-        break;
+        if (++cicheOdczyty >= 3) break;
       }
       for (const a of actions) {
         if (a.kind === "recon") {
@@ -5046,7 +5221,10 @@
         }
         if (a.kind === "hold") { if (!Once.said(`hold|${a.key}`, 120e3)) log(`[OBRONA] [${a.key}]: ${a.why} — nie ruszam floty.`, "info"); continue; }
         // v3.68.8 (obrona-stan-lotu#3): zawrót przesuwamy TEMU lotowi, nie drugiemu z tej pary.
-        if (a.kind === "extend") { const s2 = Situation.load(); const f = (s2.flights || []).find(x => x.fromKey === a.flight.fromKey && x.toKey === a.flight.toKey && (x.fromBody || a.flight.fromBody) === a.flight.fromBody && x.phase === "launched"); if (f && f.recallAt < a.recallAt) { f.recallAt = a.recallAt; Situation.save(s2); log(`[LOT] ${a.why} — zawrót przesunięty na ${new Date(a.recallAt).toLocaleTimeString("pl-PL")}`, "warn"); } continue; }
+        // v3.96.0: wpis lotu ma własny `id` (v3.76.0) — dopasowujemy PO NIM, bo z jednej pary leci
+        // dziś kilka ratunków tą samą trasą i trójka (skąd, dokąd, ciało) trafiała zawsze w pierwszy.
+        // Trasa zostaje tylko dla wpisów sprzed v3.76.0 (bez `id`).
+        if (a.kind === "extend") { const s2 = Situation.load(); const f = (s2.flights || []).find(x => a.flight.id ? x.id === a.flight.id : (x.fromKey === a.flight.fromKey && x.toKey === a.flight.toKey && (x.fromBody || a.flight.fromBody) === a.flight.fromBody && x.phase === "launched")); if (f && f.recallAt < a.recallAt) { f.recallAt = a.recallAt; Situation.save(s2); log(`[LOT] ${a.why} — zawrót lotu [${f.fromKey}]→[${f.toKey}]${f.id ? ` (${String(f.id).slice(0, 8)})` : ""} przesunięty na ${new Date(a.recallAt).toLocaleTimeString("pl-PL")}`, "warn"); } continue; }
         if (!CFG.autoRescue) { if (!Once.said(`obs|${a.kind}|${a.fromKey || a.flight?.fromKey}`, 60e3)) log(`[OBSERWATOR] zrobiłbym: ${a.kind} ${a.why || ""} — auto-ratunek OFF.`, "warn"); continue; }
         if (a.kind === "recall") { await Fly.recall(a.flight); break; }
         if (a.kind === "fly") {
@@ -5106,10 +5284,16 @@
           if (a.rescue || a.blind) {
             const odlozone = actions.filter(x => x !== a && x.kind === "fly" && (x.rescue || x.blind));
             if (odlozone.length && !Once.said(`odlozone|${odlozone.map(x => x.fromKey).join(",")}`, 5 * 60e3)) {
-              Journal.add("ATAK", `Ratuję [${a.fromKey}] ${a.fromBody}${a.etaMs != null ? ` (uderzenie za ${Math.round(a.etaMs / 1000)}s)` : ""} — mam JEDEN slot lotu. BEZ RATUNKU zostaje: ${odlozone.map(x => `[${x.fromKey}] ${x.fromBody}${x.etaMs != null ? ` za ${Math.round(x.etaMs / 1000)}s` : ""}${x.saveTotal ? `, ${x.saveTotal.toLocaleString("pl-PL")} szt.` : ""}`).join("; ")} — ratuj ręcznie.`);
+              // v3.96.0 (HANDOFF 14.09, sekcja 5: „alarm, który kłamie, jest gorszy niż brak alarmu"):
+              // „BEZ RATUNKU zostaje… ratuj ręcznie" kłamało — para odłożona dostaje własny lot zaraz
+              // po tej wysyłce (bot wypełnia JEDEN formularz naraz, ~20–40 s), co 14.09 zadziałało na
+              // trzech księżycach. Ręcznie trzeba ratować tylko tę, której dolot jest krótszy niż kolejka.
+              const ciasno = odlozone.filter(x => x.etaMs != null && x.etaMs < 90e3);
+              Journal.add("ATAK", `Ratuję [${a.fromKey}] ${a.fromBody}${a.etaMs != null ? ` (uderzenie za ${Math.round(a.etaMs / 1000)}s)` : ""} — jeden formularz naraz. W KOLEJCE zaraz po tej wysyłce: ${odlozone.map(x => `[${x.fromKey}] ${x.fromBody}${x.etaMs != null ? ` za ${Math.round(x.etaMs / 1000)}s` : ""}${x.saveTotal ? `, ${x.saveTotal.toLocaleString("pl-PL")} szt.` : ""}`).join("; ")}.${ciasno.length ? ` UWAGA: ${ciasno.map(x => `[${x.fromKey}]`).join(", ")} ma dolot krótszy niż ta kolejka — ratuj ręcznie.` : ""}`);
             }
           }
-          if (Fly.start(a)) { await Fly.tick(); } break;
+          if (Fly.start(a)) { await Fly.tick(); break; }
+          continue;   // v3.96.0: nieudany start (misja już istnieje) nie kończy przebiegu — następna para nie czeka
         }
       }
       // v3.7.3 (audyt): ekonomia w WŁASNYM try — błąd w ekspedycjach/miningu/złomie
@@ -5160,7 +5344,10 @@
       // nawigacji formularza (złapane przez E2E 43b).
       const ekoWolne = !actions.some(a => (a.kind === "fly" && !a.fs) || a.kind === "recall");
       let moonRuszyl = false;
-      if (!Fly.mission() && (Object.keys(s.moonLost || {}).length || ekoWolne)) {
+      // v3.96.0 (AUDYT-ODBUDOWY P0 #4): `Moon.pending()` — próba czekająca na weryfikację albo odłożony
+      // zwóz dostają przebieg także pod ostrzałem, bo po UDANEJ odbudowie `moonLost` gaśnie i bez tego
+      // sukces nie byłby księgowany w trakcie nalotu (licznik prób zostawał, zwóz przepadał).
+      if (!Fly.mission() && (Object.keys(s.moonLost || {}).length || ekoWolne || Moon.pending())) {
         try { moonRuszyl = await Moon.tick(s); } catch (e) { log(`[KSIĘŻYC] odbudowa nie wyszła: ${e.message}`, "warn"); }
       }
       if (!moonRuszyl && !Fly.mission() && ekoWolne) {
