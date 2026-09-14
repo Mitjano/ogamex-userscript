@@ -3364,5 +3364,21 @@ console.log("\n── 82. ODBUDOWA KSIĘŻYCA — P0 z AUDYT-ODBUDOWY-2026-09-14
     /if \(Once\.said\(`qrecon\|\$\{a\.key\}\|\$\{bq\}`, 60e3\)\) continue;/.test(loopQ) && /if \(\+\+cicheOdczyty >= 3\) break;/.test(loopQ));
 }
 
+
+// v3.96.1 (przenosiny bazy [2:224:7]→[2:184:1], 14.09 wieczór): para nieobecna na ŻYWYM pasku planet
+// w dwóch odczytach odległych o ≥ 60 s znika ze stanu razem z hangarami — bez tego duch pary
+// z największym hangarem wygrywał sortowanie Fleet Save co przebieg, a Fly kończył „brak na pasku
+// planet" i karencją trasy. Zachowanie: E2E 69. Tu pilnujemy, żeby poprawka nie zniknęła.
+console.log("\n── 83. DUCH PARY: klucz spoza żywego paska planet jest kasowany ze stanu (v3.96.1) ──");
+{
+  const i83 = src.indexOf("s.pairGone = s.pairGone || {};");
+  const blk = i83 > 0 ? src.slice(i83, i83 + 2400) : "";
+  check("83a: (źródło) blok istnieje i działa tylko na ŻYWYM pasku z ≥ 1 parą", i83 > 0 && /if \(livePairs\.length\) \{/.test(blk) && /const livePairs = PlanetBar\.pairs\(\);/.test(src));
+  check("83b: (źródło) dwa odczyty odległe o ≥ 60 s, nie jeden", /if \(!s\.pairGone\[k\]\) \{ s\.pairGone\[k\] = now; continue; \}/.test(blk) && /if \(now - s\.pairGone\[k\] < 60e3\) continue;/.test(blk));
+  check("83c: (źródło) kasuje parę, znacznik i hangary OBU ciał", /delete s\.pairs\[k\]; delete s\.pairGone\[k\]; delete s\.hangars\[`\$\{k\}\|moon`\]; delete s\.hangars\[`\$\{k\}\|planet`\];/.test(blk));
+  check("83d: (źródło) blok stoi PO scaleniu z drugą kartą (inaczej scalanie wskrzesza hangar ducha)", i83 > src.indexOf("if (!mine || (hv.at || 0) > (mine.at || 0)) s.hangars[hk] = hv;"));
+  check("83e: (źródło) pasek z fetcha /home NIE kasuje par (bywa niepełny)", !/kb\.pary[\s\S]{0,800}?delete s\.pairs\[/.test(src));
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

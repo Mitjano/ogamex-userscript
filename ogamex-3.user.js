@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.96.0
+// @version      3.96.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.96.0";
+  const VERSION = "3.96.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1052,7 +1052,8 @@
       // księżyce). Odwrotne przejście (moduł Moon albo naturalny wynik bitwy
       // odtworzył księżyc) kończy tryb awaryjny.
       s.moonLost = s.moonLost || {};
-      for (const p of PlanetBar.pairs()) {
+      const livePairs = PlanetBar.pairs();
+      for (const p of livePairs) {
         const had = s.pairs[p.key] && s.pairs[p.key].hasMoon;
         if (had && !p.hasMoon && !s.moonLost[p.key]) {
           s.moonLost[p.key] = now;
@@ -1354,6 +1355,37 @@
       // „za krótki") też mają termin ważności — po dobie prędkości/cele mogły się zmienić,
       // a pomiar sprzed tygodnia nie ma prawa wstrzymywać startu Fleet Save.
       if (s.fsMeasured) { for (const rk of Object.keys(s.fsMeasured)) if (now - ((s.fsMeasured[rk] || {}).at || 0) > 24 * 3600e3) delete s.fsMeasured[rk]; }
+      // v3.96.1 (14.09 wieczór, przenosiny bazy [2:224:7]→[2:184:1]) — CO SIĘ PSUŁO: DUCH PARY.
+      // `s.pairs` tylko rosło: żywy pasek planet DOPISYWAŁ pary, ale nic ich nie kasowało, gdy
+      // znikały (przenosiny planety, porzucona kolonia). Po przenosinach w stanie został klucz
+      // [2:224:7] z hangarem 3,29 mld statków; decide() co przebieg wybierał go na Fleet Save
+      // (największy hangar wygrywa sortowanie), Fly kończył „brak [2:224:7] moon na pasku planet"
+      // i karencją trasy — a flota pod nowymi koordami nigdy nie dostawała swojego lotu. Ten sam
+      // duch blokował odbudowę księżyców (AUDYT-ODBUDOWY 14.09: „martwy klucz w s.pairs").
+      // Reguła: para, której nie ma na ŻYWYM pasku (strona z ≥ 1 parą) w DWÓCH odczytach
+      // odległych o ≥ 60 s, znika ze stanu razem ze wszystkim, co było pod nią kluczowane
+      // (hangary obu ciał, moonLost, rescues, landings, zmierzone czasy FS). Dwa odczyty, nie
+      // jeden — pojedynczy dziwny render nie ma prawa wymazać pary. Pasek z fetcha /home tego
+      // nie robi (bywa niepełny, patrz v3.95.2 wyżej). Blok stoi PO scaleniu z drugą kartą
+      // z tego samego powodu co v3.68.10: inaczej scalanie wskrzesiłoby hangar ducha.
+      s.pairGone = s.pairGone || {};
+      if (livePairs.length) {
+        const liveKeys = new Set(livePairs.map(p => p.key));
+        for (const k of Object.keys(s.pairs)) {
+          if (liveKeys.has(k)) { delete s.pairGone[k]; continue; }
+          if (!s.pairGone[k]) { s.pairGone[k] = now; continue; }
+          if (now - s.pairGone[k] < 60e3) continue;
+          const hm = s.hangars[`${k}|moon`], hpl = s.hangars[`${k}|planet`];
+          const szt = ((hm && hm.total) || 0) + ((hpl && hpl.total) || 0);
+          delete s.pairs[k]; delete s.pairGone[k]; delete s.hangars[`${k}|moon`]; delete s.hangars[`${k}|planet`];
+          if (s.moonLost) delete s.moonLost[k];
+          if (s.rescues) delete s.rescues[k];
+          if (s.landings) { delete s.landings[`${k}|moon`]; delete s.landings[`${k}|planet`]; }
+          if (s.fsMeasured) for (const rk of Object.keys(s.fsMeasured)) if (rk.startsWith(`${k}>`) || rk.endsWith(`>${k}`)) delete s.fsMeasured[rk];
+          log(`[PASEK] para [${k}] zniknęła z paska planet (przenosiny albo porzucona kolonia) — kasuję ją ze stanu razem z hangarem (${szt.toLocaleString("pl-PL")} szt.). Jeśli to przenosiny, flota stoi teraz pod nowymi koordami i rekonesans ją odczyta; sprawdź stały cel FS, start ekspedycji i listę księżyców do odbudowy.`, "warn");
+          if (szt > 0) Journal.add("STAN", `Para [${k}] zniknęła z paska planet — zapomniałem jej hangar (${szt.toLocaleString("pl-PL")} szt.). Sprawdź stały cel FS i start ekspedycji.`);
+        }
+      }
       // v3.52.0 (owner 31.08): REJESTR POWROTÓW — utrzymanie. Wpis `pending` starszy
       // niż 10 min = wysyłka bez potwierdzenia (lustro reguły `flights`), wpis godzinę
       // po lądowaniu = historia. Wiersz POWROTNY z listy ruchów niesie DOKŁADNY zegar,

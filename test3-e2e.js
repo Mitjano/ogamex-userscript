@@ -3127,6 +3127,53 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     }
   }
 
+  console.log("\n── 69. PRZENOSINY PLANETY: para znika z paska → stan ją ZAPOMINA, FS leci z nowych koordów (v3.96.1) ──");
+  {
+    // 14.09 wieczór: owner przeniósł bazę [2:224:7]→[2:184:1]. `s.pairs` tylko rosło, więc w stanie
+    // został duch [2:224:7] z hangarem 3,29 mld; decide() co przebieg wybierał go na Fleet Save
+    // (największy hangar), Fly kończył „brak na pasku planet" + karencją, a flota pod nowymi
+    // koordami nigdy nie dostała lotu. Tu: baza 700 BS, po przenosinach 600 BS — duch ma WIĘKSZY
+    // hangar, więc bez poprawki zawsze wygrywa sortowanie i FS z nowej pary nie wychodzi.
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
+    const cfgOff = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false }, debris: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: false }, human: { breaks: false, economyAtNight: true } };
+    const cfgFs = { ...cfgOff, fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10, target: "1:100:9" } };
+    const g = new Game({
+      pairs: [
+        { key: "1:100:5", name: "Baza", moon: true, uuid: "uuid-baza" },   // ten sam UUID przed i po przenosinach (jak fork)
+        { key: "1:100:9", name: "Cel", moon: true },
+        { key: "5:200:3", name: "Daleka", moon: true },
+      ],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.flightSec = 4 * 3600;                     // FS musi WISIEĆ w powietrzu do godziny powrotu (jak 15b)
+    await run(g, { cfg: cfgOff, loads: 6, ticksPerLoad: 2 });
+    const K69 = "genesis.ogamex.net:ogx3_situation";
+    const st0 = JSON.parse(g.store.get(K69) || "{}");
+    check("69a: (warunek wstępny) bot zna parę i hangar księżyca bazy", !!(st0.pairs || {})["1:100:5"] && ((st0.hangars || {})["1:100:5|moon"] || {}).total === 700, JSON.stringify({ pairs: Object.keys(st0.pairs || {}), hangars: st0.hangars }));
+    // PRZENOSINY: ta sama planeta (UUID), nowe koordy; hangar jedzie z nią
+    g.pairs[0].key = "2:50:7";
+    delete g.hangars["1:100:5|moon"]; g.hangars["2:50:7|moon"] = { BATTLESHIP: 600 };
+    g.active = { key: "2:50:7", body: "moon" };
+    const r1 = await run(g, { cfg: cfgFs, loads: 4, ticksPerLoad: 2 });
+    const st1 = JSON.parse(g.store.get(K69) || "{}");
+    check("69b: jeden odczyt bez pary jej NIE kasuje (dwa odczyty ≥ 60 s — pojedynczy render nie wymazuje pary)", !!(st1.pairs || {})["1:100:5"] && !!(st1.pairGone || {})["1:100:5"], JSON.stringify({ pairs: Object.keys(st1.pairs || {}), gone: st1.pairGone }));
+    check("69c: …a bot próbował FS z ducha i skończył „brak na pasku planet” (odtworzony incydent)", r1.logs.some(m => /brak \[1:100:5\] moon na pasku planet/.test(m)), r1.logs.filter(m => /LOT|FS/.test(m)).slice(0, 4).join(" | "));
+    { const st = JSON.parse(g.store.get(K69) || "{}"); if (st.pairGone && st.pairGone["1:100:5"]) st.pairGone["1:100:5"] -= 120e3; g.store.set(K69, JSON.stringify(st)); }   // pierwsze „nie widzę” było 2 min temu
+    const r2 = await run(g, { cfg: cfgFs, loads: 25, ticksPerLoad: 3 });
+    const st2 = JSON.parse(g.store.get(K69) || "{}");
+    check("69d: duch [1:100:5] ZNIKA ze stanu (para, hangar, znacznik)", !(st2.pairs || {})["1:100:5"] && !(st2.hangars || {})["1:100:5|moon"] && !(st2.pairGone || {})["1:100:5"], JSON.stringify({ pairs: Object.keys(st2.pairs || {}), hangars: Object.keys(st2.hangars || {}), gone: st2.pairGone }));
+    check("69e: …i nie jest to ciche (log mówi, co skasował i dlaczego)", r2.logs.some(m => /\[PASEK\] para \[1:100:5\] zniknęła z paska planet/.test(m)), r2.logs.filter(m => /PASEK/.test(m)).slice(0, 3).join(" | "));
+    check("69f: nowa para [2:50:7] jest w stanie z księżycem", !!(st2.pairs || {})["2:50:7"] && st2.pairs["2:50:7"].hasMoon === true, JSON.stringify(st2.pairs && st2.pairs["2:50:7"]));
+    const fs69 = g.sent.find(x => x.from === "2:50:7");
+    check("69g: FLEET SAVE poleciał z NOWYCH koordów na stały cel, z całym hangarem", !!fs69 && fs69.fromBody === "moon" && fs69.to === "1:100:9" && fs69.toBody === "moon" && !!fs69.ships && fs69.ships.BATTLESHIP === 600, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])));
+    check("69h: …i był to JEDYNY lot (nic nie wyleciało z ducha)", g.sent.length === 1, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to])));
+    const inst69 = load(g, { cfg: cfgFs });
+    check("69i: bot NIE twierdzi już, że jakakolwiek flota stoi na [1:100:5]", !inst69.api.Situation.fleetAt(inst69.api.Situation.load(), "1:100:5", Date.now()), "");
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
