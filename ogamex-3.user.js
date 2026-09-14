@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.95.2
+// @version      3.95.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.95.2";
+  const VERSION = "3.95.3";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -5025,8 +5025,21 @@
             }
             g2[kk] = { n: r2.n + 1, at: Date.now() }; Store.set("alarm_scan", g2);
           }
+          // v3.95.3 (log właściciela 14.09 06:39, [TEMPO] „ten sam powód 4× w ostatniej minucie"):
+          // ten rekonesans NAWIGUJE, a jako jedyny nie pytał, czy operator właśnie gra. W logu
+          // widać naprzemiennie „/building/resource ← otwarte ręcznie" i „/fleet ← bot: odczyt
+          // hangaru" — bot wyrywał właścicielowi stronę cztery razy na minutę. Przy alarmie ma
+          // pierwszeństwo obrona, ale gdy człowiek SIEDZI W GRZE, to on widzi hangar lepiej niż
+          // bot i sam zdecyduje; wyrywanie mu strony niczego nie dodaje, a przeszkadza ratować.
+          if (Human.playing()) {
+            if (!Once.said(`alarmscan_play|${a.key}`, 5 * 60e3))
+              log(`[OBRONA] ${a.why} — ale Ty właśnie klikasz w grze, więc nie wyrywam Ci strony. Zerknij na hangar [${a.key}], ja wrócę, gdy przestaniesz.`, "warn");
+            continue;
+          }
           log(`[OBRONA] ${a.why} — wchodzę na Fleet.`, "warn");
-          if (act && act.key === a.key && act.body === body) { const [g, sy, po] = a.key.split(":"); Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `odczyt hangaru [${a.key}] po alarmie`); return; }
+          // `?x=&y=&z=` to formularz LOTU z celem, nie widok hangaru — do odczytu wystarczy
+          // czysty /fleet, skoro stoimy już na właściwym ciele.
+          if (act && act.key === a.key && act.body === body) { Nav.go("/fleet", `odczyt hangaru [${a.key}] po alarmie`); return; }
           const el = PlanetBar.anchor(a.key, body) || PlanetBar.anchor(a.key, "planet");
           if (el) { Nav.click(el, `odczyt hangaru [${a.key}] ${body} po alarmie`); return; }
           continue;

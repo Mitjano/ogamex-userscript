@@ -31,7 +31,13 @@ Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane cia
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst
-- **`HANDOFF-2026-09-11.md` — CZYTAĆ NAJPIERW.** Stan po naprawach 09–11.09 (v3.73–v3.76),
+- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW.** Pełny stan po dwóch dobach obrony floty:
+  dwa incydenty (strata uniknięta ręcznie 13.09, nalot na trzy księżyce 14.09), wszystko, co
+  poszło na produkcję v3.86→v3.95.3, TRZY AUTOMATY, których nie wolno popsuć (macierz 672
+  scenariuszy, odtworzona noc 13.09, E2E fal wracających), zasady pracy z tej sesji, lista
+  otwartych P0/P1 i ścieżki odczytu stanu bota **na Windows**.
+- `AUDYT-ODBUDOWY-2026-09-14.md` — 16 zweryfikowanych znalezisk w łańcuchu odbudowy księżyca.
+- `HANDOFF-2026-09-11.md` — poprzedni stan (11–13.09).** Stan po naprawach 09–11.09 (v3.73–v3.76),
   przesiadka na Chrome, lista rzeczy OTWARTYCH (m.in. temat ntfy, przez który alarmy nie
   dochodzą na telefon) i temat na dalej: obrona przed zniszczeniem księżyców [2:224:7]
   i [2:224:10]. Zawiera też dwie moje pomyłki z tych dni, żeby ich nie powtórzyć.

@@ -3283,5 +3283,19 @@ console.log("\n── 79. ODBUDOWA I SONDY POD OSTRZAŁEM (nalot 14.09 03:2x) �
     /żeby nie udawał nadwyżki na pasku/.test(src));
 }
 
+console.log("\n── 80. REKONESANS PRZY ALARMIE NIE WYRYWA STRONY OPERATOROWI (log 14.09 06:39) ──");
+{
+  // [TEMPO] sam to zgłosił: „ten sam powód 4× w ostatniej minucie: odczyt hangaru [3:279:1]".
+  // W logu naprzemiennie „/building/resource ← otwarte ręcznie" i „/fleet ← bot" — właściciel
+  // przeglądał grę, a bot co kilka sekund przerzucał go na Fleet. Obrona ma pierwszeństwo, ale
+  // gdy człowiek siedzi w grze, to on widzi hangar lepiej niż bot.
+  check("80a: (źródło) nawigujący rekonesans przy alarmie pyta, czy operator gra",
+    /if \(Human\.playing\(\)\) \{[\s\S]{0,320}?nie wyrywam Ci strony/.test(src));
+  check("80b: (źródło) …i wtedy odpuszcza przebieg zamiast nawigować",
+    /nie wyrywam Ci strony[\s\S]{0,200}?continue;/.test(src));
+  check("80c: (źródło) odczyt hangaru idzie na czysty /fleet, a nie na formularz lotu z celem",
+    /Nav\.go\("\/fleet", `odczyt hangaru/.test(src) && src.indexOf("/fleet?x=${g}&y=${sy}&z=${po}`, `odczyt hangaru") < 0);
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
