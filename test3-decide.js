@@ -1831,8 +1831,12 @@ console.log("\n── 51. AUDYT PRZED MERGE v3.68.1: strażniki dla poprawek spo
     /f\.fs && f\.phase !== "done" && !flightStale\(f, Date\.now\(\)\)/.test(src));
   check("migracja FS rozstrzyga po STARYM kształcie (endHour+startHour), nie po braku returnHour",
     /typeof savedFs\.endHour === "number" && typeof savedFs\.startHour === "number"/.test(src));
-  check("panel zaokrągla prędkość FS do kroku 10 (gra nie zna innych)",
-    /Math\.max\(10, Math\.min\(100, Math\.round\(v \/ 10\) \* 10\)\)/.test(src));
+  // v3.96.3 (owner 15.09): fork ZNA 3 i 5 (zrzut 11.09) — panel przyjmuje wartości z listy
+  // forka, przycinane w dół jak w Fly. Zachowanie: test3-ui (3→3, 7→5, 17→10, 1→3).
+  check("panel FS przyjmuje prędkości z listy forka (3 i 5 też), przycina w dół — nie zaokrągla do dziesiątek",
+    /const FS_SPEEDS = \[3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100\];/.test(src)
+    && /FS_SPEEDS\.filter\(x => x <= Math\.max\(3, Math\.min\(100, v\)\)\)/.test(src)
+    && !/Math\.max\(10, Math\.min\(100, Math\.round\(v \/ 10\) \* 10\)\)/.test(src));
   check("wpis lotu zapamiętuje excludeTypes (żeby domknięcie po przeładowaniu nie skłamało o hangarze)",
     (src.match(/excludeTypes: m\.excludeTypes \|\| null/g) || []).length >= 2);
 }

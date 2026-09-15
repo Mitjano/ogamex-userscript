@@ -106,5 +106,24 @@ ck("alarm rozwija zwinięty panel", $("ogx3-body").style.display === "block");
 ck("wiersz Obrona krzyczy ATAK", $("ogx3-r-def").className.includes("alert") && $("ogx3-r-def").querySelector(".val").textContent.includes("ATAK"), $("ogx3-r-def").querySelector(".val").textContent);
 console.log("     alarm:", $("ogx3-r-def").querySelector(".val").textContent);
 
+
+// v3.96.3 (owner 15.09): pole prędkości FS przyjmuje 3 i 5 z listy forka (zrzut 11.09),
+// nie zaokrągla już do dziesiątek — 3% = mniej deuteru, a FS i tak jest zawracany.
+{
+  const cfgOf = () => { const raw = String(store.get("genesis.ogamex.net:ogx3_cfg") || "{}"); return JSON.parse(raw.replace(/^s/, "")); };
+  const spd = $("ogx3-fs-speed");
+  const wpisz = (v) => { spd.value = v; spd.dispatchEvent(new w.Event("change", { bubbles: true })); };
+  wpisz("3");
+  ck("FS 3% przyjęte wprost (bez zaokrąglenia do 10)", cfgOf().fs.speedPct === 3 && spd.value === "3", spd.value + " / " + JSON.stringify(cfgOf().fs));
+  wpisz("7");
+  ck("wpisane 7 → 5 (najbliższa nie szybsza z listy forka)", cfgOf().fs.speedPct === 5 && spd.value === "5", spd.value);
+  wpisz("17");
+  ck("wpisane 17 → 10", cfgOf().fs.speedPct === 10 && spd.value === "10", spd.value);
+  wpisz("1");
+  ck("wpisane 1 → 3 (minimum forka)", cfgOf().fs.speedPct === 3 && spd.value === "3", spd.value);
+  wpisz("100");
+  ck("100 zostaje 100", cfgOf().fs.speedPct === 100 && spd.value === "100", spd.value);
+}
+
 console.log(fails ? `\nNIE: ${fails} sprawdzeń padło` : "\nPANEL OK — wszystko przeszło");
 process.exit(fails ? 1 : 0);

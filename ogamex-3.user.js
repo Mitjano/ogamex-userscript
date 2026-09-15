@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.96.2
+// @version      3.96.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.96.2";
+  const VERSION = "3.96.3";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -5972,16 +5972,20 @@
         log(`FS: stały cel [${CFG.fs.target}].`, "info"); this.renderStatus();
       };
       $("ogx3-fs-speed").value = String(CFG.fs.speedPct ?? 10);
-      // v3.68.1 (audyt przed merge, P1): gra ma WYŁĄCZNIE wielokrotności 10 (suwak
-      // 10…100), a `Fly.form` szuka elementu o tekście dokładnie równym `m.speed`.
-      // Wpisane „3%" nie trafiało w nic: log „prędkość NIE USTAWIONA", lot z domyślną
-      // setką i LĄDOWANIE zamiast wiszenia w powietrzu — czyli odwrotność sensu FS,
-      // i to na dźwigni, o którą owner prosił wprost. Zaokrąglamy do kroku 10.
+      // v3.96.3 (owner 15.09: „wysyłaj FS na 3% — mniej deuteru, flota i tak zawracana"):
+      // zaokrąglanie do dziesiątek było ochroną z czasów, gdy Fly.form szukał elementu
+      // o tekście RÓWNYM m.speed. Od v3.68.7 Fly czyta realną listę prędkości forka
+      // i klika najbliższą NIE SZYBSZĄ, a zrzut z gry 11.09 rozstrzygnął, że Genesis
+      // daje też 3 i 5. Panel przyjmuje więc wartości z tej listy (przycinamy w dół,
+      // jak Fly) — a gdyby inny build forka nie miał trójki, Fly i tak poleci
+      // najbliższą nie szybszą z tego, co jest na formularzu.
+      const FS_SPEEDS = [3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];   // zrzut z Genesis 11.09
       $("ogx3-fs-speed").onchange = (e) => {
         const raw = parseInt(e.target.value); const v = Number.isFinite(raw) ? raw : 10;
-        CFG.fs.speedPct = Math.max(10, Math.min(100, Math.round(v / 10) * 10));
+        const nieSzybsze = FS_SPEEDS.filter(x => x <= Math.max(3, Math.min(100, v)));
+        CFG.fs.speedPct = nieSzybsze.length ? nieSzybsze[nieSzybsze.length - 1] : 3;
         e.target.value = String(CFG.fs.speedPct); saveCfg();
-        log(`FS: prędkość ${CFG.fs.speedPct}%${CFG.fs.speedPct !== v ? ` (gra zna tylko wielokrotności 10 — wpisane ${v} zaokrąglone)` : ""}.`, "info"); this.renderStatus();
+        log(`FS: prędkość ${CFG.fs.speedPct}%${CFG.fs.speedPct !== v ? ` (lista forka: ${FS_SPEEDS.join(", ")} — wpisane ${v} przycięte do najbliższej nie szybszej)` : ""}.`, "info"); this.renderStatus();
       };
       $("ogx3-expo").onclick = () => {
         CFG.expo.enabled = !CFG.expo.enabled; saveCfg();
