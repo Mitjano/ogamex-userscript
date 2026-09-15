@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.96.3
+// @version      3.97.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.96.3";
+  const VERSION = "3.97.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1941,7 +1941,19 @@
           // v3.96.2: zbieramy, jedna linia zbiorcza po pętli (patrz `fsNaPlanecie` niżej).
           fsNaPlanecie.push({ key: k, total: fleet.total });
         }
-        if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body === "moon") {
+        // v3.97.0 (owner 15.09: „po powrocie każdej floty bot wyśle ją na FS?" — TAK): FS DOSYŁOWY.
+        // Fala, która wylądowała na księżycu, gdy lot(y) FS z tej pary już wiszą w powietrzu,
+        // dostaje WŁASNY lot na ten sam cel z własnym zawrotem — arytmetyka „połowa drogi"
+        // liczy per lot od jego sentAt, więc wszystkie loty są w domu o tej samej godzinie.
+        // Warunki twarde: WSZYSTKIE wiszące loty pary to FS (ratunku nie przeplatamy), hangar
+        // księżyca ŚWIEŻSZY niż ostatnia wysyłka (po wysyłce hangar jest zerowany — dodatni
+        // odczyt sprzed wysyłki to duch floty, która właśnie wyleciała). O rezerwę slotów dba
+        // blok fsCands niżej: przy NIEZNANYCH slotach dosyłowego nie ma (wolne = fsAir ? 0 : 1).
+        const lotyFsZPary = (s.flights || []).filter(x => x.fromKey === k && x.phase !== "done" && !flightStale(x, now));
+        const fsDosylowy = !!(f && lotyFsZPary.length && lotyFsZPary.every(x => x.fs)
+          && fleet && fleet.body === "moon" && fleet.total > 0
+          && (fleet.at || 0) > Math.max(...lotyFsZPary.map(x => x.sentAt || 0)));
+        if ((!f || fsDosylowy) && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body === "moon") {
           // v3.68.0 (owner 04.09, port z Atheny): cel skonfigurowany (cfg.fs.target) jest
           // JEDYNYM wyborem — Athena nie podstawiała cicho innej kolonii, gdy stały cel był
           // z jakiegoś powodu niedostępny (brak/zły cel = twardy błąd operatora do naprawy,
@@ -1993,7 +2005,7 @@
             if (znany && now < openAt) {
               alerts.push({ key: k, level: "warn", throttleMs: 60 * 60e3, msg: `FS: lot [${k}]→[${dest.key}] trwa ${Math.round(short.flightMs / 60e3)} min, a flota ma być w domu o ${hhmm(s.fsReturnAt || 0)} — startuję dopiero o ${hhmm(openAt)} (wcześniej doleciałaby i WYLĄDOWAŁA na obcym księżycu). Chcesz wcześniej? Zmniejsz prędkość FS albo wybierz dalszy cel.` });
             } else {
-              fsCands.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE → [${dest.key}], w domu ~${hhmm(s.fsReturnAt || 0)}`, speed: fsSpeed, recall: true, air: true, fs: true, homeAt: s.fsReturnAt, recallAt: s.fsReturnAt, saveTotal: fleet.total });
+              fsCands.push({ kind: "fly", fromKey: k, fromBody: fleet.body, toKey: dest.key, toBody: dest.body, why: `FLEET SAVE${fsDosylowy ? " DOSYŁOWY (fala wylądowała w trakcie lotu)" : ""} → [${dest.key}], w domu ~${hhmm(s.fsReturnAt || 0)}`, speed: fsSpeed, recall: true, air: true, fs: true, homeAt: s.fsReturnAt, recallAt: s.fsReturnAt, saveTotal: fleet.total });
             }
           }
         }
@@ -4687,7 +4699,17 @@
       const wracaRows = ours.filter(tr => /return/i.test(tr.className)).length;
       const juzZawrocone = (s.flights || []).filter(x => x !== f && x.fromKey === f.fromKey && x.toKey === f.toKey && ["recalled", "recall_clicked"].includes(x.phase)).length;
       if (Fly.zawrotPotwierdzony(wracaRows, juzZawrocone)) { f.phase = "recalled"; f.recalledAt = f.recalledAt || Date.now(); Situation.save(s); log(`[ZAWRÓT] ✅ lot [${f.fromKey}]→[${f.toKey}] już WRACA (wierszy powrotnych ${wracaRows}, wcześniej zawróconych ${juzZawrocone}).`, "success"); Journal.add("POWRÓT", `Zawrót potwierdzony: flota wraca na [${f.fromKey}].`); return; }
-      const row = ours.find(tr => !/return/i.test(tr.className));
+      // v3.97.0 (FS dosyłowy): przy kilku lotach TĄ SAMĄ trasą wiersze listy są nieodróżnialne
+      // po treści (lekcja v3.76.0) — rozpoznajemy PO DOLOCIE: nasz wiersz to ten, którego
+      // licznik jest najbliżej (sentAt + flightMs) − teraz. Jeden kandydat = po staremu.
+      const kandydaci = ours.filter(tr => !/return/i.test(tr.className));
+      let row = kandydaci[0] || null;
+      if (kandydaci.length > 1 && f.flightMs && f.sentAt) {
+        const oczek = Math.max(0, (f.sentAt + f.flightMs - Date.now()) / 1000);
+        const etaWiersza = (tr) => etaOf(tr.querySelector("[data-remaining-seconds]") || (tr.cells && tr.cells[0]) || tr);
+        row = kandydaci.reduce((a, b) => (Math.abs(etaWiersza(b) - oczek) < Math.abs(etaWiersza(a) - oczek) ? b : a));
+        log(`[ZAWRÓT] ${kandydaci.length} nieodróżnialne wiersze [${f.fromKey}]→[${f.toKey}] — biorę licznik najbliżej dolotu TEGO lotu (oczekiwane ~${Math.round(oczek)} s).`, "info");
+      }
       if (!row) { f.tries = (f.tries || 0) + 1; f.recalledAt = Date.now(); if (f.tries >= 5) { f.phase = "recall_failed"; Journal.add("BŁĄD", `Nie widzę lotu [${f.fromKey}]→[${f.toKey}] na liście — zawróć ręcznie.`); } Situation.save(s); log(`[ZAWRÓT] brak wiersza lotu (${f.tries}/5). Wiersze: ${trs.map(tr => tr.className.replace(/\s+/g, " ") + " :: " + (tr.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100)).join(" || ").slice(0, 1200)}`, "warn"); return; }
       const id = row.getAttribute("data-fleet-id") || "";
       let live = id ? document.querySelector(`a.x_btn_fleet_return[data-fleet-id="${id}"]`) : document.querySelector("a.x_btn_fleet_return");

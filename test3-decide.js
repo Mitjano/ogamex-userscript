@@ -3435,5 +3435,48 @@ console.log("\n── 84. NOC 14/15.09: prawda o zawróconym locie, zbiorczy ala
   check("84h: (źródło) zrzut przy martwym Next bierze tekst wokół „Duration of flight” i linie z paliwem/slotami", src.includes('tekst formularza (wokół „Duration of flight")') && src.includes("paliwo/sloty na stronie") && /bodyTxt\.search\(\/Duration\\s\*of\\s\*flight\/i\)/.test(src));
 }
 
+
+// v3.97.0 (owner 15.09): FS DOSYŁOWY — fala lądująca na księżycu w trakcie lotu FS z tej pary
+// dostaje własny lot na ten sam cel. Zachowanie E2E 71; tu czyste decyzje i pin źródła.
+console.log("\n── 85. FS DOSYŁOWY: fala wylądowała w trakcie lotu FS (v3.97.0) ──");
+{
+  const CFG85 = Object.assign({}, CFG, { fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: "3:272:2", slotReserve: 1 } });
+  const lotFs = (over) => ({ kind: "air", fs: true, fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 30 * 60e3, flightMs: 4 * 3600e3, recallAt: NOW + 90 * 60e3, phase: "launched", ...over });
+  const s85 = (over) => base(Object.assign({
+    fsReturnAt: NOW + 6 * 3600e3,
+    flights: [lotFs()],
+    hangars: { "3:272:7|moon": H(300000) },                       // odczyt 30 s temu — ŚWIEŻSZY niż wysyłka sprzed 30 min
+    slots: { fleet: { used: 2, total: 35 }, at: NOW - 60e3 },     // sloty znane i świeże (bez nich dosyłowego nie ma)
+  }, over));
+  {
+    const { actions } = decide(s85(), CFG85, NOW);
+    const a = actions.find(x => x.kind === "fly" && x.fs && x.fromKey === "3:272:7");
+    check("85a: świeża fala na księżycu + lot FS w powietrzu → DRUGI lot FS z tej samej pary", !!a && a.toKey === "3:272:2" && a.toBody === "moon", JSON.stringify(actions));
+    check("85b: …oznaczony w why jako DOSYŁOWY (operator widzi w logu, że to nie duplikat)", !!a && /DOSYŁOWY/.test(a.why || ""), a && a.why);
+  }
+  {
+    // hangar sprzed wysyłki (duch floty, która właśnie wyleciała) → ZERO dosyłowego
+    const { actions } = decide(s85({ hangars: { "3:272:7|moon": H(300000, undefined, 40 * 60e3) } }), CFG85, NOW);
+    check("85c: hangar STARSZY niż wysyłka = duch — dosyłowego nie ma", !actions.some(x => x.kind === "fly" && x.fromKey === "3:272:7"), JSON.stringify(actions));
+  }
+  {
+    // w powietrzu wisi RATUNEK (fs:false) — nie przeplatamy FS z ratunkiem
+    const { actions } = decide(s85({ flights: [lotFs({ fs: false })] }), CFG85, NOW);
+    check("85d: lot w powietrzu to ratunek, nie FS → dosyłowego nie ma", !actions.some(x => x.kind === "fly" && x.fs && x.fromKey === "3:272:7"), JSON.stringify(actions));
+  }
+  {
+    // sloty NIEZNANE → kandydat powstaje, ale strażnik slotów go nie wypuszcza (fsAir ? 0 : 1)
+    const r = decide(s85({ slots: undefined }), CFG85, NOW);
+    check("85e: sloty nieznane → dosyłowy NIE wychodzi (zostaje czym uciekać), jest uczciwy alert", !r.actions.some(x => x.kind === "fly" && x.fromKey === "3:272:7") && r.alerts.some(al => /jeden lot Fleet Save już wisi w powietrzu/.test(al.msg)), JSON.stringify(r.alerts));
+  }
+  check("85f: (źródło) zawrót przy wielu wierszach tej samej trasy wybiera licznik najbliżej dolotu TEGO lotu",
+    /const kandydaci = ours\.filter\(tr => !\/return\/i\.test\(tr\.className\)\);/.test(src)
+    && /const oczek = Math\.max\(0, \(f\.sentAt \+ f\.flightMs - Date\.now\(\)\) \/ 1000\);/.test(src)
+    && /kandydaci\.reduce\(\(a, b\) => \(Math\.abs\(etaWiersza\(b\) - oczek\) < Math\.abs\(etaWiersza\(a\) - oczek\) \? b : a\)\)/.test(src));
+  check("85g: (źródło) dosyłowy wymaga: wszystkie loty pary = FS, hangar świeższy niż ostatnia wysyłka",
+    /lotyFsZPary\.every\(x => x\.fs\)/.test(src) && /\(fleet\.at \|\| 0\) > Math\.max\(\.\.\.lotyFsZPary\.map\(x => x\.sentAt \|\| 0\)\)/.test(src)
+    && /if \(\(!f \|\| fsDosylowy\) && fleet && cfg\.fs && cfg\.fs\.enabled && fleet\.total > 0 && fleet\.body === "moon"\) \{/.test(src));
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

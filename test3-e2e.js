@@ -3222,6 +3222,59 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("70f: po 6 h przerwy bot ponawia próbę (licznik startuje od nowa)", !!ftOf() && ftOf().n === 1 && ftOf().at > at2 && proby() === 4, `próby=${proby()} fs_try=${JSON.stringify(ftOf())}`);
   }
 
+  console.log("\n── 71. FS DOSYŁOWY: fala lądująca w trakcie lotu FS dostaje własny lot i własny zawrót (v3.97.0) ──");
+  {
+    // Owner 15.09: „po powrocie każdej floty bot wyśle ją na FS, każda zawracana o innej porze?"
+    // Do v3.96.3 bramka `!f` = jeden lot FS na parę w powietrzu; fale lądujące w trakcie
+    // NOCOWAŁY na księżycu do rana. Teraz: własny lot per fala, wspólna godzina powrotu.
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false }, debris: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10, target: "1:100:9", slotReserve: 1 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Cel", moon: true }, { key: "5:200:3", name: "Daleka", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.moonLinks = true;                     // cichy odczyt hangaru księżyca w tle (jak fork, v3.65.0)
+    g.flightSec = 4 * 3600;                 // lot musi WISIEĆ do godziny powrotu
+    const K71 = "genesis.ogamex.net:ogx3_situation";
+    // Bez ekonomii pierwszym działaniem bota jest CICHY recon hangaru (brak nawigacji), a run()
+    // traktuje brak nawigacji jako koniec pętli (ograniczenie harnessu) — dlatego wołamy run()
+    // kilka razy: recon w jednym przebiegu, wysyłka FS w kolejnym. Realny bot chodzi ciągle.
+    for (let i = 0; i < 4 && g.sent.length < 1; i++) await run(g, { cfg, loads: 12, ticksPerLoad: 3 });
+    check("71a: pierwszy FS wyleciał z całym hangarem", g.sent.length === 1 && g.sent[0].ships.BATTLESHIP === 600, JSON.stringify(g.sent.map(x => [x.from, x.ships])));
+    // FALA LĄDUJE w trakcie lotu FS: hangar księżyca znów ma statki (świeży odczyt zrobi recon)
+    g.hangars["1:100:5|moon"] = { HEAVY_CARGO: 250 };
+    let r2 = { logs: [] };
+    for (let i = 0; i < 4 && g.sent.length < 2; i++) r2 = await run(g, { cfg, loads: 12, ticksPerLoad: 3 });
+    check("71b: DOSYŁOWY FS wyleciał z falą, choć pierwszy lot wciąż wisi w powietrzu", g.sent.length === 2 && g.sent[1].from === "1:100:5" && g.sent[1].fromBody === "moon" && g.sent[1].to === "1:100:9" && g.sent[1].ships.HEAVY_CARGO === 250, JSON.stringify(g.sent.map(x => [x.from, x.to, x.ships])));
+    check("71c: …i log mówi wprost, że to lot dosyłowy", r2.logs.some(m => /FLEET SAVE DOSYŁOWY \(fala wylądowała w trakcie lotu\)/.test(m)), r2.logs.filter(m => /FLEET SAVE/.test(m)).slice(0, 3).join(" | "));
+    const st1 = JSON.parse(g.store.get(K71) || "{}");
+    const fl = (st1.flights || []).filter(x => x.fs && x.phase !== "done");
+    check("71d: DWA wpisy lotów FS z własnymi zawrotami (drugi później — wysłany później)", fl.length === 2 && fl[0].recallAt > 0 && fl[1].recallAt > fl[0].recallAt, JSON.stringify(fl.map(x => [x.sentAt, x.recallAt])));
+    // ZAWRÓT WŁAŚCIWEGO LOTU: chirurgia stanu — lot #2 (wiersz own1) ma zawrót TERAZ, lot #1 później,
+    // a liczniki wierszy ustawiamy tak, że dopasowanie po dolocie wskazuje own1. Bez rozpoznawania
+    // po dolocie bot kliknąłby PIERWSZY niewracający wiersz (own0) i zawrócił cudzą flotę.
+    if ((JSON.parse(g.store.get(K71) || "{}").flights || []).filter(x => x.fs).length < 2) {
+      check("71e: DWA loty FS do zawracania", false, "mniej niż dwa loty FS w stanie");
+      check("71f: DWA loty FS do zawracania", false, "mniej niż dwa loty FS w stanie");
+    } else {
+      { const st = JSON.parse(g.store.get(K71) || "{}"); const [f1, f2] = (st.flights || []).filter(x => x.fs); const now71 = Date.now();
+        f1.sentAt = now71 - 1000e3; f1.flightMs = 6000e3; f1.recallAt = now71 + 3600e3;   // dolot za ~5000 s, zawrót później
+        f2.sentAt = now71 - 1000e3; f2.flightMs = 1100e3; f2.recallAt = now71 - 60e3;     // dolot za ~100 s, zawrót TERAZ
+        g.store.set(K71, JSON.stringify(st));
+        g.sent[0].eta = 5000; g.sent[1].eta = 100; }                                      // liczniki wierszy jak doloty lotów
+      await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
+      check("71e: bot zawrócił WŁAŚCIWY wiersz (dopasowanie po dolocie, nie „pierwszy z brzegu”)", !!g.sent[1].returning && !g.sent[0].returning, JSON.stringify(g.sent.map(x => [x.from, x.eta, !!x.returning])));
+      { const st = JSON.parse(g.store.get(K71) || "{}"); for (const x of st.flights || []) if (x.fs && !["recalled", "recall_clicked"].includes(x.phase)) x.recallAt = Date.now() - 60e3; g.store.set(K71, JSON.stringify(st)); }
+      await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
+      check("71f: drugi lot też zawrócony o swojej porze — oba wracają", !!g.sent[0].returning && !!g.sent[1].returning, JSON.stringify(g.sent.map(x => [x.from, !!x.returning])));
+    }
+    check("71g: żaden lot nie wyszedł z pustego hangaru (zero duchów po dosyłowym)", g.sent.length === 2, JSON.stringify(g.sent.map(x => [x.from, x.ships])));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
