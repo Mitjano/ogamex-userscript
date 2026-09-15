@@ -3380,5 +3380,56 @@ console.log("\n── 83. DUCH PARY: klucz spoza żywego paska planet jest kasow
   check("83e: (źródło) pasek z fetcha /home NIE kasuje par (bywa niepełny)", !/kb\.pary[\s\S]{0,800}?delete s\.pairs\[/.test(src));
 }
 
+
+// v3.96.2 (noc 14/15.09): (a) zawrócony lot godzinę po terminie zawrotu to „wraca, ląduje ~HH:MM",
+// nie „sprowadź flotę ręcznie" — FS zawrócony o 02:51 lądował o 07:00, a bot cztery godziny
+// krzyczał na czerwono; (b) floty na planetach = JEDNA zbiorcza linia na godzinę, nie 20 linii
+// co 10 min (400-liniowy log obejmował niecałe 2 h); (c) trasa FS po 3 porażkach odpoczywa 6 h,
+// a zrzut przy martwym Next pokazuje ramkę z paliwem. Zachowanie (c) w E2E 70.
+console.log("\n── 84. NOC 14/15.09: prawda o zawróconym locie, zbiorczy alarm o planetach, 6 h przerwy FS ──");
+{
+  const lot = (over) => ({ kind: "air", fs: true, fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon", sentAt: NOW - 8 * 3600e3, flightMs: 7 * 3600e3, recallAt: NOW - 4 * 3600e3, phase: "recalled", recalledAt: NOW - 4 * 3600e3 + 30e3, ...over });
+  {
+    // zawrócony 4 h temu po 4 h lotu → ląduje za ~4 h: spokojna linia, zero „sprowadź ręcznie"
+    const s = base({ hangars: {}, flights: [lot()] });
+    const { alerts } = decide(s, CFG, NOW);
+    const zle = alerts.filter(a => /sprowadź flotę ręcznie/.test(a.msg));
+    const ok = alerts.filter(a => /zawrócony o .* wraca — ląduje ~/.test(a.msg));
+    check("84a: zawrócony lot w drodze powrotnej NIE dostaje „sprowadź flotę ręcznie”", zle.length === 0, JSON.stringify(zle));
+    check("84b: …dostaje spokojną linię „wraca, ląduje ~HH:MM” (warn, dławik 60 min)", ok.length === 1 && ok[0].level === "warn" && ok[0].throttleMs === 60 * 60e3, JSON.stringify(alerts));
+  }
+  {
+    // zawrócony lot, który powinien był wylądować ponad godzinę temu, a hangar nie domknął wpisu → to JEST alarm
+    const s = base({ hangars: {}, flights: [lot({ sentAt: NOW - 12 * 3600e3, recallAt: NOW - 8 * 3600e3, recalledAt: NOW - 8 * 3600e3 })] });
+    const { alerts } = decide(s, CFG, NOW);
+    check("84c: lot po terminie lądowania (+1 h) bez domknięcia hangaru → alarm „powinien był wylądować… sprawdź ręcznie”", alerts.some(a => a.level === "error" && /powinien był wylądować/.test(a.msg)), JSON.stringify(alerts));
+  }
+  {
+    // zawrót NIEUDANY → stary alarm zostaje (tu naprawdę trzeba ratować ręcznie)
+    const s = base({ hangars: {}, flights: [lot({ phase: "recall_failed" })] });
+    const { alerts } = decide(s, CFG, NOW);
+    check("84d: lot z nieudanym zawrotem wciąż dostaje „NIE ZOSTAŁ ZAWRÓCONY — sprowadź flotę ręcznie”", alerts.some(a => a.level === "error" && /NIE ZOSTAŁ ZAWRÓCONY/.test(a.msg) && /sprowadź flotę ręcznie/.test(a.msg)), JSON.stringify(alerts));
+  }
+  {
+    // trzy pary z flotą tylko na PLANECIE, FS włączony → jedna linia zbiorcza, zero linii per para
+    const s = base({
+      pairs: { "3:272:7": { hasMoon: true, galaxy: 3, system: 272, position: 7 }, "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 }, "3:272:3": { hasMoon: true, galaxy: 3, system: 272, position: 3 }, "3:272:4": { hasMoon: true, galaxy: 3, system: 272, position: 4 } },
+      hangars: { "3:272:7|planet": H(372845), "3:272:3|planet": H(444444), "3:272:4|planet": H(333333) },
+      fsReturnAt: NOW + 8 * 3600e3,
+    });
+    const cfgFs = { ...CFG, fs: { enabled: true, returnHour: 7, returnMinute: 0, speedPct: 10, target: "3:272:2", slotReserve: 1 } };
+    const { alerts } = decide(s, cfgFs, NOW);
+    const perPara = alerts.filter(a => /FS: flota \[\d+:\d+:\d+\] stoi na planecie/.test(a.msg));
+    const zbiorczy = alerts.filter(a => a.key === "fs-planeta");
+    const msg = zbiorczy.length ? zbiorczy[0].msg : "";
+    check("84e: ZERO osobnych linii „FS: flota [k] stoi na planecie” per para", perPara.length === 0, JSON.stringify(perPara));
+    check("84f: JEDNA linia zbiorcza (dławik 60 min) z liczbą par, sumą i listą od największej",
+      zbiorczy.length === 1 && zbiorczy[0].throttleMs === 60 * 60e3 && /na 3 parach/.test(msg) && msg.replace(/[\s  ]/g, "").includes("1150622") && msg.indexOf("[3:272:3]") < msg.indexOf("[3:272:7]") && msg.indexOf("[3:272:7]") < msg.indexOf("[3:272:4]"),
+      JSON.stringify(zbiorczy));
+  }
+  check("84g: (źródło) po 3 porażkach trasa FS odpoczywa 6 h, nie „do końca godziny”", /\(ft\[fk\]\.n >= 3 \? 6 : 1\) \* 60 \* 60e3/.test(src) && /\[FS\] trzecia nieudana próba wysyłki[^\n]*odpuszczam tę trasę na 6 h/.test(src) && !/trzecia nieudana próba wysyłki[^\n]*przestaję ponawiać do końca godziny/.test(src));
+  check("84h: (źródło) zrzut przy martwym Next bierze tekst wokół „Duration of flight” i linie z paliwem/slotami", src.includes('tekst formularza (wokół „Duration of flight")') && src.includes("paliwo/sloty na stronie") && /bodyTxt\.search\(\/Duration\\s\*of\\s\*flight\/i\)/.test(src));
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

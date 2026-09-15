@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.96.1
+// @version      3.96.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.96.1";
+  const VERSION = "3.96.2";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1741,6 +1741,7 @@
     // v3.68.10 (audyt 04.09, obrona-fs#2 P1): kandydaci na Fleet Save zbierają się tu,
     // a wychodzi z przebiegu NAJWYŻEJ JEDEN (wybór i rezerwa slotów — pod pętlą).
     const fsCands = [];
+    const fsNaPlanecie = [];   // v3.96.2: pary z flotą tylko na planecie (FS nie leci z planety) — jedna linia zbiorcza
 
     for (const k of Object.keys(pairs)) {
       const th = threatsFor(k);
@@ -1937,7 +1938,8 @@
         if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body !== "moon") {
           // v3.68.0: decide() musi zostać CZYSTA (bez Once/Store) — dławik idzie przez
           // throttleMs, tak jak każdy inny alert w tej funkcji, nie przez własny Once.said.
-          alerts.push({ key: k, level: "warn", throttleMs: 10 * 60e3, msg: `FS: flota [${k}] stoi na planecie — nie wysyłam stamtąd (falanga), czekam aż będzie na księżycu` });
+          // v3.96.2: zbieramy, jedna linia zbiorcza po pętli (patrz `fsNaPlanecie` niżej).
+          fsNaPlanecie.push({ key: k, total: fleet.total });
         }
         if (!f && fleet && cfg.fs && cfg.fs.enabled && fleet.total > 0 && fleet.body === "moon") {
           // v3.68.0 (owner 04.09, port z Atheny): cel skonfigurowany (cfg.fs.target) jest
@@ -2347,6 +2349,17 @@
     // wychodzi NAJWYŻEJ JEDEN lot FS (najpierw największy hangar — tam stoi wartość), i to
     // tylko wtedy, gdy po nim zostanie wolny slot dla obrony. Reszta poczeka na kolejne
     // przebiegi; obrona ma pierwszeństwo, a nie „kto pierwszy na pasku planet".
+    // v3.96.2 (noc 14/15.09): floty na PLANETACH = jedna linia ZBIORCZA na godzinę, nie osobna
+    // dla każdej pary co 10 min. Przy 20 parach z transportowcami na planetach to było ~120
+    // linii na godzinę, 400-liniowy log obejmował niecałe 2 h i historia nocy przepadła
+    // (analizę dało się zrobić tylko z dziennika). Treść zostaje: falanga je widzi, z planety
+    // nie lecą, lista od największej.
+    if (fsNaPlanecie.length) {
+      fsNaPlanecie.sort((a, b) => (b.total || 0) - (a.total || 0));
+      const suma = fsNaPlanecie.reduce((a, x) => a + (x.total || 0), 0);
+      const lista = fsNaPlanecie.slice(0, 6).map(x => `[${x.key}] ${(x.total || 0).toLocaleString("pl-PL")}`).join(", ") + (fsNaPlanecie.length > 6 ? ` i ${fsNaPlanecie.length - 6} innych` : "");
+      alerts.push({ key: "fs-planeta", level: "warn", throttleMs: 60 * 60e3, msg: `FS: flota stoi na planecie na ${fsNaPlanecie.length} parach, łącznie ${suma.toLocaleString("pl-PL")} szt. — nie wysyłam stamtąd (falanga), czekam aż będzie na księżycu: ${lista}` });
+    }
     if (fsCands.length) {
       fsCands.sort((a, b) => (b.saveTotal || 0) - (a.saveTotal || 0));
       const best = fsCands[0];
@@ -2368,6 +2381,19 @@
     for (const f of (s.flights || [])) {
       if (!flightBlind(f)) continue;
       if (f.kind === "air" && ["launched", "recall_clicked"].includes(f.phase)) continue;   // v3.10.2: ten wciąż jest zawracany
+      // v3.96.2 (noc 14/15.09): lot ZAWRÓCONY (zawrót potwierdzony na liście ruchów) godzinę po
+      // terminie zawrotu to nie „sprowadź flotę ręcznie" — flota WRACA, a droga powrotna trwa
+      // tyle, ile trwał lot do chwili zawrotu (FS zawrócony o 02:51 lądował o 07:00, a bot przez
+      // cztery godziny co 15 min krzyczał na czerwono, że trzeba go ratować ręcznie). Para i tak
+      // wraca pod pełną obronę (flightBlind), więc w logu ma być prawda: „wraca, ląduje ~HH:MM".
+      // Dopiero gdy termin lądowania minie o ponad godzinę, a hangar źródła wciąż nie domknął
+      // wpisu, jest co sprawdzać ręcznie. Alarm, który kłamie, jest gorszy niż brak alarmu.
+      if (f.phase === "recalled" && f.recalledAt && f.sentAt) {
+        const landAt = f.recalledAt + Math.max(0, f.recalledAt - f.sentAt);
+        if (now < landAt + 60 * 60e3) alerts.push({ key: f.fromKey, level: "warn", throttleMs: 60 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] zawrócony o ${hhmm(f.recalledAt)}, wraca — ląduje ~${hhmm(landAt)}; do lądowania para jest pod pełną obroną` });
+        else alerts.push({ key: f.fromKey, level: "error", throttleMs: 60 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] zawrócony o ${hhmm(f.recalledAt)} powinien był wylądować ~${hhmm(landAt)}, a hangar źródła wciąż nie domknął wpisu — sprawdź ręcznie, gdzie jest flota` });
+        continue;
+      }
       alerts.push({ key: f.fromKey, level: "error", throttleMs: 15 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] ${f.phase === "recall_failed" ? "NIE ZOSTAŁ ZAWRÓCONY" : "dawno po terminie zawrotu"} — sprowadź flotę ręcznie; para znów pod pełną obroną` });
     }
     // ŚLEPY ALARM: pasek widzi obce loty, których nie umiemy przypisać do celu.
@@ -4160,11 +4186,22 @@
         .filter(el => el.offsetParent !== null && !el.closest("#ogx3-panel"))
         .map(el => `<${el.tagName.toLowerCase()}${el.id ? " id=" + el.id : ""}${el.className ? " class=\"" + String(el.className).slice(0, 40) + "\"" : ""}${el.disabled ? " DISABLED" : ""}>${String(el.value || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}`)
         .slice(0, 25).join(" | ");
-      const txt = (document.querySelector("#content, .content, form") || document.body).textContent.replace(/\s+/g, " ").trim();
+      // v3.96.2 (noc 14/15.09: 27 przerwanych FS „Next (krok 2) martwy" i pusty zrzut „tekst
+      // formularza: …"): `#content` bywa pusty, a powód odmowy (paliwo, sloty) siedzi w ramce
+      // podsumowania lotu obok „Duration of flight". Zrzucamy tekst CAŁEJ strony wokół tej
+      // ramki i osobno każdą linię z paliwem/deuterem/slotami — z tego da się odczytać powód
+      // bez zgadywania markupu (zasada domu: nieznany markup to zrzut, nie zgadywanie).
+      const bodyTxt = document.body.textContent.replace(/\s+/g, " ").trim();
+      const iDur = bodyTxt.search(/Duration\s*of\s*flight/i);
+      const txt = iDur >= 0 ? bodyTxt.slice(Math.max(0, iDur - 250), iDur + 450) : (document.querySelector("#content, .content, form") || document.body).textContent.replace(/\s+/g, " ").trim().slice(-300);
+      const paliwo = [...document.querySelectorAll("div, span, td, li, p, label, small, b, strong")]
+        .filter(el => el.children.length === 0 && !el.closest("#ogx3-panel") && /deuter|fuel|consumption|paliw|slot|not enough|insufficient|za mało/i.test(el.textContent || ""))
+        .map(el => (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)).filter(Boolean).slice(0, 8).join(" | ");
       log(seen
         ? `[LOT] przycisk „${text}" BYŁ na stronie, ale przez ${maxMs / 1000}s pozostał WYŁĄCZONY — gra nie przyjmuje tej floty. KANDYDACI: ${cands}`
         : `[LOT] przycisku „${text}" NIE MA na stronie (${maxMs / 1000}s). KANDYDACI: ${cands}`, "error");
-      log(`[LOT] tekst formularza: …${txt.slice(-300)}`, "error");
+      log(`[LOT] tekst formularza (wokół „Duration of flight"): …${txt}`, "error");
+      if (paliwo) log(`[LOT] paliwo/sloty na stronie: ${paliwo}`, "error");
       return null;
     },
     async form(m) {
@@ -5279,9 +5316,16 @@
           if (a.fs) {
             const fk = `${a.fromKey}>${a.toKey}`;
             const ft = Store.get("fs_try", {}) || {};
-            const r3 = ft[fk] && Date.now() - ft[fk].at < 60 * 60e3 ? ft[fk] : { n: 0, at: 0 };
+            // v3.96.2 (noc 14/15.09): trzy próby na godzinę, ale po trzeciej porażce trasa
+            // odpoczywa 6 h, nie „do końca godziny". Z godzinnym oknem bot przez całą noc robił
+            // 3 próby CO GODZINĘ na tej samej martwej trasie ([1:217:6]→[5:238:11], „Next (krok 2)
+            // martwy" — najpewniej brak deuteru na księżycu): 27 przerwanych lotów i push „BŁĄD"
+            // co godzinę. Trasa nie naprawi się sama; po 6 h próbujemy znowu, bo operator mógł
+            // w międzyczasie dowieźć deuter. Udana wysyłka kasuje licznik (Fly.form), zmiana
+            // celu = inny klucz. Ratunek pod ostrzałem tego sufitu nie ma i mieć nie będzie.
+            const r3 = ft[fk] && Date.now() - ft[fk].at < (ft[fk].n >= 3 ? 6 : 1) * 60 * 60e3 ? ft[fk] : { n: 0, at: 0 };
             if (r3.n >= 3) {
-              if (!Once.said(`fstry|${fk}`, 60 * 60e3)) log(`[FS] trzecia nieudana próba wysyłki [${a.fromKey}]→[${a.toKey}] w ciągu godziny — przestaję ponawiać do końca godziny. Sprawdź deuter i cel Fleet Save.`, "error");
+              if (!Once.said(`fstry|${fk}`, 6 * 60 * 60e3)) log(`[FS] trzecia nieudana próba wysyłki [${a.fromKey}]→[${a.toKey}] w ciągu godziny — odpuszczam tę trasę na 6 h (do ${new Date(r3.at + 6 * 3600e3).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}). Sprawdź deuter na księżycu źródła i cel Fleet Save; udana wysyłka zeruje licznik.`, "error");
               continue;
             }
             ft[fk] = { n: r3.n + 1, at: Date.now() }; Store.set("fs_try", ft);

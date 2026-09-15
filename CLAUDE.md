@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.96.1, ~6,4k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.96.2, ~6,4k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
@@ -33,7 +33,7 @@ Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane cia
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst
-- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW** (sekcja 8 = sesja popołudniowa 14.09 na Windows, v3.96.0:
+- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW** (sekcja 8 = sesja popołudniowa 14.09 na Windows, v3.96.0: Sekcje 9–10 = 14/15.09 (przenosiny, noc, v3.96.1–2); odczyt stanu z Chrome na Macu: `tools/mac_chrome_state.py`.
   zamknięte cztery P0 warstwy wykonawczej i cztery P0 odbudowy księżyca, lekcje o harnessie E2E).
   Pełny stan po dwóch dobach obrony floty:
   dwa incydenty (strata uniknięta ręcznie 13.09, nalot na trzy księżyce 14.09), wszystko, co

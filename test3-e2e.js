@@ -47,6 +47,7 @@ class Game {
     // to od niej zależy, czy ucieczka poleci 3% (wisi i da się zawrócić), czy 100% (ląduje).
     this.speeds = [3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
     this.deadNext = 0;        // ile razy krok 2 ma byc BEZ przycisku „Next"
+    this.disabledNext = false; // v3.96.2: krok 2 MA przycisk „Next", ale WYŁĄCZONY (gra nie przyjmuje floty: deuter/sloty) — noc 14/15.09
     this.hijackForm = false;  // operator przelacza planete w srodku formularza
     this.formSpeed = null;    // ostatnio klinieta predkosc
     this.flightSec = 81;      // czas lotu pokazywany w kroku 2
@@ -149,7 +150,7 @@ class Game {
       <div>Duration of flight (one way): ${((sec) => sec >= 3600
         ? `${String(Math.floor(sec / 3600)).padStart(2, "0")}:${String(Math.floor(sec % 3600 / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`
         : `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`)(Math.round(this.flightSec * 100 / (this.formSpeed || 100)))}</div>
-      ${this.deadNext > 0 ? "" : '<a class="btn-continue" id="btn-next-fleet3">Next</a>'}
+      ${this.deadNext > 0 ? "" : '<a class="btn-continue' + (this.disabledNext ? " disabled" : "") + '" id="btn-next-fleet3">Next</a>'}
     </div>`;
   }
   step3Html() {
@@ -3172,6 +3173,53 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("69h: …i był to JEDYNY lot (nic nie wyleciało z ducha)", g.sent.length === 1, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to])));
     const inst69 = load(g, { cfg: cfgFs });
     check("69i: bot NIE twierdzi już, że jakakolwiek flota stoi na [1:100:5]", !inst69.api.Situation.fleetAt(inst69.api.Situation.load(), "1:100:5", Date.now()), "");
+  }
+
+  console.log("\n── 70. MARTWY „NEXT” NA FS: zrzut ramki paliwa i 6 h przerwy po trzech porażkach (v3.96.2) ──");
+  {
+    // Noc 14/15.09: trasa [1:217:6]→[5:238:11] padała na wyłączonym „Next" w kroku 2 (najpewniej
+    // deuter na księżycu), a bot z godzinnym oknem robił 3 próby CO GODZINĘ — 27 przerwanych lotów,
+    // push „BŁĄD" co godzinę i pusty zrzut „tekst formularza: …". Teraz: po trzeciej porażce trasa
+    // odpoczywa 6 h, a zrzut pokazuje tekst wokół „Duration of flight" (tam gra pisze paliwo).
+    const H = new Date(Date.now() + 2 * 3600e3).getHours();
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false }, debris: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 10, target: "1:100:9" },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Cel", moon: true }, { key: "5:200:3", name: "Daleka", moon: true }],
+      hangars: { "1:100:5|moon": { HEAVY_CARGO: 192337 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.flightSec = 4 * 3600;
+    g.disabledNext = true;                        // krok 2 z WYŁĄCZONYM „Next" — dokładnie jak w nocy (gra nie przyjmuje floty: deuter/sloty)
+    const KFS = "genesis.ogamex.net:ogx3_fs_try";
+    const ftOf = () => (JSON.parse(g.store.get(KFS) || "{}") || {})["1:100:5>1:100:9"];
+    const proby = () => rawLog(g).filter(m => /\[LOT\] FLEET SAVE → \[1:100:9\]/.test(m)).length;
+    const logs = [];
+    for (let i = 0; i < 6; i++) { const r = await run(g, { cfg, loads: 8, ticksPerLoad: 2 }); logs.push(...r.logs); advance(g, 4 * 60e3); }
+    const ft1 = ftOf();
+    check("70a: dokładnie TRZY próby w pierwszej godzinie (licznik trasy = 3, czwartej nie ma)", !!ft1 && ft1.n === 3 && proby() === 3, `próby=${proby()} fs_try=${JSON.stringify(ft1)}`);
+    check("70b: …i jedna uczciwa linia „odpuszczam tę trasę na 6 h”", logs.some(m => /odpuszczam tę trasę na 6 h/.test(m)), logs.filter(m => /\[FS\]/.test(m)).slice(0, 3).join(" | "));
+    // Zrzut przy WYŁĄCZONYM „Next": w harnessie kolejny przebieg przerywa 25-sekundowe czekanie
+    // (formularz „w toku" → przeładowanie od kroku 1), więc funkcję czekającą wołamy wprost na
+    // stronie kroku 2 — tak jak w nocy, gdy bot doczekał do końca i zrzucił pusty „#content".
+    g.page = "fleet"; g.query = "?x=1&y=100&z=9"; g.formStep = 1; g.formShips = { HEAVY_CARGO: 192337 };
+    const inst70 = load(g, { cfg, ticks: 0 });
+    await inst70.api.Fly.clickWhenEnabled("Next", 400);
+    await new Promise(r => setTimeout(r, 300));            // log trafia do GM storage z opóźnieniem (debounce)
+    const zrzut = rawLog(g).find(m => /tekst formularza \(wokół „Duration of flight"\): …/.test(m)) || "";
+    check("70c: zrzut przy martwym Next pokazuje ramkę z czasem lotu (tam gra pisze paliwo), nie pusty „…”", /Duration of flight/.test(zrzut.slice(zrzut.indexOf("…"))) && /Cargo space/.test(zrzut), rawLog(g).filter(m => /tekst formularza|WYŁĄCZONY/.test(m)).slice(0, 3).join(" | "));
+    check("70d: żaden lot nie wyszedł (gra odmawia)", g.sent.length === 0, JSON.stringify(g.sent));
+    // 2 h później: wciąż przerwa (do 3.96.1 bot wznawiał trzy próby co godzinę)
+    { const ft = JSON.parse(g.store.get(KFS) || "{}"); ft["1:100:5>1:100:9"].at -= 2 * 3600e3; g.store.set(KFS, JSON.stringify(ft)); }
+    const at2 = ftOf().at;
+    for (let i = 0; i < 3; i++) { await run(g, { cfg, loads: 6, ticksPerLoad: 2 }); advance(g, 4 * 60e3); }
+    check("70e: po 2 h trasa wciąż odpoczywa — ZERO nowych prób, licznik nietknięty", ftOf().n === 3 && ftOf().at === at2 && proby() === 3, `próby=${proby()} fs_try=${JSON.stringify(ftOf())}`);
+    // 7 h później: przerwa minęła, bot próbuje znowu (operator mógł dowieźć deuter)
+    { const ft = JSON.parse(g.store.get(KFS) || "{}"); ft["1:100:5>1:100:9"].at -= 5 * 3600e3; g.store.set(KFS, JSON.stringify(ft)); }
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("70f: po 6 h przerwy bot ponawia próbę (licznik startuje od nowa)", !!ftOf() && ftOf().n === 1 && ftOf().at > at2 && proby() === 4, `próby=${proby()} fs_try=${JSON.stringify(ftOf())}`);
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
