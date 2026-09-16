@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.97.0
+// @version      3.97.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.97.0";
+  const VERSION = "3.97.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -1444,6 +1444,20 @@
       // się ją URUCHOMIĆ w teście: dopóki siedziała w domknięciu wewnątrz refresh(), jedyną
       // ochroną był regex na kształt warunku — i dokładnie dlatego dziura z obrona-stan-lotu#2
       // przeżyła dwa audyty.
+      // v3.97.1 (rano 16.09) — JEDNORAZOWE sprzątnięcie duchów sprzed tej wersji. Wpis bez
+      // `sentTotal` nie da się rozstrzygnąć regułą „cała flota wróciła", a taki duch blokuje
+      // ekonomię („flota jest na Fleet Save") nawet przy FS OFF i zaślepia parę aż do twardego
+      // sufitu 12 h. Zdejmujemy TYLKO te, przy których hangar źródła jest pełny w odczycie
+      // NOWSZYM niż kwadrans po starcie, czyli flota fizycznie stoi w domu. Raz, pod kluczem.
+      if (!Store.get("migr_ghost_v3971", false)) {
+        Store.set("migr_ghost_v3971", true);
+        const duchy = (s.flights || []).filter(f => f.phase === "launched" && !f.sentTotal && f.recallAt
+          && (() => { const h = (s.hangars || {})[`${f.fromKey}|${f.fromBody}`]; return !!h && (h.total || 0) > (f.leftHome || 0) && (h.at || 0) > f.sentAt + 15 * 60e3; })());
+        for (const f of duchy) {
+          f.phase = "done";
+          log(`[LOT] sprzątam wpis-ducha [${f.fromKey}]→[${f.toKey}] sprzed v3.97.1: flota stoi w hangarze źródła, a wpis wisiał jako „w powietrzu” i blokował ekonomię. Jednorazowo, przy aktualizacji.`, "warn");
+        }
+      }
       s.flights = (s.flights || []).filter(f => flightAlive(f, s, now));
       return this.save(s);
     },
@@ -1567,6 +1581,22 @@
       if (!stillOut) {
         if (f.phase === "recall_clicked") log(`[LOT] domykam wpis [${f.fromKey}]→[${f.toKey}] hangarem, choć zawrót NIEPOTWIERDZONY wierszem powrotnym — jeśli to nie ta flota wróciła, sprawdź listę ruchów.`, "warn");
         log(`[LOT] domknięty — flota widziana na [${watchKey.replace("|", " ")}] (${(h.total || 0).toLocaleString("pl-PL")}).`, "success"); return false;
+      }
+      // v3.97.1 (rano 16.09: „teraz ekspedycji nie wysyła") — CO SIĘ PSUŁO: DUCH LOTU. Regułę
+      // „lot launched = w hangarze źródła nie ma jej prawa być" łamie KAŻDY powrót spoza bota:
+      // właściciel zawrócił flotę FS ręcznie (albo ściągnął ją bramą skoków), flota stanęła
+      // w domu, a wpis został „w powietrzu" na zawsze — bo hangar pełny był tłumaczony jako
+      // powroty ekspedycji. Skutki: ekonomia stała na „flota jest na Fleet Save" MIMO FS OFF,
+      // para była zaślepiona, a o godzinie zawrotu czekał alarm „zawróć ręcznie" bez lotu.
+      // Rozstrzygnięcie: CAŁA wysłana flota z powrotem w hangarze (`sentTotal`, zapisywany przy
+      // potwierdzeniu wysyłki) to nie fala ekspedycji — fala jest ułamkiem, FS zabiera wszystko.
+      // `legacy` domyka wpisy sprzed tej wersji (bez `sentTotal`), gdzie lepszego dowodu nie ma.
+      // Wpisy sprzed v3.97.1 nie niosą `sentTotal` — dla nich dowodu nie ma i zachowanie zostaje
+      // STARE (wpis żyje, patrz test 56a: fala ekspedycji nie może zdjąć lotu z powietrza).
+      // Jednego ducha, który powstał przed tą wersją, sprząta jednorazowa migracja w refresh().
+      if ((f.sentTotal || 0) > 0 && (h.total || 0) >= (f.sentTotal || 0) + leftHome) {
+        log(`[LOT] domykam wpis [${f.fromKey}]→[${f.toKey}] (${f.phase}): w hangarze [${watchKey.replace("|", " ")}] stoi ${(h.total || 0).toLocaleString("pl-PL")} szt., czyli CAŁA wysłana flota (${(f.sentTotal || 0).toLocaleString("pl-PL")}) wróciła — flota jest w domu (zawrót ręczny albo brama skoków). Para wraca pod pełną obronę, ekonomia rusza.`, "warn");
+        return false;
       }
       if (!Once.said(`expclose|${f.fromKey}|${f.sentAt}`, 10 * 60e3)) log(`[LOT] hangar [${watchKey.replace("|", " ")}] pełny, a lot [${f.fromKey}]→[${f.toKey}] jest W POWIETRZU (${f.phase}) — to powroty/lądowania, nie ratunek; wpis ZOSTAJE (zawrót planowo).`, "info");
     }
@@ -2402,8 +2432,18 @@
       // wpisu, jest co sprawdzać ręcznie. Alarm, który kłamie, jest gorszy niż brak alarmu.
       if (f.phase === "recalled" && f.recalledAt && f.sentAt) {
         const landAt = f.recalledAt + Math.max(0, f.recalledAt - f.sentAt);
+        // v3.97.1 (noc 15/16.09: trzy fałszywe alarmy o 06:01): wpis zamyka ODCZYT hangaru, a bot
+        // czyta hangary po kolei i do danej pary mógł jeszcze nie dojść. „Nie domknąłem wpisu" to
+        // wtedy brak wiedzy, nie zaginiona flota. Na czerwono krzyczymy dopiero, gdy hangar źródła
+        // został odczytany PO terminie lądowania i wciąż jest pusty; wcześniej idzie cichy odczyt.
+        const hSrc = (s.hangars || {})[`${f.fromKey}|${f.fromBody}`];
+        const sprawdzony = !!hSrc && (hSrc.at || 0) > landAt;
         if (now < landAt + 60 * 60e3) alerts.push({ key: f.fromKey, level: "warn", throttleMs: 60 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] zawrócony o ${hhmm(f.recalledAt)}, wraca — ląduje ~${hhmm(landAt)}; do lądowania para jest pod pełną obroną` });
-        else alerts.push({ key: f.fromKey, level: "error", throttleMs: 60 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] zawrócony o ${hhmm(f.recalledAt)} powinien był wylądować ~${hhmm(landAt)}, a hangar źródła wciąż nie domknął wpisu — sprawdź ręcznie, gdzie jest flota` });
+        else if (!sprawdzony) {
+          actions.push({ kind: "recon", key: f.fromKey, body: f.fromBody, quiet: true, why: `lot [${f.fromKey}]→[${f.toKey}] miał wylądować ~${hhmm(landAt)} — sprawdzam hangar, zanim podniosę alarm` });
+          alerts.push({ key: f.fromKey, level: "warn", throttleMs: 30 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] miał wylądować ~${hhmm(landAt)}, a hangaru [${f.fromKey}] ${f.fromBody === "moon" ? "księżyc" : "planeta"} jeszcze nie czytałem po tej godzinie — sprawdzam w tle, zanim cokolwiek ogłoszę` });
+        }
+        else alerts.push({ key: f.fromKey, level: "error", throttleMs: 60 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] zawrócony o ${hhmm(f.recalledAt)} powinien był wylądować ~${hhmm(landAt)}, a hangar [${f.fromKey}] ${f.fromBody === "moon" ? "księżyc" : "planeta"} odczytany o ${hhmm(hSrc.at)} jest pusty — sprawdź ręcznie, gdzie jest flota` });
         continue;
       }
       alerts.push({ key: f.fromKey, level: "error", throttleMs: 15 * 60e3, msg: `lot [${f.fromKey}]→[${f.toKey}] ${f.phase === "recall_failed" ? "NIE ZOSTAŁ ZAWRÓCONY" : "dawno po terminie zawrotu"} — sprowadź flotę ręcznie; para znów pod pełną obroną` });
@@ -3877,10 +3917,14 @@
       // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek.
       if (!eco) {
         const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending);   // v3.68.8: wpis z DRUGIEGO ciała pary nie jest naszym potwierdzeniem
+        // v3.97.1: ile statków NAPRAWDĘ poleciało (stempel wysyłki tej misji). Dowód „cała flota
+        // wróciła" w flightAlive — bez niego duch lotu żyje do twardego sufitu 12 h.
+        const lsT = Store.get("last_send", null);
+        const sentTotal = (lsT && lsT.from === m.fromKey && lsT.toKey === m.toKey && (lsT.at || 0) >= (m.startedAt || 0) && lsT.total > 0) ? lsT.total : 0;
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
-        if (f0) { delete f0.pending; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
+        if (f0) { delete f0.pending; if (sentTotal) f0.sentTotal = sentTotal; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
-          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, sentTotal, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
         }
       }
       // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
@@ -4406,9 +4450,19 @@
         if (!ok && !Once.said("speed_fail", 30 * 60e3)) { Journal.add("BŁĄD", `Nie znalazłem suwaka prędkości — lot [${m.fromKey}]→[${m.toKey}] leci z domyślną prędkością (krótko). Sprawdź zrzut w logu.`); log(`[LOT DOM] okolica suwaka prędkości: ${(document.querySelector("#target_planet_type_container")?.closest("form") || document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 2000)}`, "error"); }
         await sleep(jitter(700, 1100));
       }
-      const ft = document.body.textContent.match(/Duration\s*of\s*flight[^0-9]{0,40}?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
+      // v3.97.1 (noc 15/16.09) — CO SIĘ PSUŁO: przy 3 % loty przez dwie i trzy galaktyki trwają
+      // PONAD DOBĘ, a fork pisze wtedy „Duration of flight (one way): 1d 08:41:48". Stary wzorzec
+      // znał tylko format godzinowy, więc czas lotu zostawał NIEZNANY — a bez niego przeliczenie
+      // zawrotu na „połowę drogi" w ogóle się nie wykonywało i na wpisie zostawała sama GODZINA
+      // POWROTU. Cztery loty zawrócone o 05:00 zamiast o 01:48 wracały sześć godzin za późno
+      // (w stanie widać je po `flightMs: 0`). Doba wchodzi jako opcjonalna grupa; gdy jest,
+      // reszta jest ZAWSZE H:M:S (bez niej „12:30" nadal znaczy 12 min 30 s, jak dotąd).
+      const ft = document.body.textContent.match(/Duration\s*of\s*flight[^0-9]{0,40}?(?:(\d{1,3})\s*d\D{0,4})?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
       if (ft) {
-        m.flightMs = ft[3] !== undefined ? (+ft[1] * 3600 + +ft[2] * 60 + +ft[3]) * 1000 : (+ft[1] * 60 + +ft[2]) * 1000;
+        const dni = ft[1] !== undefined ? +ft[1] : 0;
+        m.flightMs = (dni > 0
+          ? dni * 86400 + (+ft[2] * 3600 + +ft[3] * 60 + +(ft[4] || 0))
+          : (ft[4] !== undefined ? (+ft[2] * 3600 + +ft[3] * 60 + +ft[4]) : (+ft[2] * 60 + +ft[3]))) * 1000;
         log(`[LOT] czas lotu ${Math.round(m.flightMs / 1000)} s`, "info");
         // v3.10.2: zawrót ma sens tylko wtedy, gdy flota JESZCZE LECI. Lot krótszy niż
         // termin zawrotu wyląduje na kolonii docelowej — wtedy nie udajemy, że wisi

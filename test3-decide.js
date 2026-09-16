@@ -3404,9 +3404,10 @@ console.log("\n── 84. NOC 14/15.09: prawda o zawróconym locie, zbiorczy ala
   }
   {
     // zawrócony lot, który powinien był wylądować ponad godzinę temu, a hangar nie domknął wpisu → to JEST alarm
-    const s = base({ hangars: {}, flights: [lot({ sentAt: NOW - 12 * 3600e3, recallAt: NOW - 8 * 3600e3, recalledAt: NOW - 8 * 3600e3 })] });
+    // v3.97.1: alarm wymaga DOWODU — hangar źródła odczytany PO terminie lądowania i pusty.
+    const s = base({ hangars: { "3:272:7|moon": H(0, undefined, 60e3) }, flights: [lot({ sentAt: NOW - 12 * 3600e3, recallAt: NOW - 8 * 3600e3, recalledAt: NOW - 8 * 3600e3 })] });
     const { alerts } = decide(s, CFG, NOW);
-    check("84c: lot po terminie lądowania (+1 h) bez domknięcia hangaru → alarm „powinien był wylądować… sprawdź ręcznie”", alerts.some(a => a.level === "error" && /powinien był wylądować/.test(a.msg)), JSON.stringify(alerts));
+    check("84c: lot po terminie lądowania (+1 h), a hangar świeżo odczytany i pusty → alarm „powinien był wylądować… sprawdź ręcznie”", alerts.some(a => a.level === "error" && /powinien był wylądować/.test(a.msg)), JSON.stringify(alerts));
   }
   {
     // zawrót NIEUDANY → stary alarm zostaje (tu naprawdę trzeba ratować ręcznie)
@@ -3476,6 +3477,45 @@ console.log("\n── 85. FS DOSYŁOWY: fala wylądowała w trakcie lotu FS (v3.
   check("85g: (źródło) dosyłowy wymaga: wszystkie loty pary = FS, hangar świeższy niż ostatnia wysyłka",
     /lotyFsZPary\.every\(x => x\.fs\)/.test(src) && /\(fleet\.at \|\| 0\) > Math\.max\(\.\.\.lotyFsZPary\.map\(x => x\.sentAt \|\| 0\)\)/.test(src)
     && /if \(\(!f \|\| fsDosylowy\) && fleet && cfg\.fs && cfg\.fs\.enabled && fleet\.total > 0 && fleet\.body === "moon"\) \{/.test(src));
+}
+
+
+// v3.97.1 (noc 15/16.09): (a) czas lotu ponad dobę („1d HH:MM:SS") ma być czytany — bez niego zawrót
+// szedł na godzinę powrotu zamiast w połowę drogi; (b) wpis lotu domyka CAŁA wysłana flota z powrotem
+// w hangarze (ręczny zawrót / brama skoków), inaczej duch lotu blokuje ekonomię mimo FS OFF;
+// (c) alarm „sprawdź ręcznie" dopiero po odczycie hangaru PO terminie lądowania. Zachowanie: E2E 72-73.
+console.log("\n── 86. NOC 15/16.09: doba w czasie lotu, duch lotu, uczciwy alarm o lądowaniu (v3.97.1) ──");
+{
+  // zawrót 6 h temu po 2 h lotu → lądowanie 4 h temu, czyli ponad godzinę po terminie
+  const lot = (over) => ({ kind: "air", fs: true, fromKey: "3:272:7", fromBody: "moon", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 8 * 3600e3, flightMs: 20 * 3600e3, recallAt: NOW - 6 * 3600e3, phase: "recalled", recalledAt: NOW - 6 * 3600e3, ...over });
+  {
+    // lądowanie było 4 h temu, hangaru źródła bot NIE czytał od tamtej pory → cichy odczyt, nie alarm
+    const s = base({ hangars: { "3:272:7|moon": H(0, undefined, 9 * 3600e3) }, flights: [lot()] });
+    const { actions, alerts } = decide(s, CFG, NOW);
+    check("86a: bez świeżego odczytu hangaru NIE ma czerwonego „sprawdź ręcznie”", !alerts.some(a => a.level === "error" && /sprawdź ręcznie/.test(a.msg)), JSON.stringify(alerts));
+    check("86b: …jest cichy odczyt hangaru źródła i uczciwe zdanie o niewiedzy",
+      actions.some(a => a.kind === "recon" && a.key === "3:272:7" && a.body === "moon" && a.quiet)
+      && alerts.some(a => a.level === "warn" && /jeszcze nie czytałem po tej godzinie/.test(a.msg)), JSON.stringify({ actions, alerts }));
+  }
+  {
+    // hangar odczytany PO terminie lądowania i pusty → to jest prawdziwy alarm
+    const s = base({ hangars: { "3:272:7|moon": H(0, undefined, 30 * 60e3) }, flights: [lot()] });
+    const { alerts } = decide(s, CFG, NOW);
+    check("86c: po świeżym odczycie pustego hangaru alarm JEST (z godziną odczytu)", alerts.some(a => a.level === "error" && /powinien był wylądować/.test(a.msg) && /odczytany o \d\d:\d\d jest pusty/.test(a.msg)), JSON.stringify(alerts));
+  }
+  check("86d: (źródło) czas lotu czyta też format z dobą („1d HH:MM:SS”)",
+    /\(\?:\(\\d\{1,3\}\)\\s\*d\\D\{0,4\}\)\?/.test(src) && /const dni = ft\[1\] !== undefined \? \+ft\[1\] : 0;/.test(src) && /dni \* 86400/.test(src));
+  check("86e: (źródło) wpis lotu domyka CAŁA wysłana flota w hangarze źródła (sentTotal); wpisy bez sentTotal zachowują STARE zachowanie (test 56a)",
+    /if \(\(f\.sentTotal \|\| 0\) > 0 && \(h\.total \|\| 0\) >= \(f\.sentTotal \|\| 0\) \+ leftHome\) \{/.test(src)
+    && !/const legacy = !f\.sentTotal/.test(src));
+  check("86g: (źródło) duchy sprzed wersji sprząta JEDNORAZOWA migracja przed filtrem flightAlive",
+    /if \(!Store\.get\("migr_ghost_v3971", false\)\) \{/.test(src)
+    && /f\.phase === "launched" && !f\.sentTotal && f\.recallAt/.test(src)
+    && src.indexOf('Store.get("migr_ghost_v3971"') < src.indexOf("s.flights = (s.flights || []).filter(f => flightAlive(f, s, now));"));
+  check("86f: (źródło) potwierdzona wysyłka zapisuje sentTotal na wpisie lotu",
+    /const sentTotal = \(lsT && lsT\.from === m\.fromKey && lsT\.toKey === m\.toKey && \(lsT\.at \|\| 0\) >= \(m\.startedAt \|\| 0\) && lsT\.total > 0\) \? lsT\.total : 0;/.test(src)
+    && /if \(sentTotal\) f0\.sentTotal = sentTotal;/.test(src) && /flightMs: m\.flightMs \|\| 0, sentTotal, recallAt/.test(src));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");

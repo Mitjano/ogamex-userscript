@@ -147,9 +147,14 @@ class Game {
       </div>
       ${this.noSpeeds ? "" : '<div class="speeds">' + this.speeds.map((v) => "<a>" + v + "</a>").join("") + "</div>"}
       <div>Cargo space: 0 / ${(Object.entries(this.formShips).reduce((a, [ty, q]) => a + (ty === "ASTEROID_MINER" ? q * this.cargoPerMiner : q * 5000), 0)).toLocaleString("de-DE")}</div>
-      <div>Duration of flight (one way): ${((sec) => sec >= 3600
-        ? `${String(Math.floor(sec / 3600)).padStart(2, "0")}:${String(Math.floor(sec % 3600 / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`
-        : `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`)(Math.round(this.flightSec * 100 / (this.formSpeed || 100)))}</div>
+      <div>Duration of flight (one way): ${((sec) => {
+        const p = (n) => String(n).padStart(2, "0");
+        // v3.97.1: powyżej doby fork pisze „1d 08:41:48" (zrzut z gry 16.09) — to ten format
+        // wysadzał odczyt czasu lotu, a bez niego zawrót szedł na godzinę powrotu, nie w połowę.
+        if (sec >= 86400) return `${Math.floor(sec / 86400)}d ${p(Math.floor(sec % 86400 / 3600))}:${p(Math.floor(sec % 3600 / 60))}:${p(sec % 60)}`;
+        if (sec >= 3600) return `${p(Math.floor(sec / 3600))}:${p(Math.floor(sec % 3600 / 60))}:${p(sec % 60)}`;
+        return `${p(Math.floor(sec / 60))}:${p(sec % 60)}`;
+      })(Math.round(this.flightSec * 100 / (this.formSpeed || 100)))}</div>
       ${this.deadNext > 0 ? "" : '<a class="btn-continue' + (this.disabledNext ? " disabled" : "") + '" id="btn-next-fleet3">Next</a>'}
     </div>`;
   }
@@ -321,9 +326,15 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       // kasowaloby wpisane koordy celu, czego prawdziwa gra nie robi.
       const secs = Math.round(game.flightSec * 100 / (game.formSpeed || 100));
       const dur = [...w.document.querySelectorAll("div")].find(d => /Duration of flight/i.test(d.textContent || "") && d.children.length === 0);
-      if (dur) dur.textContent = `Duration of flight (one way): ${secs >= 3600
-        ? `${String(Math.floor(secs / 3600)).padStart(2, "0")}:${String(Math.floor(secs % 3600 / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`
-        : `${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}`}`;
+      // v3.97.1: DRUGI formatter czasu lotu (przeliczenie po kliknięciu prędkości). To on renderuje
+      // wartość, którą bot faktycznie czyta — bez doby scenariusz 72 przechodził z WYŁĄCZONĄ
+      // poprawką (mutacja `dni = 0` nic nie zmieniała). Format musi być taki sam jak w step2Html.
+      if (dur) dur.textContent = `Duration of flight (one way): ${((sec) => {
+        const p2 = (n) => String(n).padStart(2, "0");
+        if (sec >= 86400) return `${Math.floor(sec / 86400)}d ${p2(Math.floor(sec % 86400 / 3600))}:${p2(Math.floor(sec % 3600 / 60))}:${p2(sec % 60)}`;
+        if (sec >= 3600) return `${p2(Math.floor(sec / 3600))}:${p2(Math.floor(sec % 3600 / 60))}:${p2(sec % 60)}`;
+        return `${p2(Math.floor(sec / 60))}:${p2(sec % 60)}`;
+      })(secs)}`;
       return;
     }
     if (id === "mission-bar" || id === "bar") {  // klik w pasek misji rozwija listę lotów (gra ma jeden pasek)
@@ -3273,6 +3284,85 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       check("71f: drugi lot też zawrócony o swojej porze — oba wracają", !!g.sent[0].returning && !!g.sent[1].returning, JSON.stringify(g.sent.map(x => [x.from, !!x.returning])));
     }
     check("71g: żaden lot nie wyszedł z pustego hangaru (zero duchów po dosyłowym)", g.sent.length === 2, JSON.stringify(g.sent.map(x => [x.from, x.ships])));
+  }
+
+  console.log("\n── 72. LOT DŁUŻSZY NIŻ DOBA: czas lotu z dobą czytany, zawrót w POŁOWIE drogi (v3.97.1) ──");
+  {
+    // Noc 15/16.09: przy 3 % loty przez dwie i trzy galaktyki trwają ponad dobę, a fork pisze wtedy
+    // „Duration of flight (one way): 1d 08:41:48". Stary wzorzec tego nie czytał, więc czas lotu
+    // zostawał nieznany i na wpisie zostawała GODZINA POWROTU zamiast połowy drogi — cztery floty
+    // zawrócone o 05:00 zamiast o 01:48 wróciły sześć godzin za późno.
+    const H = new Date(Date.now() + 8 * 3600e3).getHours();
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false }, debris: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 3, target: "1:100:9", slotReserve: 1 },
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Cel", moon: true }, { key: "5:200:3", name: "Daleka", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 700 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.flightSec = 3600;                       // 1 h przy 100 % → przy 3 % to 33,3 h, czyli „1d 09:20:00"
+    const logs = [];
+    for (let i = 0; i < 5 && g.sent.length < 1; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 3 }); logs.push(...r.logs); }
+    check("72a: FS wyleciał", g.sent.length === 1 && g.sent[0].to === "1:100:9", JSON.stringify(g.sent.map(x => [x.from, x.to])));
+    check("72b: bot ODCZYTAŁ czas lotu ponad dobę (log w godzinach, nie „nieznany”)", logs.some(m => /\[LOT\] czas lotu 1200\d\d s/.test(m)), logs.filter(m => /czas lotu|Duration/.test(m)).slice(0, 3).join(" | "));
+    const st72 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+    const f72 = (st72.flights || []).find(x => x.fs);
+    const homeAt = st72.fsReturnAt || 0;
+    const polowa = f72 ? Math.abs(f72.recallAt - (f72.sentAt + (homeAt - f72.sentAt) / 2)) : 1e9;
+    check("72c: wpis lotu niesie zmierzony czas lotu (~33,3 h), nie zero", !!f72 && f72.flightMs > 33 * 3600e3 && f72.flightMs < 34 * 3600e3, JSON.stringify(f72 && { flightMs: f72.flightMs, recallAt: f72.recallAt }));
+    check("72d: zawrót w POŁOWIE drogi (±2 min), a NIE o godzinie powrotu", polowa < 2 * 60e3 && Math.abs(f72.recallAt - homeAt) > 3 * 3600e3, f72 ? `zawrót ${new Date(f72.recallAt).toISOString()} vs powrót ${new Date(homeAt).toISOString()}` : "brak lotu");
+    check("72e: …i mówi to wprost w logu", logs.some(m => /\[FS\] lot \d+ min, zawrót o \d\d:\d\d — flota ma być w domu o \d\d:\d\d/.test(m)), logs.filter(m => /\[FS\]/.test(m)).slice(0, 3).join(" | "));
+  }
+
+  console.log("\n── 73. DUCH LOTU: flota ściągnięta ręcznie domyka wpis i odblokowuje ekonomię (v3.97.1) ──");
+  {
+    // Rano 16.09: właściciel zawrócił FS ręcznie (i przerzucił flotę bramą skoków), flota stanęła
+    // w domu, ale wpis został „launched" — bo pełny hangar źródła bot tłumaczył jako powroty
+    // ekspedycji. Ekonomia stała na „flota jest na Fleet Save" mimo FS OFF, przez wiele godzin.
+    const cfg = { autoRescue: true, expo: { enabled: true, waves: 1, slotReserve: 0, launchFrom: { galaxy: 1, system: 100, position: 5 } },
+      aster: { enabled: false }, debris: { enabled: false }, moon: { enabled: false }, bonus: { enabled: false },
+      recon: true, reconMs: 1, fs: { enabled: false }, quietHours: { enabled: false },
+      // economyAtNight FALSE jak u właściciela — dopiero wtedy działa pauza „flota jest na Fleet Save”
+      human: { breaks: false, economyAtNight: false, ecoIdleSec: 0 } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Cel", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.moonLinks = true;
+    const K73 = "genesis.ogamex.net:ogx3_situation";
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });                       // bot poznaje pary i hangary
+    // stan jak po ręcznym zawrocie: wpis FS wciąż „launched", a cała wysłana flota JEST w hangarze
+    {
+      const st = JSON.parse(g.store.get(K73) || "{}");
+      const t = Date.now();
+      st.flights = [{ kind: "air", fs: true, fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon",
+        id: "duch1", sentAt: t - 3 * 3600e3, flightMs: 20 * 3600e3, sentTotal: 600, leftHome: 0, recallAt: t + 6 * 3600e3, phase: "launched", tries: 0 }];
+      st.hangars["1:100:5|moon"] = { total: 600, ships: [{ type: "BATTLESHIP", qty: 600 }], at: t };
+      g.store.set(K73, JSON.stringify(st));
+    }
+    const inst73 = load(g, { cfg });
+    check("73a: (warunek wstępny) przy wpisie „w powietrzu” ekonomia stoi na Fleet Save", /Fleet Save/.test(String(inst73.api.Human.economyAllowed(inst73.api.Situation.load()) || "")), String(inst73.api.Human.economyAllowed(inst73.api.Situation.load())));
+    const r73 = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
+    const st73 = JSON.parse(g.store.get(K73) || "{}");
+    check("73b: wpis-duch ZNIKA (cała wysłana flota stoi w hangarze źródła)", !(st73.flights || []).some(x => x.id === "duch1"), JSON.stringify((st73.flights || []).map(x => [x.id, x.phase])));
+    check("73c: …i nie jest to ciche (log mówi, że flota jest w domu)", r73.logs.some(m => /domykam wpis \[1:100:5\]→\[1:100:9\] \(launched\)[\s\S]*CAŁA wysłana flota/.test(m)), r73.logs.filter(m => /domykam|ZOSTAJE/.test(m)).slice(0, 3).join(" | "));
+    const inst73b = load(g, { cfg });
+    check("73d: ekonomia RUSZA (już nie „flota jest na Fleet Save”)", !/Fleet Save/.test(String(inst73b.api.Human.economyAllowed(inst73b.api.Situation.load()) || "")), String(inst73b.api.Human.economyAllowed(inst73b.api.Situation.load())));
+    // fala ekspedycji, która jest UŁAMKIEM wysłanej floty, wpisu NIE domyka
+    {
+      const st = JSON.parse(g.store.get(K73) || "{}");
+      const t = Date.now();
+      st.flights = [{ kind: "air", fs: true, fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon",
+        id: "zywy1", sentAt: t - 3 * 3600e3, flightMs: 20 * 3600e3, sentTotal: 600, leftHome: 0, recallAt: t + 6 * 3600e3, phase: "launched", tries: 0 }];
+      st.hangars["1:100:5|moon"] = { total: 40, ships: [{ type: "SMALL_CARGO", qty: 40 }], at: t };
+      g.store.set(K73, JSON.stringify(st));
+    }
+    await run(g, { cfg, loads: 4, ticksPerLoad: 2 });
+    const st73c = JSON.parse(g.store.get(K73) || "{}");
+    check("73e: fala ekspedycji (ułamek floty) wpisu NIE domyka — FS dalej leci", (st73c.flights || []).some(x => x.id === "zywy1"), JSON.stringify((st73c.flights || []).map(x => [x.id, x.phase])));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
