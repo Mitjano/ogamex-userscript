@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.99.1
+// @version      3.99.2
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.99.1";
+  const VERSION = "3.99.2";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3285,6 +3285,14 @@
     // wykluczeń — to jedyny właściwy hamulec na tym uniwersum.
     const ships = avail.map(x => ({ type: x.type, qty: lastOfBurst ? x.qty : share(x.qty) })).filter(x => x.qty > 0);
     if (!ships.length) return { skip: `flota za mała na ${waves} fal (zostało ${left}) — zmniejsz liczbę fal` };
+    // v3.99.2: fala z kilku sztuk (resztki po zaokrągleniach) zajmuje slot ekspedycji na godzinę. Gdy z tej bazy
+    // leci fala ponad 100× większa, czekamy na jej powrót — resztka poleci razem z nią.
+    {
+      const sumaFali = ships.reduce((n, x) => n + x.qty, 0);
+      const wLocie = (s.expected || []).filter(x => x.kind === "expedition" && x.fromKey === homeKey && (x.returnAt || 0) > now).map(x => x.total || 0);
+      const najw = wLocie.length ? Math.max(...wLocie) : 0;
+      if (najw > 0 && sumaFali * 100 < najw) return { skip: `resztka ${sumaFali.toLocaleString("pl-PL")} szt. (fala w locie z tej bazy: ${najw.toLocaleString("pl-PL")}) — nie zajmuję slotu, czekam na powroty` };
+    }
     // v3.7.1 (audyt): rezerwa slotów istnieje po to, żeby RATUNEK miał czym lecieć.
     // Na starcie uniwersum jest 1 slot floty, więc rezerwa 1 blokowałaby ekspedycje
     // na zawsze. Ale gdy fala zabiera CAŁY hangar, ratować nie ma już czego —
@@ -3323,7 +3331,7 @@
     // księżyc, flota na planecie, zwóz się nie udaje) — 30 min; każdy inny skip — 6 h, bo
     // „czekam na powroty" przy pełnych slotach potrafi trwać cały cykl fal i push co godzinę
     // znieczulałby na alarmy obrony (lekcja expo-wykonanie#5).
-    STALL_BENIGN: /wyłączone|odstęp między falami|alarm — obrona|ratunek w powietrzu|przerwa między seriami/,
+    STALL_BENIGN: /wyłączone|odstęp między falami|alarm — obrona|ratunek w powietrzu|przerwa między seriami|resztka/,
     noteStall(p, now) {
       const kluczSkipu = String(p.skip || "").replace(/[\d\s.,]+/g, "#");
       const st = Store.get("expo_stall", null);
@@ -3476,6 +3484,9 @@
       // startu (trwa inna misja) i tak zjadala fale z serii. Najpierw start, potem licznik.
       const started = Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
         why: `ekspedycja ${p.last ? `(domyka serię — cały hangar: ${p.lastWhy})` : `(fala ${sent}/${p.waves}${p.slotBound ? `, udział 1/${p.left} z wolnych slotów` : ""})`} — ${total.toLocaleString("pl-PL")} szt., ${p.slotsTxt}`, speed: 100, plan: p.ships,
+        // v3.99.2: fala domykająca bierze CAŁY hangar z formularza (poza wykluczeniami), nie liczby z planu —
+        // plan powstaje z odczytu sprzed nawigacji, a w tym czasie potrafi wylądować fala (log 16.09 13:52)
+        takeAllExcept: p.last ? (CFG.expo.excludeTypes || []).slice() : null,
         missionType: "EXPEDITION", takeResources: false, duration: p.duration, missionId: link.mission });
       if (!started) return false;
       // v3.38.0: `sizes` zniknęło — rozmiar fali liczy dzielnik malejący z bieżącego
@@ -4407,6 +4418,14 @@
       // `decide()` nie wystawia już takiego ratunku (rezerwa zostaje w domu — wybór
       // właściciela 11.09), a to jest siatka bezpieczeństwa na wypadek, gdy decide nie zna
       // składu hangaru (świeża para, odczyt bez listy statków) i mimo wszystko go wystawi.
+      // v3.99.2 (log 16.09 13:51–13:52): „domyka serię — cały hangar: 7 szt." — plan z odczytu w tle o 13:51:25
+      // (same wykluczone typy + 7 pojedynczych sztuk), a o 13:52:32 w formularzu stało już ~320 mln z fali, która
+      // w międzyczasie wylądowała. `min(plan, hangar)` wysłało 7 statków i zajęło ostatni slot na godzinę.
+      // Fala domykająca bierze więc to, co pokazuje formularz, poza typami wykluczonymi.
+      const wszystko = Array.isArray(m.takeAllExcept) ? new Set(m.takeAllExcept.map(t => String(t).toUpperCase())) : null;
+      const qtyFor = (type, have) => wszystko ? (wszystko.has(type) ? 0 : have)
+        : want ? Math.min(want.get(type) || 0, have)
+        : (excl.has(type) ? 0 : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
       if (cap.size && !want) {
         const jestCosPoza = els.some(el => {
           const t = String(el.dataset.shipType || "").toUpperCase();
@@ -4420,7 +4439,7 @@
       for (const el of els) {
         const type = String(el.dataset.shipType || "").toUpperCase();
         const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
-        const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
+        const qty = qtyFor(type, have);
         if (qty <= 0) continue;
         const item = el.closest(".ship-item") || el.parentElement;
         const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
@@ -4436,7 +4455,7 @@
           for (const el of els) {
             const type = String(el.dataset.shipType || "").toUpperCase();
             const have = parseInt(el.dataset.shipQuantity || "0") || 0; if (!have) continue;
-            const qty = want ? Math.min(want.get(type) || 0, have) : (excl.has(type) ? 0 : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
+            const qty = qtyFor(type, have);
             if (qty <= 0) continue;
             const item = el.closest(".ship-item") || el.parentElement;
             const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
@@ -4457,7 +4476,7 @@
         // wpis „BŁĄD" w dzienniku i push „⚠️ Obrona: BŁĄD" na telefon o piątej rano.
         const stale = !!want && els.length > 0 && !els.some(el =>
           (parseInt(el.dataset.shipQuantity || "0") || 0) > 0 &&
-          (want.get(String(el.dataset.shipType || "").toUpperCase()) || 0) > 0);
+          (wszystko ? !wszystko.has(String(el.dataset.shipType || "").toUpperCase()) : (want.get(String(el.dataset.shipType || "").toUpperCase()) || 0) > 0));
         if (stale) {
           log(`[LOT] plan nieaktualny — w hangarze ${m.fromBody} [${m.fromKey}] zostały tylko statki spoza planu (${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")}). Odpuszczam falę.`, "warn");
           return this.abort("plan nieaktualny — w hangarze tylko statki spoza planu", { quiet: true });
@@ -4474,6 +4493,10 @@
         }
         log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error");
         return this.abort("brak pól statków");
+      }
+      if (wszystko && want) {
+        const planSuma = [...want.values()].reduce((a, b) => a + (b || 0), 0);
+        if (loadedTotal > planSuma) log(`[LOT] fala domykająca: w hangarze jest więcej niż w planie (${loadedTotal.toLocaleString("pl-PL")} zamiast ${planSuma.toLocaleString("pl-PL")} szt. — w międzyczasie wylądowała flota), zabieram cały hangar.`, "info");
       }
       log(`[LOT] załadowano: ${loaded.join(", ")}`, "info");
       await sleep(jitter(400, 800));

@@ -3616,5 +3616,24 @@ console.log("\n── 89. v3.99.1: lądowanie floty w trakcie wysyłki to nie �
     /if \(this\.landedDuring\(lsOk, hs\.ships, sentReal\)\) sentReal = 0;/.test(src) && /if \(wyladowala\) sentReal = 0;/.test(src));
 }
 
+console.log("\n── 90. v3.99.2: resztka nie zajmuje slotu, fala domykająca bierze cały hangar z formularza (log 16.09 13:52) ──");
+{
+  // 13:52:25 — plan „domyka serię — cały hangar: 7 szt.", a z bazy leci fala 315 459 849
+  const siedem = ["HEAVY_FIGHTER", "CRUISER", "BATTLESHIP", "BATTLE_CRUISER", "DESTROYER", "PLANET_BOMBER", "REAPER"].map(type => ({ type, qty: 1 }));
+  const wLocie = [{ kind: "expedition", fromKey: "1:100:5", total: 315459849, sentAt: NOW - 50 * 60e3, returnAt: NOW + 14 * 60e3 }];
+  const sl = { fleet: { used: 11, total: 37 }, expo: { used: 11, total: 12 }, at: NOW };
+  const pR = expoPlan(ebase({ hangars: { "1:100:5|planet": { total: 7, at: NOW - 60e3, ships: siedem } }, expected: wLocie, slots: sl }), { expo: { ...ECFG.expo, waves: 12, slotReserve: 0 } }, NOW, null);
+  check("90a: 7 sztuk przy fali 315 mln w locie → „resztka”, bez wysyłki", /resztka 7 szt\./.test(pR.skip || ""), JSON.stringify(pR));
+  const pS = expoPlan(ebase({ hangars: { "1:100:5|planet": { total: 7, at: NOW - 60e3, ships: siedem } }, expected: [], slots: sl }), { expo: { ...ECFG.expo, waves: 12, slotReserve: 0 } }, NOW, null);
+  check("90b: bez fal w locie mała flota dalej leci (próg jest względny)", !!pS.ships && pS.ships.length === 7, JSON.stringify(pS));
+  const pW = expoPlan(ebase({ expected: [{ ...wLocie[0], returnAt: NOW - 60e3 }] }), ECFG, NOW, null);
+  check("90c: fala, która już wróciła (returnAt w przeszłości), nie blokuje", !!pW.ships, JSON.stringify(pW));
+  check("90d: (źródło) „resztka” to zastój łagodny (bez pusha „Ekspedycje stoją”)", /STALL_BENIGN: \/[^/]*\|resztka\//.test(src));
+  check("90e: (źródło) fala domykająca niesie takeAllExcept, a formularz liczy ilość z hangaru dla takiej fali",
+    /takeAllExcept: p\.last \? \(CFG\.expo\.excludeTypes \|\| \[\]\)\.slice\(\) : null,/.test(src)
+    && /const qtyFor = \(type, have\) => wszystko \? \(wszystko\.has\(type\) \? 0 : have\)/.test(src)
+    && (src.match(/const qty = qtyFor\(type, have\);/g) || []).length === 2);
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);

@@ -3489,6 +3489,38 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     }
   }
 
+  console.log("\n── 76. v3.99.2: fala domykająca z NIEAKTUALNEGO planu bierze cały hangar z formularza (log 16.09 13:52) ──");
+  {
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 },
+      expo: { enabled: true, waves: 1, slotReserve: 0 } };
+    // w grze: pełny hangar (fala właśnie wylądowała) + wykluczone typy
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600, CRUISER: 41, LIGHT_CARGO: 500, HEAVY_CARGO: 50 } },
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.moonLinks = true;
+    g.page = "home"; g.query = "";
+    // w pamięci bota: odczyt sprzed chwili — po 1 sztuce (stan sprzed lądowania)
+    g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({
+      pairs: {}, threats: [], flights: [],
+      hangars: { "1:100:5|moon": { key: "1:100:5", body: "moon", total: 552, at: Date.now() - 30e3,
+        ships: [{ type: "BATTLESHIP", qty: 1 }, { type: "CRUISER", qty: 1 }, { type: "LIGHT_CARGO", qty: 500 }, { type: "HEAVY_CARGO", qty: 50 }] } },
+      slots: { fleet: { used: 0, total: 20 }, expo: { used: 0, total: 6 }, at: Date.now() },
+    }));
+    const logs = [];
+    for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+    const ex = g.sent.find(x => /Expedition/i.test(x.mission || ""));
+    const planMaly = logs.some(m => /domyka serię — cały hangar[^—]*— 2 szt\./.test(m));
+    check("76a: (warunek wstępny) plan powstał z nieaktualnego odczytu (2 szt.)", planMaly, logs.filter(m => /ekspedycja \(/.test(m)).slice(0, 3).join(" | "));
+    check("76b: fala domykająca zabrała CAŁY hangar z formularza (600 BS + 41 CR), nie 1+1", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 41,
+      JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
+    check("76c: …bez typów wykluczonych (LC, HC zostały w domu)", !!ex && !ex.ships.LIGHT_CARGO && !ex.ships.HEAVY_CARGO, JSON.stringify(ex && ex.ships));
+    check("76d: log mówi, że w hangarze było więcej niż w planie", logs.some(m => /fala domykająca: w hangarze jest więcej niż w planie \(641 zamiast 2 szt\./.test(m)),
+      logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();
