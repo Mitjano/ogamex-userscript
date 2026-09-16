@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.97.1
+// @version      3.98.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.97.1";
+  const VERSION = "3.98.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -367,7 +367,7 @@
     // aster): konto z pięcioma księżycami dostawało pięć osobnych lotów FS, każdy zjadał
     // slot floty, a gdy sloty się skończyły, gra odmawiała wysyłki RATUNKU — przy zielonym
     // pasku „FS w drodze". Rezerwa jest ta sama co dla ekonomii: ostatni slot należy do obrony.
-    fs: { enabled: false, returnHour: 7, returnMinute: 0, speedPct: 10, target: null, slotReserve: 1 },
+    fs: { enabled: false, returnHour: 7, returnMinute: 0, speedPct: 10, target: null, slotReserve: 1, restHours: 0 },
     // ── EKONOMIA (etap 2) ──
     // v3.15.0: system minerów przeniesiony z Atheny. 3.0 wysyłał WSZYSTKIE minery
     // na jedną asteroidę i czekał na powrót — a gra ogranicza urobek pojemnością
@@ -1077,6 +1077,7 @@
       // powrotu) i przez REALNY stan floty w Human.economyAllowed (s.flights, fs:true)
       // zamiast zgadywania po zegarze.
       s.fsReturnAt = fsReturnAt(CFG.fs, new Date(now));
+      s.fsRestUntil = fsRestUntil(CFG.fs, new Date(now));   // v3.98.0: do tej godziny flota zostaje w domu (ekspedycje)
       Rows.ensureOpen();                // zwinięty pasek misji = zero współrzędnych (v3.36.0)
       const evRows = Rows.readEvents(own);
       // v3.68.9 (obrona-wykrywanie#4): dopóki wisi znacznik `planet_drift`, sesja stoi na
@@ -1507,6 +1508,24 @@
     const target = new Date(d); target.setHours(num(fs.returnHour, 7, 23), num(fs.returnMinute, 0, 59), 0, 0);
     if (target.getTime() <= d.getTime()) target.setDate(target.getDate() + 1);
     return target.getTime();
+  }
+
+  // v3.98.0 (owner 16.09: „co zrobić, żeby bot wysyłał flotę po powrocie nocnego FS?") —
+  // OKNO DNIA. FS 3.x trzyma flotę w powietrzu całą dobę (v3.68.0, „flota w locie jest
+  // bezpieczniejsza niż w domu"), więc po powrocie o 5:20 wylatywała z powrotem po
+  // dwudziestu sekundach i ekspedycje nie dostawały ani minuty (log 16.09: powrót 05:02:43,
+  // nowy FS 05:03:03). `restHours` to świadoma decyzja właściciela: przez N godzin po
+  // godzinie powrotu FS NIE startuje, flota pracuje na ekspedycjach, a obrona działa
+  // normalnie (ratunek pod atakiem nie ma z tym nic wspólnego). 0 = zachowanie sprzed 3.98.
+  // Liczone z zegara, bez nowego stanu: OSTATNIE wystąpienie godziny powrotu + N godzin.
+  function fsRestUntil(fs, d) {
+    if (!fs || !fs.enabled) return 0;
+    const num = (v, dflt, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.trunc(n))) : dflt; };
+    const godzin = num(fs.restHours, 0, 23);
+    if (!godzin) return 0;
+    const ostatni = new Date(d); ostatni.setHours(num(fs.returnHour, 7, 23), num(fs.returnMinute, 0, 59), 0, 0);
+    if (ostatni.getTime() > d.getTime()) ostatni.setDate(ostatni.getDate() - 1);   // dziś jeszcze nie było → wczorajsze
+    return ostatni.getTime() + godzin * 3600e3;
   }
 
   // CZYSTA funkcja: ile obcych lotów widzi pasek ponad to, co rozpoznaliśmy, i jak
@@ -2027,6 +2046,13 @@
           // zapisywany przez Fly przy KAŻDYM odczycie „Duration of flight" dla FS) i decide()
           // liczy tę samą arytmetykę SAMA: poza oknem nie ma akcji, jest jedno zdanie
           // o godzinie startu. Czasu lotu nadal NIE liczymy ze wzoru — tylko z formularza.
+          // v3.98.0: OKNO DNIA — po powrocie flota zostaje w domu przez cfg.fs.restHours godzin.
+          // Blokuje WYŁĄCZNIE nowe starty FS; zawroty lotów już wiszących w powietrzu, ratunek
+          // pod atakiem i ewakuacja z gołej planety działają bez zmian.
+          if (dest && (s.fsRestUntil || 0) > now) {
+            alerts.push({ key: k, level: "warn", throttleMs: 60 * 60e3, msg: `FS: okno dnia — flota zostaje w domu do ${hhmm(s.fsRestUntil)} (tak ustawiłeś: ${cfg.fs.restHours} h po powrocie), żeby pracowała na ekspedycjach. Obrona działa normalnie.` });
+            dest = null;
+          }
           if (dest) {
             const fsSpeed = cfg.fs.speedPct || 10;
             const short = (s.fsMeasured || {})[`${k}>${dest.key}`];
@@ -5911,6 +5937,7 @@
           <div class="sec" data-sec="fs"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Fleet Save</span><span class="tail" id="ogx3-t-fs"></span></div><div class="sec-b">
             <div class="line"><button id="ogx3-fs" class="ogx3-btn"></button> wróć o <input id="ogx3-fs-a" style="width:44px" placeholder="HH:MM" /></div>
             <div class="line">cel (księżyc) <input id="ogx3-fs-target" style="width:70px" placeholder="g:s:p = najdalsza" /> · prędkość <input id="ogx3-fs-speed" style="width:26px" />%</div>
+            <div class="line">po powrocie w domu <input id="ogx3-fs-rest" style="width:26px" /> h (0 = leci od razu)</div>
             <div class="note" id="ogx3-fs-st"></div>
           </div></div>
           <div class="sec" data-sec="eco"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Ekonomia</span><span class="tail" id="ogx3-t-eco"></span></div><div class="sec-b">
@@ -6046,6 +6073,17 @@
         if (!mm) { alert("Wpisz koordynaty księżyca w formacie g:s:p, np. 3:272:2"); e.target.value = CFG.fs.target || ""; return; }
         CFG.fs.target = `${+mm[1]}:${+mm[2]}:${+mm[3]}`; saveCfg();
         log(`FS: stały cel [${CFG.fs.target}].`, "info"); this.renderStatus();
+      };
+      // v3.98.0: ile godzin po powrocie flota ma zostać w domu (ekspedycje). 0 = jak dotąd.
+      $("ogx3-fs-rest").value = String(CFG.fs.restHours ?? 0);
+      $("ogx3-fs-rest").onchange = (e) => {
+        const raw = parseInt(e.target.value); const v = Number.isFinite(raw) ? raw : 0;
+        CFG.fs.restHours = Math.max(0, Math.min(23, v));
+        e.target.value = String(CFG.fs.restHours); saveCfg();
+        log(CFG.fs.restHours
+          ? `FS: po powrocie flota zostaje w domu ${CFG.fs.restHours} h — w tym czasie lecą ekspedycje, FS nie startuje. Obrona działa normalnie.`
+          : "FS: okno dnia wyłączone — flota wylatuje od razu po powrocie (zachowanie sprzed 3.98).", "info");
+        this.renderStatus();
       };
       $("ogx3-fs-speed").value = String(CFG.fs.speedPct ?? 10);
       // v3.96.3 (owner 15.09: „wysyłaj FS na 3% — mniej deuteru, flota i tak zawracana"):
@@ -6366,8 +6404,10 @@
               .filter(x => x.v && x.v.flightMs > 0 && now - (x.v.at || 0) < 24 * 3600e3 && now < x.openAt)
               .sort((a, b) => a.openAt - b.openAt)[0]
           : null;
+        const restDo = (s.fsRestUntil || 0) > now ? s.fsRestUntil : 0;
         const fsTxt = !CFG.fs.enabled ? "wyłączony"
           : fsFlight ? `w drodze — zawrót ~${new Date(fsFlight.recallAt || 0).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}`
+          : restDo ? `okno dnia — flota w domu do ${new Date(restDo).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })} (ekspedycje), potem FS`
           : fsWait ? `czeka: lot ${Math.round(fsWait.v.flightMs / 60e3)} min, start ~${new Date(fsWait.openAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })} (wcześniej flota by wylądowała) · w domu o ${rh}`
           : `w domu · wraca o ${rh}${CFG.fs.target ? ` · cel [${CFG.fs.target}]` : " · cel: najdalsza kolonia"}`;
         this.setRow("ogx3-r-fs", !CFG.fs.enabled ? "dim" : (fsFlight ? "busy" : fsWait ? "busy" : "ok"), fsTxt);

@@ -125,5 +125,20 @@ console.log("     alarm:", $("ogx3-r-def").querySelector(".val").textContent);
   ck("100 zostaje 100", cfgOf().fs.speedPct === 100 && spd.value === "100", spd.value);
 }
 
+
+// v3.98.0: pole „po powrocie w domu N h" (okno dnia) — 0 znaczy zachowanie sprzed 3.98.
+{
+  const cfgOf = () => { const raw = String(store.get("genesis.ogamex.net:ogx3_cfg") || "{}"); return JSON.parse(raw.replace(/^s/, "")); };
+  const rest = $("ogx3-fs-rest");
+  ck("pole okna dnia jest w panelu", !!rest);
+  const wpisz = (v) => { rest.value = v; rest.dispatchEvent(new w.Event("change", { bubbles: true })); };
+  wpisz("16");
+  ck("16 h przyjęte", cfgOf().fs.restHours === 16 && rest.value === "16", rest.value + " / " + JSON.stringify(cfgOf().fs));
+  wpisz("99");
+  ck("99 przycięte do 23 (doba to górna granica)", cfgOf().fs.restHours === 23, String(cfgOf().fs.restHours));
+  wpisz("0");
+  ck("0 = okno dnia wyłączone", cfgOf().fs.restHours === 0 && rest.value === "0", rest.value);
+}
+
 console.log(fails ? `\nNIE: ${fails} sprawdzeń padło` : "\nPANEL OK — wszystko przeszło");
 process.exit(fails ? 1 : 0);

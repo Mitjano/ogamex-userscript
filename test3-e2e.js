@@ -3365,6 +3365,39 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("73e: fala ekspedycji (ułamek floty) wpisu NIE domyka — FS dalej leci", (st73c.flights || []).some(x => x.id === "zywy1"), JSON.stringify((st73c.flights || []).map(x => [x.id, x.phase])));
   }
 
+  console.log("\n── 74. OKNO DNIA: po powrocie FS flota zostaje w domu i LECĄ EKSPEDYCJE (v3.98.0) ──");
+  {
+    // Owner 16.09: „co zrobić, żeby bot wysyłał flotę po powrocie nocnego FS?". Do 3.97.1 FS
+    // wylatywał ponownie kilkanaście sekund po wylądowaniu (log: powrót 05:02:43, nowy FS 05:03:03),
+    // więc ekspedycje nie dostawały ani minuty. Z `restHours` flota zostaje w domu i pracuje.
+    const teraz = new Date();
+    const H = teraz.getHours();                       // godzina powrotu = TERAZ, czyli okno dnia właśnie trwa
+    const cfg = { autoRescue: true, aster: { enabled: false }, debris: { enabled: false }, moon: { enabled: false },
+      bonus: { enabled: false }, recon: true, reconMs: 1, quietHours: { enabled: false },
+      expo: { enabled: true, waves: 1, slotReserve: 0, discoverer40: true, launchFrom: { galaxy: 1, system: 100, position: 5 } },
+      fs: { enabled: true, returnHour: H, returnMinute: 0, speedPct: 3, target: "1:100:9", slotReserve: 1, restHours: 12 },
+      human: { breaks: false, economyAtNight: false, ecoIdleSec: 0 } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Cel", moon: true }],
+      hangars: { "1:100:5|moon": { LARGE_CARGO: 80, BATTLESHIP: 600 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.moonLinks = true;
+    const logs = [];
+    for (let i = 0; i < 6 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 3 }); logs.push(...r.logs); }
+    check("74a: EKSPEDYCJA wyleciała, choć Fleet Save jest WŁĄCZONY", g.sent.some(x => /Expedition/i.test(x.mission || "")), JSON.stringify(g.sent.map(x => [x.from, x.to, x.mission])));
+    // mocno: w oknie dnia bot nie tylko nic nie wysłał, ale NAWET NIE PRÓBOWAŁ (zero linii „FLEET SAVE →").
+    check("74b: …a Fleet Save ani nie wystartował, ani nie próbował", !g.sent.some(x => /Deploy/i.test(x.mission || "") && x.to === "1:100:9") && !logs.some(m => /\[LOT\] FLEET SAVE →/.test(m)), JSON.stringify(g.sent.map(x => [x.to, x.mission])) + " | " + logs.filter(m => /FLEET SAVE/.test(m)).slice(0, 2).join(" | "));
+    check("74c: …i log mówi, do której godziny flota zostaje w domu", logs.some(m => /okno dnia — flota zostaje w domu do \d\d:\d\d/.test(m)), logs.filter(m => /okno dnia|FLEET SAVE/.test(m)).slice(0, 3).join(" | "));
+    // okno mija → FS rusza. Ekspedycja zabrała hangar, więc wraca flota (jak w grze po powrocie fali),
+    // a lot musi być DŁUGI — inaczej odmowa „lot za krótki na powrót o godzinie" (to inna bramka).
+    g.hangars["1:100:5|moon"] = { BATTLESHIP: 600 };
+    g.flightSec = 4 * 3600;
+    const cfg2 = { ...cfg, fs: { ...cfg.fs, restHours: 0 } };
+    for (let i = 0; i < 6 && !g.sent.some(x => /Deploy/i.test(x.mission || "")); i++) await run(g, { cfg: cfg2, loads: 12, ticksPerLoad: 3 });
+    check("74d: po oknie dnia (restHours 0) Fleet Save wychodzi normalnie", g.sent.some(x => /Deploy/i.test(x.mission || "") && x.to === "1:100:9"), JSON.stringify(g.sent.map(x => [x.to, x.mission])));
+  }
+
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
   process.exit(fails ? 1 : 0);
 })();

@@ -3518,5 +3518,43 @@ console.log("\n── 86. NOC 15/16.09: doba w czasie lotu, duch lotu, uczciwy a
     && /if \(sentTotal\) f0\.sentTotal = sentTotal;/.test(src) && /flightMs: m\.flightMs \|\| 0, sentTotal, recallAt/.test(src));
 }
 
+
+// v3.98.0 (owner 16.09: „co zrobić, żeby bot wysyłał flotę po powrocie nocnego FS?"): OKNO DNIA.
+// Po godzinie powrotu FS nie startuje przez cfg.fs.restHours godzin — flota pracuje na ekspedycjach.
+// Blokuje WYŁĄCZNIE nowe starty FS; ratunek pod atakiem i zawroty działają bez zmian. Zachowanie: E2E 74.
+console.log("\n── 87. OKNO DNIA PO POWROCIE FS (v3.98.0) ──");
+{
+  const CFG87 = (rest) => Object.assign({}, CFG, { fs: { enabled: true, returnHour: 5, returnMinute: 0, speedPct: 3, target: "3:272:2", slotReserve: 1, restHours: rest } });
+  const s87 = (over) => base(Object.assign({ fsReturnAt: NOW + 20 * 3600e3, hangars: { "3:272:7|moon": H(900) } }, over));
+  {
+    const s = s87({ fsRestUntil: NOW + 6 * 3600e3 });
+    const { actions, alerts } = decide(s, CFG87(16), NOW);
+    check("87a: w oknie dnia FS NIE startuje", !actions.some(a => a.kind === "fly" && a.fs), JSON.stringify(actions));
+    check("87b: …i mówi wprost do której godziny flota zostaje w domu", alerts.some(a => a.level === "warn" && /okno dnia — flota zostaje w domu do \d\d:\d\d/.test(a.msg) && /16 h po powrocie/.test(a.msg)), JSON.stringify(alerts));
+  }
+  {
+    const s = s87({ fsRestUntil: NOW - 60e3 });      // okno minęło
+    const { actions } = decide(s, CFG87(16), NOW);
+    check("87c: po oknie dnia FS rusza normalnie", actions.some(a => a.kind === "fly" && a.fs && a.fromKey === "3:272:7"), JSON.stringify(actions));
+  }
+  {
+    const s = s87({ fsRestUntil: 0 });               // restHours = 0, zachowanie sprzed 3.98
+    const { actions } = decide(s, CFG87(0), NOW);
+    check("87d: restHours = 0 → nic się nie zmienia, FS lata jak dotąd", actions.some(a => a.kind === "fly" && a.fs), JSON.stringify(actions));
+  }
+  {
+    // ATAK w oknie dnia: ratunek MUSI wyjść, okno dnia go nie dotyczy
+    const s = s87({ fsRestUntil: NOW + 6 * 3600e3, threats: [threat("3:272:7", "moon", 300)] });
+    const { actions } = decide(s, CFG87(16), NOW);
+    const a = actions.find(x => x.kind === "fly" && x.fromKey === "3:272:7");
+    check("87e: ATAK w oknie dnia → ratunek wychodzi mimo wszystko (okno dotyczy tylko FS)", !!a && !a.fs, JSON.stringify(actions));
+  }
+  check("87f: (źródło) okno liczone POZA decide (strefa czasowa), z OSTATNIEGO wystąpienia godziny powrotu",
+    /function fsRestUntil\(fs, d\) \{/.test(src) && /if \(ostatni\.getTime\(\) > d\.getTime\(\)\) ostatni\.setDate\(ostatni\.getDate\(\) - 1\);/.test(src)
+    && /s\.fsRestUntil = fsRestUntil\(CFG\.fs, new Date\(now\)\);/.test(src));
+  check("87g: (źródło) okno blokuje TYLKO start FS (zeruje `dest`), nie zawroty ani ratunek",
+    /if \(dest && \(s\.fsRestUntil \|\| 0\) > now\) \{/.test(src) && /dest = null;/.test(src));
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
