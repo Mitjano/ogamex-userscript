@@ -3463,6 +3463,21 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       check("75j: migawka hangaru = świeży odczyt (zostało 301 szt.)", !!hm && hm.total === 301, JSON.stringify(hm));
     }
 
+    // (b2) v3.99.1: w chwili wysyłki LĄDUJE flota (seria rusza przy powrotach) — to nie „gra wysłała mniej”
+    {
+      const g = mk75({ BATTLESHIP: 600, CRUISER: 50 });
+      g.staleSend = true;
+      let raz = 0;
+      g.serverShips = (sh) => { if (!raz++) { const h = g.hangars["1:100:5|moon"]; h.DESTROYER = (h.DESTROYER || 0) + 30; } return sh; };
+      const logs = [];
+      for (let i = 0; i < 5 && !expos(g).length; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+      const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+      check("75l: lądowanie w trakcie wysyłki: bez fałszywego „gra wysłała MNIEJ”, rejestr zna wpisaną liczbę (650)",
+        !!expos(g).length && !logs.some(m => /gra wysłała MNIEJ/.test(m)) && logs.some(m => /w tym czasie wylądowała flota/.test(m))
+        && (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 650),
+        logs.filter(m => /LOT\]/.test(m)).slice(-5).join(" | ") + " || " + JSON.stringify(st.expected));
+    }
+
     // (c) odmowa przy nieprzeładowanej stronie dalej jest odmową (świeży odczyt: hangar stoi)
     {
       const g = mk75({ BATTLESHIP: 600 });

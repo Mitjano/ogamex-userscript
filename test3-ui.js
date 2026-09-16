@@ -140,5 +140,40 @@ console.log("     alarm:", $("ogx3-r-def").querySelector(".val").textContent);
   ck("0 = okno dnia wyłączone", cfgOf().fs.restHours === 0 && rest.value === "0", rest.value);
 }
 
+// v3.99.1 (owner 16.09: „bot sam wysyła ekspedycje, choć są OFF"): przełącznik ekspedycji w panelu
+// nie może zmienić stanu klawiszem (Enter/Spacja na przycisku w fokusie) ani na nieaktualnej kopii
+// ustawień (inna karta zmieniła je wcześniej).
+{
+  const api = w.__OGX3;
+  const btn = $("ogx3-expo");
+  const klik = () => btn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, detail: 1 }));
+  const przed = api.CFG.expo.enabled;
+  klik();
+  ck("99.1a: klik myszą przełącza ekspedycje", api.CFG.expo.enabled === !przed, String(api.CFG.expo.enabled));
+  const po1 = api.CFG.expo.enabled;
+  const orig = api.UI.zKlawiatury;
+  api.UI.zKlawiatury = () => true;          // jsdom nie wytworzy zaufanego kliknięcia z klawiatury — udajemy je
+  klik();
+  api.UI.zKlawiatury = orig;
+  ck("99.1b: „klik” z klawiatury (Enter/Spacja na przycisku w fokusie) NIE przełącza", api.CFG.expo.enabled === po1, String(api.CFG.expo.enabled));
+  // inna karta zmieniła ustawienie: w magazynie jest odwrotność tego, co ma ta karta
+  const obca = JSON.parse(JSON.stringify(api.CFG)); obca.expo.enabled = !po1;
+  api.Store.set("cfg", obca); api.Store.set("cfg_saved_at", Date.now() + 60000);
+  // klik w INNY przycisk (Odkrywca) w tej karcie: bez synchronizacji saveCfg zapisałby CAŁE stare ustawienia,
+  // czyli po cichu przywrócił ekspedycje do stanu sprzed zmiany w innej karcie
+  $("ogx3-disc").dispatchEvent(new w.MouseEvent("click", { bubbles: true, detail: 1 }));
+  const zMagazynu = () => { const r = api.Store.get("cfg", null); return r && r.expo ? r.expo.enabled : null; };
+  ck("99.1c: klik w inny przycisk w karcie ze starym stanem NIE przywraca ekspedycji w magazynie", zMagazynu() === !po1 && api.CFG.expo.enabled === !po1, "magazyn=" + zMagazynu() + " pamięć=" + api.CFG.expo.enabled);
+  ck("99.1d: …a przycisk pokazuje prawdziwy stan", btn.textContent === `Ekspedycje ${!po1 ? "ON" : "OFF"}`, btn.textContent);
+  klik();
+  ck("99.1e: następny klik (już na aktualnym stanie) przełącza normalnie", api.CFG.expo.enabled === po1, String(api.CFG.expo.enabled));
+  // to samo dla pola liczbowego (okno dnia FS): zapis pola nie może przywrócić starego przełącznika
+  const obca2 = JSON.parse(JSON.stringify(api.CFG)); obca2.expo.enabled = !po1;
+  api.Store.set("cfg", obca2); api.Store.set("cfg_saved_at", Date.now() + 120000);
+  const pole = $("ogx3-fs-rest"); pole.value = "5"; pole.dispatchEvent(new w.Event("change", { bubbles: true }));
+  const r2 = api.Store.get("cfg", null);
+  ck("99.1f: zmiana pola w karcie ze starym stanem zapisuje pole, ale NIE przywraca ekspedycji", r2 && r2.expo.enabled === !po1 && r2.fs.restHours === 5, JSON.stringify(r2 && { expo: r2.expo.enabled, rest: r2.fs.restHours }));
+}
+
 console.log(fails ? `\nNIE: ${fails} sprawdzeń padło` : "\nPANEL OK — wszystko przeszło");
 process.exit(fails ? 1 : 0);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.99.0
+// @version      3.99.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.99.0";
+  const VERSION = "3.99.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3955,6 +3955,18 @@
       }
       return out;
     },
+    // v3.99.1 (log 16.09 10:43/11:44/11:48): seria fal rusza DOKŁADNIE wtedy, gdy wracają poprzednie, więc
+    // między „przed kliknięciem" a odczytem po wysyłce potrafi wylądować flota. v3.99.0 pisało wtedy
+    // „poleciało ~0 z 296 mln" albo „388 mln z 382 mln" i wpisywało tę liczbę do rejestru powrotów.
+    // Ślad lądowania: któryś typ ma PO wysyłce więcej sztuk niż PRZED (wysyłka umie tylko odejmować)
+    // albo „poleciało" wychodzi więcej, niż wpisano. Wtedy odczyt nie mówi nic o tym, co wysłał serwer.
+    landedDuring(ls, afterShips, sentReal) {
+      if (!ls || !ls.beforeShips || !Array.isArray(afterShips)) return true;
+      if ((ls.total || 0) > 0 && sentReal > ls.total) return true;
+      const teraz = {};
+      for (const x of afterShips) { const t = String(x.type).toUpperCase(); teraz[t] = (teraz[t] || 0) + (x.qty || 0); }
+      return Object.entries(teraz).some(([t, q]) => q > (ls.beforeShips[t] || 0));
+    },
     shortfallTxt(lista) { return lista.map(x => `${x.type} ${x.left.toLocaleString("pl-PL")}${x.expected ? ` (miało zostać ${x.expected.toLocaleString("pl-PL")})` : ""}`).join(", "); },
     // v3.62.0: JEDNO miejsce domykające wysyłkę — wołane po kliku (gdy strona jeszcze
     // stoi) ALBO po przeładowaniu z adresem fleetSendSuccessfully (na tym forku to
@@ -4124,7 +4136,8 @@
                 const hs = (page() === "fleet" && act && act.key === m.fromKey && act.body === m.fromBody && lsOk.ships) ? Hangar.scan() : null;
                 if (hs && typeof lsOk.before === "number") {
                   sentReal = Math.max(0, lsOk.before - hs.total);
-                  const brak = this.shortfall(lsOk, hs.ships);
+                  if (this.landedDuring(lsOk, hs.ships, sentReal)) sentReal = 0;   // wylądowała flota — odczyt nic nie mówi o wysyłce
+                  const brak = sentReal ? this.shortfall(lsOk, hs.ships) : [];
                   if (brak.length) log(`[LOT] gra wysłała MNIEJ, niż bot wpisał: poleciało ~${sentReal.toLocaleString("pl-PL")} z ${(lsOk.total || 0).toLocaleString("pl-PL")} szt. W hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak)}. Pola formularza miały pełne wartości — to decyzja serwera forka (albo w tym czasie wylądowała flota).`, "warn");
                 }
               } catch {}
@@ -4763,8 +4776,13 @@
       let sentReal = 0;
       if (fresh) {
         sentReal = Math.max(0, shipsBefore - after.total);
-        const brak = this.shortfall({ ships: loadedMap, beforeShips: beforeMap }, after.ships);
-        if (partial || brak.length) {
+        const lsTu = { ships: loadedMap, beforeShips: beforeMap, total: loadedTotal };
+        const wyladowala = this.landedDuring(lsTu, after.ships, sentReal);
+        if (wyladowala) sentReal = 0;
+        const brak = wyladowala ? [] : this.shortfall(lsTu, after.ships);
+        if (wyladowala) {
+          log(`[LOT] wysyłka potwierdzona świeżym odczytem hangaru; w tym czasie wylądowała flota, więc nie oceniam, ile dokładnie poleciało (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
+        } else if (partial || brak.length) {
           log(`[LOT] gra wysłała MNIEJ, niż bot wpisał: poleciało ~${sentReal.toLocaleString("pl-PL")} z ${loadedTotal.toLocaleString("pl-PL")} szt. W hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak) || "(różnica bez wskazania typu)"}. Pola formularza miały pełne wartości — to decyzja serwera forka (albo w tym czasie wylądowała flota). ${["expedition", "asteroid", "debris"].includes(m.kind) ? "Reszta poleci z następną falą." : "Obrona widzi resztę w hangarze."}`, "warn");
         } else {
           log(`[LOT] strona nie przeładowała się po „Send fleet”, ale świeży odczyt hangaru potwierdza wysyłkę (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
@@ -6188,7 +6206,7 @@
         // v3.16.0: włączenie modułu ręcznie kasuje trwającą przerwę kawową — operator
         // właśnie powiedział, czego chce, a przerwa i tak dotyczy tylko ekonomii.
         if (CFG.expo.enabled && Human.onBreak()) { Store.set("break_until", 0); Store.set("break_next", Date.now() + jitter(CFG.human.breakEveryMinMin, CFG.human.breakEveryMaxMin) * 60e3); log("[PRZERWA] przerwana ręcznie — włączyłeś ekspedycje.", "info"); }
-        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"} (zapisane ${new Date(cfgSavedAt || Date.now()).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}; ustawienie dotyczy TEJ przeglądarki — bot na innym komputerze ma własne)`, "info"); this.renderStatus();
+        log(`Ekspedycje ${CFG.expo.enabled ? "ON" : "OFF"} — kliknięcie w panelu (zapisane ${new Date(cfgSavedAt || Date.now()).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}; ustawienie dotyczy TEJ przeglądarki — bot na innym komputerze ma własne)`, "info"); this.renderStatus();
       };
       $("ogx3-disc").onclick = () => { CFG.expo.discoverer40 = !CFG.expo.discoverer40; saveCfg(); log(`Odkrywca (40 min) ${CFG.expo.discoverer40 ? "ON" : "OFF — ekspedycje na " + CFG.expo.holdingHours + " h"}`, "info"); this.renderStatus(); };
       $("ogx3-waves").value = String(CFG.expo.waves); $("ogx3-waves").onchange = (e) => { CFG.expo.waves = Math.max(1, parseInt(e.target.value) || 1); saveCfg(); Store.del("burst"); log(`Fale ekspedycji: ${CFG.expo.waves} (seria liczona od nowa)`, "info"); };
@@ -6261,8 +6279,37 @@
       };
       $("ogx3-copy").onclick = () => { const t = logEntries.map(e => `[${e.time}] [${e.type.toUpperCase()}] ${e.msg}`).join("\n"); navigator.clipboard?.writeText(t); };
       $("ogx3-clear").onclick = () => { logEntries = []; Store.set("log", []); this.renderLog(); };
+      // v3.99.1 (owner 16.09: „bot sam wysyła ekspedycje, choć są OFF"; log: „Ekspedycje OFF" 12:28:55,
+      // „Ekspedycje ON" 12:53:00 — oba wpisy pisze WYŁĄCZNIE obsługa przycisku, czyli przełącznik).
+      // Dwie drogi do przełączenia bez świadomego kliknięcia, zamykane dla KAŻDEGO przycisku panelu:
+      //  (1) przycisk zostaje w fokusie po kliknięciu, a Enter/Spacja wciśnięte później „klikają" go
+      //      jeszcze raz (klik z klawiatury ma `detail === 0`) — takie kliknięcie ignorujemy;
+      //  (2) karta z nieaktualnym stanem (ustawienie zmienione w innej karcie) przełączała SWOJĄ
+      //      kopię — napis mógł mówić jedno, a klik robił odwrotnie. Najpierw synchronizacja; gdy stan
+      //      się zmienił, klik przepada, a panel pokazuje prawdę.
+      this.el.addEventListener("click", (e) => {
+        const b = e.target && e.target.closest ? e.target.closest("button") : null;
+        if (!b || !this.el.contains(b)) return;
+        setTimeout(() => { try { b.blur(); } catch {} }, 0);
+        if (this.zKlawiatury(e)) {
+          e.stopImmediatePropagation(); e.preventDefault();
+          log(`[PANEL] zignorowałem „${(b.textContent || "").trim()}" wciśnięte KLAWISZEM (Enter/Spacja na przycisku w fokusie) — ustawienia zmieniasz tylko kliknięciem myszą.`, "warn");
+          return;
+        }
+        if (syncCfg()) {
+          e.stopImmediatePropagation(); e.preventDefault();
+          this.renderStatus();
+          log(`[PANEL] ustawienia zmieniono w innej karcie — odświeżyłem panel i NIE przełączyłem „${(b.textContent || "").trim()}". Sprawdź stan i kliknij jeszcze raz, jeśli trzeba.`, "warn");
+        }
+      }, true);
+      // pola liczbowe też zapisują CAŁY obiekt ustawień: najpierw przyjmujemy stan z innej karty, potem handler pola
+      // zmienia tylko swoje pole (wartość bierze z e.target), więc nie przywraca starych przełączników
+      this.el.addEventListener("change", () => { try { syncCfg(); } catch {} }, true);
       this.renderStatus(); this.renderLog(); this.renderImpact();
     },
+    // v3.99.1: prawdziwy klik myszą ma `detail >= 1`; Enter/Spacja na przycisku w fokusie daje zaufany klik z `detail === 0`.
+    // Osobna metoda, bo test (jsdom) nie umie wytworzyć zaufanego zdarzenia — podmienia ją.
+    zKlawiatury(e) { return !!e && e.isTrusted === true && e.detail === 0; },
     // Zegar dolotu: GODZINA uderzenia i godzina wysyłki recyklerów. Rysowany co
     // sekundę, więc trzyma się samego zegara — nie czeka na przebieg obrony (20 s).
     _impAuto: false,

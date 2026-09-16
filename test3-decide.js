@@ -3598,5 +3598,23 @@ console.log("\n── 88. v3.99.0: ekspedycje bez sond i lekkich transporterów,
     /if \(typeof info\.fresh === "number"\) noteLeftHome\(m\.fromKey, m\.fromBody, info\.fresh\); else emptySourceHangar\(/.test(src));
 }
 
+console.log("\n── 89. v3.99.1: lądowanie floty w trakcie wysyłki to nie „gra wysłała mniej” (log 16.09) ──");
+{
+  const landed = new Function("ls", "afterShips", "sentReal", bodyOf("landedDuring(ls, afterShips, sentReal) {"));
+  // 10:43:46 — „poleciało ~0 z 296 069 079”: LIGHT_FIGHTER po wysyłce 96 740 612 > przed 96 706 857
+  const ls1043 = { total: 296069079, ships: { LIGHT_FIGHTER: 96706857 }, beforeShips: { LIGHT_FIGHTER: 96706857, HEAVY_FIGHTER: 45754469 } };
+  check("89a: typ, którego PO wysyłce jest więcej niż PRZED = wylądowała flota (10:43:46)",
+    landed(ls1043, [{ type: "LIGHT_FIGHTER", qty: 96740612 }, { type: "HEAVY_FIGHTER", qty: 46603445 }], 0) === true);
+  // 11:48:21 — „poleciało ~388 495 269 z 382 033 688”: więcej, niż wpisano
+  check("89b: „poleciało” więcej, niż wpisano = wylądowała flota (11:48:21)",
+    landed({ total: 382033688, ships: {}, beforeShips: { LIGHT_FIGHTER: 187286520 } }, [{ type: "LIGHT_FIGHTER", qty: 122120127 }], 388495269) === true);
+  // 09:40 — prawdziwe „wysłał mniej”: wszystko zmalało, poleciało mniej niż wpisano
+  check("89c: 09:40 (serwer wysłał skład z 09:37) to NIE lądowanie — ostrzeżenie zostaje",
+    landed({ total: 508066993, ships: { BATTLESHIP: 196781438, SPY_PROBE: 18 }, beforeShips: { BATTLESHIP: 196781438, SPY_PROBE: 18, HEAVY_CARGO: 376121027 } },
+      [{ type: "BATTLESHIP", qty: 98876249 }, { type: "SPY_PROBE", qty: 1 }, { type: "HEAVY_CARGO", qty: 376121027 }], 409190737) === false);
+  check("89d: (źródło) przy lądowaniu obie ścieżki zerują sentReal (rejestr powrotów zostaje przy wpisanej liczbie)",
+    /if \(this\.landedDuring\(lsOk, hs\.ships, sentReal\)\) sentReal = 0;/.test(src) && /if \(wyladowala\) sentReal = 0;/.test(src));
+}
+
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
 process.exit(fails ? 1 : 0);
