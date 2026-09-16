@@ -74,6 +74,8 @@ class Game {
     this.homeFetchFail = false;      // v3.71.0: fetch /home (świeży pasek misji) pada — sieć sypie się jak 08.09 03:26
     this.blankFleet = 0;             // v3.96.0: tyle kolejnych odsłon /fleet fork odda BEZ kroku wyboru statków (strona nieczytelna)
     this.refuseMoon = false;         // v3.96.0: „Form a moon” klika się, ale gra go nie przyjmuje (strona stoi, księżyca nie ma)
+    this.staleSend = false;          // v3.99.0: serwer WYSYŁA flotę, ale strona NIE przeładowuje się i DOM kroku 3 zostaje stary (log 16.09 09:40)
+    this.serverShips = null;         // v3.99.0: (skład z pól) → skład, który serwer NAPRAWDĘ wysyła (fork wysłał mniej, niż wpisano)
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
@@ -395,10 +397,14 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
       // wysyłka: hangar źródła pustoszeje, gra przekierowuje (jak fork)
       const src = `${game.active.key}|${game.active.body}`;
       const h = game.hangars[src] || {};
-      for (const [t, q] of Object.entries(game.formShips)) { h[t] = Math.max(0, (h[t] || 0) - q); if (!h[t]) delete h[t]; }
+      const wyslane = game.serverShips ? game.serverShips({ ...game.formShips }) : game.formShips;
+      for (const [t, q] of Object.entries(wyslane)) { h[t] = Math.max(0, (h[t] || 0) - q); if (!h[t]) delete h[t]; }
       game.hangars[src] = h;
-      game.sent.push({ from: game.active.key, fromBody: game.active.body, to: game.formTarget, toBody: game.formBody, mission: game.formMission, ships: { ...game.formShips }, inFlight: true });
+      game.sent.push({ from: game.active.key, fromBody: game.active.body, to: game.formTarget, toBody: game.formBody, mission: game.formMission, ships: { ...wyslane }, typed: { ...game.formShips }, inFlight: true });
       game.slots.fleet.used++;
+      // v3.99.0: jak fork 16.09 — flota poszła, a karta stoi na kroku 3 ze starym hangarem w DOM.
+      // Następne załadowanie strony to już zwykły krok 1 (formularz forka jest renderowany od nowa).
+      if (game.staleSend) { game.formStep = 0; return; }
       // v3.68.7 (expo-wykonanie#5): fork potrafi wysłać flotę i DOPIERO POTEM (po dłuższej
       // chwili niż okno 3–4,5 s) pokazać stronę sukcesu. Flota naprawdę leci, adresu
       // `fleetSendSuccessfully` jeszcze nie ma, a hangar źródła jest już pomniejszony.
@@ -3396,6 +3402,76 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const cfg2 = { ...cfg, fs: { ...cfg.fs, restHours: 0 } };
     for (let i = 0; i < 6 && !g.sent.some(x => /Deploy/i.test(x.mission || "")); i++) await run(g, { cfg: cfg2, loads: 12, ticksPerLoad: 3 });
     check("74d: po oknie dnia (restHours 0) Fleet Save wychodzi normalnie", g.sent.some(x => /Deploy/i.test(x.mission || "") && x.to === "1:100:9"), JSON.stringify(g.sent.map(x => [x.to, x.mission])));
+  }
+
+  console.log("\n── 75. v3.99.0: strona stoi po „Send fleet”, fork wysyła mniej, bez sond i LC (log 16.09 09:40) ──");
+  {
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 },
+      expo: { enabled: true, waves: 1, slotReserve: 0 } };
+    const mk75 = (hangar) => {
+      const g = new Game({
+        pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+        hangars: { "1:100:5|moon": hangar },
+        active: { key: "1:100:5", body: "moon" },
+      });
+      g.moonLinks = true;
+      return g;
+    };
+    const expos = (g) => g.sent.filter(x => /Expedition/i.test(x.mission || ""));
+    const journal = (g) => JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+
+    // (a) fala domykająca, serwer wysyła całość, strona NIE przeładowuje się
+    {
+      const g = mk75({ BATTLESHIP: 600, CRUISER: 1, SPY_PROBE: 18, LIGHT_CARGO: 500, HEAVY_CARGO: 50 });
+      g.staleSend = true;
+      const logs = [];
+      for (let i = 0; i < 5 && !expos(g).length; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+      for (let i = 0; i < 2; i++) { const r = await run(g, { cfg, loads: 6, ticksPerLoad: 2 }); logs.push(...r.logs); }
+      const ex = expos(g)[0];
+      check("75a: ekspedycja wyleciała BEZ sond, lekkich i ciężkich transporterów", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 1
+        && !ex.ships.SPY_PROBE && !ex.ships.LIGHT_CARGO && !ex.ships.HEAVY_CARGO, JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
+      check("75b: stary DOM po kliknięciu NIE jest dowodem — świeży odczyt potwierdza wysyłkę",
+        logs.some(m => /strona nie przeładowała się po „Send fleet”, ale świeży odczyt hangaru potwierdza wysyłkę/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(-8).join(" | "));
+      check("75c: …zero „wysyłka NIE potwierdzona” i zero wpisu o przerwanym locie",
+        !logs.some(m => /wysyłka NIE potwierdzona/.test(m)) && !journal(g).some(e => /przerwany/.test(e.msg || "")),
+        logs.filter(m => /NIE potwierdzona|przerwany/.test(m)).join(" | "));
+      const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+      check("75d: wpis w rejestrze powrotów przeżył (601 szt.)", (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 601), JSON.stringify(st.expected));
+      check("75e: …i nie było drugiej, daremnej próby tej samej fali", expos(g).length === 1,
+        JSON.stringify(expos(g).map(x => x.ships)));
+    }
+
+    // (b) serwer wysyła MNIEJ, niż stoi w polach (połowa pancerników, bez krążownika)
+    {
+      const g = mk75({ BATTLESHIP: 600, CRUISER: 1, DESTROYER: 40 });
+      g.staleSend = true;
+      let raz = 0;
+      g.serverShips = (sh) => { if (raz++) return sh; const o = { ...sh, BATTLESHIP: Math.floor((sh.BATTLESHIP || 0) / 2) }; delete o.CRUISER; return o; };
+      const logs = [];
+      for (let i = 0; i < 5 && !expos(g).length; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+      const ex = expos(g)[0];
+      check("75f: (warunek wstępny) bot wpisał całość, serwer wysłał część", !!ex && ex.typed.BATTLESHIP === 600 && ex.typed.CRUISER === 1 && ex.ships.BATTLESHIP === 300 && !ex.ships.CRUISER,
+        JSON.stringify(expos(g)));
+      const w = logs.find(m => /gra wysłała MNIEJ, niż bot wpisał/.test(m)) || "";
+      check("75g: log nazywa, czego zostało ponad plan (BATTLESHIP 300, CRUISER 1)", /BATTLESHIP 300/.test(w) && /CRUISER 1/.test(w), w || logs.filter(m => /LOT/.test(m)).slice(-6).join(" | "));
+      check("75h: częściowa wysyłka to NIE odmowa — bez „NIE potwierdzona”, bez przerwania",
+        !logs.some(m => /wysyłka NIE potwierdzona/.test(m)) && !journal(g).some(e => /przerwany/.test(e.msg || "")), logs.filter(m => /NIE potwierdzona|przerwany/.test(m)).join(" | "));
+      const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+      check("75i: rejestr powrotów zna PRAWDZIWĄ liczbę (340), nie wpisaną (641)", (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 340), JSON.stringify(st.expected));
+      const hm = (st.hangars || {})["1:100:5|moon"];
+      check("75j: migawka hangaru = świeży odczyt (zostało 301 szt.)", !!hm && hm.total === 301, JSON.stringify(hm));
+    }
+
+    // (c) odmowa przy nieprzeładowanej stronie dalej jest odmową (świeży odczyt: hangar stoi)
+    {
+      const g = mk75({ BATTLESHIP: 600 });
+      g.refuseSubmit = true;
+      const logs = [];
+      for (let i = 0; i < 3 && !logs.some(m => /wysyłka NIE potwierdzona/.test(m)); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+      check("75k: odmowa gry dalej = „wysyłka NIE potwierdzona” (z adnotacją o świeżym odczycie)",
+        logs.some(m => /wysyłka NIE potwierdzona.*świeży odczyt z serwera/.test(m)) && !expos(g).length, logs.filter(m => /LOT/.test(m)).slice(-6).join(" | "));
+    }
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

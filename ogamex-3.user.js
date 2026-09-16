@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.98.0
+// @version      3.99.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.98.0";
+  const VERSION = "3.99.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -422,7 +422,10 @@
       // zostają w domu. Nazwa typu `HEAVY_CARGO` potwierdzona zrzutem z żywej gry
       // (STAN-I-PLAN: „HEAVY_CARGO×12 341"; ten fork NIE zna `LARGE_CARGO` — ta nazwa żyje
       // tylko w atrapie E2E). Lista jest WŁASNOŚCIĄ KODU, nie schowka — patrz `pinCodeOwned`.
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "HEAVY_CARGO"],
+      // v3.99.0 (owner 16.09: „wykluczyć sondy szpiegowskie i light cargo, nie są tam potrzebne"):
+      // SPY_PROBE i LIGHT_CARGO też zostają w domu. Nazwy potwierdzone logiem z żywej gry
+      // („załadowano: SPY_PROBE×18, LIGHT_CARGO×110 684 569, …", 16.09 09:40).
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "HEAVY_CARGO", "SPY_PROBE", "LIGHT_CARGO"],
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
     },
   };
@@ -969,7 +972,7 @@
         const em = txt.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
         if (fm || em) { const s0 = Situation.load(); s0.slots = { fleet: fm ? { used: +fm[1], total: +fm[2] } : (s0.slots?.fleet || null), expo: em ? { used: +em[1], total: +em[2] } : (s0.slots?.expo || null), at: Date.now() }; Situation.save(s0); }
         Situation.noteHangar({ key: k, body, total, ships, at: Date.now(), slots: fm ? { used: +fm[1], total: +fm[2] } : null });
-        return { key: k, body, total };
+        return { key: k, body, total, ships };
       } catch (e) {
         // Główny fetch mógł dojść do serwera, zanim rzucił (timeout w drodze powrotnej)
         // — wybór operatora i tak przywracamy.
@@ -3264,7 +3267,11 @@
     const left = Math.max(1, Math.min(waves - inSeries, freeSlots));   // ile fal jeszcze poleci
     const slotBound = freeSlots < waves - inSeries;
     const lastOfBurst = waves === 1 || inSeries >= waves - 1 || (expo && expo.total && expo.used >= cap - 1);
-    const share = (qty) => Math.floor(qty / left);
+    // v3.99.0 (owner 16.09: „zostają pojedyncze sztuki statków w hangarze"): typ, którego jest
+    // MNIEJ sztuk niż fal do wysłania, miał udział 0 i czekał w domu na falę domykającą — a gdy
+    // ta nie zabrała wszystkiego (serwer forka, patrz `Fly.shortfall`), sztuki stały do następnej
+    // serii. Taki typ leci teraz w całości z bieżącą falą; duże typy dzielimy jak dotąd.
+    const share = (qty) => (qty < left ? qty : Math.floor(qty / left));
     // ── OSTATNIA fala serii zabiera CAŁY hangar ──
     // Udział fali to dzielenie w dół, więc po wszystkich falach w hangarze
     // zostaje reszta z zaokrąglenia plus produkcja z czasu serii. Fala
@@ -3931,6 +3938,24 @@
       if (h.total >= ls.before - tol) return { ok: false, total: h.total };
       return { ok: null, total: h.total, why: `hangar zmalał tylko częściowo (${h.total.toLocaleString("pl-PL")} z ${ls.before.toLocaleString("pl-PL")})` };
     },
+    // v3.99.0 (log 16.09 09:40): fork potrafi wysłać INNY skład, niż stał w polach formularza —
+    // fala domykająca wpisała 508 066 993 szt., a w hangarze zostało BATTLESHIP 98 876 249 i po
+    // jednej sztuce siedmiu typów (czyli poleciał co do sztuki skład fali z 09:37). Klient forka
+    // wysyła dokładnie wartości pól (/fleet/submitfleet), więc to decyzja serwera. Tu liczymy,
+    // których typów po wysyłce zostało WIĘCEJ, niż wynika z „przed − wpisane".
+    // `ls` = stempel wysyłki (ships = wpisane, beforeShips = hangar przed klikiem), `afterShips` = świeży odczyt.
+    shortfall(ls, afterShips) {
+      if (!ls || !ls.ships || !ls.beforeShips || !Array.isArray(afterShips)) return [];
+      const teraz = {};
+      for (const x of afterShips) { const t = String(x.type).toUpperCase(); teraz[t] = (teraz[t] || 0) + (x.qty || 0); }
+      const out = [];
+      for (const [t, q] of Object.entries(ls.ships)) {
+        const oczek = Math.max(0, (ls.beforeShips[t] || 0) - q), jest = teraz[t] || 0;
+        if (jest > oczek) out.push({ type: t, left: jest, expected: oczek });
+      }
+      return out;
+    },
+    shortfallTxt(lista) { return lista.map(x => `${x.type} ${x.left.toLocaleString("pl-PL")}${x.expected ? ` (miało zostać ${x.expected.toLocaleString("pl-PL")})` : ""}`).join(", "); },
     // v3.62.0: JEDNO miejsce domykające wysyłkę — wołane po kliku (gdy strona jeszcze
     // stoi) ALBO po przeładowaniu z adresem fleetSendSuccessfully (na tym forku to
     // ścieżka normalna). Idempotentne: confirmPendingSend() mógł już zdjąć `pending`
@@ -3948,9 +3973,11 @@
         const lsT = Store.get("last_send", null);
         const sentTotal = (lsT && lsT.from === m.fromKey && lsT.toKey === m.toKey && (lsT.at || 0) >= (m.startedAt || 0) && lsT.total > 0) ? lsT.total : 0;
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
-        if (f0) { delete f0.pending; if (sentTotal) f0.sentTotal = sentTotal; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
+        // v3.99.0: świeży odczyt hangaru po wysyłce mówi, ile NAPRAWDĘ poleciało (fork potrafi wysłać mniej)
+        const sentReal = info.sentReal > 0 ? info.sentReal : sentTotal;
+        if (f0) { delete f0.pending; if (sentReal) f0.sentTotal = sentReal; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
-          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, sentTotal, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, sentTotal: sentReal, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
         }
       }
       // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
@@ -3959,6 +3986,7 @@
           || (s.expected || []).filter(e => e.fromKey === m.fromKey && (e.sentAt || 0) >= (m.startedAt || 0)).pop();
         if (e0) {
           delete e0.pending;
+          if (info.sentReal > 0) e0.total = info.sentReal;   // v3.99.0: wraca tyle, ile naprawdę wyleciało
           if (!Once.said(`powrot|${e0.fromKey}|${e0.sentAt}`, 3600e3)) log(`[POWRÓT] zapamiętany: ${(e0.total || 0).toLocaleString("pl-PL")} szt. (${e0.kind}) wróci na [${e0.fromKey}] ${e0.fromBody === "moon" ? "księżyc" : "planetę"} ~${new Date(e0.returnAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`, "info");
         }
       }
@@ -3967,7 +3995,10 @@
       // w trakcie pracy), hangar NIE jest pusty — zerowanie skłamałoby "nic tu nie ma"
       // aż do następnego realnego odczytu, a to akurat wtedy, gdyby przyszedł atak,
       // ukryłoby zostawioną flotę przed obroną zamiast jej bronić.
-      if (!eco) emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona", m.excludeTypes, m.capTypes);
+      // v3.99.0: gdy wysyłkę potwierdził ŚWIEŻY odczyt hangaru (`info.fresh` = ile zostało), ten odczyt
+      // jest prawdą — zerowanie wyliczeniem skłamałoby „pusto", gdy fork wysłał tylko część floty,
+      // a reszta stoi pod uderzeniem. Notujemy tylko, ile zostało (jak bramka `sendProof`).
+      if (!eco) { if (typeof info.fresh === "number") noteLeftHome(m.fromKey, m.fromBody, info.fresh); else emptySourceHangar(m.fromKey, m.fromBody, "wysyłka potwierdzona", m.excludeTypes, m.capTypes); }
       // v3.68.1: udana wysyłka zwalnia budżet prób FS — sufit 3/h dotyczy PORAŻEK.
       if (m.fs) { try { const ft = Store.get("fs_try", {}) || {}; delete ft[`${m.fromKey}>${m.toKey}`]; Store.set("fs_try", ft); } catch {} }
       // v3.68.11 (obrona-wykonanie#4): tak samo dla ewakuacji — sufit 3/h liczy PORAŻKI,
@@ -4086,7 +4117,20 @@
             const lsOk = Store.get("last_send", null);
             if (lsOk && lsOk.toKey === m.toKey && lsOk.from === m.fromKey && lsOk.kind === m.kind && (lsOk.at || 0) >= (m.startedAt || 0) && location.href.includes("fleetSendSuccessfully")) {
               log(`[LOT] gra potwierdziła wysyłkę [${m.fromKey}]→[${m.toKey}] (adres fleetSendSuccessfully) — „Send fleet" przeładował stronę, zanim bot zdążył to zapisać.`, "info");
-              this.confirmed(m, { loaded: lsOk.loaded || "" });
+              // v3.99.0: strona sukcesu to świeży hangar źródła — sprawdzamy, czy fork zabrał to, co wpisaliśmy.
+              let sentReal = 0;
+              try {
+                const act = PlanetBar.active();
+                const hs = (page() === "fleet" && act && act.key === m.fromKey && act.body === m.fromBody && lsOk.ships) ? Hangar.scan() : null;
+                if (hs && typeof lsOk.before === "number") {
+                  sentReal = Math.max(0, lsOk.before - hs.total);
+                  const brak = this.shortfall(lsOk, hs.ships);
+                  if (brak.length) log(`[LOT] gra wysłała MNIEJ, niż bot wpisał: poleciało ~${sentReal.toLocaleString("pl-PL")} z ${(lsOk.total || 0).toLocaleString("pl-PL")} szt. W hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak)}. Pola formularza miały pełne wartości — to decyzja serwera forka (albo w tym czasie wylądowała flota).`, "warn");
+                }
+              } catch {}
+              // lot obronny zostaje przy stemplu: bez `leftHome` z tego samego odczytu mniejsza liczba mogłaby
+              // przedwcześnie domknąć jego wpis w `flightAlive` (utrata zawrotu)
+              this.confirmed(m, { loaded: lsOk.loaded || "", sentReal: ["expedition", "asteroid", "debris"].includes(m.kind) ? sentReal : 0 });
               return;
             }
           }
@@ -4327,6 +4371,7 @@
       if (snap.total === 0) { log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
       const loaded = [];
       let loadedTotal = 0;   // v3.52.0: rejestr powrotów chce wiedzieć, ILE statków wraca
+      const loadedMap = {};  // v3.99.0: skład wpisany w formularz, per typ (porównanie z hangarem po wysyłce)
       const want = m.plan ? new Map(m.plan.map(p => [String(p.type).toUpperCase(), p.qty])) : null;
       // v3.68.0 (owner 04.09, port z Atheny): FS i ucieczka w ataku nie mają `plan`
       // (biorą "wszystko"), ale "wszystko" nie może już oznaczać dosłownie każdego
@@ -4366,7 +4411,7 @@
         if (qty <= 0) continue;
         const item = el.closest(".ship-item") || el.parentElement;
         const input = item?.querySelector("input.numberFormatInput, input[type='text'], input[type='number']");
-        if (!input) continue; setInput(input, qty); loadedTotal += qty; loaded.push(`${el.dataset.shipType}×${qty.toLocaleString("pl-PL")}`);
+        if (!input) continue; setInput(input, qty); loadedTotal += qty; loadedMap[type] = qty; loaded.push(`${el.dataset.shipType}×${qty.toLocaleString("pl-PL")}`);
         if (want) await sleep(jitter(120, 380));   // człowiek wypełnia pola po kolei, nie w jednej milisekundzie
       }
       // v3.9.0 (audyt, incydent 2.x 05.08 23:22): formularz przelicza się po każdym
@@ -4597,6 +4642,8 @@
       const send = this.findButton("Send fleet") || [...document.querySelectorAll("a, button, input[type='submit']")].find(el => /send fleet/i.test(el.value || el.textContent || "") && el.offsetParent !== null);
       if (!send) return this.abort("brak przycisku Send fleet");
       const shipsBefore = snap.total;
+      const beforeMap = {};
+      for (const x of snap.ships || []) beforeMap[String(x.type).toUpperCase()] = (beforeMap[String(x.type).toUpperCase()] || 0) + (x.qty || 0);
       // v3.9.0 (audyt): "Send fleet" potrafi nawigować NATYCHMIAST — kod po kliku
       // może nigdy się nie wykonać. Lot obronny zapisujemy PRZED klikiem (inaczej
       // flota ucieka bez zaplanowanego zawrotu i zostaje na refugium na stałe),
@@ -4654,7 +4701,7 @@
       // ratunku [K] planeta → [K] księżyc i bramka anty-duplikat zjadała ten ratunek.
       // v3.96.0: `before` = ile stało w hangarze PRZED klikiem — bramka anty-duplikat porównuje z nim
       // świeży odczyt i dopiero z tego wnioskuje, czy gra przyjęła wysyłkę (`Fly.sendProof`).
-      Store.set("last_send", { at: Date.now(), toKey: m.toKey, toBody: m.toBody, kind: m.kind, from: m.fromKey, fromBody: m.fromBody, startedAt: m.startedAt, loaded: loaded.join(", "), total: loadedTotal, before: shipsBefore });
+      Store.set("last_send", { at: Date.now(), toKey: m.toKey, toBody: m.toBody, kind: m.kind, from: m.fromKey, fromBody: m.fromBody, startedAt: m.startedAt, loaded: loaded.join(", "), total: loadedTotal, before: shipsBefore, ships: loadedMap, beforeShips: beforeMap });
       if (m.missionType === "ASTEROID") Aster.learnCargo(m);
       // v3.62.0: klik przez Nav.click — przeładowanie po „Send fleet" ma w linii startowej
       // powód „bot: wysyłka", a nie „otwarte ręcznie" (i nie udaje klikania operatora).
@@ -4662,8 +4709,26 @@
       Nav.click(send, `wysyłka floty [${m.fromKey}]→[${m.toKey}] (Send fleet)`);
       // potwierdzenie: URL fleetSendSuccessfully albo hangar pusty
       await sleep(jitter(3000, 4500));
-      const okUrl = location.href.includes("fleetSendSuccessfully");
-      const after = page() === "fleet" ? Hangar.scan() : null;
+      let okUrl = location.href.includes("fleetSendSuccessfully");
+      // v3.99.0 (log 16.09 09:40:46–09:44:32): fork NIE przeładował strony, a jej DOM nadal pokazywał
+      // hangar sprzed kliknięcia — `Hangar.scan()` czytało „1 113 074 331 szt., jak przed" i bot uznał
+      // wysyłkę za nieudaną, choć flota wyleciała (sloty ekspedycji 11/12 → 12/12). Skutek: skasowany
+      // wpis powrotu, karencja trasy, czerwony wpis w logu i o 09:44 druga, daremna próba przy pełnych
+      // slotach. Prawdą jest ŚWIEŻY odczyt z serwera (`scanRemote` tego samego ciała — bez przełączania
+      // operatora). Wysyłka na forku bywa wolna, więc stojący hangar sprawdzamy jeszcze raz (ekonomia:
+      // dwa razy); lot obronny nie czeka dłużej, bo odmowa i tak kończy się ponowieniem formularza.
+      let after = null, fresh = false;
+      if (!okUrl) {
+        const prob = ["expedition", "asteroid", "debris"].includes(m.kind) ? 3 : 2;
+        for (let p = 0; p < prob; p++) {
+          if (p) await sleep(jitter(2500, 4000));
+          if (location.href.includes("fleetSendSuccessfully")) { okUrl = true; break; }
+          let h = null;
+          try { h = await Hangar.scanRemote(m.fromKey, m.fromBody); } catch {}
+          if (h && typeof h.total === "number") { after = h; fresh = true; if (h.total < shipsBefore - Math.floor(loadedTotal * 0.1)) break; }
+        }
+      }
+      if (!after && page() === "fleet") after = Hangar.scan();
       // v3.68.7 (audyt 04.09, expo-wykonanie#5 P3): zapasowe potwierdzenie „hangar prawie pusty"
       // pisano dla lotów OBRONNYCH, które zabierają CAŁY hangar — dla fali ekspedycji biorącej
       // 1/left hangaru było arytmetycznie nieosiągalne (`after.total >= 0.5 * shipsBefore`).
@@ -4673,14 +4738,21 @@
       // alarm raz na falę to znieczulenie na alarmy PRAWDZIWE, czyli koszt po stronie obrony.
       // Miarą jest teraz to, co naprawdę wyszło z hangaru: ile statków WPISALIŚMY w formularz.
       const expectedLeft = Math.max(0, shipsBefore - loadedTotal);
-      const ok = okUrl || (after && loadedTotal > 0 && after.total <= expectedLeft + Math.floor(loadedTotal * 0.1));
-      if (!ok) {
-        const err = document.querySelector(".error, .alert, .modal.show, [class*='error']");
+      const tol = Math.floor(loadedTotal * 0.1);
+      const ok = okUrl || (after && loadedTotal > 0 && after.total <= expectedLeft + tol);
+      // v3.99.0: świeży odczyt pokazuje WYRAŹNY ubytek, ale mniejszy niż wpisany skład — flota
+      // wyleciała (częściowo). To nie odmowa: bez potwierdzenia lot obronny straciłby wpis i zawrót.
+      const partial = !ok && fresh && loadedTotal > 0 && after.total < shipsBefore - tol;
+      if (!ok && !partial) {
+        // v3.99.0: „⏱Dolot—" z logu 16.09 to był tekst z NASZEGO panelu (selektor [class*='error']
+        // łapał cokolwiek). Komunikat forka to okno sweetalert2 (ShowError) — ono idzie pierwsze.
+        const err = [...document.querySelectorAll(".swal2-popup .swal2-html-container, .swal2-popup #swal2-content, .swal2-popup .swal2-title, .error, .alert, .modal.show, [class*='error']")]
+          .find(e => !e.closest("#ogx3-panel") && (e.textContent || "").trim());
         // Rozróżnienie z 2.x: „przycisk BYŁ, ale WYŁĄCZONY" (gra nie przyjmuje floty — brak
         // slotu/deuteru) to inna usterka niż „brak komunikatu". „Send fleet" jest jedynym
         // krokiem klikanym bez `clickWhenEnabled`, więc stan przycisku sprawdzamy tutaj.
         const disabledTxt = this.isDisabled(send) ? " — przycisk „Send fleet” jest WYŁĄCZONY (gra nie przyjmuje tej floty: slot? deuter?)" : "";
-        log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"}${disabledTxt}; hangar ${after ? `${after.total.toLocaleString("pl-PL")} szt., oczekiwano ≤ ${expectedLeft.toLocaleString("pl-PL")}` : "nieodczytany"})`, "error");
+        log(`[LOT] wysyłka NIE potwierdzona (${err ? (err.textContent || "").trim().slice(0, 160) : "brak komunikatu"}${disabledTxt}; hangar ${after ? `${after.total.toLocaleString("pl-PL")} szt.${fresh ? " (świeży odczyt z serwera)" : ""}, oczekiwano ≤ ${expectedLeft.toLocaleString("pl-PL")}` : "nieodczytany"})`, "error");
         // v3.10.2: sprzatanie wpisu `pending` bylo NIEOSIAGALNE (stalo za tym returnem).
         const sBad = Situation.load();
         sBad.flights = (sBad.flights || []).filter(f => !(f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending));   // v3.68.8: jw. — sprzątamy wyłącznie wpis TEJ misji
@@ -4688,8 +4760,18 @@
         Situation.save(sBad);
         return this.abort("brak potwierdzenia wysyłki");
       }
+      let sentReal = 0;
+      if (fresh) {
+        sentReal = Math.max(0, shipsBefore - after.total);
+        const brak = this.shortfall({ ships: loadedMap, beforeShips: beforeMap }, after.ships);
+        if (partial || brak.length) {
+          log(`[LOT] gra wysłała MNIEJ, niż bot wpisał: poleciało ~${sentReal.toLocaleString("pl-PL")} z ${loadedTotal.toLocaleString("pl-PL")} szt. W hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak) || "(różnica bez wskazania typu)"}. Pola formularza miały pełne wartości — to decyzja serwera forka (albo w tym czasie wylądowała flota). ${["expedition", "asteroid", "debris"].includes(m.kind) ? "Reszta poleci z następną falą." : "Obrona widzi resztę w hangarze."}`, "warn");
+        } else {
+          log(`[LOT] strona nie przeładowała się po „Send fleet”, ale świeży odczyt hangaru potwierdza wysyłkę (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
+        }
+      }
       // v3.62.0: całe domknięcie wysyłki w jednym miejscu (wspólne z drogą po przeładowaniu)
-      this.confirmed(m, { loaded: loaded.join(", ") });
+      this.confirmed(m, { loaded: loaded.join(", "), fresh: fresh ? after.total : null, sentReal });
       // v3.48.0: po fali DOMYKAJĄCEJ serię nie będzie kolejnej przez ~40 min — zamiast
       // zostawiać operatora na stronie głównej, bot odprowadza kartę tam, gdzie był
       // (o ile od startu serii sam nie kliknął).

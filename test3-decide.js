@@ -487,7 +487,9 @@ console.log("\n── 17g. EKSPEDYCJE: licznik serii ma termin ważności (v3.68
 console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
 {
   const s = ebase({ hangars: { "1:100:5|planet": { total: 2, at: NOW - 60000, ships: [{ type: "SMALL_CARGO", qty: 2 }] } } });
-  check("2 statki na 4 fale → nie dzielimy do zera, mówimy wprost", /za mała/.test(expoPlan(s, ECFG, NOW, null).skip || ""), JSON.stringify(expoPlan(s, ECFG, NOW, null)));
+  // v3.99.0 (owner 16.09: „zostają pojedyncze sztuki"): typ, którego jest mniej niż fal, nie ma już
+  // udziału 0 — leci w całości z bieżącą falą (dawniej: „flota za mała", sztuki stały w domu).
+  check("2 statki na 4 fale → lecą od razu w całości (nie dzielimy do zera, nie zostają w domu)", (expoPlan(s, ECFG, NOW, null).ships || []).some(x => x.type === "SMALL_CARGO" && x.qty === 2), JSON.stringify(expoPlan(s, ECFG, NOW, null)));
   check("waves=1 → leci wszystko", expoPlan(s, { expo: { ...ECFG.expo, waves: 1 } }, NOW, null).ships[0].qty === 2);
 }
 
@@ -1084,7 +1086,7 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   // v3.62.0 (log 02.09): „Send fleet" na tym forku przeładowuje stronę PRZED kodem po kliku,
   // więc domknięcie wysyłki musi umieć iść z DOWODU po przeładowaniu — i z jednego miejsca.
   check("wysyłka potwierdzana po przeładowaniu z adresu fleetSendSuccessfully + stempla TEJ misji", /lsOk\.at \|\| 0\) >= \(m\.startedAt \|\| 0\) && location\.href\.includes\("fleetSendSuccessfully"\)/.test(src) && /this\.confirmed\(m, \{ loaded: lsOk\.loaded/.test(src));
-  check("domknięcie wysyłki w JEDNYM miejscu (po kliku i po przeładowaniu)", /confirmed\(m, info = \{\}\) \{/.test(src) && /this\.confirmed\(m, \{ loaded: loaded\.join\(", "\) \}\)/.test(src) && !/\[EXPO\] fala wysłana: \$\{loaded\.join/.test(src));
+  check("domknięcie wysyłki w JEDNYM miejscu (po kliku i po przeładowaniu)", /confirmed\(m, info = \{\}\) \{/.test(src) && /this\.confirmed\(m, \{ loaded: loaded\.join\(", "\)(, [^}]*)? \}\)/.test(src) && !/\[EXPO\] fala wysłana: \$\{loaded\.join/.test(src));
   check("klik Send fleet idzie przez Nav.click (linia startowa: bot, nie 'otwarte ręcznie')",/Nav\.click\(send, `wysyłka floty/.test(src) && !/\bsend\.click\(\)/.test(src));
   check("fala domykająca mówi DLACZEGO domyka (sloty/licznik/konfiguracja)", /lastWhy = waves === 1/.test(src) && /ostatni wolny slot ekspedycji \(\$\{expo\.used\}\/\$\{expo\.total\}/.test(src) && /domyka serię — cały hangar: \$\{p\.lastWhy\}/.test(src));
   check("rekonesans ustepuje RATUNKOWI, ale nie rutynowemu FS", /a\.kind === "fly" && \(a\.rescue \|\| a\.blind\)/.test(src));
@@ -2063,7 +2065,7 @@ console.log("\n── 55. AUDYT 04.09 (partia antyduplikat): bramka anty-duplika
     return s0.slice(s0.indexOf("{"), s0.indexOf("});") + 1);
   })();
   // v3.96.0: stempel niesie też `before` (stan hangaru sprzed kliknięcia) — dowód dla bramki.
-  const stamp = (m, at) => new Function("m", "loaded", "loadedTotal", "shipsBefore", "Date", `return (${stampSrc});`)(m, [], 0, 0, { now: () => at });
+  const stamp = (m, at) => new Function("m", "loaded", "loadedTotal", "shipsBefore", "loadedMap", "beforeMap", "Date", `return (${stampSrc});`)(m, [], 0, 0, {}, {}, { now: () => at });
 
   check("55-0: bramka faktycznie korzysta z wyliczonego warunku (test nie bada martwego kodu)",
     /if \(lsMine && Date\.now\(\) - ls\.at < guardMs\) \{/.test(src));
@@ -3515,7 +3517,9 @@ console.log("\n── 86. NOC 15/16.09: doba w czasie lotu, duch lotu, uczciwy a
     && src.indexOf('Store.get("migr_ghost_v3971"') < src.indexOf("s.flights = (s.flights || []).filter(f => flightAlive(f, s, now));"));
   check("86f: (źródło) potwierdzona wysyłka zapisuje sentTotal na wpisie lotu",
     /const sentTotal = \(lsT && lsT\.from === m\.fromKey && lsT\.toKey === m\.toKey && \(lsT\.at \|\| 0\) >= \(m\.startedAt \|\| 0\) && lsT\.total > 0\) \? lsT\.total : 0;/.test(src)
-    && /if \(sentTotal\) f0\.sentTotal = sentTotal;/.test(src) && /flightMs: m\.flightMs \|\| 0, sentTotal, recallAt/.test(src));
+    // v3.99.0: świeży odczyt hangaru (info.sentReal) koryguje stempel, gdy fork wysłał mniej
+    && /const sentReal = info\.sentReal > 0 \? info\.sentReal : sentTotal;/.test(src)
+    && /if \(sentReal\) f0\.sentTotal = sentReal;/.test(src) && /flightMs: m\.flightMs \|\| 0, sentTotal: sentReal, recallAt/.test(src));
 }
 
 
@@ -3554,6 +3558,44 @@ console.log("\n── 87. OKNO DNIA PO POWROCIE FS (v3.98.0) ──");
     && /s\.fsRestUntil = fsRestUntil\(CFG\.fs, new Date\(now\)\);/.test(src));
   check("87g: (źródło) okno blokuje TYLKO start FS (zeruje `dest`), nie zawroty ani ratunek",
     /if \(dest && \(s\.fsRestUntil \|\| 0\) > now\) \{/.test(src) && /dest = null;/.test(src));
+}
+
+console.log("\n── 88. v3.99.0: ekspedycje bez sond i lekkich transporterów, pojedyncze sztuki nie czekają, fork wysyła mniej ──");
+{
+  // (a) lista wykluczeń jest własnością kodu (pinCodeOwned) — sprawdzamy DEFAULTS w źródle
+  const lista = (src.match(/excludeTypes: (\[[^\]]*"HEAVY_CARGO"[^\]]*\])/) || [])[1] || "";
+  check("88a: (źródło) DEFAULTS.expo.excludeTypes zawiera SPY_PROBE i LIGHT_CARGO (owner 16.09)",
+    /"SPY_PROBE"/.test(lista) && /"LIGHT_CARGO"/.test(lista), lista);
+  const EX = { expo: { ...ECFG.expo, excludeTypes: JSON.parse(lista || "[]") } };
+  const h88 = (ships) => ebase({ hangars: { "1:100:5|planet": { total: ships.reduce((n, x) => n + x.qty, 0), at: NOW - 60000, ships } } });
+  const p1 = expoPlan(h88([{ type: "SPY_PROBE", qty: 18 }, { type: "LIGHT_CARGO", qty: 110684569 }, { type: "BATTLESHIP", qty: 800 }]), EX, NOW, null);
+  check("88b: fala NIE bierze sond ani lekkich transporterów", !!p1.ships && !p1.ships.some(x => /SPY_PROBE|LIGHT_CARGO/.test(x.type)) && p1.ships.some(x => x.type === "BATTLESHIP"), JSON.stringify(p1));
+  const p2 = expoPlan(h88([{ type: "SPY_PROBE", qty: 18 }, { type: "LIGHT_CARGO", qty: 5 }]), EX, NOW, null);
+  check("88c: hangar z samymi sondami i LC = „brak statków do wysłania”, a nie fala", /brak statków/.test(p2.skip || ""), JSON.stringify(p2));
+  // (b) pojedyncze sztuki: typ, którego jest mniej niż fal, leci od razu w całości
+  const p3 = expoPlan(h88([{ type: "BATTLESHIP", qty: 801 }, { type: "CRUISER", qty: 1 }, { type: "DESTROYER", qty: 3 }]), EX, NOW, null);
+  const q = (p, t) => (p.ships.find(x => x.type === t) || {}).qty || 0;
+  check("88d: pojedyncza sztuka (1 < 4 fal) leci z PIERWSZĄ falą", q(p3, "CRUISER") === 1 && q(p3, "DESTROYER") === 3, JSON.stringify(p3.ships));
+  check("88e: duży typ dalej dzielony w dół (801 / 4 = 200)", q(p3, "BATTLESHIP") === 200, JSON.stringify(p3.ships));
+  // (c) Fly.shortfall — co zostało ponad plan po wysyłce (liczby z logu 16.09 09:40)
+  const sfBody = bodyOf("shortfall(ls, afterShips) {");
+  const shortfall = new Function("ls", "afterShips", sfBody);
+  const ls = { ships: { SPY_PROBE: 18, LIGHT_CARGO: 110684569, HEAVY_FIGHTER: 45705511, BATTLESHIP: 196781438 },
+    beforeShips: { SPY_PROBE: 18, LIGHT_CARGO: 110684569, HEAVY_FIGHTER: 45705511, BATTLESHIP: 196781438, HEAVY_CARGO: 376121027 } };
+  const po = [{ type: "SPY_PROBE", qty: 1 }, { type: "LIGHT_CARGO", qty: 1 }, { type: "BATTLESHIP", qty: 98876249 }, { type: "HEAVY_CARGO", qty: 376121027 }];
+  const sf = shortfall(ls, po);
+  check("88f: shortfall wskazuje typy, których zostało ponad plan (BS 98 876 249, SPY 1, LC 1)",
+    sf.length === 3 && sf.some(x => x.type === "BATTLESHIP" && x.left === 98876249 && x.expected === 0) && sf.some(x => x.type === "SPY_PROBE" && x.left === 1),
+    JSON.stringify(sf));
+  check("88g: …a typów spoza planu (HEAVY_CARGO) i wysłanych w całości (HEAVY_FIGHTER) nie wymienia",
+    !sf.some(x => x.type === "HEAVY_CARGO" || x.type === "HEAVY_FIGHTER"), JSON.stringify(sf));
+  check("88h: shortfall bez stempla per typ (stary format) = pusta lista, nie wyjątek", shortfall({ total: 5 }, po).length === 0);
+  // (d) źródło: stary DOM po kliknięciu nie jest dowodem — świeży odczyt z serwera
+  check("88i: (źródło) po „Send fleet” bez adresu sukcesu hangar czytany jest ŚWIEŻO z serwera (scanRemote), nie ze starego DOM",
+    /if \(!okUrl\) \{\s*const prob = /.test(src) && /h = await Hangar\.scanRemote\(m\.fromKey, m\.fromBody\)/.test(src)
+    && /if \(!after && page\(\) === "fleet"\) after = Hangar\.scan\(\);/.test(src));
+  check("88j: (źródło) częściowa wysyłka lotu obronnego NIE zeruje hangaru (noteLeftHome zamiast emptySourceHangar)",
+    /if \(typeof info\.fresh === "number"\) noteLeftHome\(m\.fromKey, m\.fromBody, info\.fresh\); else emptySourceHangar\(/.test(src));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
