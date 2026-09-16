@@ -220,7 +220,7 @@ class Game {
 // pisały do tego samego magazynu, co żywy scenariusz). W przeglądarce robi to
 // sama gra — przeładowanie strony zabija timery. Tutaj musimy to zrobić ręcznie.
 let poprzednieOkno = null;
-function load(game, { cfg = {}, ticks = 1 } = {}) {
+function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
   if (poprzednieOkno) { try { poprzednieOkno.close(); } catch {} poprzednieOkno = null; }
   const url = `https://genesis.ogamex.net/${game.page}${game.query}`;
   const dom = new JSDOM(`<!doctype html><html><body>${game.bodyHtml()}</body></html>`, { url, pretendToBeVisual: true, runScripts: "outside-only" });
@@ -365,6 +365,17 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
         nav("/" + game.page);
         return;
       }
+      // v3.99.3 (incydent 16.09 19:56:09): fork czyści `#content` pod render kroku 2, ale przycisk
+      // „Next" kroku 1 leży POZA tym kontenerem (stopka formularza) i czyszczenie przeżywa — w DOM
+      // zostaje TEN SAM element. Zrzut detektora z żywej gry pokazał dokładnie to: „#content teraz:"
+      // pusty, a drugi klik trafił w `btn-next-fleet2`. `slowStep2` = przez tyle kliknięć gra zostaje
+      // w tym stanie. Celowo NIE przerysowujemy body: tożsamość przycisku ma zostać ta sama.
+      if (game.slowStep2 > 0) {
+        game.slowStep2--;
+        const c = w.document.getElementById("content");
+        if (c) c.innerHTML = "";
+        return;
+      }
       game.formShips = {};
       for (const it of w.document.querySelectorAll(".ship-item")) {
         const t = it.querySelector("[data-ship-type]")?.getAttribute("data-ship-type");
@@ -420,6 +431,9 @@ function load(game, { cfg = {}, ticks = 1 } = {}) {
   const api = w.__OGX3;
   if (!api) { console.log("DIAG: __OGX3 brak; panel:", !!w.document.getElementById("ogx3-panel"), "| klucze store:", [...game.store.keys()].slice(0,5)); }
   if (api && Object.keys(cfg).length) { for (const [k, v] of Object.entries(cfg)) { if (v && typeof v === "object" && !Array.isArray(v)) Object.assign(api.CFG[k], v); else api.CFG[k] = v; } api.Store.set("cfg", api.CFG); }
+  // v3.99.3: haczyk na STAŁE bota, których nie ma w configu (np. `Fly.STEP2_MS` — 12 s czekania
+  // na krok 2 formularza). Scenariusz skraca je do ułamka sekundy, zamiast czekać naprawdę.
+  if (api && onApi) { try { onApi(api); } catch (e) { console.log("!! onApi rzucił:", e && e.message); } }
   poprzednieOkno = w;
   return { w, api, dom, async tick(n = ticks) { for (let i = 0; i < n; i++) await api.defenceTick(); } };
 }
@@ -464,7 +478,7 @@ function advance(game, ms) {
 }
 
 // „przeglądarka": ładuje stronę, robi ticki, i tak dopóki bot nawiguje
-async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
+async function run(game, { cfg, loads = 25, ticksPerLoad = 3, onApi = null } = {}) {
   const logs = [];
   for (let i = 0; i < loads; i++) {
     const before = game.navigations.length;
@@ -477,7 +491,7 @@ async function run(game, { cfg, loads = 25, ticksPerLoad = 3 } = {}) {
         if (st && st.threats) { for (const t of st.threats) t.seenAt -= 30000; game.store.set(k, JSON.stringify(st)); }
       } catch {}
     }
-    const inst = load(game, { cfg });
+    const inst = load(game, { cfg, onApi });
     try { await inst.tick(ticksPerLoad); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
     // Czas na dokonczenie krokow bota (jego wlasne pauzy sa 150x krotsze).
     // UWAGA (31.08): probowalismy tu czekac na `busy()` bota (startowy defenceTick
@@ -3519,6 +3533,60 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("76c: …bez typów wykluczonych (LC, HC zostały w domu)", !!ex && !ex.ships.LIGHT_CARGO && !ex.ships.HEAVY_CARGO, JSON.stringify(ex && ex.ships));
     check("76d: log mówi, że w hangarze było więcej niż w planie", logs.some(m => /fala domykająca: w hangarze jest więcej niż w planie \(641 zamiast 2 szt\./.test(m)),
       logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
+  }
+
+  console.log("\n── 77. v3.99.3: krok 2 formularza nie zdążył wstać — bot CZEKA, nie klika Next kroku 1 drugi raz (incydent 16.09 19:56) ──");
+  {
+    // Log z żywej gry 19:56:08–19:56:19: bot kliknął „Next" kroku 1, fork wyczyścił `#content`
+    // pod render kroku 2 i nie zdążył go wypełnić. Bramka „czekaj na krok 2" pytała wtedy
+    // WYŁĄCZNIE o `#fleet2_target_x` — pole wypełniane z URL-a, więc bywa w DOM-ie już na kroku 1
+    // — i przepuszczała natychmiast. Drugi `clickWhenEnabled("Next")` trafiał w TEN SAM przycisk
+    // (detektor z v3.65.2 zrzucił pusty `#content`), krok 3 wstawał kaleki i lot ginął na „brak
+    // przycisku Send fleet". Na ekspedycji to spalona fala, na ratunku pod ostrzałem — nieuratowana flota.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 },
+      expo: { enabled: true, waves: 1, slotReserve: 0 } };
+    const nowa = () => {
+      const g = new Game({
+        pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+        hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+        active: { key: "1:100:5", body: "moon" },
+      });
+      g.moonLinks = true; g.page = "home"; g.query = "";
+      // „Next" w STOPCE formularza, poza `#content` — to jest ta własność forka, dzięki której
+      // przycisk kroku 1 przeżywa czyszczenie kontenera i daje się kliknąć drugi raz.
+      g.nextOutsideContent = true;
+      return g;
+    };
+    // 12 s czekania → 60 ms. Budżet MUSI zmieścić się w oknie osadzania harnessu (140 ms realnego
+    // czasu po ticku), inaczej kolejne załadowanie zamyka okno w środku czekania i abort nie pada —
+    // to ta sama pułapka, co przy 25-sekundowym czekaniu na „Next" w scenariuszu 70.
+    const krotkoCzekaj = (api) => { api.Fly.STEP2_MS = 60; };
+
+    const g1 = nowa();
+    g1.slowStep2 = 99;                                            // gra NIGDY nie dorysowuje kroku 2
+    const r1 = { logs: [] };
+    for (let i = 0; i < 4; i++) { const r = await run(g1, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotkoCzekaj }); r1.logs.push(...r.logs); advance(g1, 4 * 60e3); }
+    const kliki1 = r1.logs.filter(m => /klik „Next" \(<\w+ id=btn-next-fleet2>/.test(m)).length;
+    const proby1 = r1.logs.filter(m => /krok 2 formularza nie wstał/.test(m)).length;
+    check("77a: bot mówi wprost, co się stało („krok 2 formularza nie wstał”, z id przycisku kroku 1)",
+      r1.logs.some(m => /krok 2 formularza nie wstał w \d+ s — widoczny „Next" to wciąż przycisk kroku 1 \(id=btn-next-fleet2\)/.test(m)),
+      r1.logs.filter(m => /LOT\] przerwany|Next/.test(m)).slice(0, 4).join(" | "));
+    check("77b: ANI RAZU nie kliknął Next kroku 1 dwa razy (jeden klik na próbę)", kliki1 > 0 && proby1 > 0 && kliki1 === proby1,
+      `kliki=${kliki1} przerwane=${proby1} | ${r1.logs.filter(m => /klik „Next"/.test(m)).slice(0, 6).join(" | ")}`);
+    check("77c: stary objaw ZNIKNĄŁ — żadnego „brak przycisku Send fleet” ani linii detektora krok 2→3",
+      !r1.logs.some(m => /brak przycisku Send fleet|krok 2→3 kliknął/.test(m)),
+      r1.logs.filter(m => /Send fleet|krok 2→3/.test(m)).slice(0, 3).join(" | "));
+    check("77d: nic nie poleciało (formularz był kaleki — lepiej nie wysłać niż wysłać byle co)", g1.sent.length === 0, JSON.stringify(g1.sent.map(x => [x.to, x.mission])));
+
+    // …i druga strona medalu: gdy gra JEDNAK dorysuje krok 2, następna próba ma wyjść normalnie.
+    const g2 = nowa();
+    g2.slowStep2 = 1;                                             // pierwsze podejście pada, drugie zastaje zdrowy formularz
+    const logs2 = [];
+    for (let i = 0; i < 4 && !g2.sent.length; i++) { const r = await run(g2, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotkoCzekaj }); logs2.push(...r.logs); advance(g2, 4 * 60e3); }
+    check("77e: po nieudanym podejściu następne kończy się WYSYŁKĄ (poprawka nie zabija trasy)",
+      g2.sent.some(x => /16$/.test(String(x.to || "")) && x.ships && x.ships.BATTLESHIP === 600),
+      `${JSON.stringify(g2.sent.map(x => [x.to, x.ships]))} | ${logs2.filter(m => /LOT\]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

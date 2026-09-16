@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.99.2
+// @version      3.99.3
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.99.2";
+  const VERSION = "3.99.3";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -4070,6 +4070,9 @@
     // liczba nawigacji, bo każda z nich to przeładowanie gry. Sufit przerywa pętlę
     // po 6 krokach — normalny lot potrzebuje 2–3.
     NAV_MAX: 6,
+    // v3.99.3: ile czekamy, aż gra przerysuje krok 2 formularza floty (patrz `krok2Wstal`).
+    // Osobne pole, a nie liczba w kodzie, żeby test mógł zejść z 12 s do ułamka sekundy.
+    STEP2_MS: 12000,
     bumpNav(m) { m.navs = (m.navs || 0) + 1; Store.set("mission", m); },
     async tick() {
       const m = this.mission(); if (!m) return;
@@ -4513,7 +4516,26 @@
       const nextBtn1 = await this.clickWhenEnabled("Next");
       if (!nextBtn1) return this.abort("Next (krok 1) martwy");
       // krok 2: cel (koordy, ciało), prędkość
-      const t0 = Date.now(); while (Date.now() - t0 < 8000 && !document.getElementById("fleet2_target_x")) await sleep(400);
+      // v3.99.3 (incydent 16.09 19:56:09 — PIERWSZY DOWÓD dla detektora z v3.65.2) — CO SIĘ
+      // PSUŁO: bramka „czekaj na krok 2" pytała o `#fleet2_target_x`, a to pole w forku jest
+      // wypełnione Z URL-a (`/fleet?x=…&y=…&z=…`), więc bywa w DOM-ie już na kroku 1. Bramka
+      // przepuszczała wtedy NATYCHMIAST — także wtedy, gdy gra dopiero czyściła `#content` pod
+      // render kroku 2. Przycisk „Next" kroku 1 leży POZA tym kontenerem i czyszczenie przeżywa,
+      // więc drugi `clickWhenEnabled("Next")` trafiał w TEN SAM element (zrzut detektora:
+      // „#content teraz:" PUSTY), krok 3 wstawał kaleki (kafel misji bez `enabled`, brak listy
+      // czasu trwania) i lot ginął na „brak przycisku Send fleet". Na ekspedycji to spalona fala,
+      // na RATUNKU pod ostrzałem — nieuratowana flota, i to bez jednego czerwonego zdania o tym,
+      // że winna jest nasza bramka, a nie gra. Dowodem kroku 2 jest teraz WIDOCZNY „Next" o innej
+      // tożsamości niż ten z kroku 1 albo tekst „Duration of flight" (gra pisze go wyłącznie na
+      // kroku 2). Druga droga jest konieczna: przy martwym Next kroku 2 (v3.96.2) sam krok 2 stoi
+      // poprawnie i ma czas lotu — tamta diagnostyka ma zostać nietknięta.
+      const krok2Wstal = () => {
+        const b = this.findButton("Next");
+        return (!!b && b !== nextBtn1 && !(nextBtn1.id && b.id === nextBtn1.id))
+          || /Duration\s*of\s*flight/i.test(document.body.textContent || "");
+      };
+      const t0 = Date.now(); while (Date.now() - t0 < this.STEP2_MS && !(krok2Wstal() && document.getElementById("fleet2_target_x"))) await sleep(400);
+      if (!krok2Wstal()) return this.abort(`krok 2 formularza nie wstał w ${Math.round(this.STEP2_MS / 1000)} s — widoczny „Next" to wciąż przycisk kroku 1 (id=${nextBtn1.id || "brak"}), gra nie przerysowała strony`);
       const [g, sy, po] = m.toKey.split(":");
       const fx = document.getElementById("fleet2_target_x"), fy = document.getElementById("fleet2_target_y"), fz = document.getElementById("fleet2_target_z");
       if (fx && fy && fz && `${fx.value}:${fy.value}:${fz.value}` !== m.toKey) { setInput(fx, g); setInput(fy, sy); setInput(fz, po); log(`[LOT] koordy celu ustawione na [${m.toKey}]`, "info"); await sleep(600); }
