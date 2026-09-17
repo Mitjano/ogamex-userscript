@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.99.3
+// @version      3.99.4
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.99.3";
+  const VERSION = "3.99.4";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -4276,6 +4276,37 @@
       const loose = (list) => list.find(el => { const l = label(el); return l.length <= 24 && alt.some(a => l.includes(a)); });
       return exact(inArea) || exact(anywhere) || loose(inArea) || loose(anywhere) || null;
     },
+    // v3.97.1: czas lotu z ramki „Duration of flight" (także ponad dobę: „1d 08:41:48").
+    // v3.99.4: wydzielone, bo to samo jest dowodem, że krok 2 formularza wstał — 0, gdy brak liczby.
+    flightMsOnPage() {
+      const ft = (document.body.textContent || "").match(/Duration\s*of\s*flight[^0-9]{0,40}?(?:(\d{1,3})\s*d\D{0,4})?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
+      if (!ft) return 0;
+      const dni = ft[1] !== undefined ? +ft[1] : 0;
+      return (dni > 0
+        ? dni * 86400 + (+ft[2] * 3600 + +ft[3] * 60 + +(ft[4] || 0))
+        : (ft[4] !== undefined ? (+ft[2] * 3600 + +ft[3] * 60 + +ft[4]) : (+ft[2] * 60 + +ft[3]))) * 1000;
+    },
+    // v3.99.4 (incydent 17.09 12:10:40): okno błędu gry (sweetalert2, tytuł „Error"), np. „Ships
+    // not found." po Next kroku 1. Tylko okna BŁĘDU — inne dialogi forka nie przerywają lotu.
+    // Widoczność: kontener swal2 ma `position: fixed`, więc `offsetParent` bywa null mimo okna na ekranie.
+    gameError() {
+      const pop = [...document.querySelectorAll(".swal2-popup")].find(p => !p.closest("#ogx3-panel") && !p.classList.contains("swal2-hide")
+        && (p.offsetParent !== null || p.getClientRects().length > 0));
+      if (!pop) return null;
+      const t = (sel) => (pop.querySelector(sel)?.textContent || "").replace(/\s+/g, " ").trim();
+      const tytul = t(".swal2-title");
+      if (!/error|błąd|fehler/i.test(tytul) && !pop.classList.contains("swal2-icon-error")) return null;
+      const tresc = t(".swal2-html-container, #swal2-content");
+      return { text: [tytul, tresc].filter(Boolean).join(": ") || (pop.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160), pop };
+    },
+    // v3.99.4: gra odrzuciła formularz oknem błędu. Zamykamy okno (OK), przerywamy próbę z tekstem
+    // gry i przeładowujemy /fleet — po odmowie `#content` jest pusty, a karta bez nawigacji stała
+    // z modalem na ekranie aż do keepalive (10 min).
+    refused(err, krok) {
+      try { const ok = err.pop.querySelector(".swal2-confirm, .swal2-close"); if (ok) ok.click(); } catch {}
+      this.abort(`gra odrzuciła formularz na kroku ${krok}: „${err.text}"`);
+      Nav.go("/fleet", "gra odrzuciła formularz floty — zamykam okno błędu i odświeżam stronę");
+    },
     isDisabled(el) { return !el || el.disabled || el.classList.contains("disabled") || el.getAttribute("aria-disabled") === "true"; },
     // v3.68.11 (audyt 04.09, obrona-wykonanie#1 P1) — CO SIĘ PSUŁO: `defenceTick` trzyma
     // flagę `running` przez cały `await Fly.tick()`, a wypełnianie formularza ma DWA
@@ -4529,12 +4560,27 @@
       // tożsamości niż ten z kroku 1 albo tekst „Duration of flight" (gra pisze go wyłącznie na
       // kroku 2). Druga droga jest konieczna: przy martwym Next kroku 2 (v3.96.2) sam krok 2 stoi
       // poprawnie i ma czas lotu — tamta diagnostyka ma zostać nietknięta.
+      // v3.99.4 (incydent 17.09 12:10:40) — CO SIĘ PSUŁO: druga droga pytała o SAM napis
+      // „Duration of flight", a żywa gra ma go na stronie już na kroku 1 (w ramce podsumowania,
+      // bez liczby). Bramka przepuszczała w tej samej sekundzie co klik, detektor krok 2→3 znów
+      // złapał podwójny klik w `btn-next-fleet2`, a w logu NIE było linii „czas lotu" — w udanych
+      // lotach jest zawsze. Dowodem jest więc dopiero CZAS LOTU większy od zera (krok 2 go liczy).
       const krok2Wstal = () => {
         const b = this.findButton("Next");
         return (!!b && b !== nextBtn1 && !(nextBtn1.id && b.id === nextBtn1.id))
-          || /Duration\s*of\s*flight/i.test(document.body.textContent || "");
+          || this.flightMsOnPage() > 0;
       };
-      const t0 = Date.now(); while (Date.now() - t0 < this.STEP2_MS && !(krok2Wstal() && document.getElementById("fleet2_target_x"))) await sleep(400);
+      // v3.99.4 (ten sam incydent): gra odpowiedziała na Next kroku 1 oknem „Error — Ships not
+      // found." i kroku 2 nie narysowała wcale. Bot tego nie widział: klikał dalej po pustej
+      // stronie, przerwał lot na „brak przycisku Send fleet" i zostawił okno błędu na ekranie —
+      // karta stała z modalem aż do keepalive. Okno błędu gry kończy próbę OD RAZU, z tekstem gry.
+      let odmowa = null;
+      const t0 = Date.now();
+      while (Date.now() - t0 < this.STEP2_MS && !(krok2Wstal() && document.getElementById("fleet2_target_x"))) {
+        if ((odmowa = this.gameError())) break;
+        await sleep(400);
+      }
+      if (odmowa || (!krok2Wstal() && (odmowa = this.gameError()))) return this.refused(odmowa, "krok 1 (wybór statków)");
       if (!krok2Wstal()) return this.abort(`krok 2 formularza nie wstał w ${Math.round(this.STEP2_MS / 1000)} s — widoczny „Next" to wciąż przycisk kroku 1 (id=${nextBtn1.id || "brak"}), gra nie przerysowała strony`);
       const [g, sy, po] = m.toKey.split(":");
       const fx = document.getElementById("fleet2_target_x"), fy = document.getElementById("fleet2_target_y"), fz = document.getElementById("fleet2_target_z");
@@ -4586,12 +4632,9 @@
       // POWROTU. Cztery loty zawrócone o 05:00 zamiast o 01:48 wracały sześć godzin za późno
       // (w stanie widać je po `flightMs: 0`). Doba wchodzi jako opcjonalna grupa; gdy jest,
       // reszta jest ZAWSZE H:M:S (bez niej „12:30" nadal znaczy 12 min 30 s, jak dotąd).
-      const ft = document.body.textContent.match(/Duration\s*of\s*flight[^0-9]{0,40}?(?:(\d{1,3})\s*d\D{0,4})?(\d{1,3}):(\d{2})(?::(\d{2}))?/i);
-      if (ft) {
-        const dni = ft[1] !== undefined ? +ft[1] : 0;
-        m.flightMs = (dni > 0
-          ? dni * 86400 + (+ft[2] * 3600 + +ft[3] * 60 + +(ft[4] || 0))
-          : (ft[4] !== undefined ? (+ft[2] * 3600 + +ft[3] * 60 + +ft[4]) : (+ft[2] * 60 + +ft[3]))) * 1000;
+      const czasLotu = this.flightMsOnPage();
+      if (czasLotu > 0) {
+        m.flightMs = czasLotu;
         log(`[LOT] czas lotu ${Math.round(m.flightMs / 1000)} s`, "info");
         // v3.10.2: zawrót ma sens tylko wtedy, gdy flota JESZCZE LECI. Lot krótszy niż
         // termin zawrotu wyląduje na kolonii docelowej — wtedy nie udajemy, że wisi

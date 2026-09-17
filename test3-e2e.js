@@ -62,6 +62,11 @@ class Game {
     this.metal = 3_800_000_000;      // pasek surowców (moduł księżyców liczy z niego budżet)
     this.moonKmCost = 300_000;       // koszt metalu za 1 km średnicy (atrapa cennika forka)
     this.nextOutsideContent = false;   // „Next" w stopce, POZA #content (jak na Genesis)
+    // v3.99.4 (incydent 17.09 12:10:40): stopka kroku 1 jak w żywej grze — pola celu z URL-a,
+    // przełącznik ciała i ramka „Duration of flight" BEZ czasu. Sam napis nie dowodzi kroku 2.
+    this.liveFooter = false;
+    this.shipsNotFound = 0;            // ile razy gra odpowie na Next kroku 1 oknem „Error — Ships not found."
+    this.dialogClosed = 0;
     this.bonus = false;       // zielony „Online bonus" w menu (antymateria + punkty Akademii)
     this.bonusClaims = 0;
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
@@ -139,7 +144,13 @@ class Game {
       <div>Fleets: ${this.slots.fleet.used} / ${this.slots.fleet.total} Expeditions: ${this.slots.expo.used} / ${this.slots.expo.total}</div>
       <div id="step1">${ships || "There are no ships on this planet at this time."}</div>
       ${this.nextOutsideContent ? "" : '<a class="btn-continue" id="btn-next-fleet2">Next</a>'}
-    </div>${this.nextOutsideContent ? '<div class="form-footer"><span>Selected fleet points: 31.272</span><button id="btn-next-fleet2" class="btn btn-success">Next</button></div>' : ""}`;
+    </div>${this.nextOutsideContent ? '<div class="form-footer"><span>Selected fleet points: 31.272</span>' + (this.liveFooter ? this.liveFooterHtml() : "") + '<button id="btn-next-fleet2" class="btn btn-success">Next</button></div>' : ""}`;
+  }
+  liveFooterHtml() {
+    const q = new URLSearchParams((this.query || "").replace(/^\?/, ""));
+    return `<div class="fleet-summary"><input id="fleet2_target_x" value="${q.get("x") || ""}"><input id="fleet2_target_y" value="${q.get("y") || ""}"><input id="fleet2_target_z" value="${q.get("z") || ""}">
+      <a data-planet-type="1" class="planet-icon">Planet</a><a data-planet-type="2" class="moon-icon">Moon</a><a data-planet-type="3">Debris</a>
+      <div>Duration of flight (one way): -</div></div>`;
   }
   step2Html() {
     return `<div id="content">
@@ -345,6 +356,7 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
       return;
     }
     if (id === "diameter" || (el.id === "diameter")) { return; }
+    if (cls.includes("swal2-confirm")) { game.dialogClosed++; el.closest(".swal2-container")?.remove(); return; }
     if (id === "btn-form-moon") {
       const inp = w.document.getElementById("diameter");
       const km = parseInt((inp && inp.value || "0").replace(/[^\d]/g, ""), 10) || 0;
@@ -370,6 +382,17 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
       // zostaje TEN SAM element. Zrzut detektora z żywej gry pokazał dokładnie to: „#content teraz:"
       // pusty, a drugi klik trafił w `btn-next-fleet2`. `slowStep2` = przez tyle kliknięć gra zostaje
       // w tym stanie. Celowo NIE przerysowujemy body: tożsamość przycisku ma zostać ta sama.
+      // v3.99.4 (incydent 17.09 12:10:40): gra odrzuca krok 1 oknem sweetalert2 i kroku 2 nie rysuje.
+      if (game.shipsNotFound > 0) {
+        game.shipsNotFound--;
+        const c = w.document.getElementById("content");
+        if (c) c.innerHTML = "";
+        const box = w.document.createElement("div");
+        box.className = "swal2-container swal2-center swal2-backdrop-show";
+        box.innerHTML = '<div class="swal2-popup swal2-modal swal2-icon-error swal2-show"><h2 class="swal2-title">Error</h2><div class="swal2-html-container">Ships not found.</div><div class="swal2-actions"><button type="button" class="swal2-confirm swal2-styled">OK</button></div></div>';
+        w.document.body.appendChild(box);
+        return;
+      }
       if (game.slowStep2 > 0) {
         game.slowStep2--;
         const c = w.document.getElementById("content");
@@ -3556,6 +3579,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       // „Next" w STOPCE formularza, poza `#content` — to jest ta własność forka, dzięki której
       // przycisk kroku 1 przeżywa czyszczenie kontenera i daje się kliknąć drugi raz.
       g.nextOutsideContent = true;
+      g.liveFooter = true;         // v3.99.4: w żywej grze napis „Duration of flight" stoi już na kroku 1
       return g;
     };
     // 12 s czekania → 60 ms. Budżet MUSI zmieścić się w oknie osadzania harnessu (140 ms realnego
@@ -3587,6 +3611,42 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("77e: po nieudanym podejściu następne kończy się WYSYŁKĄ (poprawka nie zabija trasy)",
       g2.sent.some(x => /16$/.test(String(x.to || "")) && x.ships && x.ships.BATTLESHIP === 600),
       `${JSON.stringify(g2.sent.map(x => [x.to, x.ships]))} | ${logs2.filter(m => /LOT\]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
+  }
+
+  console.log("\n── 78. v3.99.4: gra odrzuca krok 1 oknem „Error — Ships not found.” — bot przerywa z tekstem gry, zamyka okno, odświeża stronę (incydent 17.09 12:10:40) ──");
+  {
+    // Log z żywej gry 12:10:39–12:10:49: Next kroku 1 → okno „Error / Ships not found.", kroku 2
+    // nie ma. Bramka przepuściła od razu (napis „Duration of flight" w stopce), bot kliknął ten sam
+    // Next drugi raz, przerwał na „brak przycisku Send fleet" i zostawił kartę z modalem na ekranie.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 },
+      expo: { enabled: true, waves: 1, slotReserve: 0 } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.moonLinks = true; g.page = "home"; g.query = "";
+    g.nextOutsideContent = true; g.liveFooter = true;
+    g.shipsNotFound = 1;
+    const krotko = (api) => { api.Fly.STEP2_MS = 60; };
+    const logs = [];
+    for (let i = 0; i < 4 && !g.dialogClosed && !g.sent.length; i++) { const r = await run(g, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotko }); logs.push(...r.logs); if (!g.dialogClosed) advance(g, 4 * 60e3); }
+    check("78a: bot przerywa próbę z TEKSTEM gry („Error: Ships not found.”)",
+      logs.some(m => /gra odrzuciła formularz na kroku krok 1 \(wybór statków\): „Error: Ships not found\./.test(m)),
+      logs.filter(m => /LOT\]/.test(m)).slice(0, 8).join(" | "));
+    check("78b: Next kroku 1 kliknięty RAZ, bez klikania po pustej stronie (brak „Send fleet”, detektora 2→3, wyboru celu)",
+      logs.filter(m => /klik „Next" \(<\w+ id=btn-next-fleet2>/.test(m)).length === 1 && !logs.some(m => /brak przycisku Send fleet|krok 2→3 kliknął|cel: PLANETA/.test(m)),
+      logs.filter(m => /klik „Next"|Send fleet|krok 2→3|cel:/.test(m)).slice(0, 5).join(" | "));
+    check("78c: okno błędu zamknięte (OK kliknięte)", g.dialogClosed === 1, `dialogClosed=${g.dialogClosed}`);
+    check("78d: po odmowie bot odświeża /fleet (karta nie stoi z modalem do keepalive)",
+      logs.some(m => /gra odrzuciła formularz floty — zamykam okno błędu i odświeżam stronę/.test(m)),
+      JSON.stringify(g.navigations.slice(0, 8)) + " | " + logs.filter(m => /ON, AUTO/.test(m)).slice(0, 5).join(" | "));
+    check("78e: nic nie poleciało przy odmowie", g.sent.length === 0, JSON.stringify(g.sent.map(x => [x.to, x.ships])));
+    for (let i = 0; i < 4 && !g.sent.length; i++) { advance(g, 4 * 60e3); const r = await run(g, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotko }); logs.push(...r.logs); }
+    check("78f: po karencji następna próba kończy się WYSYŁKĄ (odmowa nie zabija trasy)",
+      g.sent.some(x => /16$/.test(String(x.to || "")) && x.ships && x.ships.BATTLESHIP === 600),
+      `${JSON.stringify(g.sent.map(x => [x.to, x.ships]))} | ${logs.filter(m => /LOT\]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
