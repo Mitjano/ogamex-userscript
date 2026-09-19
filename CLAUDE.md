@@ -4,13 +4,14 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.99.3, ~6,6k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
+| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.100.0, ~6,7k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
 | `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
 - Serwer: fork **.NET**, nie Laravel `lanedirt/OGameX`. Nie budować na endpointach niepotwierdzonych na żywo; nowy markup najpierw zrzuć do logu (`[... DOM]`), potem parser.
 - Język: polski (logi, commity, dokumenty). Użytkownik = obrońca; **obrona floty ma bezwzględny priorytet nad ekonomią**.
 - Przy fałszywym alarmie prosić o ZRZUT EKRANU paska misji, nie o log.
+- **Lista `expo.excludeTypes` jest WŁASNOŚCIĄ KODU** (`pinCodeOwned`), bo `saveCfg` zapisuje cały CFG i schowek z poprzedniej wersji nadpisałby ją na zawsze (panel nie ma pola, żeby to odkręcić). Stan na v3.100.0: w domu zostają minery, kolonizatory, GŚ, recyklery, avatary i **sondy**; **light i heavy cargo LECĄ na ekspedycje** (owner 19.09 cofnął wykluczenia z 07.09 i 16.09). Nie „przywracać" starej listy z pamięci — historia jest w komentarzu przy `DEFAULTS`.
 
 ## 3.0 (Genesis) — architektura, której trzeba się trzymać
 Kolejność czytania: `START-3.0.md` → `AUDYT-3.0-2026-08-28.md` → kod.
@@ -33,7 +34,7 @@ Reguły twarde: dom = księżyc, gdy para go ma · nic nie leci NA atakowane cia
 - 2.x: `node test-all.js` (24 zestawy, wycinają funkcje po DOKŁADNEJ sygnaturze).
 
 ## Historia i kontekst
-- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW** (sekcja 8 = sesja popołudniowa 14.09 na Windows, v3.96.0: Sekcje 9–17 = 14/16.09 (przenosiny, noc, v3.96.1–3.99.2; 17 = fala domykająca bierze cały hangar z formularza + podejrzenie drugiego bota; 15 = fork wysyła mniej, niż wpisano, ekspedycje bez sond i LC; 16 = osłona przełączników panelu, lądowanie w trakcie wysyłki); odczyt stanu z Chrome na Macu: `tools/mac_chrome_state.py`.
+- **`HANDOFF-2026-09-14.md` — CZYTAĆ NAJPIERW** (sekcja 8 = sesja popołudniowa 14.09 na Windows, v3.96.0: Sekcje 9–18 = 14–19.09 (przenosiny, noc, v3.96.1–3.100.0; 17 = fala domykająca bierze cały hangar z formularza + podejrzenie drugiego bota; 15 = fork wysyła mniej, niż wpisano, ekspedycje bez sond i LC; 16 = osłona przełączników panelu, lądowanie w trakcie wysyłki; **18 = v3.100.0, transportery WRACAJĄ na ekspedycje**); odczyt stanu z Chrome na Macu: `tools/mac_chrome_state.py`.
   zamknięte cztery P0 warstwy wykonawczej i cztery P0 odbudowy księżyca, lekcje o harnessie E2E).
   Pełny stan po dwóch dobach obrony floty:
   dwa incydenty (strata uniknięta ręcznie 13.09, nalot na trzy księżyce 14.09), wszystko, co

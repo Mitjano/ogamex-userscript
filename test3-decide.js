@@ -2477,30 +2477,38 @@ console.log("\n── 59. SUFITY I NAWIGACJA (audyt 04.09, partia 'sufity-nawiga
     /x\.attack && !x\.mine && !x\.friendly && !x\.isReturn && x\.dst && own\.has\(x\.dst\)/.test(flyMod));
 }
 
-console.log("\n── 60. HEAVY CARGO NIE LECI NA EKSPEDYCJE (owner 07.09, v3.69.0) ──");
+console.log("\n── 60. TRANSPORTERY LECĄ NA EKSPEDYCJE, SONDY ZOSTAJĄ (owner 19.09, v3.100.0) ──");
 {
-  // Duże transportery zostają w domu. Nazwa typu z żywej gry: `HEAVY_CARGO`
-  // (STAN-I-PLAN: „HEAVY_CARGO×12 341"); ten fork nie zna `LARGE_CARGO` (to nazwa z atrapy E2E).
+  // v3.100.0 odwraca decyzje z v3.69.0 (HEAVY_CARGO) i v3.99.0 (LIGHT_CARGO): oba transportery
+  // wracają do fal, bo to one wożą łup z ekspedycji. Wykluczone zostają sondy (zwiad) oraz
+  // statki, które na ekspedycji nie mają czego szukać (minery, recyklery, kolonizatory, GŚ).
+  // Nazwy typów z żywej gry; ten fork nie zna `LARGE_CARGO` (to nazwa z atrapy E2E).
   const DEFAULTS = new Function("return {" + bodyOf("const DEFAULTS = {") + "}")();
-  check("60a: domyślna lista wykluczeń ekspedycji zawiera HEAVY_CARGO (i nadal minery/recyklery)",
-    DEFAULTS.expo.excludeTypes.includes("HEAVY_CARGO") && DEFAULTS.expo.excludeTypes.includes("ASTEROID_MINER") && DEFAULTS.expo.excludeTypes.includes("RECYCLER"),
+  check("60a: domyślna lista wykluczeń NIE ma już transporterów, ale ma sondy, minery i recyklery",
+    !DEFAULTS.expo.excludeTypes.includes("HEAVY_CARGO") && !DEFAULTS.expo.excludeTypes.includes("LIGHT_CARGO")
+    && DEFAULTS.expo.excludeTypes.includes("SPY_PROBE") && DEFAULTS.expo.excludeTypes.includes("ASTEROID_MINER") && DEFAULTS.expo.excludeTypes.includes("RECYCLER"),
     JSON.stringify(DEFAULTS.expo.excludeTypes));
   const cfgD = { expo: { ...ECFG.expo, waves: 1, excludeTypes: DEFAULTS.expo.excludeTypes } };
   const hang = (ships) => ({ "1:100:5|planet": { total: ships.reduce((n, x) => n + x.qty, 0), at: NOW - 60000, ships } });
-  const p = expoPlan(ebase({ hangars: hang([{ type: "BATTLESHIP", qty: 800 }, { type: "HEAVY_CARGO", qty: 200 }, { type: "SMALL_CARGO", qty: 100 }]) }), cfgD, NOW, null);
-  check("60b: fala ekspedycji NIE zawiera HEAVY_CARGO", !p.skip && !p.ships.some(x => x.type === "HEAVY_CARGO"), JSON.stringify(p));
-  check("60b1: … a reszta hangaru leci w całości (pancerniki + małe transportery)",
-    !p.skip && p.ships.find(x => x.type === "BATTLESHIP")?.qty === 800 && p.ships.find(x => x.type === "SMALL_CARGO")?.qty === 100, JSON.stringify(p.ships));
-  const only = expoPlan(ebase({ hangars: hang([{ type: "HEAVY_CARGO", qty: 5000 }]) }), cfgD, NOW, null);
-  check("60c: same duże transportery w hangarze = skip „brak statków”, nie fala z transporterami", /brak statków/.test(only.skip || "") && !only.ships, JSON.stringify(only));
+  const p = expoPlan(ebase({ hangars: hang([{ type: "BATTLESHIP", qty: 800 }, { type: "HEAVY_CARGO", qty: 200 }, { type: "LIGHT_CARGO", qty: 300 }, { type: "SPY_PROBE", qty: 18 }, { type: "RECYCLER", qty: 40 }]) }), cfgD, NOW, null);
+  check("60b: fala ekspedycji bierze OBA transportery w całości",
+    !p.skip && p.ships.find(x => x.type === "HEAVY_CARGO")?.qty === 200 && p.ships.find(x => x.type === "LIGHT_CARGO")?.qty === 300, JSON.stringify(p));
+  check("60b1: … razem z flotą bojową, ale bez sond i recyklerów",
+    !p.skip && p.ships.find(x => x.type === "BATTLESHIP")?.qty === 800 && !p.ships.some(x => /SPY_PROBE|RECYCLER/.test(x.type)), JSON.stringify(p.ships));
+  const only = expoPlan(ebase({ hangars: hang([{ type: "SPY_PROBE", qty: 18 }, { type: "RECYCLER", qty: 5000 }]) }), cfgD, NOW, null);
+  check("60c: same sondy i recyklery w hangarze = skip „brak statków”, nie fala z nimi", /brak statków/.test(only.skip || "") && !only.ships, JSON.stringify(only));
+  const cargoOnly = expoPlan(ebase({ hangars: hang([{ type: "HEAVY_CARGO", qty: 5000 }]) }), cfgD, NOW, null);
+  check("60c1: sam hangar transporterów to już PEŁNOPRAWNA fala, nie „brak statków”",
+    !cargoOnly.skip && cargoOnly.ships.length === 1 && cargoOnly.ships[0].qty === 5000, JSON.stringify(cargoOnly));
   // Schowek z POPRZEDNIEJ wersji: `saveCfg` zapisuje CAŁY CFG, więc w przeglądarce ownera
-  // leży stara lista bez HEAVY_CARGO — ani budowa CFG, ani syncCfg NIE MOGĄ jej przyjąć.
-  const OLD = ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"];
+  // leży lista v3.99.x Z transporterami — ani budowa CFG, ani syncCfg NIE MOGĄ jej przyjąć,
+  // bo transportery zostałyby w domu na zawsze, a panel nie ma pola, żeby to odkręcić.
+  const OLD = ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "HEAVY_CARGO", "SPY_PROBE", "LIGHT_CARGO"];
   const pinCodeOwned = new Function("DEFAULTS", `return (c) => {${bodyOf("const pinCodeOwned = (c) => {")}}`)(DEFAULTS);
   const buildCfg = (saved) => new Function("Store", "DEFAULTS", "pinCodeOwned", bodyOf("const CFG = (() => {"))({ get: (k, d) => (k === "cfg" ? saved : d) }, DEFAULTS, pinCodeOwned);
   const built = buildCfg({ expo: { enabled: true, waves: 8, excludeTypes: OLD }, autoRescue: true });
-  check("60d: stara lista ze schowka NIE nadpisuje domyślnej (HEAVY_CARGO wykluczony zaraz po aktualizacji)",
-    built.expo.excludeTypes.includes("HEAVY_CARGO"), JSON.stringify(built.expo.excludeTypes));
+  check("60d: lista ze schowka NIE nadpisuje domyślnej (transportery lecą zaraz po aktualizacji)",
+    !built.expo.excludeTypes.includes("HEAVY_CARGO") && !built.expo.excludeTypes.includes("LIGHT_CARGO"), JSON.stringify(built.expo.excludeTypes));
   check("60d1: … a pozostałe ustawienia ze schowka zostają (ekspedycje ON, 8 fal, auto-ratunek)",
     built.expo.enabled === true && built.expo.waves === 8 && built.autoRescue === true, JSON.stringify(built.expo));
   check("60d2: przypięcie nie mutuje DEFAULTS (kopia tablicy, nie ta sama referencja)",
@@ -3560,18 +3568,20 @@ console.log("\n── 87. OKNO DNIA PO POWROCIE FS (v3.98.0) ──");
     /if \(dest && \(s\.fsRestUntil \|\| 0\) > now\) \{/.test(src) && /dest = null;/.test(src));
 }
 
-console.log("\n── 88. v3.99.0: ekspedycje bez sond i lekkich transporterów, pojedyncze sztuki nie czekają, fork wysyła mniej ──");
+console.log("\n── 88. v3.99.0: ekspedycje bez sond (lista wykluczeń po v3.100.0), pojedyncze sztuki nie czekają, fork wysyła mniej ──");
 {
   // (a) lista wykluczeń jest własnością kodu (pinCodeOwned) — sprawdzamy DEFAULTS w źródle
-  const lista = (src.match(/excludeTypes: (\[[^\]]*"HEAVY_CARGO"[^\]]*\])/) || [])[1] || "";
-  check("88a: (źródło) DEFAULTS.expo.excludeTypes zawiera SPY_PROBE i LIGHT_CARGO (owner 16.09)",
-    /"SPY_PROBE"/.test(lista) && /"LIGHT_CARGO"/.test(lista), lista);
+  // v3.100.0: transportery wróciły do fal (blok 60), sondy zostają w domu.
+  const lista = (src.match(/excludeTypes: (\[[^\]]*"SPY_PROBE"[^\]]*\])/) || [])[1] || "";
+  check("88a: (źródło) DEFAULTS.expo.excludeTypes ma SPY_PROBE, a nie ma już transporterów",
+    /"SPY_PROBE"/.test(lista) && !/"LIGHT_CARGO"/.test(lista) && !/"HEAVY_CARGO"/.test(lista), lista);
   const EX = { expo: { ...ECFG.expo, excludeTypes: JSON.parse(lista || "[]") } };
   const h88 = (ships) => ebase({ hangars: { "1:100:5|planet": { total: ships.reduce((n, x) => n + x.qty, 0), at: NOW - 60000, ships } } });
   const p1 = expoPlan(h88([{ type: "SPY_PROBE", qty: 18 }, { type: "LIGHT_CARGO", qty: 110684569 }, { type: "BATTLESHIP", qty: 800 }]), EX, NOW, null);
-  check("88b: fala NIE bierze sond ani lekkich transporterów", !!p1.ships && !p1.ships.some(x => /SPY_PROBE|LIGHT_CARGO/.test(x.type)) && p1.ships.some(x => x.type === "BATTLESHIP"), JSON.stringify(p1));
-  const p2 = expoPlan(h88([{ type: "SPY_PROBE", qty: 18 }, { type: "LIGHT_CARGO", qty: 5 }]), EX, NOW, null);
-  check("88c: hangar z samymi sondami i LC = „brak statków do wysłania”, a nie fala", /brak statków/.test(p2.skip || ""), JSON.stringify(p2));
+  check("88b: fala bierze lekkie transportery, ale NIE sondy", !!p1.ships && !p1.ships.some(x => x.type === "SPY_PROBE")
+    && p1.ships.some(x => x.type === "LIGHT_CARGO") && p1.ships.some(x => x.type === "BATTLESHIP"), JSON.stringify(p1));
+  const p2 = expoPlan(h88([{ type: "SPY_PROBE", qty: 18 }]), EX, NOW, null);
+  check("88c: hangar z samymi sondami = „brak statków do wysłania”, a nie fala", /brak statków/.test(p2.skip || ""), JSON.stringify(p2));
   // (b) pojedyncze sztuki: typ, którego jest mniej niż fal, leci od razu w całości
   const p3 = expoPlan(h88([{ type: "BATTLESHIP", qty: 801 }, { type: "CRUISER", qty: 1 }, { type: "DESTROYER", qty: 3 }]), EX, NOW, null);
   const q = (p, t) => (p.ships.find(x => x.type === t) || {}).qty || 0;

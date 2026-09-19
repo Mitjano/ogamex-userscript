@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.99.4
+// @version      3.100.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.99.4";
+  const VERSION = "3.100.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -418,22 +418,27 @@
       // seriami DOMYŚLNIE WYŁĄCZONA (0 = brak). Włączenie = restMaxMin > 0.
       restMinMin: 0, restMaxMin: 0,
       slotReserve: 1,       // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
-      // v3.69.0 (owner 07.09: „nie wysyłaj heavy cargo na ekspedycję"): duże transportery
-      // zostają w domu. Nazwa typu `HEAVY_CARGO` potwierdzona zrzutem z żywej gry
-      // (STAN-I-PLAN: „HEAVY_CARGO×12 341"; ten fork NIE zna `LARGE_CARGO` — ta nazwa żyje
-      // tylko w atrapie E2E). Lista jest WŁASNOŚCIĄ KODU, nie schowka — patrz `pinCodeOwned`.
-      // v3.99.0 (owner 16.09: „wykluczyć sondy szpiegowskie i light cargo, nie są tam potrzebne"):
-      // SPY_PROBE i LIGHT_CARGO też zostają w domu. Nazwy potwierdzone logiem z żywej gry
-      // („załadowano: SPY_PROBE×18, LIGHT_CARGO×110 684 569, …", 16.09 09:40).
-      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "HEAVY_CARGO", "SPY_PROBE", "LIGHT_CARGO"],
+      // Lista jest WŁASNOŚCIĄ KODU, nie schowka — patrz `pinCodeOwned`. Nazwy typów
+      // potwierdzone zrzutami z żywej gry (`HEAVY_CARGO`, `LIGHT_CARGO`, `SPY_PROBE`;
+      // ten fork NIE zna `LARGE_CARGO` — ta nazwa żyje tylko w atrapie E2E).
+      // HISTORIA tej listy, żeby nikt jej nie „przywrócił" z pamięci:
+      //   v3.69.0 (owner 07.09) → HEAVY_CARGO zostaje w domu;
+      //   v3.99.0 (owner 16.09) → SPY_PROBE i LIGHT_CARGO też;
+      //   v3.100.0 (owner 19.09: „zacząć wysyłać light cargo i heavy cargo na ekspedycje")
+      //     → OBA transportery WRACAJĄ do fal. Sondy zostają w domu (na ekspedycji nie
+      //     mają co robić, a są potrzebne do zwiadu). Wykluczenie transporterów było
+      //     decyzją właściciela, nie obejściem defektu — nic w mechanice ich nie blokuje.
+      excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "SPY_PROBE"],
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
     },
   };
   // v3.69.0: `expo.excludeTypes` jest własnością KODU. `saveCfg` zapisuje CAŁY obiekt CFG,
   // a zarówno budowa CFG przy starcie (Object.assign po podobiektach), jak i `syncCfg`
   // (cfgMerge) podmieniają tablice W CAŁOŚCI — lista wykluczeń zapisana w schowku przez
-  // poprzednią wersję (bez HEAVY_CARGO) nadpisywałaby nową domyślną przy KAŻDYM
-  // przeładowaniu, na zawsze, a panel nie ma pola, którym operator mógłby to odkręcić.
+  // poprzednią wersję nadpisywałaby nową domyślną przy KAŻDYM przeładowaniu, na zawsze,
+  // a panel nie ma pola, którym operator mógłby to odkręcić. Działa w OBIE strony: tak samo
+  // schowek BEZ HEAVY_CARGO cofał wykluczenie w v3.69.0, jak schowek Z HEAVY_CARGO/LIGHT_CARGO
+  // trzymałby transportery w domu po v3.100.0, która je z tej listy zdejmuje.
   // Dopóki pola w panelu nie ma, jedynym źródłem tej listy jest DEFAULTS: przypinamy ją
   // po każdym scaleniu ze schowkiem (start karty + zapis z innej karty).
   const pinCodeOwned = (c) => { c.expo.excludeTypes = DEFAULTS.expo.excludeTypes.slice(); return c; };

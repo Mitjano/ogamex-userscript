@@ -2584,18 +2584,22 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       logs.filter(m => /przerwany/.test(m)).join(" | "));
   }
 
-  console.log("\n── 58. HEAVY CARGO ZOSTAJE W DOMU: fala ekspedycji bez dużych transporterów (owner 07.09, v3.69.0) ──");
+  console.log("\n── 58. TRANSPORTERY LECĄ, SONDY ZOSTAJĄ: lista wykluczeń jest własnością KODU (owner 19.09, v3.100.0) ──");
   {
-    // Schowek z POPRZEDNIEJ wersji: `saveCfg` zapisał cały CFG ze starą listą wykluczeń
-    // (bez HEAVY_CARGO). Po aktualizacji skryptu bot ma mimo to zostawić transportery w domu.
-    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 40, HEAVY_CARGO: 20 } } });
-    g.store.set("genesis.ogamex.net:ogx3_cfg", JSON.stringify({ expo: { enabled: true, waves: 1, excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR"] } }));
+    // Schowek z POPRZEDNIEJ wersji: `saveCfg` zapisał cały CFG z listą v3.99.x, w której
+    // transportery były wykluczone. Po aktualizacji skryptu bot ma je mimo to wysłać —
+    // `pinCodeOwned` przypina listę z kodu przy każdym starcie karty. Ten sam strażnik
+    // działał w drugą stronę w v3.69.0 (schowek bez HEAVY_CARGO cofał wykluczenie).
+    const g = new Game({ hangars: { "1:100:5|moon": { BATTLESHIP: 40, HEAVY_CARGO: 20, LIGHT_CARGO: 30, SPY_PROBE: 7 } } });
+    g.store.set("genesis.ogamex.net:ogx3_cfg", JSON.stringify({ expo: { enabled: true, waves: 1, excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "HEAVY_CARGO", "SPY_PROBE", "LIGHT_CARGO"] } }));
     const { logs } = await run(g, { cfg: { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true } }, loads: 25, ticksPerLoad: 2 });
     const expo = g.sent.find(s => /Expedition/i.test(s.mission || ""));
     check("ekspedycja poleciała (mimo starej listy w schowku)", !!expo, JSON.stringify(g.sent.map(s => s.mission)) + " | " + logs.filter(m => /EXPO|LOT/.test(m)).slice(0, 6).join(" | "));
-    check("bez HEAVY_CARGO w składzie fali", !!expo && !(expo.ships.HEAVY_CARGO > 0), JSON.stringify(expo && expo.ships));
+    check("oba transportery są w składzie fali (20 HC + 30 LC)", !!expo && expo.ships.HEAVY_CARGO === 20 && expo.ships.LIGHT_CARGO === 30, JSON.stringify(expo && expo.ships));
     check("… a pancerniki poleciały w komplecie (fala domykająca bierze resztę hangaru)", !!expo && expo.ships.BATTLESHIP === 40, JSON.stringify(expo && expo.ships));
-    check("duże transportery zostały w hangarze księżyca", (g.hangars["1:100:5|moon"].HEAVY_CARGO || 0) === 20, JSON.stringify(g.hangars["1:100:5|moon"]));
+    check("sondy zostały w hangarze księżyca, transporterów tam nie ma",
+      (g.hangars["1:100:5|moon"].SPY_PROBE || 0) === 7 && !(g.hangars["1:100:5|moon"].HEAVY_CARGO > 0) && !(g.hangars["1:100:5|moon"].LIGHT_CARGO > 0),
+      JSON.stringify(g.hangars["1:100:5|moon"]));
   }
 
   console.log("\n── 59. RÓJ SOND ≠ ATAK: trwałość nadwyżki musi być ZOBACZONA na drugim odczycie (08.09 10:03, v3.71.0) ──");
@@ -3466,15 +3470,15 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       for (let i = 0; i < 5 && !expos(g).length; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
       for (let i = 0; i < 2; i++) { const r = await run(g, { cfg, loads: 6, ticksPerLoad: 2 }); logs.push(...r.logs); }
       const ex = expos(g)[0];
-      check("75a: ekspedycja wyleciała BEZ sond, lekkich i ciężkich transporterów", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 1
-        && !ex.ships.SPY_PROBE && !ex.ships.LIGHT_CARGO && !ex.ships.HEAVY_CARGO, JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
+      check("75a: ekspedycja wyleciała z transporterami (v3.100.0), ale BEZ sond", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 1
+        && ex.ships.LIGHT_CARGO === 500 && ex.ships.HEAVY_CARGO === 50 && !ex.ships.SPY_PROBE, JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
       check("75b: stary DOM po kliknięciu NIE jest dowodem — świeży odczyt potwierdza wysyłkę",
         logs.some(m => /strona nie przeładowała się po „Send fleet”, ale świeży odczyt hangaru potwierdza wysyłkę/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(-8).join(" | "));
       check("75c: …zero „wysyłka NIE potwierdzona” i zero wpisu o przerwanym locie",
         !logs.some(m => /wysyłka NIE potwierdzona/.test(m)) && !journal(g).some(e => /przerwany/.test(e.msg || "")),
         logs.filter(m => /NIE potwierdzona|przerwany/.test(m)).join(" | "));
       const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
-      check("75d: wpis w rejestrze powrotów przeżył (601 szt.)", (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 601), JSON.stringify(st.expected));
+      check("75d: wpis w rejestrze powrotów przeżył (1151 szt.)", (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 1151), JSON.stringify(st.expected));
       check("75e: …i nie było drugiej, daremnej próby tej samej fali", expos(g).length === 1,
         JSON.stringify(expos(g).map(x => x.ships)));
     }
@@ -3534,7 +3538,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // w grze: pełny hangar (fala właśnie wylądowała) + wykluczone typy
     const g = new Game({
       pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
-      hangars: { "1:100:5|moon": { BATTLESHIP: 600, CRUISER: 41, LIGHT_CARGO: 500, HEAVY_CARGO: 50 } },
+      hangars: { "1:100:5|moon": { BATTLESHIP: 600, CRUISER: 41, RECYCLER: 500, SPY_PROBE: 50 } },
       active: { key: "1:100:5", body: "planet" },
     });
     g.moonLinks = true;
@@ -3543,7 +3547,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({
       pairs: {}, threats: [], flights: [],
       hangars: { "1:100:5|moon": { key: "1:100:5", body: "moon", total: 552, at: Date.now() - 30e3,
-        ships: [{ type: "BATTLESHIP", qty: 1 }, { type: "CRUISER", qty: 1 }, { type: "LIGHT_CARGO", qty: 500 }, { type: "HEAVY_CARGO", qty: 50 }] } },
+        ships: [{ type: "BATTLESHIP", qty: 1 }, { type: "CRUISER", qty: 1 }, { type: "RECYCLER", qty: 500 }, { type: "SPY_PROBE", qty: 50 }] } },
       slots: { fleet: { used: 0, total: 20 }, expo: { used: 0, total: 6 }, at: Date.now() },
     }));
     const logs = [];
@@ -3553,7 +3557,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("76a: (warunek wstępny) plan powstał z nieaktualnego odczytu (2 szt.)", planMaly, logs.filter(m => /ekspedycja \(/.test(m)).slice(0, 3).join(" | "));
     check("76b: fala domykająca zabrała CAŁY hangar z formularza (600 BS + 41 CR), nie 1+1", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 41,
       JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
-    check("76c: …bez typów wykluczonych (LC, HC zostały w domu)", !!ex && !ex.ships.LIGHT_CARGO && !ex.ships.HEAVY_CARGO, JSON.stringify(ex && ex.ships));
+    check("76c: …bez typów wykluczonych (recyklery i sondy zostały w domu)", !!ex && !ex.ships.RECYCLER && !ex.ships.SPY_PROBE, JSON.stringify(ex && ex.ships));
     check("76d: log mówi, że w hangarze było więcej niż w planie", logs.some(m => /fala domykająca: w hangarze jest więcej niż w planie \(641 zamiast 2 szt\./.test(m)),
       logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
   }
