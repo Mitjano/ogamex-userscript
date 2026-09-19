@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.100.0
+// @version      3.101.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.100.0";
+  const VERSION = "3.101.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3269,27 +3269,55 @@
     // resztę. Wartość oczekiwana ta sama, ale jedno „flota utracona" trafiało w 39 mln.
     // Dzielnik = min(fale, które zostały w serii; WOLNE sloty ekspedycji do limitu).
     const freeSlots = (expo && expo.total) ? Math.max(1, cap - expo.used) : Infinity;
-    const left = Math.max(1, Math.min(waves - inSeries, freeSlots));   // ile fal jeszcze poleci
     const slotBound = freeSlots < waves - inSeries;
-    const lastOfBurst = waves === 1 || inSeries >= waves - 1 || (expo && expo.total && expo.used >= cap - 1);
+    // ── ROZMIAR FALI: udział z CAŁEJ floty ekspedycyjnej, nie z samego hangaru ──
+    // v3.101.0 (owner 19.09: „bot nie zawsze wysyła równe partie, jedna sporo mniejsza,
+    // druga sporo większa" + „wysłał wszystkie floty, a jeden slot został pusty").
+    // CO SIĘ PSUŁO: rozmiar fali liczył się jako `hangar / wolne sloty`, a fala domykająca
+    // (ostatni wolny slot) brała CAŁY hangar. W stanie ustalonym wolny slot jest jeden, więc
+    // KAŻDA fala zabierała wszystko, co zdążyło wylądować od poprzedniej wysyłki — a nie 1/N
+    // floty. Gdy między dwiema wysyłkami wylądowały dwie fale (wysyłka to trzy kroki
+    // formularza, do tego odstęp 60–90 s, przerwy ludzkie i alarmy obrony), szły jednym lotem
+    // i JUŻ SIĘ NIE ROZDZIELAŁY: wracały razem i znowu leciały razem. Liczba lotów mogła tylko
+    // maleć, rozmiary tylko rosnąć, a zwolniony slot zostawał pusty na stałe (panel 11/12).
+    // Symulacja na produkcyjnym kodzie: rozrzut 4,88×, jeden slot martwy; po poprawce 1,00×
+    // i 12/12 slotów, także gdy start jest już nierówny (wtedy wyrównuje się sama).
+    // JAK JEST TERAZ: celem jednej fali jest `flota ekspedycyjna / cap`, gdzie flota to hangar
+    // PLUS to, co jeszcze wraca z tej bazy. Cel nie zależy od tego, ile akurat wylądowało, więc
+    // nadmiar zostaje w domu na następny zwolniony slot, zamiast puchnąć w jeden lot.
+    const doma = avail.reduce((n, x) => n + x.qty, 0);
+    const znane = (s.expected || []).filter(x => x.kind === "expedition" && x.fromKey === homeKey && (x.returnAt || 0) > now && (x.total || 0) > 0);
+    const znanychSzt = znane.reduce((n, x) => n + x.total, 0);
+    // Rejestr powrotów bywa niepełny (nowa karta, wpisy po terminie). Gdy zna MNIEJ lotów, niż
+    // mówi gra, skalujemy średnią na wszystkie zajęte sloty; gdy nie zna ŻADNEGO, wracamy do
+    // starego wzoru — `doma / wolne sloty` — czyli do zachowania sprzed tej wersji. Ile fal już
+    // lata, wiemy z DWÓCH źródeł: slotów gry i licznika serii. Bierzemy większe, bo odczyt
+    // slotów bywa starszy niż seria (fale idą co 60–90 s, strona floty nie po każdej).
+    const juzLata = Math.max((expo && expo.total) ? expo.used : 0, inSeries);
+    const wolne = Math.max(1, cap - juzLata);
+    const wPowietrzu = znane.length
+      ? (juzLata > znane.length ? Math.round(znanychSzt / znane.length * juzLata) : znanychSzt)
+      : Math.round(doma / wolne * (cap - wolne));
+    // Udział JEDNEJ fali. Celowo ułamkowy: przy flocie mniejszej niż liczba fal zaokrąglenie
+    // do 1 szt. robiło z dzielnika 2 i tłukło hangar 2 szt. na pół (sc. 18).
+    const docelowa = (doma + wPowietrzu) / cap;
+    // Dzielnik: na ile fal powinien się rozejść dzisiejszy hangar.
+    const left = Math.max(1, doma / Math.max(1e-9, docelowa));
+    // Hangar nie większy od udziału jednej fali = leci w całości. To jest jedyny przypadek
+    // „fali domykającej": nie ma już czego dzielić. Wcześniej domykała KAŻDA fala przy jednym
+    // wolnym slocie i to ona zlepiała fale w coraz większe.
+    const bierzeWszystko = doma <= docelowa;
+    const docelowaSzt = Math.max(1, Math.round(docelowa));   // do logu i wpisu lotu
     // v3.99.0 (owner 16.09: „zostają pojedyncze sztuki statków w hangarze"): typ, którego jest
-    // MNIEJ sztuk niż fal do wysłania, miał udział 0 i czekał w domu na falę domykającą — a gdy
+    // MNIEJ sztuk niż wynosi dzielnik, miał udział 0 i czekał w domu na falę domykającą — a gdy
     // ta nie zabrała wszystkiego (serwer forka, patrz `Fly.shortfall`), sztuki stały do następnej
-    // serii. Taki typ leci teraz w całości z bieżącą falą; duże typy dzielimy jak dotąd.
+    // serii. Taki typ leci w całości z bieżącą falą; duże typy dzielimy jak dotąd.
+    // v3.28.0: żadnego sufitu na falę — wszystko poza `excludeTypes` jest flotą ekspedycyjną,
+    // a sufit zostawiał ją bezczynnie w hangarze. Statki, które mają zostać w domu, wpisuje się
+    // do wykluczeń; to jedyny właściwy hamulec na tym uniwersum.
     const share = (qty) => (qty < left ? qty : Math.floor(qty / left));
-    // ── OSTATNIA fala serii zabiera CAŁY hangar ──
-    // Udział fali to dzielenie w dół, więc po wszystkich falach w hangarze
-    // zostaje reszta z zaokrąglenia plus produkcja z czasu serii. Fala
-    // domykająca zabiera to wszystko, żeby flota nie stała w domu do powrotu.
-    // v3.26.0 dopisała tu sufit 3× udziału (port SWEEP_CAP_X z 2.x, gdzie
-    // chronił flotę bojową zaparkowaną po porannym FS). v3.28.0 GO ZDEJMUJE:
-    // na Genesis nie ma FS ani floty parkowanej w domu — wszystko poza
-    // `excludeTypes` jest flotą ekspedycyjną, a sufit zostawiał ją bezczynnie
-    // w hangarze (log 29.08 13:26: ostatnia fala 4/4 wzięła 1236 pancerników
-    // zamiast całej reszty). Statki, które mają zostać w domu, wpisuje się do
-    // wykluczeń — to jedyny właściwy hamulec na tym uniwersum.
-    const ships = avail.map(x => ({ type: x.type, qty: lastOfBurst ? x.qty : share(x.qty) })).filter(x => x.qty > 0);
-    if (!ships.length) return { skip: `flota za mała na ${waves} fal (zostało ${left}) — zmniejsz liczbę fal` };
+    const ships = avail.map(x => ({ type: x.type, qty: bierzeWszystko ? x.qty : share(x.qty) })).filter(x => x.qty > 0);
+    if (!ships.length) return { skip: `flota za mała na ${waves} fal (udział fali ${docelowaSzt.toLocaleString("pl-PL")} szt.) — zmniejsz liczbę fal` };
     // v3.99.2: fala z kilku sztuk (resztki po zaokrągleniach) zajmuje slot ekspedycji na godzinę. Gdy z tej bazy
     // leci fala ponad 100× większa, czekamy na jej powrót — resztka poleci razem z nią.
     {
@@ -3317,11 +3345,12 @@
     // v3.62.0 (log 02.09 08:55–09:04: od 2. fali każda „domyka serię", a log nie mówił
     // DLACZEGO): powód fali domykającej i odczyt slotów idą do wpisu lotu — następny
     // taki log rozstrzygnie, czy to sloty z gry, licznik serii czy konfiguracja.
-    const lastWhy = waves === 1 ? "seria = 1 fala"
-      : inSeries >= waves - 1 ? `ostatnia fala serii ${inSeries + 1}/${waves}`
-      : lastOfBurst ? `ostatni wolny slot ekspedycji (${expo.used}/${expo.total}, limit fal ${cap})` : "";
+    const lastWhy = !bierzeWszystko ? ""
+      : waves === 1 ? "seria = 1 fala"
+      : `hangar ${doma.toLocaleString("pl-PL")} szt. nie przekracza udziału jednej fali (${docelowaSzt.toLocaleString("pl-PL")} szt.)`;
     const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}${expo.fromBar ? ` (odczyt ${expoRaw.used}/${expoRaw.total} przycięty do ${s.bar.own} własnych lotów z paska)` : ""}` : "sloty nieznane";
-    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!lastOfBurst, waves, left, slotBound, lastWhy, slotsTxt,
+    return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!bierzeWszystko, waves, left, slotBound, lastWhy, slotsTxt,
+      docelowa: docelowaSzt, doma, wPowietrzu,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
   }
 
@@ -3488,7 +3517,7 @@
       // v3.10.2 (audyt regresji): licznik fali zapisywany PRZED Fly.start — odmowa
       // startu (trwa inna misja) i tak zjadala fale z serii. Najpierw start, potem licznik.
       const started = Fly.start({ kind: "expedition", fromKey: p.fromKey, fromBody: p.fromBody, toKey: p.toKey, toBody: "planet",
-        why: `ekspedycja ${p.last ? `(domyka serię — cały hangar: ${p.lastWhy})` : `(fala ${sent}/${p.waves}${p.slotBound ? `, udział 1/${p.left} z wolnych slotów` : ""})`} — ${total.toLocaleString("pl-PL")} szt., ${p.slotsTxt}`, speed: 100, plan: p.ships,
+        why: `ekspedycja ${p.last ? `(cały hangar: ${p.lastWhy})` : `(fala ${sent}/${p.waves}, udział ${p.docelowa.toLocaleString("pl-PL")} szt. z floty ${(p.doma + p.wPowietrzu).toLocaleString("pl-PL")} szt.; w hangarze ${p.doma.toLocaleString("pl-PL")}, w powietrzu ${p.wPowietrzu.toLocaleString("pl-PL")})`} — ${total.toLocaleString("pl-PL")} szt., ${p.slotsTxt}`, speed: 100, plan: p.ships,
         // v3.99.2: fala domykająca bierze CAŁY hangar z formularza (poza wykluczeniami), nie liczby z planu —
         // plan powstaje z odczytu sprzed nawigacji, a w tym czasie potrafi wylądować fala (log 16.09 13:52)
         takeAllExcept: p.last ? (CFG.expo.excludeTypes || []).slice() : null,
@@ -4883,10 +4912,12 @@
       }
       // v3.62.0: całe domknięcie wysyłki w jednym miejscu (wspólne z drogą po przeładowaniu)
       this.confirmed(m, { loaded: loaded.join(", "), fresh: fresh ? after.total : null, sentReal });
-      // v3.48.0: po fali DOMYKAJĄCEJ serię nie będzie kolejnej przez ~40 min — zamiast
+      // v3.48.0: po fali, która zabrała CAŁY hangar, nie będzie kolejnej przez ~40 min — zamiast
       // zostawiać operatora na stronie głównej, bot odprowadza kartę tam, gdzie był
       // (o ile od startu serii sam nie kliknął).
-      if (okUrl && /domyka serię/.test(m.why || "") && Expo.maybeReturnOperator("czekam na powroty")) return;
+      // v3.101.0: rozpoznanie takiej fali to fraza „cały hangar" w opisie lotu. Do 3.100.0 było
+      // to „domyka serię" i zmiana opisu w expoPlan po cichu zabiła odprowadzanie (E2E sc. 36).
+      if (okUrl && /cały hangar/.test(m.why || "") && Expo.maybeReturnOperator("czekam na powroty")) return;
       if (okUrl) Nav.go("/", "po wysyłce floty — powrót na stronę główną");
     },
     async applyReserve() {

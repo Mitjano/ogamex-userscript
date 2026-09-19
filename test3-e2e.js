@@ -3553,7 +3553,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const logs = [];
     for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
     const ex = g.sent.find(x => /Expedition/i.test(x.mission || ""));
-    const planMaly = logs.some(m => /domyka serię — cały hangar[^—]*— 2 szt\./.test(m));
+    const planMaly = logs.some(m => /cały hangar[^—]*— 2 szt\./.test(m));
     check("76a: (warunek wstępny) plan powstał z nieaktualnego odczytu (2 szt.)", planMaly, logs.filter(m => /ekspedycja \(/.test(m)).slice(0, 3).join(" | "));
     check("76b: fala domykająca zabrała CAŁY hangar z formularza (600 BS + 41 CR), nie 1+1", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 41,
       JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
