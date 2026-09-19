@@ -3700,6 +3700,16 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
   check("91d1: rejestr zna 1 lot z 11 → średnia skalowana na wszystkie zajęte sloty (nie 1000, tylko 11 000 w powietrzu)",
     d2.wPowietrzu === 11000, JSON.stringify({ wPowietrzu: d2.wPowietrzu, docelowa: d2.docelowa }));
 
+  // (f) v3.101.1: niepełny rejestr skalujemy liczbą lotów, którą widzi GRA — NIE licznikiem serii.
+  // Licznik serii liczy fale WYSŁANE, a część z nich zdążyła już wrócić; użycie go do skalowania
+  // zawyżało flotę i wracał rozrzut fal (symulacja: 1,18× zamiast 1,00×).
+  const seria11 = { waves: 12, sent: 11, lastSendAt: NOW - 120e3, gapMs: 60e3 };
+  const f = expoPlan(stan(2000, [1000, 1000, 1000], 3), C12, NOW, seria11);
+  check("91g: rejestr zgodny z grą (3 loty) → flota w powietrzu = 3000, mimo licznika serii 11/12",
+    f.wPowietrzu === 3000, JSON.stringify({ wPowietrzu: f.wPowietrzu, docelowa: f.docelowa }));
+  check("91g1: (źródło) skalowanie niepełnego rejestru idzie po `lataGra` (sloty gry), nie po `juzLata`",
+    /const lataGra = \(expo && expo\.total\) \? expo\.used : 0;/.test(src) && /lataGra > znane\.length \? Math\.round\(znanychSzt \/ znane\.length \* lataGra\)/.test(src));
+
   // (e) źródło: nie ma już reguły „ostatni wolny slot = cały hangar”, bo to ona zlepiała fale.
   check("91e: (źródło) „cały hangar” zależy WYŁĄCZNIE od tego, czy hangar przekracza udział fali",
     /const bierzeWszystko = doma <= docelowa;/.test(src) && !/lastOfBurst/.test(src) && !/expo\.used >= cap - 1/.test(src));

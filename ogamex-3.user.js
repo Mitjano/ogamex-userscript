@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.101.0
+// @version      3.101.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.101.0";
+  const VERSION = "3.101.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3293,10 +3293,11 @@
     // starego wzoru — `doma / wolne sloty` — czyli do zachowania sprzed tej wersji. Ile fal już
     // lata, wiemy z DWÓCH źródeł: slotów gry i licznika serii. Bierzemy większe, bo odczyt
     // slotów bywa starszy niż seria (fale idą co 60–90 s, strona floty nie po każdej).
-    const juzLata = Math.max((expo && expo.total) ? expo.used : 0, inSeries);
+    const lataGra = (expo && expo.total) ? expo.used : 0;   // ile lotów widzi GRA (jedyna twarda liczba)
+    const juzLata = Math.max(lataGra, inSeries);
     const wolne = Math.max(1, cap - juzLata);
     const wPowietrzu = znane.length
-      ? (juzLata > znane.length ? Math.round(znanychSzt / znane.length * juzLata) : znanychSzt)
+      ? (lataGra > znane.length ? Math.round(znanychSzt / znane.length * lataGra) : znanychSzt)
       : Math.round(doma / wolne * (cap - wolne));
     // Udział JEDNEJ fali. Celowo ułamkowy: przy flocie mniejszej niż liczba fal zaokrąglenie
     // do 1 szt. robiło z dzielnika 2 i tłukło hangar 2 szt. na pół (sc. 18).
