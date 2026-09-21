@@ -3553,13 +3553,49 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const logs = [];
     for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
     const ex = g.sent.find(x => /Expedition/i.test(x.mission || ""));
-    const planMaly = logs.some(m => /domyka serię — cały hangar[^—]*— 2 szt\./.test(m));
+    const planMaly = logs.some(m => /cały hangar[^—]*— 2 szt\./.test(m));
     check("76a: (warunek wstępny) plan powstał z nieaktualnego odczytu (2 szt.)", planMaly, logs.filter(m => /ekspedycja \(/.test(m)).slice(0, 3).join(" | "));
     check("76b: fala domykająca zabrała CAŁY hangar z formularza (600 BS + 41 CR), nie 1+1", !!ex && ex.ships.BATTLESHIP === 600 && ex.ships.CRUISER === 41,
       JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
     check("76c: …bez typów wykluczonych (recyklery i sondy zostały w domu)", !!ex && !ex.ships.RECYCLER && !ex.ships.SPY_PROBE, JSON.stringify(ex && ex.ships));
     check("76d: log mówi, że w hangarze było więcej niż w planie", logs.some(m => /fala domykająca: w hangarze jest więcej niż w planie \(641 zamiast 2 szt\./.test(m)),
       logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
+  }
+
+  console.log("\n── 76bis. v3.103.0: „cały hangar” NIE zlepia dwóch fal, gdy druga wylądowała między planem a formularzem (log 21.09 11:11) ──");
+  {
+    // Log z żywej gry: plan „cały hangar: 2 802 mln nie przekracza udziału fali", a poleciało 5 600 mln —
+    // formularz pokazywał już DWIE fale. Jeden lot zajął miejsce dwóch i slot stał pusty ponad godzinę.
+    const cfg = { autoRescue: true, recon: false, debris: { enabled: false }, aster: { enabled: false },
+      moon: { enabled: false }, bonus: { enabled: false }, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 },
+      expo: { enabled: true, waves: 12, slotReserve: 0 } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 2000, CRUISER: 1, RECYCLER: 500 } },   // w grze: DWIE fale + pojedynczy krążownik
+      active: { key: "1:100:5", body: "planet" },
+    });
+    g.moonLinks = true;
+    g.page = "home"; g.query = "";
+    g.slots = { fleet: { used: 11, total: 20 }, expo: { used: 11, total: 12 } };
+    // w pamięci bota: JEDNA fala w hangarze (stan sprzed drugiego lądowania), 11 lotów po 1000 w rejestrze
+    g.store.set("genesis.ogamex.net:ogx3_situation", JSON.stringify({
+      pairs: {}, threats: [], flights: [],
+      hangars: { "1:100:5|moon": { key: "1:100:5", body: "moon", total: 1500, at: Date.now() - 30e3,
+        ships: [{ type: "BATTLESHIP", qty: 1000 }, { type: "RECYCLER", qty: 500 }] } },
+      expected: Array.from({ length: 11 }, (_, i) => ({ kind: "expedition", fromKey: "1:100:5", fromBody: "moon", total: 1000,
+        sentAt: Date.now() - 20 * 60e3, returnAt: Date.now() + (20 + i) * 60e3 })),
+      slots: { fleet: { used: 11, total: 20 }, expo: { used: 11, total: 12 }, at: Date.now() },
+    }));
+    const logs = [];
+    for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+    const ex = g.sent.find(x => /Expedition/i.test(x.mission || ""));
+    check("76e: (warunek wstępny) plan to „cały hangar” — w pamięci stała jedna fala (1000 szt.)", logs.some(m => /ekspedycja \(cały hangar[^—]*— 1[\s  ]?000 szt\./.test(m)),
+      logs.filter(m => /ekspedycja \(/.test(m)).slice(0, 3).join(" | "));
+    // udział liczony na formularzu: (2001 + 11 000) / 12 = 1083; stoi 2001 = 1,85 udziału → 2000 / 1,85 = 1082
+    check("76f: w formularzu stały DWIE fale → poleciał JEDEN udział (1082 BS), nie 2000", !!ex && ex.ships.BATTLESHIP === 1082,
+      JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
+    check("76g: …pojedynczy krążownik leci z tą falą (nie zostaje w domu jako sztuka), recyklery zostają", !!ex && ex.ships.CRUISER === 1 && !ex.ships.RECYCLER, JSON.stringify(ex && ex.ships));
+    check("76h: log nazywa powód po imieniu", logs.some(m => /od planu wylądowała kolejna fala\. Biorę JEDEN udział/.test(m)), logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
   }
 
   console.log("\n── 77. v3.99.3: krok 2 formularza nie zdążył wstać — bot CZEKA, nie klika Next kroku 1 drugi raz (incydent 16.09 19:56) ──");

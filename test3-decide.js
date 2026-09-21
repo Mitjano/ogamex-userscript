@@ -1088,7 +1088,12 @@ console.log("── 30. AUDYT ZEWNĘTRZNY: defekty krytyczne (v3.9.0) ──");
   check("wysyłka potwierdzana po przeładowaniu z adresu fleetSendSuccessfully + stempla TEJ misji", /lsOk\.at \|\| 0\) >= \(m\.startedAt \|\| 0\) && location\.href\.includes\("fleetSendSuccessfully"\)/.test(src) && /this\.confirmed\(m, \{ loaded: lsOk\.loaded/.test(src));
   check("domknięcie wysyłki w JEDNYM miejscu (po kliku i po przeładowaniu)", /confirmed\(m, info = \{\}\) \{/.test(src) && /this\.confirmed\(m, \{ loaded: loaded\.join\(", "\)(, [^}]*)? \}\)/.test(src) && !/\[EXPO\] fala wysłana: \$\{loaded\.join/.test(src));
   check("klik Send fleet idzie przez Nav.click (linia startowa: bot, nie 'otwarte ręcznie')",/Nav\.click\(send, `wysyłka floty/.test(src) && !/\bsend\.click\(\)/.test(src));
-  check("fala domykająca mówi DLACZEGO domyka (sloty/licznik/konfiguracja)", /lastWhy = waves === 1/.test(src) && /ostatni wolny slot ekspedycji \(\$\{expo\.used\}\/\$\{expo\.total\}/.test(src) && /domyka serię — cały hangar: \$\{p\.lastWhy\}/.test(src));
+  // v3.101.0: „domyka" nie znaczy już „ostatni wolny slot", tylko „hangar nie przekracza udziału
+  // jednej fali" — log ma podawać obie liczby, żeby dało się sprawdzić, czy fale są równe.
+  check("fala biorąca cały hangar mówi DLACZEGO (hangar kontra udział fali)",
+    /lastWhy = !bierzeWszystko \? ""/.test(src) && /nie przekracza udziału jednej fali/.test(src) && /cały hangar: \$\{p\.lastWhy\}/.test(src));
+  check("zwykła fala loguje udział, flotę i podział hangar/powietrze (dowód równości fal)",
+    /udział \$\{p\.docelowa\.toLocaleString\("pl-PL"\)\} szt\. z floty/.test(src) && /w powietrzu \$\{p\.wPowietrzu\.toLocaleString\("pl-PL"\)\}/.test(src));
   check("rekonesans ustepuje RATUNKOWI, ale nie rutynowemu FS", /a\.kind === "fly" && \(a\.rescue \|\| a\.blind\)/.test(src));
   check("FS nie startuje na godzinnym odczycie hangaru", /FS: odczyt hangaru/.test(src));
   // v3.75.0: lista lotów do zawrotu powstaje BEZ filtra `flightBlind` — przeterminowany
@@ -1322,7 +1327,7 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   // konfigurowalna, DOMYŚLNIE 0 = fale lecą od razu; migracja starego 300→0 przy bumpie.
   check("bramka „grasz\" konfigurowalna, domyślnie WYŁĄCZONA (0), stare 300 migrowane", /ecoIdleSec: 0 \}/.test(src) && /CFG\.human\.ecoIdleSec \?\? 0/.test(src) && /idleMin > 0 && cisza </.test(src) && /ecoIdleSec === 300\) \{ CFG\.human\.ecoIdleSec = 0; saveCfg\(\); \}/.test(src) && /ogx3-idle/.test(src) && !/ruszy minutę po ostatnim kliknięciu/.test(src));
   check("przełączenie pod misję ekonomii zapamiętuje stronę operatora", /Store\.set\("eco_return", \{ url: location\.pathname \+ location\.search/.test(src) && /\["expedition", "asteroid", "debris"\]\.includes\(m\.kind\)/.test(src));
-  check("po domkniętej serii bot odprowadza operatora (chyba że sam kliknął)", /maybeReturnOperator\(reason\)/.test(src) && /czekam na powroty\|brak statków/.test(src) && /!== \(r\.input \|\| 0\)\) return false;/.test(src) && /powrót na stronę operatora po serii ekspedycji/.test(src) && /domyka serię\/\.test\(m\.why \|\| ""\) && Expo\.maybeReturnOperator/.test(src));
+  check("po domkniętej serii bot odprowadza operatora (chyba że sam kliknął)", /maybeReturnOperator\(reason\)/.test(src) && /czekam na powroty\|brak statków/.test(src) && /!== \(r\.input \|\| 0\)\) return false;/.test(src) && /powrót na stronę operatora po serii ekspedycji/.test(src) && /cały hangar\/\.test\(m\.why \|\| ""\) && !m\.splitOnForm && Expo\.maybeReturnOperator/.test(src));   // v3.103.0: po fali podzielonej na formularzu zaraz leci następna — operatora nie odprowadzamy
 }
 
 // ── v3.49.0: naturalny rytm konta + sonda /research ──
@@ -3641,8 +3646,82 @@ console.log("\n── 90. v3.99.2: resztka nie zajmuje slotu, fala domykająca b
   check("90d: (źródło) „resztka” to zastój łagodny (bez pusha „Ekspedycje stoją”)", /STALL_BENIGN: \/[^/]*\|resztka\//.test(src));
   check("90e: (źródło) fala domykająca niesie takeAllExcept, a formularz liczy ilość z hangaru dla takiej fali",
     /takeAllExcept: p\.last \? \(CFG\.expo\.excludeTypes \|\| \[\]\)\.slice\(\) : null,/.test(src)
-    && /const qtyFor = \(type, have\) => wszystko \? \(wszystko\.has\(type\) \? 0 : have\)/.test(src)
+    && /const qtyFor = \(type, have\) => wszystko \? \(wszystko\.has\(type\) \? 0 : \(dziel > 1 \? \(have < dziel \? have : Math\.floor\(have \/ dziel\)\) : have\)\)/.test(src)   // v3.103.0: dzielnik > 1 tylko, gdy w formularzu stoją DWIE fale (E2E 76e–h)
     && (src.match(/const qty = qtyFor\(type, have\);/g) || []).length === 2);
+}
+
+console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (owner 19.09: nierówne partie + martwy slot) ──");
+{
+  // CO SIĘ PSUŁO: rozmiar fali = `hangar / wolne sloty`, a przy JEDNYM wolnym slocie fala
+  // brała cały hangar. W stanie ustalonym wolny slot jest zawsze jeden, więc każda fala
+  // zabierała tyle, ile zdążyło wylądować — dwa lądowania między wysyłkami zlepiały się
+  // w jeden lot NA STAŁE (wracały razem, więc znowu leciały razem). Stąd u ownera fale
+  // od 720 mln do 2,9 mld i slot 11/12, który nie miał już czym polecieć.
+  const C12 = { expo: { ...ECFG.expo, waves: 12, slotReserve: 0 } };
+  const stan = (hangarSzt, wLocie, used) => ebase({
+    hangars: { "1:100:5|planet": { total: hangarSzt, at: NOW - 60e3, ships: [{ type: "LIGHT_FIGHTER", qty: hangarSzt }] } },
+    expected: wLocie.map((total, i) => ({ kind: "expedition", fromKey: "1:100:5", total, sentAt: NOW - 30 * 60e3, returnAt: NOW + (5 + i) * 60e3 })),
+    slots: { fleet: { used, total: 37 }, expo: { used, total: 12 }, at: NOW },
+    bar: { own: used, at: NOW },
+  });
+  const q = (p) => (p.ships && p.ships[0] ? p.ships[0].qty : null);
+
+  // (a) STEROWY PRZYPADEK OWNERA: 11 lotów w powietrzu, jeden wolny slot, a w hangarze
+  // wylądowały DWIE fale. Stary kod wysyłał wszystkie 2000 jednym lotem.
+  const wLocie11 = Array(11).fill(1000);
+  const a = expoPlan(stan(2000, wLocie11, 11), C12, NOW, null);
+  check("91a: przy jednym wolnym slocie fala bierze UDZIAŁ (1083 z floty 13 000), nie cały hangar",
+    q(a) === 1083 && a.docelowa === 1083, JSON.stringify(a.skip || { qty: q(a), docelowa: a.docelowa, doma: a.doma, wPowietrzu: a.wPowietrzu }));
+  check("91a1: … więc reszta zostaje w domu na następny zwolniony slot, a lot nie jest „cały hangar”",
+    q(a) < a.doma && a.last !== true, JSON.stringify({ qty: q(a), doma: a.doma, last: a.last }));
+
+  // (b) SAMOWYRÓWNANIE: fale w powietrzu są już nierówne (tak jak dziś u ownera) —
+  // cel liczy się i tak z całej floty, więc duże fale po powrocie rozejdą się na równe.
+  const nierowne = [720, 1441, 1441, 2162, 2905, 1441, 1441, 1441, 1441, 1441];
+  const b = expoPlan(stan(3000, nierowne, 10), C12, NOW, null);
+  const flotaB = 3000 + nierowne.reduce((n, x) => n + x, 0);
+  check("91b: przy nierównych falach w locie udział to nadal flota/12, nie hangar/wolne sloty",
+    b.docelowa === Math.round(flotaB / 12) && q(b) === Math.floor(3000 / (3000 / (flotaB / 12))),
+    JSON.stringify({ qty: q(b), docelowa: b.docelowa, flota: flotaB }));
+
+  // (c) ZIMNY START bez zmian: cała flota w domu dzieli się na 12 równych fal.
+  const c1 = expoPlan(stan(12000, [], 0), C12, NOW, null);
+  check("91c: zimny start → 12 równych fal (12 000 / 12 = 1000)", q(c1) === 1000, JSON.stringify(c1.skip || c1.ships));
+  const c2 = expoPlan(stan(11000, [1000], 1), C12, NOW, { waves: 12, sent: 1, lastSendAt: NOW - 120e3, gapMs: 60e3 });
+  check("91c1: … i druga fala jest TAKA SAMA, bo cel liczy się z floty, nie z reszty hangaru", q(c2) === 1000, JSON.stringify(c2.skip || c2.ships));
+  const c3 = expoPlan(stan(1000, Array(11).fill(1000), 11), C12, NOW, { waves: 12, sent: 11, lastSendAt: NOW - 120e3, gapMs: 60e3 });
+  check("91c2: … a ostatnia fala serii zabiera hangar w całości (nie ma już czego dzielić)", q(c3) === 1000 && c3.last === true, JSON.stringify(c3.skip || c3));
+
+  // (d) SIATKA BEZPIECZEŃSTWA: gdy rejestr powrotów nie zna ŻADNEGO lotu, wracamy do wzoru
+  // sprzed tej wersji (hangar / wolne sloty) — bot nie może zaniżać fal na podstawie niewiedzy.
+  const d = expoPlan(stan(2000, [], 11), C12, NOW, null);
+  check("91d: pusty rejestr powrotów → stary wzór (jeden wolny slot = cały hangar)", q(d) === 2000 && d.last === true, JSON.stringify(d.skip || d));
+  const d2 = expoPlan(stan(2000, [1000], 11), C12, NOW, null);
+  check("91d1: rejestr zna 1 lot z 11 → średnia skalowana na wszystkie zajęte sloty (nie 1000, tylko 11 000 w powietrzu)",
+    d2.wPowietrzu === 11000, JSON.stringify({ wPowietrzu: d2.wPowietrzu, docelowa: d2.docelowa }));
+
+  // (f) v3.101.1: niepełny rejestr skalujemy liczbą lotów, którą widzi GRA — NIE licznikiem serii.
+  // Licznik serii liczy fale WYSŁANE, a część z nich zdążyła już wrócić; użycie go do skalowania
+  // zawyżało flotę i wracał rozrzut fal (symulacja: 1,18× zamiast 1,00×).
+  const seria11 = { waves: 12, sent: 11, lastSendAt: NOW - 120e3, gapMs: 60e3 };
+  const f = expoPlan(stan(2000, [1000, 1000, 1000], 3), C12, NOW, seria11);
+  check("91g: rejestr zgodny z grą (3 loty) → flota w powietrzu = 3000, mimo licznika serii 11/12",
+    f.wPowietrzu === 3000, JSON.stringify({ wPowietrzu: f.wPowietrzu, docelowa: f.docelowa }));
+  check("91g1: (źródło) skalowanie niepełnego rejestru idzie po `lataGra` (sloty gry), nie po `juzLata`",
+    /const lataGra = \(expo && expo\.total\) \? expo\.used : 0;/.test(src) && /lataGra > znane\.length \? Math\.round\(znanychSzt \/ znane\.length \* lataGra\)/.test(src));
+
+  // (e) źródło: nie ma już reguły „ostatni wolny slot = cały hangar”, bo to ona zlepiała fale.
+  check("91e: (źródło) „cały hangar” zależy WYŁĄCZNIE od tego, czy hangar przekracza udział fali",
+    /const bierzeWszystko = doma <= docelowa;/.test(src) && !/lastOfBurst/.test(src) && !/expo\.used >= cap - 1/.test(src));
+  // v3.103.0 (log 21.09 11:11: plan „cały hangar 2 802 mln", poleciało 5 600 mln): wykonanie pilnuje E2E 76e–h,
+  // tu tylko strażnik, żeby poprawka nie zniknęła przy porządkach.
+  const c12 = expoPlan(stan(1000, Array(11).fill(1000), 11), C12, NOW, null);
+  check("91i: plan „cały hangar” niesie `cap`, żeby Fly mógł przeliczyć udział na świeżym formularzu", c12.last === true && c12.cap === 12 && c12.wPowietrzu === 11000, JSON.stringify({ last: c12.last, cap: c12.cap, wPowietrzu: c12.wPowietrzu }));
+  check("91i1: (źródło) Fly dzieli „cały hangar”, gdy w formularzu stoi ≥ 1,5 udziału liczonego z formularza",
+    /shareCtx: p\.last \? \{ wPowietrzu: p\.wPowietrzu \|\| 0, cap: p\.cap \|\| 1 \} : null/.test(src)
+    && /const udzial = \(stoi \+ \(m\.shareCtx\.wPowietrzu \|\| 0\)\) \/ m\.shareCtx\.cap;/.test(src) && /if \(udzial > 0 && stoi >= 1\.5 \* udzial\) \{/.test(src));
+  check("91f: (źródło) udział liczony z hangaru PLUS floty w powietrzu, dzielone przez cap",
+    /const docelowa = \(doma \+ wPowietrzu\) \/ cap;/.test(src) && /x\.kind === "expedition" && x\.fromKey === homeKey && \(x\.returnAt \|\| 0\) > now && \(x\.total \|\| 0\) > 0/.test(src));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
