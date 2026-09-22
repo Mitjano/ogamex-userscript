@@ -3721,6 +3721,24 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
   check("91j: hangar 3020 przy udziale 3001,5 (13 fal, 12 w locie) → leci CAŁY hangar, zero resztek", q(j) === 3020 && j.last === true && /z dokładnością do 1%/.test(j.lastWhy || ""), JSON.stringify(j.skip || { qty: q(j), last: j.last, why: j.lastWhy }));
   const j2 = expoPlan(stan13(3100, Array(12).fill(3000), 12), C13, NOW, null);
   check("91j1: hangar 3100 (1,03 udziału) → nadal udział, nie całość (próg nie rozjeżdża fal)", q(j2) < 3100 && j2.last !== true, JSON.stringify(j2.skip || { qty: q(j2), last: j2.last, docelowa: j2.docelowa }));
+  // v3.104.0 (log 22.09 11:03–11:18): bot nie nadążał za lądowaniami — przy zaległości ≥ 2 udziałów odstęp
+  // między falami nie obowiązuje; poniżej obowiązuje jak dotąd.
+  const gapOn = { waves: 13, sent: 3, lastSendAt: NOW - 10e3, gapMs: 75e3 };
+  const k = expoPlan(stan13(6000, Array(11).fill(3000), 11), C13, NOW, gapOn);
+  check("91k: zaległość 2 udziałów (6000 przy udziale 3000) → fala leci mimo odstępu", !k.skip && q(k) > 0, JSON.stringify(k.skip || { qty: q(k) }));
+  const k1 = expoPlan(stan13(4000, Array(11).fill(3000), 11), C13, NOW, gapOn);
+  const k0 = expoPlan(stan13(30000, Array(2).fill(3000), 2), C13, NOW, gapOn);
+  check("91k0: zimny start (2/13 w locie, cały hangar w domu) → odstęp obowiązuje mimo „zaległości”", k0.skip === "odstęp między falami", JSON.stringify(k0.skip || { qty: q(k0) }));
+  check("91k1: zaległość 1,3 udziału → odstęp obowiązuje", k1.skip === "odstęp między falami", JSON.stringify(k1.skip || { qty: q(k1) }));
+  check("91k2: (źródło) odstęp rozstrzygany po policzeniu udziału, a nie przed hangarem",
+    /const wOdstepie = !!\(burst && burst\.lastSendAt/.test(src) && /if \(wOdstepie && !\(doma >= 2 \* docelowa && lataGra \* 2 >= cap\)\) return \{ skip: "odstęp między falami" \};/.test(src));
+  // v3.104.0: bilans floty — spadek ≥ 5% względem poprzedniego planu serii = ostrzeżenie (rejestr zgubił falę).
+  const l1 = expoPlan(stan13(3000, Array(11).fill(3000), 11), C13, NOW, { waves: 13, sent: 3, lastSendAt: NOW - 120e3, gapMs: 60e3, flota: 39000 });
+  check("91l: flota 36 000 po planie z 39 000 (−7,7%) → plan niesie `flotaSpadek`", l1.flotaSpadek === 39000 && l1.flota === 36000, JSON.stringify({ flota: l1.flota, spadek: l1.flotaSpadek }));
+  const l2 = expoPlan(stan13(3000, Array(11).fill(3000), 11), C13, NOW, { waves: 13, sent: 3, lastSendAt: NOW - 120e3, gapMs: 60e3, flota: 36500 });
+  check("91l1: spadek 1,4% (znaleziska/zaokrąglenia) → bez ostrzeżenia", !l2.flotaSpadek, JSON.stringify({ flota: l2.flota, spadek: l2.flotaSpadek }));
+  check("91l2: (źródło) Expo.send zapisuje `flota` w liczniku serii i loguje spadek raz na 30 min",
+    /gapMs: jitter\(CFG\.expo\.gapMinSec, CFG\.expo\.gapMaxSec\) \* 1000, flota: p\.flota \}\);/.test(src) && /Once\.said\("expo\|flota-spadek", 30 \* 60e3\)/.test(src));
   // v3.103.0 (log 21.09 11:11: plan „cały hangar 2 802 mln", poleciało 5 600 mln): wykonanie pilnuje E2E 76e–h,
   // tu tylko strażnik, żeby poprawka nie zniknęła przy porządkach.
   const c12 = expoPlan(stan(1000, Array(11).fill(1000), 11), C12, NOW, null);

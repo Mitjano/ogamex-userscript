@@ -1298,7 +1298,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g.bonus = true;
     const { logs } = await run(g, { cfg, loads: 12, ticksPerLoad: 2 });
     check("bot odebrał bonus (nawigacja pod /home/onlinebonus)", g.bonusClaims === 1, "odbiorów: " + g.bonusClaims + " | " + logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
-    check("i potwierdził odbiór po przeładowaniu", logs.some(m => /\[BONUS\] odebrany/.test(m)), logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+    check("i potwierdził odbiór po przeładowaniu", logs.some(m => /\[BONUS] odebrany/.test(m)), logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
     check("nie klika w kółko, gdy bonusu nie ma", g.bonusClaims === 1, "odbiorów: " + g.bonusClaims);
 
     // odliczanie „Online bonus 04:12" = jeszcze nie ma czego odbierać
@@ -1346,7 +1346,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g4.store.set("genesis.ogamex.net:ogx3_nav_log", JSON.stringify(Array.from({ length: 300 }, () => Date.now())));
     const r4 = await run(g4, { cfg, loads: 8, ticksPerLoad: 2 });
     check("inna bramka niż cisza (sufit nawigacji) wstrzymuje odbiór", g4.bonusClaims === 0, "odbiorów: " + g4.bonusClaims);
-    check("i bot pisze, dlaczego nie odbiera (koniec cichego nicnierobienia)", r4.logs.some(m => /\[BONUS\] nie odbieram teraz/.test(m)), r4.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
+    check("i bot pisze, dlaczego nie odbiera (koniec cichego nicnierobienia)", r4.logs.some(m => /\[BONUS] nie odbieram teraz/.test(m)), r4.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
     check("i bot mówi dlaczego", r2.logs.some(m => /odliczanie/.test(m)), r2.logs.filter(m => /BONUS/.test(m)).slice(0, 4).join(" | "));
 
     // Zgłoszenie 29.08 13:25: „bot nie klika online bonus". Bot tika także na
@@ -1398,7 +1398,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // cfg tego testu), nie największa przystępna — cena nie jest już kryterium wyboru.
     check("wybrał NAJMNIEJSZĄ średnicę (minKm=2000), nie największą przystępną (3000)", !!g.moonBuilt && g.moonBuilt.km === 2000, JSON.stringify(g.moonBuilt));
     check("gra nigdy nie odmówiła (bot nie klikał ponad stan)", !g.moonRefused, "odmów: " + (g.moonRefused || 0));
-    check("i zameldował sukces", logs.some(m => /\[KSIĘŻYC\] ✅/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+    check("i zameldował sukces", logs.some(m => /\[KSIĘŻYC] ✅/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
 
     // za mało metalu = ani jednego kliknięcia
     const g2 = new Game({
@@ -1515,7 +1515,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       active: { key: "1:100:5", body: "moon" },
     });
     const { logs } = await run(g, { cfg, loads: 25, ticksPerLoad: 2 });
-    const hops = logs.filter(m => /REKONESANS\] przechodzę na/.test(m));
+    const hops = logs.filter(m => /REKONESANS] przechodzę na/.test(m));
     check("bot NIE objeżdża pustych kolonii", !hops.some(m => /1:100:9|1:100:3/.test(m)), hops.slice(0, 4).join(" | "));
     check("ale zna hangar tam, gdzie stoi flota", logs.some(m => /sprawdzam hangar|1:100:5/.test(m)) || g.navigations.some(n => /z=5/.test(String(n))), g.navigations.slice(0, 6).join(","));
 
@@ -1814,7 +1814,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // więc fala rusza dopiero w kolejnym wywołaniu (jak na żywo: „wysyłka w następnym przebiegu").
     const r1 = { logs: [] };
     for (let i = 0; i < 5 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const rr = await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); r1.logs.push(...rr.logs); }
-    check("bot dociągnął w tle hangar KSIĘŻYCA (nie planety) i zobaczył flotę", r1.logs.some(m => /dociągnąłem hangar \[1:217:6\] moon w tle/.test(m)) && !r1.logs.some(m => /dociągnąłem hangar \[1:217:6\] planet/.test(m)), r1.logs.filter(m => /EXPO|REKONESANS|LOT/.test(m)).slice(0, 8).join(" | "));
+    check("bot dociągnął w tle hangar KSIĘŻYCA (nie planety) i zobaczył flotę", r1.logs.some(m => /dociągnąłem hangar \[1:217:6] moon w tle/.test(m)) && !r1.logs.some(m => /dociągnąłem hangar \[1:217:6\] planet/.test(m)), r1.logs.filter(m => /EXPO|REKONESANS|LOT/.test(m)).slice(0, 8).join(" | "));
     const ex1 = g.sent.find(s => /Expedition/i.test(s.mission || ""));
     check("fala poleciała z księżyca [1:217:6] bez pomocy operatora", !!ex1 && ex1.from === "1:217:6" && ex1.fromBody === "moon" && ex1.ships.LIGHT_FIGHTER === 5000, JSON.stringify(g.sent));
     check("żadnego „brak statków do wysłania” (objaw incydentu)", !r1.logs.some(m => /brak statków do wysłania/.test(m)), r1.logs.filter(m => /brak statków/.test(m)).join(" | "));
@@ -1839,7 +1839,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     }
     const r2 = { logs: [] };
     for (let i = 0; i < 5 && g.sent.filter(x => /Expedition/i.test(x.mission || "")).length < 2; i++) { const rr = await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
-    check("po lądowaniu bot CICHO odczytał hangar księżyca (fetch w tle, zero nawigacji operatora)", r2.logs.some(m => /wróciła własna flota na księżyc \[1:217:6\].*odczytany w tle/.test(m)), r2.logs.filter(m => /OBRONA|EXPO|REKONESANS/.test(m)).slice(0, 8).join(" | "));
+    check("po lądowaniu bot CICHO odczytał hangar księżyca (fetch w tle, zero nawigacji operatora)", r2.logs.some(m => /wróciła własna flota na księżyc \[1:217:6].*odczytany w tle/.test(m)), r2.logs.filter(m => /OBRONA|EXPO|REKONESANS/.test(m)).slice(0, 8).join(" | "));
     const exps = g.sent.filter(s => /Expedition/i.test(s.mission || ""));
     check("i od razu poszła kolejna fala z powrotów (3000 myśliwców z księżyca)", exps.length === 2 && exps[1].ships.LIGHT_FIGHTER === 3000 && exps[1].fromBody === "moon", JSON.stringify(g.sent.map(s => [s.mission, s.from, s.fromBody, s.ships])));
   }
@@ -1859,7 +1859,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     try { await a.tick(3); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
     await new Promise(r => setTimeout(r, 200));
     const lg = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg);
-    check("karta A przejęła wyłączenie z karty B (wpis w logu)", lg.some(m => /\[CFG\] ustawienia zmienione w innej karcie.*ekspedycje OFF/.test(m)), lg.slice(0, 6).join(" | "));
+    check("karta A przejęła wyłączenie z karty B (wpis w logu)", lg.some(m => /\[CFG] ustawienia zmienione w innej karcie.*ekspedycje OFF/.test(m)), lg.slice(0, 6).join(" | "));
     check("karta A NIE wysłała fali ani nie zaplanowała misji", g.sent.length === 0 && (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null", JSON.stringify(g.sent) + " misja=" + String(g.store.get("genesis.ogamex.net:ogx3_mission")).slice(0, 80));
     check("CFG w pamięci karty A = OFF (panel pokaże prawdę)", a.api.CFG.expo.enabled === false);
     a.api.saveCfg();
@@ -1877,7 +1877,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     load(g3, { cfg: cfgOn }).api.saveCfg();                  // jeden prawdziwy zapis, jak klik w panelu
     for (let i = 0; i < 8; i++) { const inst = load(g3, {}); try { await inst.tick(2); } catch {} }
     const lg3 = JSON.parse(g3.store.get("genesis.ogamex.net:ogx3_log") || "[]").map(e => e.msg);
-    check("8 kolejnych przeładowań BEZ zmiany ustawień → zero spurious „[CFG] zmienione”", !lg3.some(m => /\[CFG\] ustawienia zmienione w innej karcie/.test(m)), lg3.filter(m => /CFG/.test(m)).join(" | "));
+    check("8 kolejnych przeładowań BEZ zmiany ustawień → zero spurious „[CFG] zmienione”", !lg3.some(m => /\[CFG] ustawienia zmienione w innej karcie/.test(m)), lg3.filter(m => /CFG/.test(m)).join(" | "));
     // kontrola: bez wyłączenia w schowku ta sama karta wysyła normalnie
     const g2 = new Game();
     g2.moonLinks = true;                                   // bez recon bot czyta hangar księżyca tylko cichym fetchem
@@ -1944,7 +1944,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("43b-b: …ale ZNISZCZONY księżyc odbudowuje mimo wyłączonego modułu",
       !!g.moonBuilt && g.moonBuilt.key === "1:100:8", JSON.stringify(g.moonBuilt) + " | " + logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
     check("43b-c: …i mówi wprost, dlaczego to robi mimo OFF",
-      logs.some(m => /moduł jest WYŁĄCZONY, ale \[1:100:8\] straciła księżyc/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
+      logs.some(m => /moduł jest WYŁĄCZONY, ale \[1:100:8] straciła księżyc/.test(m)), logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 5).join(" | "));
     check("43b-d: nowa kolonia [1:100:9] dalej bez księżyca (wyłącznik działa)",
       g.pairs.find(p => p.key === "1:100:9").moon === false, JSON.stringify(g.pairs));
   }
@@ -2002,7 +2002,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // (Że sam formularz dochodzi do skutku, pokazuje scenariusz 43b — tam nic nie walczy
     //  o stronę. Tutaj mierzymy wytrwałość, bo to ona zawiodła 14.09.)
     check("43c-d: …i po ustaniu nalotu nadal dobija się do odbudowy, zamiast odpuścić",
-      rawLog(g).some(m => /stawiam księżyc przy \[1:100:5\]/.test(m)) || !!g.moonBuilt,
+      rawLog(g).some(m => /stawiam księżyc przy \[1:100:5]/.test(m)) || !!g.moonBuilt,
       JSON.stringify(g.moonBuilt) + " | KS: " + rawLog(g).filter(m => /KSIĘŻYC/.test(m)).slice(0, 3).join(" | "));
   }
 
@@ -2172,7 +2172,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const ex = g.sent.find(x => /Expedition/i.test(x.mission || ""));
     check("(warunek wstępny) fala CZĘŚCIOWA naprawdę wyszła (2000 z 4000 szt.)", !!ex && ex.ships.LIGHT_FIGHTER === 2000, JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
     check("bot POTWIERDZIŁ wysyłkę po stanie hangaru, mimo braku strony sukcesu",
-      r.logs.some(m => /\[EXPO\] fala wysłana/.test(m)), r.logs.filter(m => /LOT|EXPO/.test(m)).slice(-8).join(" | "));
+      r.logs.some(m => /\[EXPO] fala wysłana/.test(m)), r.logs.filter(m => /LOT|EXPO/.test(m)).slice(-8).join(" | "));
     check("… żadnego „wysyłka NIE potwierdzona” i żadnego fałszywego BŁĘDU w dzienniku",
       !r.logs.some(m => /wysyłka NIE potwierdzona/.test(m))
       // v3.77.0: przerwana fala ma dziś rodzaj „EKO", nie „BŁĄD" — sprawdzamy OBA, żeby
@@ -2477,7 +2477,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const { logs } = await run(g, { cfg, loads: 12, ticksPerLoad: 3 });
     const st2 = JSON.parse(g.store.get(K) || "{}");
     const f2 = (st2.flights || []).find(x => x.fromKey === "1:100:9");
-    const kliki = rawLog(g).filter(m => /ZAWRÓT.*przełączam na \[1:100:9\]/.test(m)).length;
+    const kliki = rawLog(g).filter(m => /ZAWRÓT.*przełączam na \[1:100:9]/.test(m)).length;
     check("(warunek wstępny) bot w ogóle próbował przełączyć się na parę lotu", kliki > 0, `klików: ${kliki}`);
     check("pętla klików ma SUFIT (najwyżej 5), a nie tempo ładowania strony", kliki <= 5, `klików: ${kliki}`);
     check("… i kończy się jawnie: faza recall_failed zamiast wiecznego kręcenia",
@@ -2485,7 +2485,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("… z instrukcją dla właściciela na telefonie (tylko on zawróci tę flotę)",
       (g.pushes || []).some(p => /klików bez skutku/.test(String(p.body))), JSON.stringify((g.pushes || []).map(p => String(p.body).slice(0, 60))));
     check("każdy klik idzie przez Nav.click — linia startowa mówi, kto przywiódł stronę",
-      logs.some(m => /← bot: zawrót lotu \[1:100:9\]/.test(m)), logs.filter(m => /OGameX Assistant/.test(m)).slice(0, 3).join(" | "));
+      logs.some(m => /← bot: zawrót lotu \[1:100:9]/.test(m)), logs.filter(m => /OGameX Assistant/.test(m)).slice(0, 3).join(" | "));
   }
 
   console.log("\n── 56. EWAKUACJA PO UTRACIE KSIĘŻYCA: odmowa gry nie może być wielogodzinną pętlą (v3.68.11, obrona-wykonanie#4) ──");
@@ -2540,7 +2540,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     // ntfy — jest per (rodzaj + współrzędne z treści), a te same koordy poszły przed chwilą
     // w pushu o przerwanym locie. Dławika nie ruszamy: to świadoma decyzja z v3.33.0.
     check("… oraz zostawia właścicielowi wpis „BŁĄD” (flota stoi na ciele widocznym dla falangi)",
-      JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => e.kind === "BŁĄD" && /Ewakuacja \[1:100:5\]/.test(e.msg || "")),
+      JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").some(e => e.kind === "BŁĄD" && /Ewakuacja \[1:100:5]/.test(e.msg || "")),
       JSON.stringify(JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]").slice(0, 3)));
   }
 
@@ -2574,10 +2574,10 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       logs.push(...r.logs);
     }
     check("(warunek wstępny) fala ekspedycji weszła w formularz i utknęła na kroku 2",
-      logs.some(m => /\[LOT\] klik „Next"/.test(m)) && logs.some(m => /ekspedycja/.test(m)),
+      logs.some(m => /\[LOT] klik „Next"/.test(m)) && logs.some(m => /ekspedycja/.test(m)),
       logs.filter(m => /EXPO|LOT/.test(m)).slice(0, 6).join(" | "));
     check("bot ZOBACZYŁ atak, stojąc w formularzu (podgląd listy ruchów w trakcie czekania)",
-      logs.some(m => /ALARM w trakcie wypełniania formularza \(ATTACK → \[1:100:5\]/.test(m)),
+      logs.some(m => /ALARM w trakcie wypełniania formularza \(ATTACK → \[1:100:5]/.test(m)),
       logs.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
     check("… i porzucił lot dobrowolny z tego właśnie powodu (nie po limicie czasu)",
       logs.some(m => /przerwany: ALARM w trakcie formularza/.test(m)),
@@ -2987,7 +2987,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g.sent.push({ from: "1:100:5", fromBody: "moon", to: "1:100:12", toBody: "moon", mission: "Deploy", ships: { BATTLESHIP: 900 }, inFlight: true, eta: 3000 });
     g.sent.push({ from: "1:100:9", fromBody: "moon", to: "1:100:12", toBody: "moon", mission: "Deploy", ships: { CRUISER: 900 }, inFlight: true, eta: 3000 });
     const r1 = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
-    const cichy = (lg, k) => lg.some(m => new RegExp(`\\[OBRONA\\] atak na \\[${k}\\][^|]*odczytany w tle`, "i").test(m));
+    const cichy = (lg, k) => lg.some(m => new RegExp(`\\[OBRONA\] atak na \\[${k}\\][^|]*odczytany w tle`, "i").test(m));
     check("65a: (krok 1) para A dostała cichy odczyt, B jeszcze go nie potrzebowała", cichy(r1.logs, "1:100:5") && !cichy(r1.logs, "1:100:9"), r1.logs.filter(m => /OBRONA/.test(m)).slice(0, 6).join(" | "));
     // krok 2: A znów prosi (nowe lądowanie po odczycie); B zaczyna prosić (wróciła fala);
     // D dostaje potwierdzony atak i ma flotę w domu → w przebiegu czeka gotowy ratunek
@@ -3003,9 +3003,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     }
     const r2 = await run(g, { cfg, loads: 3, ticksPerLoad: 2 });
     const nowe = r2.logs.filter(m => !r1.logs.includes(m));   // wpisy dopiero z kroku 2 (log w schowku kumuluje się)
-    check("65b: (krok 2) w przebiegu czeka ratunek D — główna pętla pomija rekonesans", nowe.some(m => /\[LOT\] .*\[1:100:14\] moon → /.test(m)) || g.sent.some(x => x.from === "1:100:14"), nowe.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
+    check("65b: (krok 2) w przebiegu czeka ratunek D — główna pętla pomija rekonesans", nowe.some(m => /\[LOT] .*\[1:100:14\] moon → /.test(m)) || g.sent.some(x => x.from === "1:100:14"), nowe.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
     check("65c: …a para B MIMO TO dostała cichy odczyt w tym samym przebiegu", cichy(nowe, "1:100:9"), nowe.filter(m => /OBRONA/.test(m)).slice(0, 8).join(" | "));
-    check("65d: …odczyt B niósł prawdziwą liczbę (200 szt.)", nowe.some(m => /atak na \[1:100:9\][^|]*odczytany w tle \(200 szt/i.test(m)), nowe.filter(m => /odczytany w tle/.test(m)).join(" | "));
+    check("65d: …odczyt B niósł prawdziwą liczbę (200 szt.)", nowe.some(m => /atak na \[1:100:9][^|]*odczytany w tle \(200 szt/i.test(m)), nowe.filter(m => /odczytany w tle/.test(m)).join(" | "));
     const st2 = JSON.parse(g.store.get(KSIT) || "{}");
     check("65e: migawka B w stanie odświeżona (nie sprzed pięciu minut)", !!st2.hangars["1:100:9|moon"] && Date.now() - st2.hangars["1:100:9|moon"].at < 60e3, JSON.stringify(st2.hangars["1:100:9|moon"]));
   }
@@ -3175,7 +3175,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       g.store.set(KMOON, JSON.stringify({ tries: { "1:100:5": { n: 1, at: now - 5e3 } }, m: { key: "1:100:5", at: now - 5e3, navs: 3, km: 1000, cost: 300_000_000 } }));
       { const st = JSON.parse(g.store.get(KSIT) || "{}"); st.moonLost = { "1:100:5": now - 60e3 }; st.hangars["1:100:5|planet"] = { total: 100, ships: [{ type: "BATTLESHIP", qty: 100 }], at: now - 60e3 }; g.store.set(KSIT, JSON.stringify(st)); }
       const r1 = await run(g, { cfg: cfg68(), loads: 8, ticksPerLoad: 2 });
-      check("68h: mimo trwającego ataku sukces został ZAKSIĘGOWANY (log ✅, wpis próby zdjęty)", r1.logs.some(m => /✅ \[1:100:5\] ma księżyc/.test(m)) && !ms(g).m, JSON.stringify(ms(g)) + " | " + r1.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 4).join(" | "));
+      check("68h: mimo trwającego ataku sukces został ZAKSIĘGOWANY (log ✅, wpis próby zdjęty)", r1.logs.some(m => /✅ \[1:100:5] ma księżyc/.test(m)) && !ms(g).m, JSON.stringify(ms(g)) + " | " + r1.logs.filter(m => /KSIĘŻYC/.test(m)).slice(0, 4).join(" | "));
       check("68i: …licznik prób skasowany", !(ms(g).tries || {})["1:100:5"], JSON.stringify(ms(g).tries));
       check("68j: …zwóz floty ODŁOŻONY na ciszę, nie zapomniany", !!ms(g).zwoz && ms(g).zwoz.key === "1:100:5" && r1.logs.some(m => /zwóz floty z planety poczeka na ciszę/.test(m)), JSON.stringify(ms(g).zwoz) + " | " + r1.logs.filter(m => /zwóz/.test(m)).join(" | "));
       check("68k: …a pod ostrzałem żaden lot dobrowolny z [1:100:5] nie wyszedł", !g.sent.some(x => x.from === "1:100:5"), JSON.stringify(g.sent.map(x => [x.from, x.fromBody])));
@@ -3219,12 +3219,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const r1 = await run(g, { cfg: cfgFs, loads: 4, ticksPerLoad: 2 });
     const st1 = JSON.parse(g.store.get(K69) || "{}");
     check("69b: jeden odczyt bez pary jej NIE kasuje (dwa odczyty ≥ 60 s — pojedynczy render nie wymazuje pary)", !!(st1.pairs || {})["1:100:5"] && !!(st1.pairGone || {})["1:100:5"], JSON.stringify({ pairs: Object.keys(st1.pairs || {}), gone: st1.pairGone }));
-    check("69c: …a bot próbował FS z ducha i skończył „brak na pasku planet” (odtworzony incydent)", r1.logs.some(m => /brak \[1:100:5\] moon na pasku planet/.test(m)), r1.logs.filter(m => /LOT|FS/.test(m)).slice(0, 4).join(" | "));
+    check("69c: …a bot próbował FS z ducha i skończył „brak na pasku planet” (odtworzony incydent)", r1.logs.some(m => /brak \[1:100:5] moon na pasku planet/.test(m)), r1.logs.filter(m => /LOT|FS/.test(m)).slice(0, 4).join(" | "));
     { const st = JSON.parse(g.store.get(K69) || "{}"); if (st.pairGone && st.pairGone["1:100:5"]) st.pairGone["1:100:5"] -= 120e3; g.store.set(K69, JSON.stringify(st)); }   // pierwsze „nie widzę” było 2 min temu
     const r2 = await run(g, { cfg: cfgFs, loads: 25, ticksPerLoad: 3 });
     const st2 = JSON.parse(g.store.get(K69) || "{}");
     check("69d: duch [1:100:5] ZNIKA ze stanu (para, hangar, znacznik)", !(st2.pairs || {})["1:100:5"] && !(st2.hangars || {})["1:100:5|moon"] && !(st2.pairGone || {})["1:100:5"], JSON.stringify({ pairs: Object.keys(st2.pairs || {}), hangars: Object.keys(st2.hangars || {}), gone: st2.pairGone }));
-    check("69e: …i nie jest to ciche (log mówi, co skasował i dlaczego)", r2.logs.some(m => /\[PASEK\] para \[1:100:5\] zniknęła z paska planet/.test(m)), r2.logs.filter(m => /PASEK/.test(m)).slice(0, 3).join(" | "));
+    check("69e: …i nie jest to ciche (log mówi, co skasował i dlaczego)", r2.logs.some(m => /\[PASEK] para \[1:100:5\] zniknęła z paska planet/.test(m)), r2.logs.filter(m => /PASEK/.test(m)).slice(0, 3).join(" | "));
     check("69f: nowa para [2:50:7] jest w stanie z księżycem", !!(st2.pairs || {})["2:50:7"] && st2.pairs["2:50:7"].hasMoon === true, JSON.stringify(st2.pairs && st2.pairs["2:50:7"]));
     const fs69 = g.sent.find(x => x.from === "2:50:7");
     check("69g: FLEET SAVE poleciał z NOWYCH koordów na stały cel, z całym hangarem", !!fs69 && fs69.fromBody === "moon" && fs69.to === "1:100:9" && fs69.toBody === "moon" && !!fs69.ships && fs69.ships.BATTLESHIP === 600, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])));
@@ -3253,12 +3253,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     g.disabledNext = true;                        // krok 2 z WYŁĄCZONYM „Next" — dokładnie jak w nocy (gra nie przyjmuje floty: deuter/sloty)
     const KFS = "genesis.ogamex.net:ogx3_fs_try";
     const ftOf = () => (JSON.parse(g.store.get(KFS) || "{}") || {})["1:100:5>1:100:9"];
-    const proby = () => rawLog(g).filter(m => /\[LOT\] FLEET SAVE → \[1:100:9\]/.test(m)).length;
+    const proby = () => rawLog(g).filter(m => /\[LOT] FLEET SAVE → \[1:100:9\]/.test(m)).length;
     const logs = [];
     for (let i = 0; i < 6; i++) { const r = await run(g, { cfg, loads: 8, ticksPerLoad: 2 }); logs.push(...r.logs); advance(g, 4 * 60e3); }
     const ft1 = ftOf();
     check("70a: dokładnie TRZY próby w pierwszej godzinie (licznik trasy = 3, czwartej nie ma)", !!ft1 && ft1.n === 3 && proby() === 3, `próby=${proby()} fs_try=${JSON.stringify(ft1)}`);
-    check("70b: …i jedna uczciwa linia „odpuszczam tę trasę na 6 h”", logs.some(m => /odpuszczam tę trasę na 6 h/.test(m)), logs.filter(m => /\[FS\]/.test(m)).slice(0, 3).join(" | "));
+    check("70b: …i jedna uczciwa linia „odpuszczam tę trasę na 6 h”", logs.some(m => /odpuszczam tę trasę na 6 h/.test(m)), logs.filter(m => /\[FS]/.test(m)).slice(0, 3).join(" | "));
     // Zrzut przy WYŁĄCZONYM „Next": w harnessie kolejny przebieg przerywa 25-sekundowe czekanie
     // (formularz „w toku" → przeładowanie od kroku 1), więc funkcję czekającą wołamy wprost na
     // stronie kroku 2 — tak jak w nocy, gdy bot doczekał do końca i zrzucił pusty „#content".
@@ -3353,14 +3353,14 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const logs = [];
     for (let i = 0; i < 5 && g.sent.length < 1; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 3 }); logs.push(...r.logs); }
     check("72a: FS wyleciał", g.sent.length === 1 && g.sent[0].to === "1:100:9", JSON.stringify(g.sent.map(x => [x.from, x.to])));
-    check("72b: bot ODCZYTAŁ czas lotu ponad dobę (log w godzinach, nie „nieznany”)", logs.some(m => /\[LOT\] czas lotu 1200\d\d s/.test(m)), logs.filter(m => /czas lotu|Duration/.test(m)).slice(0, 3).join(" | "));
+    check("72b: bot ODCZYTAŁ czas lotu ponad dobę (log w godzinach, nie „nieznany”)", logs.some(m => /\[LOT] czas lotu 1200\d\d s/.test(m)), logs.filter(m => /czas lotu|Duration/.test(m)).slice(0, 3).join(" | "));
     const st72 = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     const f72 = (st72.flights || []).find(x => x.fs);
     const homeAt = st72.fsReturnAt || 0;
     const polowa = f72 ? Math.abs(f72.recallAt - (f72.sentAt + (homeAt - f72.sentAt) / 2)) : 1e9;
     check("72c: wpis lotu niesie zmierzony czas lotu (~33,3 h), nie zero", !!f72 && f72.flightMs > 33 * 3600e3 && f72.flightMs < 34 * 3600e3, JSON.stringify(f72 && { flightMs: f72.flightMs, recallAt: f72.recallAt }));
     check("72d: zawrót w POŁOWIE drogi (±2 min), a NIE o godzinie powrotu", polowa < 2 * 60e3 && Math.abs(f72.recallAt - homeAt) > 3 * 3600e3, f72 ? `zawrót ${new Date(f72.recallAt).toISOString()} vs powrót ${new Date(homeAt).toISOString()}` : "brak lotu");
-    check("72e: …i mówi to wprost w logu", logs.some(m => /\[FS\] lot \d+ min, zawrót o \d\d:\d\d — flota ma być w domu o \d\d:\d\d/.test(m)), logs.filter(m => /\[FS\]/.test(m)).slice(0, 3).join(" | "));
+    check("72e: …i mówi to wprost w logu", logs.some(m => /\[FS] lot \d+ min, zawrót o \d\d:\d\d — flota ma być w domu o \d\d:\d\d/.test(m)), logs.filter(m => /\[FS\]/.test(m)).slice(0, 3).join(" | "));
   }
 
   console.log("\n── 73. DUCH LOTU: flota ściągnięta ręcznie domyka wpis i odblokowuje ekonomię (v3.97.1) ──");
@@ -3395,7 +3395,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const r73 = await run(g, { cfg, loads: 10, ticksPerLoad: 2 });
     const st73 = JSON.parse(g.store.get(K73) || "{}");
     check("73b: wpis-duch ZNIKA (cała wysłana flota stoi w hangarze źródła)", !(st73.flights || []).some(x => x.id === "duch1"), JSON.stringify((st73.flights || []).map(x => [x.id, x.phase])));
-    check("73c: …i nie jest to ciche (log mówi, że flota jest w domu)", r73.logs.some(m => /domykam wpis \[1:100:5\]→\[1:100:9\] \(launched\)[\s\S]*CAŁA wysłana flota/.test(m)), r73.logs.filter(m => /domykam|ZOSTAJE/.test(m)).slice(0, 3).join(" | "));
+    check("73c: …i nie jest to ciche (log mówi, że flota jest w domu)", r73.logs.some(m => /domykam wpis \[1:100:5]→\[1:100:9\] \(launched\)[\s\S]*CAŁA wysłana flota/.test(m)), r73.logs.filter(m => /domykam|ZOSTAJE/.test(m)).slice(0, 3).join(" | "));
     const inst73b = load(g, { cfg });
     check("73d: ekonomia RUSZA (już nie „flota jest na Fleet Save”)", !/Fleet Save/.test(String(inst73b.api.Human.economyAllowed(inst73b.api.Situation.load()) || "")), String(inst73b.api.Human.economyAllowed(inst73b.api.Situation.load())));
     // fala ekspedycji, która jest UŁAMKIEM wysłanej floty, wpisu NIE domyka
@@ -3434,7 +3434,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     for (let i = 0; i < 6 && !g.sent.some(x => /Expedition/i.test(x.mission || "")); i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 3 }); logs.push(...r.logs); }
     check("74a: EKSPEDYCJA wyleciała, choć Fleet Save jest WŁĄCZONY", g.sent.some(x => /Expedition/i.test(x.mission || "")), JSON.stringify(g.sent.map(x => [x.from, x.to, x.mission])));
     // mocno: w oknie dnia bot nie tylko nic nie wysłał, ale NAWET NIE PRÓBOWAŁ (zero linii „FLEET SAVE →").
-    check("74b: …a Fleet Save ani nie wystartował, ani nie próbował", !g.sent.some(x => /Deploy/i.test(x.mission || "") && x.to === "1:100:9") && !logs.some(m => /\[LOT\] FLEET SAVE →/.test(m)), JSON.stringify(g.sent.map(x => [x.to, x.mission])) + " | " + logs.filter(m => /FLEET SAVE/.test(m)).slice(0, 2).join(" | "));
+    check("74b: …a Fleet Save ani nie wystartował, ani nie próbował", !g.sent.some(x => /Deploy/i.test(x.mission || "") && x.to === "1:100:9") && !logs.some(m => /\[LOT] FLEET SAVE →/.test(m)), JSON.stringify(g.sent.map(x => [x.to, x.mission])) + " | " + logs.filter(m => /FLEET SAVE/.test(m)).slice(0, 2).join(" | "));
     check("74c: …i log mówi, do której godziny flota zostaje w domu", logs.some(m => /okno dnia — flota zostaje w domu do \d\d:\d\d/.test(m)), logs.filter(m => /okno dnia|FLEET SAVE/.test(m)).slice(0, 3).join(" | "));
     // okno mija → FS rusza. Ekspedycja zabrała hangar, więc wraca flota (jak w grze po powrocie fali),
     // a lot musi być DŁUGI — inaczej odmowa „lot za krótki na powrót o godzinie" (to inna bramka).
@@ -3484,6 +3484,9 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     }
 
     // (b) serwer wysyła MNIEJ, niż stoi w polach (połowa pancerników, bez krążownika)
+    // v3.104.0: ten scenariusz opisuje zachowanie, którego fork NIE MA — 22.09 „737 mln z 3 726 mln" wróciło
+    // jako 3,7 mld (HANDOFF 20f). Rejestr trzyma to, co wpisano; hangar po wysyłce idzie tylko do logu.
+    // Harness dalej symuluje „mniej", żeby pilnować, że bot tego NIE traktuje jak odmowy ani nie zaniża rejestru.
     {
       const g = mk75({ BATTLESHIP: 600, CRUISER: 1, DESTROYER: 40 });
       g.staleSend = true;
@@ -3494,12 +3497,12 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       const ex = expos(g)[0];
       check("75f: (warunek wstępny) bot wpisał całość, serwer wysłał część", !!ex && ex.typed.BATTLESHIP === 600 && ex.typed.CRUISER === 1 && ex.ships.BATTLESHIP === 300 && !ex.ships.CRUISER,
         JSON.stringify(expos(g)));
-      const w = logs.find(m => /gra wysłała MNIEJ, niż bot wpisał/.test(m)) || "";
-      check("75g: log nazywa, czego zostało ponad plan (BATTLESHIP 300, CRUISER 1)", /BATTLESHIP 300/.test(w) && /CRUISER 1/.test(w), w || logs.filter(m => /LOT/.test(m)).slice(-6).join(" | "));
+      const w = logs.find(m => /po wysyłce w hangarze .* zostało ponad plan/.test(m)) || "";
+      check("75g: log nazywa, czego zostało ponad plan (BATTLESHIP 300, CRUISER 1) — jako lądowanie, nie „gra wysłała mniej”", /BATTLESHIP 300/.test(w) && /CRUISER 1/.test(w) && !logs.some(m => /gra wysłała MNIEJ/.test(m)), w || logs.filter(m => /LOT/.test(m)).slice(-6).join(" | "));
       check("75h: częściowa wysyłka to NIE odmowa — bez „NIE potwierdzona”, bez przerwania",
         !logs.some(m => /wysyłka NIE potwierdzona/.test(m)) && !journal(g).some(e => /przerwany/.test(e.msg || "")), logs.filter(m => /NIE potwierdzona|przerwany/.test(m)).join(" | "));
       const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
-      check("75i: rejestr powrotów zna PRAWDZIWĄ liczbę (340), nie wpisaną (641)", (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 340), JSON.stringify(st.expected));
+      check("75i: rejestr powrotów zna liczbę WPISANĄ (641), nie wynik odejmowania hangaru (340) — v3.104.0, dowód 22.09 12:04", (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 641), JSON.stringify(st.expected));
       const hm = (st.hangars || {})["1:100:5|moon"];
       check("75j: migawka hangaru = świeży odczyt (zostało 301 szt.)", !!hm && hm.total === 301, JSON.stringify(hm));
     }
@@ -3516,7 +3519,27 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       check("75l: lądowanie w trakcie wysyłki: bez fałszywego „gra wysłała MNIEJ”, rejestr zna wpisaną liczbę (650)",
         !!expos(g).length && !logs.some(m => /gra wysłała MNIEJ/.test(m)) && logs.some(m => /w tym czasie wylądowała flota/.test(m))
         && (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 650),
-        logs.filter(m => /LOT\]/.test(m)).slice(-5).join(" | ") + " || " + JSON.stringify(st.expected));
+        logs.filter(m => /LOT]/.test(m)).slice(-5).join(" | ") + " || " + JSON.stringify(st.expected));
+    }
+
+    // (b3) v3.104.0 — LOG 22.09 10:59: fala „cały hangar” (3 726 mln), a w sekundzie wysyłki ląduje fala MNIEJSZA
+    // od hangaru sprzed kliknięcia (2 989 mln, ten sam skład co poranne fale). `landedDuring` tego nie widzi
+    // (żaden typ nie ma „więcej niż przed”), więc v3.99.0 wpisywało do rejestru 737 mln. Rejestr ma znać 3 726.
+    {
+      const g = mk75({ BATTLESHIP: 3000, CRUISER: 726 });
+      g.staleSend = true;
+      let raz = 0;
+      g.serverShips = (sh) => { if (!raz++) { const h = g.hangars["1:100:5|moon"]; h.BATTLESHIP = (h.BATTLESHIP || 0) + 2400; h.CRUISER = (h.CRUISER || 0) + 589; } return sh; };
+      const logs = [];
+      for (let i = 0; i < 5 && !expos(g).length; i++) { const r = await run(g, { cfg, loads: 12, ticksPerLoad: 2 }); logs.push(...r.logs); }
+      const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
+      const ex = expos(g)[0];
+      check("75m: (warunek wstępny) poleciało wszystko (3000 BS + 726 CR), a po wysyłce w hangarze stoi mniejsza fala (2400 + 589)",
+        !!ex && ex.ships.BATTLESHIP === 3000 && ex.ships.CRUISER === 726 && g.hangars["1:100:5|moon"].BATTLESHIP === 2400, JSON.stringify([ex && ex.ships, g.hangars["1:100:5|moon"]]));
+      check("75n: rejestr powrotów zna 3726 (wpisane), NIE 737 (odjęcie hangaru) — inaczej udział fali spada i flota stoi w domu przy pełnych slotach",
+        (st.expected || []).some(e => e.kind === "expedition" && !e.pending && e.total === 3726), JSON.stringify(st.expected));
+      check("75o: log nie mówi „gra wysłała MNIEJ” — nazywa lądowanie", !logs.some(m => /gra wysłała MNIEJ/.test(m)) && logs.some(m => /lądowanie fali w sekundzie wysyłki|w tym czasie wylądowała flota/.test(m)),
+        logs.filter(m => /LOT]/.test(m)).slice(-5).join(" | "));
     }
 
     // (c) odmowa przy nieprzeładowanej stronie dalej jest odmową (świeży odczyt: hangar stoi)
@@ -3559,7 +3582,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
     check("76c: …bez typów wykluczonych (recyklery i sondy zostały w domu)", !!ex && !ex.ships.RECYCLER && !ex.ships.SPY_PROBE, JSON.stringify(ex && ex.ships));
     check("76d: log mówi, że w hangarze było więcej niż w planie", logs.some(m => /fala domykająca: w hangarze jest więcej niż w planie \(641 zamiast 2 szt\./.test(m)),
-      logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
+      logs.filter(m => /LOT]/.test(m)).slice(-6).join(" | "));
   }
 
   console.log("\n── 76bis. v3.103.0: „cały hangar” NIE zlepia dwóch fal, gdy druga wylądowała między planem a formularzem (log 21.09 11:11) ──");
@@ -3595,7 +3618,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("76f: w formularzu stały DWIE fale → poleciał JEDEN udział (1082 BS), nie 2000", !!ex && ex.ships.BATTLESHIP === 1082,
       JSON.stringify(g.sent.map(x => [x.mission, x.ships])));
     check("76g: …pojedynczy krążownik leci z tą falą (nie zostaje w domu jako sztuka), recyklery zostają", !!ex && ex.ships.CRUISER === 1 && !ex.ships.RECYCLER, JSON.stringify(ex && ex.ships));
-    check("76h: log nazywa powód po imieniu", logs.some(m => /od planu wylądowała kolejna fala\. Biorę JEDEN udział/.test(m)), logs.filter(m => /LOT\]/.test(m)).slice(-6).join(" | "));
+    check("76h: log nazywa powód po imieniu", logs.some(m => /od planu wylądowała kolejna fala\. Biorę JEDEN udział/.test(m)), logs.filter(m => /LOT]/.test(m)).slice(-6).join(" | "));
   }
 
   console.log("\n── 77. v3.99.3: krok 2 formularza nie zdążył wstać — bot CZEKA, nie klika Next kroku 1 drugi raz (incydent 16.09 19:56) ──");
@@ -3635,7 +3658,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const proby1 = r1.logs.filter(m => /krok 2 formularza nie wstał/.test(m)).length;
     check("77a: bot mówi wprost, co się stało („krok 2 formularza nie wstał”, z id przycisku kroku 1)",
       r1.logs.some(m => /krok 2 formularza nie wstał w \d+ s — widoczny „Next" to wciąż przycisk kroku 1 \(id=btn-next-fleet2\)/.test(m)),
-      r1.logs.filter(m => /LOT\] przerwany|Next/.test(m)).slice(0, 4).join(" | "));
+      r1.logs.filter(m => /LOT] przerwany|Next/.test(m)).slice(0, 4).join(" | "));
     check("77b: ANI RAZU nie kliknął Next kroku 1 dwa razy (jeden klik na próbę)", kliki1 > 0 && proby1 > 0 && kliki1 === proby1,
       `kliki=${kliki1} przerwane=${proby1} | ${r1.logs.filter(m => /klik „Next"/.test(m)).slice(0, 6).join(" | ")}`);
     check("77c: stary objaw ZNIKNĄŁ — żadnego „brak przycisku Send fleet” ani linii detektora krok 2→3",
@@ -3650,7 +3673,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     for (let i = 0; i < 4 && !g2.sent.length; i++) { const r = await run(g2, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotkoCzekaj }); logs2.push(...r.logs); advance(g2, 4 * 60e3); }
     check("77e: po nieudanym podejściu następne kończy się WYSYŁKĄ (poprawka nie zabija trasy)",
       g2.sent.some(x => /16$/.test(String(x.to || "")) && x.ships && x.ships.BATTLESHIP === 600),
-      `${JSON.stringify(g2.sent.map(x => [x.to, x.ships]))} | ${logs2.filter(m => /LOT\]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
+      `${JSON.stringify(g2.sent.map(x => [x.to, x.ships]))} | ${logs2.filter(m => /LOT]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
   }
 
   console.log("\n── 78. v3.99.4: gra odrzuca krok 1 oknem „Error — Ships not found.” — bot przerywa z tekstem gry, zamyka okno, odświeża stronę (incydent 17.09 12:10:40) ──");
@@ -3674,7 +3697,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     for (let i = 0; i < 4 && !g.dialogClosed && !g.sent.length; i++) { const r = await run(g, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotko }); logs.push(...r.logs); if (!g.dialogClosed) advance(g, 4 * 60e3); }
     check("78a: bot przerywa próbę z TEKSTEM gry („Error: Ships not found.”)",
       logs.some(m => /gra odrzuciła formularz na kroku krok 1 \(wybór statków\): „Error: Ships not found\./.test(m)),
-      logs.filter(m => /LOT\]/.test(m)).slice(0, 8).join(" | "));
+      logs.filter(m => /LOT]/.test(m)).slice(0, 8).join(" | "));
     check("78b: Next kroku 1 kliknięty RAZ, bez klikania po pustej stronie (brak „Send fleet”, detektora 2→3, wyboru celu)",
       logs.filter(m => /klik „Next" \(<\w+ id=btn-next-fleet2>/.test(m)).length === 1 && !logs.some(m => /brak przycisku Send fleet|krok 2→3 kliknął|cel: PLANETA/.test(m)),
       logs.filter(m => /klik „Next"|Send fleet|krok 2→3|cel:/.test(m)).slice(0, 5).join(" | "));
@@ -3686,7 +3709,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     for (let i = 0; i < 4 && !g.sent.length; i++) { advance(g, 4 * 60e3); const r = await run(g, { cfg, loads: 10, ticksPerLoad: 2, onApi: krotko }); logs.push(...r.logs); }
     check("78f: po karencji następna próba kończy się WYSYŁKĄ (odmowa nie zabija trasy)",
       g.sent.some(x => /16$/.test(String(x.to || "")) && x.ships && x.ships.BATTLESHIP === 600),
-      `${JSON.stringify(g.sent.map(x => [x.to, x.ships]))} | ${logs.filter(m => /LOT\]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
+      `${JSON.stringify(g.sent.map(x => [x.to, x.ships]))} | ${logs.filter(m => /LOT]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

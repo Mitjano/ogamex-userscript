@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.103.1
+// @version      3.104.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.103.1";
+  const VERSION = "3.104.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3221,7 +3221,12 @@
     const expo = (expoRaw && barFresh && s.bar.own < expoRaw.used) ? { ...expoRaw, used: s.bar.own, fromBar: true } : expoRaw;
     const cap = Math.max(1, Math.min(e.waves || 1, expo?.total || e.waves || 1));
     if (expo && expo.used >= cap) return { skip: `ekspedycje ${expo.used}/${expo.total} (limit fal ${cap}) — czekam na powroty` };
-    if (burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000)) return { skip: "odstęp między falami" };
+    // v3.104.0 (log 22.09 11:03–11:18): odstęp 60–90 s + formularz ~20 s = jedna fala na 80–110 s, a fale
+    // LĄDUJĄ co ~80 s. Bot nie nadążał: w hangarze przez cały cykl leżało 6–7 mld (dwie fale), sloty stały
+    // na 11/13 i zaległość skończyła w domu na ostatnim slocie (1,6 mld przy 13/13). Odstęp jest po to,
+    // żeby wyglądać jak człowiek między falami — przy zaległości ≥ 2 udziałów wysyłamy od razu (formularz
+    // sam trwa ~20 s). Decyzja zapada niżej, gdy znany jest udział fali.
+    const wOdstepie = !!(burst && burst.lastSendAt && now - burst.lastSendAt < (burst.gapMs || e.gapMinSec * 1000));
     const avail = (h.ships || []).filter(x => x.qty > 0 && !excl.includes(String(x.type).toUpperCase()));
     if (!avail.length) {
       // v3.68.7 (audyt 04.09, expo-plan#1 + expo-wykonanie#2, P0): pusty księżyc bazy kończył
@@ -3313,6 +3318,15 @@
     // trzymała je w domu do następnego powrotu — owner widział pojedyncze statki w hangarze przy 13/13.
     // Hangar do 1% ponad udział leci w całości. 1% nie rozjeżdża fal (próg 1,2–1,5 rozjeżdżał — HANDOFF 20b),
     // bo fala nie może tą drogą urosnąć ponad 1,01 udziału.
+    // Tylko w stanie ustalonym (≥ połowa slotów w locie): zimny start zachowuje rytm człowieka.
+    if (wOdstepie && !(doma >= 2 * docelowa && lataGra * 2 >= cap)) return { skip: "odstęp między falami" };
+    // v3.104.0: bilans floty. Flota rośnie (znaleziska) albo maleje o falę („flota utracona" na ekspedycji);
+    // spadek o ≥ 5% między dwoma planami tej samej serii to najczęściej REJESTR, który zgubił falę
+    // (22.09 10:59: lądowanie w sekundzie wysyłki policzone jako „gra wysłała mniej" — 3 mld zniknęło
+    // z rejestru, udział spadł o 230 mln i 1,6 mld stało w domu przy 13/13). Plan tego nie naprawia
+    // (nie wie, która to fala) — ale mówi głośno, żeby log nie był cichy przez godzinę.
+    const flota = doma + wPowietrzu;
+    const flotaSpadek = (burst && burst.flota > 0 && burstFresh && flota < 0.95 * burst.flota) ? burst.flota : 0;
     const bierzeWszystko = doma <= docelowa * 1.01;
     const docelowaSzt = Math.max(1, Math.round(docelowa));   // do logu i wpisu lotu
     // v3.99.0 (owner 16.09: „zostają pojedyncze sztuki statków w hangarze"): typ, którego jest
@@ -3358,7 +3372,7 @@
       : `hangar ${doma.toLocaleString("pl-PL")} szt. = udział fali (${docelowaSzt.toLocaleString("pl-PL")} szt.) z dokładnością do 1% — resztki z zaokrągleń lecą razem`;
     const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}${expo.fromBar ? ` (odczyt ${expoRaw.used}/${expoRaw.total} przycięty do ${s.bar.own} własnych lotów z paska)` : ""}` : "sloty nieznane";
     return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!bierzeWszystko, waves, left, slotBound, lastWhy, slotsTxt,
-      docelowa: docelowaSzt, doma, wPowietrzu, cap,
+      docelowa: docelowaSzt, doma, wPowietrzu, cap, flota, flotaSpadek,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
   }
 
@@ -3535,7 +3549,8 @@
       if (!started) return false;
       // v3.38.0: `sizes` zniknęło — rozmiar fali liczy dzielnik malejący z bieżącego
       // hangaru, więc stanem serii jest sam licznik wysłanych fal.
-      Store.set("burst", { waves: p.waves, sent: p.last ? 0 : sent, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000 });
+      if (p.flotaSpadek && !Once.said("expo|flota-spadek", 30 * 60e3)) log(`[EXPO] flota ekspedycyjna spadła z ${p.flotaSpadek.toLocaleString("pl-PL")} do ${p.flota.toLocaleString("pl-PL")} szt. między dwoma planami — albo ekspedycja straciła flotę, albo rejestr powrotów zgubił falę (lądowanie w sekundzie wysyłki). Sprawdź listę ruchów flot: lot dużo mniejszy od reszty = rejestr.`, "warn");
+      Store.set("burst", { waves: p.waves, sent: p.last ? 0 : sent, lastSendAt: now, gapMs: jitter(CFG.expo.gapMinSec, CFG.expo.gapMaxSec) * 1000, flota: p.flota });
       return true;
     },
   };
@@ -4033,12 +4048,12 @@
       const s = Situation.load();
       // TYLKO loty obronne trafiają do `flights` (v3.2.0): ekspedycja tam wpisana
       // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek.
+      // v3.97.1: stempel wysyłki tej misji — ile statków bot WPISAŁ w formularz. Dowód „cała flota
+      // wróciła" w flightAlive — bez niego duch lotu żyje do twardego sufitu 12 h.
+      const lsT = Store.get("last_send", null);
+      const sentTotal = (lsT && lsT.from === m.fromKey && lsT.toKey === m.toKey && (lsT.at || 0) >= (m.startedAt || 0) && lsT.total > 0) ? lsT.total : 0;
       if (!eco) {
         const f0 = (s.flights || []).find(f => f.fromKey === m.fromKey && (f.fromBody || m.fromBody) === m.fromBody && f.pending);   // v3.68.8: wpis z DRUGIEGO ciała pary nie jest naszym potwierdzeniem
-        // v3.97.1: ile statków NAPRAWDĘ poleciało (stempel wysyłki tej misji). Dowód „cała flota
-        // wróciła" w flightAlive — bez niego duch lotu żyje do twardego sufitu 12 h.
-        const lsT = Store.get("last_send", null);
-        const sentTotal = (lsT && lsT.from === m.fromKey && lsT.toKey === m.toKey && (lsT.at || 0) >= (m.startedAt || 0) && lsT.total > 0) ? lsT.total : 0;
         // czas lotu bywa znany dopiero TERAZ (v3.10.3) — razem z nim przeliczamy termin zawrotu
         // v3.99.0: świeży odczyt hangaru po wysyłce mówi, ile NAPRAWDĘ poleciało (fork potrafi wysłać mniej)
         const sentReal = info.sentReal > 0 ? info.sentReal : sentTotal;
@@ -4053,7 +4068,13 @@
           || (s.expected || []).filter(e => e.fromKey === m.fromKey && (e.sentAt || 0) >= (m.startedAt || 0)).pop();
         if (e0) {
           delete e0.pending;
-          if (info.sentReal > 0) e0.total = info.sentReal;   // v3.99.0: wraca tyle, ile naprawdę wyleciało
+          // v3.104.0 (log 22.09 10:59 + dowód 12:04): rejestr trzyma to, co bot WPISAŁ w formularz, nie wynik
+          // odejmowania hangaru. v3.99.0 wpisywało tu `sentReal` („fork wysyła mniej") — a fala, która wylądowała
+          // w sekundzie wysyłki i była MNIEJSZA od hangaru sprzed kliknięcia, wyglądała jak „niewysłana":
+          // rejestr dostał 737 mln zamiast 3 726 mln, bilans floty spadł o 3 mld, udział fali o 230 mln i 1,6 mld
+          // stało w domu przy 13/13. O 12:04 wróciło 3,7 mld, nie 0,7 — fork wysłał wszystko. Stempel wysyłki
+          // (`last_send.total`) to liczby z pól formularza po ich ponownym odczycie (v3.9.0), więc jest dowodem.
+          if (sentTotal > 0) e0.total = sentTotal;
           if (!Once.said(`powrot|${e0.fromKey}|${e0.sentAt}`, 3600e3)) log(`[POWRÓT] zapamiętany: ${(e0.total || 0).toLocaleString("pl-PL")} szt. (${e0.kind}) wróci na [${e0.fromKey}] ${e0.fromBody === "moon" ? "księżyc" : "planetę"} ~${new Date(e0.returnAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}.`, "info");
         }
       }
@@ -4196,7 +4217,7 @@
                   sentReal = Math.max(0, lsOk.before - hs.total);
                   if (this.landedDuring(lsOk, hs.ships, sentReal)) sentReal = 0;   // wylądowała flota — odczyt nic nie mówi o wysyłce
                   const brak = sentReal ? this.shortfall(lsOk, hs.ships) : [];
-                  if (brak.length) log(`[LOT] gra wysłała MNIEJ, niż bot wpisał: poleciało ~${sentReal.toLocaleString("pl-PL")} z ${(lsOk.total || 0).toLocaleString("pl-PL")} szt. W hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak)}. Pola formularza miały pełne wartości — to decyzja serwera forka (albo w tym czasie wylądowała flota).`, "warn");
+                  if (brak.length) log(`[LOT] po wysyłce w hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak)} (odjęcie hangaru dałoby ~${sentReal.toLocaleString("pl-PL")} z ${(lsOk.total || 0).toLocaleString("pl-PL")} szt.). To lądowanie fali w sekundzie wysyłki (22.09: „737 mln” wróciło jako 3,7 mld) — rejestr powrotów trzyma to, co wpisano w formularz.`, "info");
                 }
               } catch {}
               // lot obronny zostaje przy stemplu: bez `leftHome` z tego samego odczytu mniejsza liczba mogłaby
@@ -4933,7 +4954,7 @@
         if (wyladowala) {
           log(`[LOT] wysyłka potwierdzona świeżym odczytem hangaru; w tym czasie wylądowała flota, więc nie oceniam, ile dokładnie poleciało (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
         } else if (partial || brak.length) {
-          log(`[LOT] gra wysłała MNIEJ, niż bot wpisał: poleciało ~${sentReal.toLocaleString("pl-PL")} z ${loadedTotal.toLocaleString("pl-PL")} szt. W hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak) || "(różnica bez wskazania typu)"}. Pola formularza miały pełne wartości — to decyzja serwera forka (albo w tym czasie wylądowała flota). ${["expedition", "asteroid", "debris"].includes(m.kind) ? "Reszta poleci z następną falą." : "Obrona widzi resztę w hangarze."}`, "warn");
+          log(`[LOT] po wysyłce w hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak) || "(różnica bez wskazania typu)"} (odjęcie hangaru dałoby ~${sentReal.toLocaleString("pl-PL")} z ${loadedTotal.toLocaleString("pl-PL")} szt.). To lądowanie fali w sekundzie wysyłki (22.09: „737 mln” wróciło jako 3,7 mld) — rejestr powrotów trzyma to, co wpisano w formularz. ${["expedition", "asteroid", "debris"].includes(m.kind) ? "Reszta poleci z następną falą." : "Obrona widzi resztę w hangarze."}`, "info");
         } else {
           log(`[LOT] strona nie przeładowała się po „Send fleet”, ale świeży odczyt hangaru potwierdza wysyłkę (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
         }
