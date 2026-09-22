@@ -3665,15 +3665,21 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
     bar: { own: used, at: NOW },
   });
   const q = (p) => (p.ships && p.ships[0] ? p.ships[0].qty : null);
+  const C13 = { expo: { ...C12.expo, waves: 13 } };
+  const stan13 = (h, w, u) => { const s = stan(h, w, u); s.slots.expo.total = 13; return s; };
 
   // (a) STEROWY PRZYPADEK OWNERA: 11 lotów w powietrzu, jeden wolny slot, a w hangarze
   // wylądowały DWIE fale. Stary kod wysyłał wszystkie 2000 jednym lotem.
   const wLocie11 = Array(11).fill(1000);
   const a = expoPlan(stan(2000, wLocie11, 11), C12, NOW, null);
-  check("91a: przy jednym wolnym slocie fala bierze UDZIAŁ (1083 z floty 13 000), nie cały hangar",
-    q(a) === 1083 && a.docelowa === 1083, JSON.stringify(a.skip || { qty: q(a), docelowa: a.docelowa, doma: a.doma, wPowietrzu: a.wPowietrzu }));
-  check("91a1: … więc reszta zostaje w domu na następny zwolniony slot, a lot nie jest „cały hangar”",
-    q(a) < a.doma && a.last !== true, JSON.stringify({ qty: q(a), doma: a.doma, last: a.last }));
+  // v3.105.0 ODWRACA 91a/91a1 z 19.09: owner 22.09 („ostatnia fala powinna wysyłać wszystkie statki, które
+  // zostały!") — na OSTATNIM wolnym slocie nie ma gdzie wysłać reszty, więc lecą obie fale jednym lotem.
+  // Udział z całej floty (1083) zostaje dla fal, po których jest jeszcze wolny slot (91e3, 91b, 91c).
+  check("91a: przy jednym wolnym slocie fala bierze CAŁY hangar (2000), choć udział to 1083 — reszta nie ma slotu (owner 22.09)",
+    q(a) === 2000 && a.docelowa === 1083 && a.last === true, JSON.stringify(a.skip || { qty: q(a), docelowa: a.docelowa, doma: a.doma, wPowietrzu: a.wPowietrzu, last: a.last }));
+  const a2 = expoPlan(stan(2000, Array(10).fill(1000), 10), C12, NOW, null);
+  check("91a1: przy DWÓCH wolnych slotach ta sama zaległość leci udziałem (1000 z floty 12 000), reszta następnym lotem",
+    q(a2) === 1000 && a2.last !== true, JSON.stringify({ qty: q(a2), doma: a2.doma, docelowa: a2.docelowa, last: a2.last }));
 
   // (b) SAMOWYRÓWNANIE: fale w powietrzu są już nierówne (tak jak dziś u ownera) —
   // cel liczy się i tak z całej floty, więc duże fale po powrocie rozejdą się na równe.
@@ -3710,17 +3716,24 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
   check("91g1: (źródło) skalowanie niepełnego rejestru idzie po `lataGra` (sloty gry), nie po `juzLata`",
     /const lataGra = \(expo && expo\.total\) \? expo\.used : 0;/.test(src) && /lataGra > znane\.length \? Math\.round\(znanychSzt \/ znane\.length \* lataGra\)/.test(src));
 
-  // (e) źródło: nie ma już reguły „ostatni wolny slot = cały hangar”, bo to ona zlepiała fale.
-  check("91e: (źródło) „cały hangar” zależy WYŁĄCZNIE od tego, czy hangar przekracza udział fali",
-    /const bierzeWszystko = doma <= docelowa \* 1\.01;/.test(src) && !/lastOfBurst/.test(src) && !/expo\.used >= cap - 1/.test(src));
+  // v3.105.0 (owner 22.09: „ostatnia fala powinna wysyłać wszystkie statki"): ostatni wolny slot wg GRY bierze
+  // cały hangar BEZ progu; licznik serii nadal bez głosu (to on zlepiał fale w v3.100.0).
+  check("91e: (źródło) „cały hangar” = hangar ≤ 1,01 udziału ALBO ostatni wolny slot wg gry; licznik serii bez głosu",
+    /const ostatniSlot = !!\(expo && expo\.total\) && lataGra >= cap - 1;/.test(src) && /const bierzeWszystko = doma <= docelowa \* 1\.01 \|\| ostatniSlot;/.test(src) && !/lastOfBurst/.test(src));
+  const o1 = expoPlan(stan13(3113, Array(12).fill(2925), 12), C13, NOW, null);
+  check("91e1: LOG 22.09 14:59 — ostatni slot (12/13), hangar 3113 przy udziale 2925 (1,06) → leci CAŁY hangar, nie 2925", q(o1) === 3113 && o1.last === true && /ostatni wolny slot ekspedycji \(12\/13\)/.test(o1.lastWhy || ""), JSON.stringify(o1.skip || { qty: q(o1), last: o1.last, why: o1.lastWhy }));
+  const o2 = expoPlan(stan13(4700, Array(12).fill(2925), 12), C13, NOW, null);
+  check("91e2: ostatni slot, hangar 1,6 udziału → też cały hangar (nie ma slotu na resztę)", q(o2) === 4700 && o2.last === true, JSON.stringify(o2.skip || { qty: q(o2), last: o2.last }));
+  const o3 = expoPlan(stan13(4700, Array(11).fill(2925), 11), C13, NOW, null);
+  check("91e3: DWA wolne sloty, hangar 1,6 udziału → udział (reszta ma dokąd polecieć)", q(o3) < 4700 && o3.last !== true, JSON.stringify(o3.skip || { qty: q(o3), last: o3.last }));
+  const o4 = expoPlan(stan13(4700, Array(3).fill(2925), 3), C13, NOW, { waves: 13, sent: 12, lastSendAt: NOW - 120e3, gapMs: 60e3 });
+  check("91e4: licznik serii 12/13 przy 3 lotach w grze NIE jest „ostatnim slotem”", o4.last !== true && q(o4) < 4700, JSON.stringify(o4.skip || { qty: q(o4), last: o4.last }));
   // v3.103.1 (log 22.09 09:01): 13. fala miała hangar o 47 szt. większy od udziału → dzielenie przez 1,00000002
   // zostawiało po kilka sztuk z typu. Hangar do 1% ponad udział leci w całości; 1,02 udziału już nie.
-  const C13 = { expo: { ...C12.expo, waves: 13 } };
-  const stan13 = (h, w, u) => { const s = stan(h, w, u); s.slots.expo.total = 13; return s; };
   const j = expoPlan(stan13(3020, Array(12).fill(3000), 12), C13, NOW, null);
   check("91j: hangar 3020 przy udziale 3001,5 (13 fal, 12 w locie) → leci CAŁY hangar, zero resztek", q(j) === 3020 && j.last === true && /z dokładnością do 1%/.test(j.lastWhy || ""), JSON.stringify(j.skip || { qty: q(j), last: j.last, why: j.lastWhy }));
-  const j2 = expoPlan(stan13(3100, Array(12).fill(3000), 12), C13, NOW, null);
-  check("91j1: hangar 3100 (1,03 udziału) → nadal udział, nie całość (próg nie rozjeżdża fal)", q(j2) < 3100 && j2.last !== true, JSON.stringify(j2.skip || { qty: q(j2), last: j2.last, docelowa: j2.docelowa }));
+  const j2 = expoPlan(stan13(3100, Array(11).fill(3000), 11), C13, NOW, null);
+  check("91j1: hangar 3100 (1,2 udziału) przy DWÓCH wolnych slotach → udział, nie całość (próg nie rozjeżdża fal)", q(j2) < 3100 && j2.last !== true, JSON.stringify(j2.skip || { qty: q(j2), last: j2.last, docelowa: j2.docelowa }));
   // v3.104.0 (log 22.09 11:03–11:18): bot nie nadążał za lądowaniami — przy zaległości ≥ 2 udziałów odstęp
   // między falami nie obowiązuje; poniżej obowiązuje jak dotąd.
   const gapOn = { waves: 13, sent: 3, lastSendAt: NOW - 10e3, gapMs: 75e3 };
@@ -3744,7 +3757,8 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
   const c12 = expoPlan(stan(1000, Array(11).fill(1000), 11), C12, NOW, null);
   check("91i: plan „cały hangar” niesie `cap`, żeby Fly mógł przeliczyć udział na świeżym formularzu", c12.last === true && c12.cap === 12 && c12.wPowietrzu === 11000, JSON.stringify({ last: c12.last, cap: c12.cap, wPowietrzu: c12.wPowietrzu }));
   check("91i1: (źródło) Fly dzieli „cały hangar”, gdy w formularzu stoi ≥ 1,5 udziału liczonego z formularza",
-    /shareCtx: p\.last \? \{ wPowietrzu: p\.wPowietrzu \|\| 0, cap: p\.cap \|\| 1 \} : null/.test(src)
+    /shareCtx: p\.last \? \{ wPowietrzu: p\.wPowietrzu \|\| 0, cap: p\.cap \|\| 1, lastSlot: !!p\.ostatniSlot \} : null/.test(src)
+    && /if \(wszystko && m\.shareCtx && m\.shareCtx\.cap > 1 && !m\.shareCtx\.lastSlot\) \{/.test(src)
     && /const udzial = \(stoi \+ \(m\.shareCtx\.wPowietrzu \|\| 0\)\) \/ m\.shareCtx\.cap;/.test(src) && /if \(udzial > 0 && stoi >= 1\.5 \* udzial\) \{/.test(src));
   check("91f: (źródło) udział liczony z hangaru PLUS floty w powietrzu, dzielone przez cap",
     /const docelowa = \(doma \+ wPowietrzu\) \/ cap;/.test(src) && /x\.kind === "expedition" && x\.fromKey === homeKey && \(x\.returnAt \|\| 0\) > now && \(x\.total \|\| 0\) > 0/.test(src));

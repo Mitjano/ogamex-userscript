@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.104.0
+// @version      3.105.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.104.0";
+  const VERSION = "3.105.0";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3327,7 +3327,13 @@
     // (nie wie, która to fala) — ale mówi głośno, żeby log nie był cichy przez godzinę.
     const flota = doma + wPowietrzu;
     const flotaSpadek = (burst && burst.flota > 0 && burstFresh && flota < 0.95 * burst.flota) ? burst.flota : 0;
-    const bierzeWszystko = doma <= docelowa * 1.01;
+    // v3.105.0 (owner 22.09 15:01, po 188 mln w hangarze przy 13/13: „ostatnia fala powinna wysyłać wszystkie
+    // statki, które zostały!"): fala, która wg GRY zajmuje OSTATNI wolny slot, bierze cały hangar — bez progu.
+    // Tolerancja 1% nie wystarczała: znaleziska z całego cyklu (+6%) robiły z ostatniego hangaru 1,06 udziału
+    // i zostawało 0,5% floty na 40 min. Cena: gdy na ostatnim slocie stoją dwie fale, lecą jednym lotem
+    // (12 równych + 1 podwójna) — właściciel woli to od floty w domu. Pełne sloty > równość fal.
+    const ostatniSlot = !!(expo && expo.total) && lataGra >= cap - 1;
+    const bierzeWszystko = doma <= docelowa * 1.01 || ostatniSlot;
     const docelowaSzt = Math.max(1, Math.round(docelowa));   // do logu i wpisu lotu
     // v3.99.0 (owner 16.09: „zostają pojedyncze sztuki statków w hangarze"): typ, którego jest
     // MNIEJ sztuk niż wynosi dzielnik, miał udział 0 i czekał w domu na falę domykającą — a gdy
@@ -3368,11 +3374,12 @@
     // taki log rozstrzygnie, czy to sloty z gry, licznik serii czy konfiguracja.
     const lastWhy = !bierzeWszystko ? ""
       : waves === 1 ? "seria = 1 fala"
+      : ostatniSlot && doma > docelowa * 1.01 ? `ostatni wolny slot ekspedycji (${expo.used}/${expo.total}) — cały hangar ${doma.toLocaleString("pl-PL")} szt., udział fali ${docelowaSzt.toLocaleString("pl-PL")} szt.`
       : doma <= docelowa ? `hangar ${doma.toLocaleString("pl-PL")} szt. nie przekracza udziału jednej fali (${docelowaSzt.toLocaleString("pl-PL")} szt.)`
       : `hangar ${doma.toLocaleString("pl-PL")} szt. = udział fali (${docelowaSzt.toLocaleString("pl-PL")} szt.) z dokładnością do 1% — resztki z zaokrągleń lecą razem`;
     const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}${expo.fromBar ? ` (odczyt ${expoRaw.used}/${expoRaw.total} przycięty do ${s.bar.own} własnych lotów z paska)` : ""}` : "sloty nieznane";
     return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!bierzeWszystko, waves, left, slotBound, lastWhy, slotsTxt,
-      docelowa: docelowaSzt, doma, wPowietrzu, cap, flota, flotaSpadek,
+      docelowa: docelowaSzt, doma, wPowietrzu, cap, flota, flotaSpadek, ostatniSlot,
       duration: { minutes: e.discoverer40 ? 40 : 0, hours: Math.max(1, e.holdingHours || 1) } };
   }
 
@@ -3544,7 +3551,7 @@
         // plan powstaje z odczytu sprzed nawigacji, a w tym czasie potrafi wylądować fala (log 16.09 13:52)
         takeAllExcept: p.last ? (CFG.expo.excludeTypes || []).slice() : null,
         // v3.103.0: dane do przeliczenia udziału fali na ŚWIEŻYM stanie formularza (patrz Fly, „wszystko")
-        shareCtx: p.last ? { wPowietrzu: p.wPowietrzu || 0, cap: p.cap || 1 } : null,
+        shareCtx: p.last ? { wPowietrzu: p.wPowietrzu || 0, cap: p.cap || 1, lastSlot: !!p.ostatniSlot } : null,
         missionType: "EXPEDITION", takeResources: false, duration: p.duration, missionId: link.mission });
       if (!started) return false;
       // v3.38.0: `sizes` zniknęło — rozmiar fali liczy dzielnik malejący z bieżącego
@@ -4531,7 +4538,9 @@
       // Nieaktualny plan z v3.99.2 (7 szt. w planie, pełny hangar w formularzu) dalej bierze wszystko,
       // bo udział liczy się z formularza, nie z planu.
       let dziel = 1;
-      if (wszystko && m.shareCtx && m.shareCtx.cap > 1) {
+      // v3.105.0: na OSTATNIM wolnym slocie nie dzielimy nawet, gdy wylądowała druga fala — nie ma slotu,
+      // w którym reszta mogłaby polecieć, a właściciel nie chce floty w domu (owner 22.09).
+      if (wszystko && m.shareCtx && m.shareCtx.cap > 1 && !m.shareCtx.lastSlot) {
         const stoi = els.reduce((n, el) => n + (wszystko.has(String(el.dataset.shipType || "").toUpperCase()) ? 0 : (parseInt(el.dataset.shipQuantity || "0") || 0)), 0);
         const udzial = (stoi + (m.shareCtx.wPowietrzu || 0)) / m.shareCtx.cap;
         if (udzial > 0 && stoi >= 1.5 * udzial) {
