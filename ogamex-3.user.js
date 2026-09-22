@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3 (Genesis)
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.103.0
+// @version      3.103.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -34,7 +34,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.103.0";
+  const VERSION = "3.103.1";
   const HOST = location.host;
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
@@ -3307,7 +3307,13 @@
     // Hangar nie większy od udziału jednej fali = leci w całości. To jest jedyny przypadek
     // „fali domykającej": nie ma już czego dzielić. Wcześniej domykała KAŻDA fala przy jednym
     // wolnym slocie i to ona zlepiała fale w coraz większe.
-    const bierzeWszystko = doma <= docelowa;
+    // v3.103.1 (log 22.09 09:01, 13. fala: hangar 2 988 882 622, udział 2 988 882 575 — o 47 szt. więcej po
+    // zaokrągleniach w dół z 12 poprzednich fal): ostry warunek `doma <= docelowa` dzielił hangar przez
+    // 1,00000002 i zostawiał po kilka sztuk z każdego typu (52 szt. na 39 mld), a „resztka nie zajmuje slotu"
+    // trzymała je w domu do następnego powrotu — owner widział pojedyncze statki w hangarze przy 13/13.
+    // Hangar do 1% ponad udział leci w całości. 1% nie rozjeżdża fal (próg 1,2–1,5 rozjeżdżał — HANDOFF 20b),
+    // bo fala nie może tą drogą urosnąć ponad 1,01 udziału.
+    const bierzeWszystko = doma <= docelowa * 1.01;
     const docelowaSzt = Math.max(1, Math.round(docelowa));   // do logu i wpisu lotu
     // v3.99.0 (owner 16.09: „zostają pojedyncze sztuki statków w hangarze"): typ, którego jest
     // MNIEJ sztuk niż wynosi dzielnik, miał udział 0 i czekał w domu na falę domykającą — a gdy
@@ -3348,7 +3354,8 @@
     // taki log rozstrzygnie, czy to sloty z gry, licznik serii czy konfiguracja.
     const lastWhy = !bierzeWszystko ? ""
       : waves === 1 ? "seria = 1 fala"
-      : `hangar ${doma.toLocaleString("pl-PL")} szt. nie przekracza udziału jednej fali (${docelowaSzt.toLocaleString("pl-PL")} szt.)`;
+      : doma <= docelowa ? `hangar ${doma.toLocaleString("pl-PL")} szt. nie przekracza udziału jednej fali (${docelowaSzt.toLocaleString("pl-PL")} szt.)`
+      : `hangar ${doma.toLocaleString("pl-PL")} szt. = udział fali (${docelowaSzt.toLocaleString("pl-PL")} szt.) z dokładnością do 1% — resztki z zaokrągleń lecą razem`;
     const slotsTxt = expo ? `sloty ekspedycji ${expo.used}/${expo.total}${expo.fromBar ? ` (odczyt ${expoRaw.used}/${expoRaw.total} przycięty do ${s.bar.own} własnych lotów z paska)` : ""}` : "sloty nieznane";
     return { toKey: `${g}:${sy}:16`, fromKey: homeKey, fromBody: body, ships, last: !!bierzeWszystko, waves, left, slotBound, lastWhy, slotsTxt,
       docelowa: docelowaSzt, doma, wPowietrzu, cap,

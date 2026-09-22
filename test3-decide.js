@@ -3712,7 +3712,15 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
 
   // (e) źródło: nie ma już reguły „ostatni wolny slot = cały hangar”, bo to ona zlepiała fale.
   check("91e: (źródło) „cały hangar” zależy WYŁĄCZNIE od tego, czy hangar przekracza udział fali",
-    /const bierzeWszystko = doma <= docelowa;/.test(src) && !/lastOfBurst/.test(src) && !/expo\.used >= cap - 1/.test(src));
+    /const bierzeWszystko = doma <= docelowa \* 1\.01;/.test(src) && !/lastOfBurst/.test(src) && !/expo\.used >= cap - 1/.test(src));
+  // v3.103.1 (log 22.09 09:01): 13. fala miała hangar o 47 szt. większy od udziału → dzielenie przez 1,00000002
+  // zostawiało po kilka sztuk z typu. Hangar do 1% ponad udział leci w całości; 1,02 udziału już nie.
+  const C13 = { expo: { ...C12.expo, waves: 13 } };
+  const stan13 = (h, w, u) => { const s = stan(h, w, u); s.slots.expo.total = 13; return s; };
+  const j = expoPlan(stan13(3020, Array(12).fill(3000), 12), C13, NOW, null);
+  check("91j: hangar 3020 przy udziale 3001,5 (13 fal, 12 w locie) → leci CAŁY hangar, zero resztek", q(j) === 3020 && j.last === true && /z dokładnością do 1%/.test(j.lastWhy || ""), JSON.stringify(j.skip || { qty: q(j), last: j.last, why: j.lastWhy }));
+  const j2 = expoPlan(stan13(3100, Array(12).fill(3000), 12), C13, NOW, null);
+  check("91j1: hangar 3100 (1,03 udziału) → nadal udział, nie całość (próg nie rozjeżdża fal)", q(j2) < 3100 && j2.last !== true, JSON.stringify(j2.skip || { qty: q(j2), last: j2.last, docelowa: j2.docelowa }));
   // v3.103.0 (log 21.09 11:11: plan „cały hangar 2 802 mln", poleciało 5 600 mln): wykonanie pilnuje E2E 76e–h,
   // tu tylko strażnik, żeby poprawka nie zniknęła przy porządkach.
   const c12 = expoPlan(stan(1000, Array(11).fill(1000), 11), C12, NOW, null);
