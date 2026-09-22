@@ -156,3 +156,31 @@ Magazyn per-host = na Athenie bot wstaje z fabrycznymi ustawieniami. Checklist p
 
 **Otwarte pytania do ownera:** (1) Genesis równolegle czy przesiadka na Athenę?
 (2) wykluczenia ekspedycji per-uni? (3) port GateSave — teraz czy po stabilizacji?
+
+---
+
+## 9. WDROŻENIE (22.09, decyzja ownera: „wszystko na Athenie 1:1 jak na Genesis")
+
+**v3.106.0** (`ogamex-3.user.js`):
+- `@match` obejmuje `athena.ogamex.net`; `@name` bez „(Genesis)".
+- Stała `UNI` z hosta; wszystkie tytuły pushy mówią, które uni krzyczy
+  (ATAK / RATUNEK / FS / BŁĄD / SONDA / EKO / POWRÓT / strażnik / raport startowy).
+- Puls do strażnika niesie uni: `GET /hb?u=<uni>` (stary strażnik dopasowuje
+  `startswith("/hb")` — zgodność wstecz zachowana).
+
+**v2.112.0** (`ogamex-bot.user.js`): ROZBROJONY early-returnem po `"use strict"` —
+auto-update wyłączy go na każdej maszynie. Owner powinien dodatkowo ODINSTALOWAĆ
+go w Tampermonkey (skrypt loguje o tym do konsoli). Kod zostaje jako referencja.
+
+**Strażnik** (`watchdog/ogx-watchdog.py`): stan pulsu per uni (`state["unis"]`),
+martwa karta JEDNEGO uni przy żywym drugim = restart przeglądarki z kartami
+WSZYSTKICH pilnowanych uni (`open -a <app> url1 url2`); uni nieożywione po
+3 restartach wypada spod ochrony z pushem (wraca przy pierwszym pulsie —
+owner mógł celowo zamknąć tę grę); `/status` pokazuje wiek pulsu per uni;
+nowy env `OGX_WD_URLS` (jawna lista kart) obok starego `OGX_WD_URL`.
+Stary bot bez `?u=` działa jak dotąd (tylko zegar globalny).
+
+**Pozostaje po stronie ownera (sekcja 5 bez zmian):** pierwsza sesja na Athenie
+w trybie Obserwator → „Kopiuj raport startowy" → potwierdzenie parserów → dopiero
+wtedy auto-ratunek i moduły po kolei (F2). Checklist panelu w sekcji 5.
+`expo.excludeTypes` pozostaje wspólna dla obu uni (1:1 — zgodnie z decyzją).

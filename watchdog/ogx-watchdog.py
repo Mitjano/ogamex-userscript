@@ -6,10 +6,13 @@
 # działa"): bot żyje wyłącznie w karcie przeglądarki. Martwa karta = cicha
 # śmierć obrony, bez żadnego alarmu. Ten strażnik:
 #   1. słucha pulsu bota na http://127.0.0.1:8765/hb (bot pinguje co ~60 s,
-#      tylko karta-lider),
-#   2. gdy puls ustanie na > THRESHOLD (12 min), wysyła push na ntfy
-#      i restartuje PRZEGLĄDARKĘ, z której szedł puls (Firefox/Chrome — patrz
-#      OGX_WD_BROWSER), z kartą gry; stan bota przeżywa w GM storage,
+#      tylko karta-lider; od v3.106.0 puls niesie nazwę uni: /hb?u=genesis),
+#   2. gdy puls ustanie na > THRESHOLD (12 min) — GLOBALNIE albo dla JEDNEGO
+#      uni, gdy drugie wciąż pinguje (gra na dwóch uni naraz: martwa karta
+#      Atheny była niewidzialna, dopóki Genesis żył — AUDYT-ATHENA-2026-09-22
+#      sekcja 3) — wysyła push na ntfy i restartuje PRZEGLĄDARKĘ, z której
+#      szedł puls (Firefox/Chrome — patrz OGX_WD_BROWSER), otwierając karty
+#      WSZYSTKICH pilnowanych uni; stan bota przeżywa w GM storage,
 #   3. po uśpieniu Maca NIE restartuje w panice — wykrywa lukę w zegarze
 #      i daje botowi czas na powrót po wybudzeniu.
 # Limity: maks. 3 restarty na godzinę — potem już tylko push „nie umiem ożywić".
@@ -24,10 +27,12 @@
 import http.server
 import json
 import os
+import re
 import subprocess
 import threading
 import time
 import urllib.request
+from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("OGX_WD_PORT", "8765"))
 THRESHOLD = int(os.environ.get("OGX_WD_THRESHOLD", str(12 * 60)))   # s bez pulsu = zawiecha
@@ -41,6 +46,10 @@ MAX_RESTARTS_H = 3
 DRYRUN = os.environ.get("OGX_WD_DRYRUN") == "1"
 NTFY_TOPIC = os.environ.get("OGX_WD_NTFY", "ogx-4wrgtgf1zknuoa")
 GAME_URL = os.environ.get("OGX_WD_URL", "https://genesis.ogamex.net/")
+# Jawna lista kart do otwarcia po restarcie (przecinki). Pusta = wyprowadzana
+# z uni widzianych w pulsie (https://<uni>.ogamex.net/), a bez żadnego uni
+# w pulsie (stary bot) zostaje GAME_URL.
+GAME_URLS_ENV = os.environ.get("OGX_WD_URLS", "")
 # Godziny ciszy „S-E" (np. "1-7"): w tym oknie strażnik NIE restartuje, tylko
 # pushuje — restart o 4 w nocy w 2 min wzmacnia wzorzec „konto nigdy nie znika".
 # Puste (domyślnie) = restart o każdej porze. Sam puls nigdy nie wychodzi poza
@@ -65,8 +74,21 @@ def quiet_now():
     return (s <= h < e) if s < e else (h >= s or h < e)
 
 state = {"last_hb": 0.0, "hb_count": 0, "restarts": [], "started": time.time(),
-         "browser": None, "seen_browsers": {}, "warned_dup": 0.0}
+         "browser": None, "seen_browsers": {}, "warned_dup": 0.0,
+         # per-uni: ostatni puls i licznik nieudanych ożywień (uni, które nie
+         # wstaje po 3 restartach, najpewniej ZAMKNĄŁ owner — przestajemy je
+         # pilnować, wraca pod ochronę przy pierwszym pulsie)
+         "unis": {}, "uni_strikes": {}}
 lock = threading.Lock()
+
+
+def game_urls():
+    """Karty do otwarcia po restarcie. Jawny env > uni z pulsu > GAME_URL."""
+    if GAME_URLS_ENV.strip():
+        return [u.strip() for u in GAME_URLS_ENV.split(",") if u.strip()]
+    with lock:
+        unis = sorted(state["unis"].keys())
+    return [f"https://{u}.ogamex.net/" for u in unis] or [GAME_URL]
 
 # 09.09 (owner przesiada się na Chrome): strażnik był ZASZYTY na Firefoksa — ubijał
 # proces `firefox` i robił `open -a Firefox`. Przy grze w Chrome to nie tylko nie
@@ -145,8 +167,9 @@ def push(title, body, priority="urgent"):
 def restart_browser():
     app = target_browser()
     proc = PROC_NAME.get(app, app)
+    urls = game_urls()
     if DRYRUN:
-        log(f"[DRYRUN] restart {app} (osascript quit → pkill {proc} → open z kartą gry)")
+        log(f"[DRYRUN] restart {app} (osascript quit → pkill {proc} → open z kartami: {' '.join(urls)})")
         return
     try:
         subprocess.run(["osascript", "-e", f'tell application "{app}" to quit'], timeout=20)
@@ -155,19 +178,32 @@ def restart_browser():
     time.sleep(15)
     subprocess.run(["pkill", "-9", "-x", proc], check=False)
     time.sleep(5)
-    subprocess.run(["open", "-a", app, GAME_URL], check=False)
-    log(f"{app} zrestartowany z kartą {GAME_URL}")
+    subprocess.run(["open", "-a", app] + urls, check=False)
+    log(f"{app} zrestartowany z kartami: {' '.join(urls)}")
 
 
 class HB(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/hb"):
             app = browser_from_ua(self.headers.get("User-Agent"))
+            # v3.106.0: puls niesie uni (?u=genesis/athena) — bez tego martwa karta
+            # jednego uni chowała się za żywym pulsem drugiego. Stary bot pinguje
+            # bez parametru: trafia tylko do zegara globalnego, jak dotąd.
+            uni = None
+            try:
+                uni = (parse_qs(urlparse(self.path).query).get("u") or [None])[0]
+                if uni:
+                    uni = re.sub(r"[^a-z0-9-]", "", uni.lower())[:24] or None
+            except Exception:
+                uni = None
             now = time.time()
             dup = None
             with lock:
                 state["last_hb"] = now
                 state["hb_count"] += 1
+                if uni:
+                    state["unis"][uni] = now
+                    state["uni_strikes"].pop(uni, None)
                 if app:
                     state["browser"] = app
                     state["seen_browsers"][app] = now
@@ -190,6 +226,7 @@ class HB(http.server.BaseHTTPRequestHandler):
                                    "browser_cfg": BROWSER,
                                    "hb_count": state["hb_count"],
                                    "last_hb_age_s": round(age) if age is not None else None,
+                                   "unis": {u: round(time.time() - t) for u, t in state["unis"].items()},
                                    "restarts_last_h": len([t for t in state["restarts"] if time.time() - t < 3600]),
                                    "uptime_s": round(time.time() - state["started"])})
             self.send_response(200)
@@ -214,26 +251,63 @@ def monitor():
             if gap > CHECK_EVERY + SLEEP_GAP:
                 log(f"wykryto sen Maca (luka {round(gap)} s) — daję botowi czas na powrót")
                 state["last_hb"] = now
+                for u in state["unis"]:
+                    state["unis"][u] = now
                 continue
             ref = state["last_hb"] or state["started"]
             silent = now - ref
             grace = STARTUP_GRACE if not state["last_hb"] else THRESHOLD
-            if silent < grace:
+            stale = []
+            reason = None
+            if silent >= grace:
+                reason = f"Brak pulsu od {round(silent / 60)} min"
+            else:
+                # Globalnie żywy — ale przy grze na DWÓCH uni martwa karta jednego
+                # chowa się za pulsem drugiego (utrata floty 08.09 była globalna;
+                # ta sama ślepota per uni bez tego bloku zostaje na zawsze).
+                stale = [u for u, t in state["unis"].items() if now - t > THRESHOLD]
+                if stale:
+                    ages = ", ".join(f"{u} od {round((now - state['unis'][u]) / 60)} min" for u in stale)
+                    reason = f"Karta uni bez pulsu ({ages}), reszta żyje"
+            if not reason:
                 continue
             if quiet_now():
-                push("🩺 Bot OGameX MILCZY (godziny ciszy)", f"Brak pulsu od {round(silent / 60)} min — w oknie ciszy NIE restartuję; wejdź do gry, gdy wstaniesz.")
-                state["last_hb"] = now + 1800  # w ciszy przypominaj co ~30 min
+                push("🩺 Bot OGameX MILCZY (godziny ciszy)", f"{reason} — w oknie ciszy NIE restartuję; wejdź do gry, gdy wstaniesz.")
+                state["last_hb"] = max(state["last_hb"], now + 1800)  # w ciszy przypominaj co ~30 min
+                for u in stale:
+                    state["unis"][u] = now + 1800
                 continue
             state["restarts"] = [t for t in state["restarts"] if now - t < 3600]
             if len(state["restarts"]) >= MAX_RESTARTS_H:
-                push("🩺 Bot OGameX MILCZY", f"Brak pulsu od {round(silent / 60)} min, a limit restartów wyczerpany — wejdź do gry RĘCZNIE.")
-                state["last_hb"] = now  # nie spamuj co 30 s
+                push("🩺 Bot OGameX MILCZY", f"{reason}, a limit restartów wyczerpany — wejdź do gry RĘCZNIE.")
+                state["last_hb"] = max(state["last_hb"], now)  # nie spamuj co 30 s
+                for u in stale:
+                    state["unis"][u] = now
+                continue
+            # Uni, które nie wstaje mimo 3 restartów, najpewniej ZAMKNĄŁ owner —
+            # bez tego strażnik restartowałby przeglądarkę 3×/h w nieskończoność.
+            # Uni wraca pod ochronę przy pierwszym pulsie (patrz /hb).
+            dropped = []
+            for u in stale:
+                state["uni_strikes"][u] = state["uni_strikes"].get(u, 0) + 1
+                if state["uni_strikes"][u] > 3:
+                    dropped.append(u)
+            for u in dropped:
+                state["unis"].pop(u, None)
+                state["uni_strikes"].pop(u, None)
+            stale = [u for u in stale if u not in dropped]
+            if dropped and not stale and silent < grace:
+                push("🩺 Przestaję pilnować uni: " + ", ".join(dropped),
+                     "Karta nie wstała po 3 restartach — jeśli sam ją zamknąłeś, wszystko OK. "
+                     "Wraca pod ochronę przy pierwszym pulsie (otwórz grę).", "high")
                 continue
             state["restarts"].append(now)
-            state["last_hb"] = now + 300  # 5 min łaski na wstanie przeglądarki
+            state["last_hb"] = max(state["last_hb"], now + 300)  # 5 min łaski na wstanie przeglądarki
+            for u in state["unis"]:
+                state["unis"][u] = max(state["unis"][u], now + 300)
         app = target_browser()
-        log(f"BRAK PULSU od {round(silent)} s — restartuję {app}")
-        push("🩺 Karta z grą ZAMARŁA", f"Brak pulsu bota od {round(silent / 60)} min — restartuję {app} z kartą gry. Sprawdź, czy wstał.")
+        log(f"{reason} — restartuję {app}")
+        push("🩺 Karta z grą ZAMARŁA", f"{reason} — restartuję {app} z kartami gry. Sprawdź, czy wstał.")
         restart_browser()
 
 

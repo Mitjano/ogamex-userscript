@@ -1290,7 +1290,7 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   check("sonda listy USUNIĘTA (żaden fetch listy ruchów z ?planet=)", !/probePlanetList/.test(src) && !/\[SONDA LISTY\]/.test(src) && !/this\.URL\}\?planet=/.test(src) && /WERDYKTY OSTATECZNE/.test(src));
   // Komplet kalibracji szedł na telefon jako „⚠️ Obrona: BŁĄD" i fałszował dziennik
   // obrony (oraz bilans po przerwie). Raport startowy to nie awaria.
-  check("raport startowy NIE udaje błędu obrony (push wprost, bez wpisu BŁĄD)", !/KOMPLET[\s\S]{0,600}?Journal\.add\("BŁĄD"/.test(src) && /Notifier\.push\("📋 Raport startowy gotowy \(Genesis\)"/.test(src));
+  check("raport startowy NIE udaje błędu obrony (push wprost, bez wpisu BŁĄD)", !/KOMPLET[\s\S]{0,600}?Journal\.add\("BŁĄD"/.test(src) && /Notifier\.push\(`📋 Raport startowy gotowy \(\$\{UNI\}\)`/.test(src));
   // [GOTOWOŚĆ] krzyczała ERROR-em „nie widzę żadnej floty", gdy flota była w powietrzu
   // z woli BOTA (własny ratunek w toku) — to dowód działania obrony, nie braku.
   check("gotowość obrony nie panikuje przy własnym locie ratunkowym w powietrzu", /const wLocie = \(s\.flights \|\| \[\]\)\.some\(f => \(f\.fromKey === guard \|\| f\.toKey === guard\) && f\.phase !== "done" && !flightStale\(f, now\)\)/.test(src) && /if \(!wLocie\) braki\.push/.test(src));
@@ -1458,7 +1458,7 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
   // v3.70.1 (utrata floty 08.09): martwy strażnik NIE może być tylko wpisem w dzienniku —
   // push na telefon natychmiast, powtarzany co godzinę (flotę można stracić w godzinę),
   // a powrót strażnika zeruje dławik.
-  check("martwy strażnik pushuje na telefon natychmiast + co 1 h, powrót zeruje dławik", /hb_down_push", 0\) \|\| 0\) >= 3600e3/.test(src) && /Notifier\.push\("🩺 Strażnik karty NIE DZIAŁA/.test(src) && /onload: \(\) => \{ Store\.set\("hb_down_push", 0\);/.test(src));
+  check("martwy strażnik pushuje na telefon natychmiast + co 1 h, powrót zeruje dławik", /hb_down_push", 0\) \|\| 0\) >= 3600e3/.test(src) && /Notifier\.push\(`🩺 Strażnik karty NIE DZIAŁA/.test(src) && /onload: \(\) => \{ Store\.set\("hb_down_push", 0\);/.test(src));
   check("instalator strażnika zdejmuje flagę disabled launchd", /launchctl enable/.test(fs.readFileSync(path.join(__dirname, "watchdog", "install.sh"), "utf8")));
   // 08.09 (utrata floty): strażnika pilnował launchd, a launchd miał trwałą flagę disabled —
   // warstwa 2 to cron, mechanizm NIEZALEŻNY, z fallbackiem nohup gdy launchd zawiedzie.
@@ -2700,7 +2700,7 @@ console.log("\n── 65. KANAŁ ALARMOWY: stały temat ntfy + ekonomia poza rod
   // kanałem i tą samą wagą co realny ostrzał. Kanał pełen nieszkodliwych alarmów przestaje
   // być czytany, więc ekonomia dostaje własny rodzaj wpisu.
   check("65f: rodzaj EKO ma własny tytuł pusha i NIE udaje awarii obrony",
-    /kind === "EKO"[\s\S]{0,200}?this\.push\("🧰[^"]*"/.test(src) && !/kind === "EKO"[\s\S]{0,200}?Obrona: BŁĄD/.test(src),
+    /kind === "EKO"[\s\S]{0,200}?this\.push\(`🧰[^`]*`/.test(src) && !/kind === "EKO"[\s\S]{0,200}?Obrona: BŁĄD/.test(src),
     (src.match(/kind === "EKO"[\s\S]{0,200}/) || [""])[0].slice(0, 160));
   check("65g: EKO idzie niskim priorytetem (nie budzi w nocy jak ATAK)",
     /kind === "EKO"[\s\S]{0,200}?this\.push\([\s\S]{0,80}?, "low", /.test(src),
@@ -2948,8 +2948,8 @@ console.log("\n── 71. STRAŻNIK: alarm po ŚMIERCI, nie po nieobecności (w�
     const magazyn = { hb_ever: hbEver, hb_ok: null, hb_down_push: 0 };
     const pushe = [], logi = [];
     const Store = { get: (k, d) => (magazyn[k] === undefined ? d : magazyn[k]), set: (k, v) => { magazyn[k] = v; } };
-    const down = new Function("Store", "log", "Notifier", "return function () {" + bodyOf("down() {") + "};")(
-      Store, (m) => logi.push(String(m)), { push: (t, m) => pushe.push(t) });
+    const down = new Function("Store", "log", "Notifier", "UNI", "return function () {" + bodyOf("down() {") + "};")(
+      Store, (m) => logi.push(String(m)), { push: (t, m) => pushe.push(t) }, "Genesis");
     return { down, pushe, logi, magazyn };
   };
 
@@ -3267,7 +3267,7 @@ console.log("\n── 78. SKAN TO NIE ATAK: tytuł powiadomienia ma mówić praw
   // Tym samym kanałem przychodzi jedyne ostrzeżenie o realnym uderzeniu, więc fałszywy tytuł
   // uczy go ignorować — ta sama choroba co v3.85.0 i v3.89.0.
   check("78a: (źródło) alarm o sondzie ma własny kanał powiadomień, nie kanał ataku",
-    /pushKey: "sonda"/.test(src) && /kind === "SONDA"/.test(src) && /Skan \(Genesis\)/.test(src));
+    /pushKey: "sonda"/.test(src) && /kind === "SONDA"/.test(src) && /Skan \(\$\{UNI\}\)/.test(src));
   check("78b: (źródło) …i nie krzyczy głosem „Atak na bazę”",
     !/kind === "SONDA"[\s\S]{0,200}?speak\(/.test(src));
   check("78c: (źródło) rodzaj wpisu wybierany po pushKey (ślepota→BŁĄD, sonda→SONDA, reszta→ATAK)",

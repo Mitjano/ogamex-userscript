@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name         OGameX Assistant 3 (Genesis)
+// @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.105.0
-// @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis only.
+// @version      3.106.0
+// @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
+// @match        https://athena.ogamex.net/*
 // @updateURL    https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-3.user.js
 // @downloadURL  https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-3.user.js
 // @grant        GM_getValue
@@ -34,8 +35,15 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.105.0";
+  const VERSION = "3.106.0";
   const HOST = location.host;
+  // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
+  // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
+  // na Athenie wysłałby ownera do złej gry. Etykieta z hosta, nie z configu (cfg per
+  // host startuje pusty i mógłby kłamać).
+  const UNI = HOST === "athena.ogamex.net" ? "Athena"
+    : HOST === "genesis.ogamex.net" ? "Genesis"
+    : (HOST.split(".")[0] || HOST);
   // v3.68.9 (audyt 04.09, obrona-wykrywanie#2 P0) — CO SIĘ PSUŁO: pasek misji jest
   // wyrenderowany przez serwer przy ZAŁADOWANIU strony i — inaczej niż odliczania w
   // wierszach — nie ma tykającego bliźniaka, który by go korygował. Bot stemplował go
@@ -119,7 +127,11 @@
   // oddała stronę błędu. Puls ma więc własny zegar, poza wszystkimi bramkami
   // obrony, i milknie dokładnie wtedy, gdy ma milknąć: gdy karta naprawdę zamarła.
   const Heartbeat = {
-    URL: "http://127.0.0.1:8765/hb",
+    // v3.106.0: puls niesie nazwę uni — strażnik z jednym globalnym `last_hb` nie
+    // widział śmierci karty Atheny, dopóki karta Genesis pingowała (AUDYT-ATHENA
+    // sekcja 3). Stary strażnik dopasowuje ścieżkę przez startsWith("/hb"), więc
+    // parametr nie psuje zgodności wstecz.
+    URL: "http://127.0.0.1:8765/hb?u=" + encodeURIComponent((location.host.split(".")[0] || "gra")),
     ping() {
       const now = Date.now();
       if (now - (Store.get("hb_last", 0) || 0) < 60e3) return;
@@ -158,7 +170,7 @@
       }
       if (bylKiedys && Date.now() - (Store.get("hb_down_push", 0) || 0) >= 3600e3) {
         Store.set("hb_down_push", Date.now());
-        Notifier.push("🩺 Strażnik karty NIE DZIAŁA (Genesis)", "Watchdog na Macu nie odpowiada — zawieszona karta NIE zostanie ożywiona i obrona może umrzeć po cichu. Napraw: bash watchdog/install.sh w repo ogamex-userscript.", "high", "warning");
+        Notifier.push(`🩺 Strażnik karty NIE DZIAŁA (${UNI})`, "Watchdog na Macu nie odpowiada — zawieszona karta NIE zostanie ożywiona i obrona może umrzeć po cichu. Napraw: bash watchdog/install.sh w repo ogamex-userscript.", "high", "warning");
       }
     },
   };
@@ -242,15 +254,15 @@
     },
     fromJournal(kind, msg) {
       const m = String(msg || "");
-      if (kind === "ATAK") { if (this.throttled("ATAK", m)) return; this.push("⚔️ ATAK (Genesis)", m, "urgent", "rotating_light"); this.speak("Uwaga! Atak na bazę!", 3); }
-      else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK", m)) return; this.push("🛟 Flota ewakuowana (Genesis)", m, "default", "shield"); }
-      else if (kind === "FS" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("FS", m)) return; this.push("🌙 Fleet Save (Genesis)", m, "min", "crescent_moon"); }
-      else if (kind === "BŁĄD") { if (this.throttled("BŁĄD", m)) return; this.push("⚠️ Obrona: BŁĄD (Genesis)", m, "high", "warning"); }
+      if (kind === "ATAK") { if (this.throttled("ATAK", m)) return; this.push(`⚔️ ATAK (${UNI})`, m, "urgent", "rotating_light"); this.speak("Uwaga! Atak na bazę!", 3); }
+      else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK", m)) return; this.push(`🛟 Flota ewakuowana (${UNI})`, m, "default", "shield"); }
+      else if (kind === "FS" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("FS", m)) return; this.push(`🌙 Fleet Save (${UNI})`, m, "min", "crescent_moon"); }
+      else if (kind === "BŁĄD") { if (this.throttled("BŁĄD", m)) return; this.push(`⚠️ Obrona: BŁĄD (${UNI})`, m, "high", "warning"); }
       // v3.94.0: skan to NIE atak — własny tytuł, priorytet „default" i BEZ komunikatu
       // głosowego. Tytuł „ATAK" ma znaczyć atak, inaczej przestaje znaczyć cokolwiek.
-      else if (kind === "SONDA") { if (this.throttled("SONDA", m)) return; this.push("🛰 Skan (Genesis) — flotą nie ruszam", m, "default", "satellite"); }
-      else if (kind === "EKO") { if (this.throttled("EKO", m)) return; this.push("🧰 Ekonomia stoi (Genesis)", m, "low", "gear"); }
-      else if (kind === "POWRÓT" && /wróci|wysłan/i.test(m)) { if (this.throttled("POWRÓT", m)) return; this.push("✅ Flota w domu (Genesis)", m, "min", "white_check_mark"); }
+      else if (kind === "SONDA") { if (this.throttled("SONDA", m)) return; this.push(`🛰 Skan (${UNI}) — flotą nie ruszam`, m, "default", "satellite"); }
+      else if (kind === "EKO") { if (this.throttled("EKO", m)) return; this.push(`🧰 Ekonomia stoi (${UNI})`, m, "low", "gear"); }
+      else if (kind === "POWRÓT" && /wróci|wysłan/i.test(m)) { if (this.throttled("POWRÓT", m)) return; this.push(`✅ Flota w domu (${UNI})`, m, "min", "white_check_mark"); }
     },
   };
 
@@ -5142,7 +5154,7 @@
         // v3.46.0 (push 31.08 09:02:36): gotowy raport to nie awaria — wpis „BŁĄD"
         // fałszował dziennik obrony (i bilans po przerwie), a na telefonie wyglądał
         // jak „⚠️ Obrona: BŁĄD". Push idzie wprost, bez wpisu do dziennika.
-        Notifier.push("📋 Raport startowy gotowy (Genesis)", "Skopiuj raport z panelu i wyślij Claude'owi (potwierdzenie parserów).", "default", "clipboard");
+        Notifier.push(`📋 Raport startowy gotowy (${UNI})`, "Skopiuj raport z panelu i wyślij Claude'owi (potwierdzenie parserów).", "default", "clipboard");
       }
     },
     collect() {

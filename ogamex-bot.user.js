@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant
 // @namespace    https://github.com/Mitjano/Bybit_bot/ogamex-bot
-// @version      2.111.8
+// @version      2.112.0
 // @description  Asteroid Mining automation for OGameX (multi-universe, fresh-scan on every cycle, TTL-aware dispatch with 5min safety margin; v2.10.0 adds right-sized fleets + parallel dispatch: send only the miners needed to carry the asteroid's resources and keep the rest mining other asteroids in parallel, with auto-learned cargo/yield; v2.13.0 auto-claims the green "Online bonus" menu button for antimatter + Academy points)
 // @author       MCH
 // @match        https://athena.ogamex.net/*
@@ -24,6 +24,16 @@ const __gmSetRaw = GM_setValue;
 
 (function () {
   "use strict";
+
+  // ═══ v2.112.0 — 2.x ROZBROJONY (AUDYT-ATHENA-2026-09-22.md, P0-3) ═══
+  // Athenę prowadzi teraz ogamex-3.user.js (od v3.106.0 @match obejmuje
+  // athena.ogamex.net). Dwa boty na jednej stronie = dwie pętle nawigacji
+  // walczące o formularz floty — klasa incydentu „dwie instancje" z 09.09,
+  // tylko w jednej karcie. Kod zostaje w repo jako referencja (parsery,
+  // lekcje Atheny); wznowienie = usunięcie tego bloku + bump wersji.
+  console.log("[OGX 2.x] wyłączony na stałe — Athenę prowadzi OGameX Assistant 3 (ogamex-3.user.js). Odinstaluj ten skrypt w Tampermonkey.");
+  return;
+
 
   // ═══════════════════════════════════════════════════════════════
   //  PER-UNIVERSE STORAGE ISOLATION  (v2.92.0 — naprawa martwej v2.9.0)

@@ -1,11 +1,11 @@
 # OGameX Assistant — instrukcje dla Claude Code
 
-**Dwa skrypty, dwa uniwersa. Push na `main` = auto-deploy; bump `// @version` przy KAŻDEJ zmianie.**
+**JEDEN aktywny skrypt na OBA uniwersa (od v3.106.0, decyzja ownera 22.09: „Athena 1:1 jak Genesis"). Push na `main` = auto-deploy; bump `// @version` przy KAŻDEJ zmianie.**
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis.ogamex.net** | **AKTYWNY ROZWÓJ** (v3.105.0, ~6,7k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09) |
-| `ogamex-bot.user.js` | athena.ogamex.net | zamrożony (v2.111.8, 16,5k linii) | konto na urlopie; ruszać tylko na wyraźną prośbę |
+| `ogamex-3.user.js` | **genesis + athena** (`@match` oba; stan i cfg PER HOST, etykieta uni w pushach = stała `UNI`) | **AKTYWNY ROZWÓJ** (v3.106.0, ~6,9k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09); wejście na Athenę: `AUDYT-ATHENA-2026-09-22.md` (raport startowy Obserwatorem, checklist panelu) |
+| `ogamex-bot.user.js` | athena.ogamex.net | **ROZBROJONY** (v2.112.0: early-return po „use strict") | NIE przywracać — dwa boty na jednej stronie to wojna o formularz; kod zostaje jako referencja parserów/lekcji Atheny |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.
 - Serwer: fork **.NET**, nie Laravel `lanedirt/OGameX`. Nie budować na endpointach niepotwierdzonych na żywo; nowy markup najpierw zrzuć do logu (`[... DOM]`), potem parser.
