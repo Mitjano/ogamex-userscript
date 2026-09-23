@@ -1866,8 +1866,40 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const p0 = await planuj(cfg0);
     check("40b0 (warunek wstępny) misja zaplanowana przy bramce 0", p0.planned && p0.g.sent.length === 0);
     p0.g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now()));
+    p0.g.store.set("genesis.ogamex.net:ogx3_nav_last", JSON.stringify({ at: Date.now(), to: "/fleet", why: "test: klik NA stronie, bez przejścia" }));   // v3.111.0: przejście na inną stronę to osobny przypadek (40c)
     const r0 = await run(p0.g, { cfg: cfg0, loads: 8, ticksPerLoad: 2 });
     check("40b0: przy bramce 0 klik nie odkłada fali (leci jak dotąd)", p0.g.sent.length === 1 && !r0.logs.some(m => /odłożony bez karencji/.test(m)), `wysyłek=${p0.g.sent.length} | ${r0.logs.filter(m => /odłożony/.test(m)).join(" | ")}`);
+  }
+
+  console.log("\n── 40c. RĘCZNIE otwarta strona między falami nie wraca na formularz (v3.111.0, log 23.09 20:33) ──");
+  {
+    // Athena 23.09 20:33:39: fala 2/14 zaplanowana, operator otwiera /home, bot w tej samej
+    // sekundzie przenosi go na /fleet?…&mission=1. Bramka ecoIdleSec = 0 (decyzja 31.08).
+    const cfg = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 } };
+    const g = new Game();
+    let planned = false;
+    for (let i = 0; i < 12 && !planned && g.sent.length === 0; i++) {
+      const inst = load(g, { cfg });
+      try { await inst.tick(1); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
+      await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
+      planned = (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
+    }
+    check("40c (warunek wstępny) misja fali zaplanowana, fala jeszcze nie wysłana", planned && g.sent.length === 0);
+    g.store.set("genesis.ogamex.net:ogx3_nav_last", "null");      // następne załadowanie strony = „otwarte ręcznie"…
+    g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now()));   // …po prawdziwym kliknięciu w menu gry
+    const nawPrzed = g.navigations.length;
+    const { logs } = await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    check("40c: fala NIE poszła — operator przeszedł na inną stronę", g.sent.length === 0, JSON.stringify(g.sent));
+    check("40c: bot NIE otworzył operatorowi formularza floty", !g.navigations.slice(nawPrzed).some(u => /\/fleet\?x=/.test(u)), JSON.stringify(g.navigations.slice(nawPrzed)));
+    check("40c: misja zdjęta bez karencji", (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null" && !Object.keys(JSON.parse(g.store.get("genesis.ogamex.net:ogx3_fly_block") || "{}")).length);
+    check("40c: log mówi, że odłożył przez ręcznie otwartą stronę", logs.some(m => /odłożony bez karencji: sam otworzyłeś/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 6).join(" | "));
+    // po minucie ciszy seria rusza sama
+    g.store.set("genesis.ogamex.net:ogx3_eco_yield_at", JSON.stringify(Date.now() - 61e3));
+    g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now() - 61e3));
+    { const kB = "genesis.ogamex.net:ogx3_burst", b = JSON.parse(g.store.get(kB) || "null"); if (b) { b.lastSendAt -= 5 * 60e3; g.store.set(kB, JSON.stringify(b)); } }   // odstęp między falami też minął
+    const r2 = { logs: [] };
+    for (let i = 0; i < 4 && g.sent.length === 0; i++) { const rr = await run(g, { cfg, loads: 8, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
+    check("40c: po 60 s bez kliknięcia fala leci", g.sent.length === 1, `wysyłek=${g.sent.length} | ${[...new Set(r2.logs.filter(m => /LOT|EXPO/.test(m)))].slice(0, 8).join(" | ")}`);
   }
 
   console.log("\n── 41. Pusty księżyc po fali domykającej + OPÓŹNIONY powrót ekspedycji (v3.65.0, log 03.09 08:58) ──");

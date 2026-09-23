@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.110.1
+// @version      3.111.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.110.1";
+  const VERSION = "3.111.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -2644,6 +2644,8 @@
     // zbierały złom — a potem sam im tego zabraniał. Tu jest ta lista, wąska i jawna:
     // wszystko inne (ekspedycje, mining, bonus) czeka na powrót floty jak dotąd.
     FS_MIMO: ["moon", "debris"],
+    // v3.111.0: ile ekonomia czeka od ostatniego kliknięcia po RĘCZNYM wejściu na inną stronę.
+    MANUAL_YIELD_MS: 60e3,
     // Jedyne pytanie, jakie zadaje ekonomia. Obrona NIGDY tego nie pyta.
     // `who` = nazwa modułu; puste (domyślne) znaczy „pełna pauza", czyli zachowanie 3.68.9.
     economyAllowed(s, who = "") {
@@ -2695,6 +2697,22 @@
             : "grasz — nie przełączam Ci planety, ekspedycja poczeka";
         }
         if (Store.get("eco_wait_since", 0)) Store.set("eco_wait_since", 0);
+      }
+      // v3.111.0 (owner 23.09 20:34, Athena: „gdy bot wysyła kolejne fale, nie da się przejść
+      // do żadnej innej zakładki — od razu przeskakuje z powrotem do floty"). Log: między
+      // falami 2..14 każde ręcznie otwarte /home czy /messages bot w tej samej sekundzie
+      // zamieniał na formularz floty — seria 14 fal zabierała kartę na ~5 min. Bramka
+      // ecoIdleSec zostaje 0 (klik NA stronie floty nie zatrzymuje fali, decyzja 31.08),
+      // ale RĘCZNE przejście na inną stronę to jawne „teraz ja" — ekonomia oddaje kartę
+      // i rusza dopiero po MANUAL_YIELD_MS bez żadnego kliknięcia. Obrona tego nie pyta.
+      {
+        const now3 = Date.now();
+        const man = Store.get("eco_yield_at", 0) || 0;
+        if (now3 - man < 10 * 60e3) {
+          const ost = Math.max(man, Store.get("input_at", 0) || 0);
+          const zostalo = this.MANUAL_YIELD_MS - (now3 - ost);
+          if (zostalo > 0) return `grasz — przeglądasz grę, fale ruszą ${Math.ceil(zostalo / 1000)} s po Twoim ostatnim kliknięciu`;
+        }
       }
       if (NavRate.over()) return `sufit ${CFG.maxNavPerHour} nawigacji/h — ekonomia czeka`;
       return null;
@@ -4339,6 +4357,20 @@
             log(`[LOT] odłożony bez karencji: kliknąłeś ${Math.max(0, Math.round((Date.now() - klik) / 1000))} s temu, zanim bot otworzył formularz — ${m.kind === "expedition" ? "fala ekspedycji" : m.kind === "asteroid" ? "lot minerów" : "lot po złom"} poczeka ${Math.round(CFG.human.ecoIdleSec / 60)} min od Twojego ostatniego kliknięcia.`, "info");
             return;
           }
+        }
+      }
+      // v3.111.0: ręcznie otwarta strona PO starcie misji ekonomii (linia startowa
+      // „otwarte ręcznie" + świeży klik zapisuje `eco_yield_at`) = operator zabrał kartę. Dawniej pierwszy
+      // tick nowej strony wracał na formularz floty. Teraz misja schodzi bez karencji,
+      // a Expo/Aster/Debris zaplanują ją od nowa, gdy Human.economyAllowed przepuści.
+      // Wysyłka, która już poszła, idzie normalną ścieżką (rejestr powrotów).
+      if (["expedition", "asteroid", "debris"].includes(m.kind) && (Store.get("eco_yield_at", 0) || 0) > (m.startedAt || 0)) {
+        const ls1 = Store.get("last_send", null);
+        const sent1 = ls1 && ls1.toKey === m.toKey && ls1.from === m.fromKey && ls1.kind === m.kind && (ls1.at || 0) >= (m.startedAt || 0);
+        if (!sent1) {
+          Store.del("mission");
+          log(`[LOT] odłożony bez karencji: sam otworzyłeś ${location.pathname} — nie zabieram Ci karty, ${m.kind === "expedition" ? "fala ekspedycji" : m.kind === "asteroid" ? "lot minerów" : "lot po złom"} ruszy ${Math.round(Human.MANUAL_YIELD_MS / 1000)} s po Twoim ostatnim kliknięciu.`, "info");
+          return;
         }
       }
       try {
@@ -6984,6 +7016,19 @@
       log(`[TEMPO] ten sam powód ${worst[1]}× w ostatniej minucie: „${worst[0]}". To wygląda na pętlę — pokaż tę linię Claude'owi.`, "warn");
     }
     if (!fresh) Store.set("manual_at", Date.now());   // operator sam klika po grze
+    // v3.111.0: ręczne wejście na stronę W TRAKCIE serii ekonomii (misja w toku albo fala
+    // sprzed < 5 min) = „teraz ja". Human.economyAllowed oddaje wtedy kartę operatorowi.
+    // Dowodem ręcznego wejścia jest PRAWDZIWY klik/klawisz (`input_at`, isTrusted) tuż
+    // przed załadowaniem — samo przeładowanie bez śladu bota (np. gra sama odświeża
+    // stronę) jeszcze nie znaczy, że operator coś robi. Samo otwarcie karty bez serii
+    // niczego nie wstrzymuje.
+    if (!fresh && Date.now() - (Store.get("input_at", 0) || 0) < 15e3) {
+      try {
+        const mi = Store.get("mission", null), ls = Store.get("last_send", null);
+        const eco = ["expedition", "asteroid", "debris"];
+        if ((mi && eco.includes(mi.kind)) || (ls && eco.includes(ls.kind) && Date.now() - (ls.at || 0) < 5 * 60e3)) Store.set("eco_yield_at", Date.now());
+      } catch {}
+    }
   }
   // v3.45.0 (pytanie ownera: „czy jak ktoś mnie w nocy zaatakuje, to rano zobaczę to w logach?"):
   // zwykły log mieści 400 wpisów, czyli w nocy jakieś 8–10 godzin — po długiej przerwie może
