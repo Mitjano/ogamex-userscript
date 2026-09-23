@@ -267,6 +267,12 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
         })()
       : /^\/home(\?|$)/.test(String(u)) ? (game.homeFetchFail ? (() => { throw new Error("NetworkError when attempting to fetch resource."); })() : game.planetBarHtml() + (game.bonus ? game.bonusMenu() : "<div id='overview'>Overview</div>") + game.missionBarHtml(true))
       : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
+      // v3.110.0: strona galaktyki pobrana w tle (cichy skan asteroid) = ten sam render,
+      // co przy nawigacji; `galaxyFetchNoRows` odwzorowuje fork oddający stronę bez wierszy.
+      : /^\/galaxy\?x=/.test(String(u)) ? (game.galaxyFetchNoRows ? "<html><body><div id='galaxy'>loading…</div></body></html>" : (() => {
+          const pp = game.page, pq = game.query; game.page = "galaxy"; game.query = String(u).replace(/^\/galaxy/, "");
+          const html = game.bodyHtml(); game.page = pp; game.query = pq; return html;
+        })())
       : "<div class='galaxy-asteroid-modal'>[1:31:1] [1:51:9]</div>" });
   // nawigacja
   const nav = (to) => {
@@ -1202,6 +1208,33 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("poleciały TYLKO minery (flota bojowa została w domu)", !mine || !mine.ships.BATTLESHIP, JSON.stringify(mine && mine.ships));
     const st = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_situation") || "{}");
     check("lot ekonomiczny NIE trafia do stanu obrony", (st.flights || []).length === 0, JSON.stringify(st.flights));
+  }
+
+  console.log("\n── 22b. MINING: skan układów W TLE — bez przeładowań strony (v3.110.0, owner 23.09) ──");
+  {
+    // Athena 23.09 11:09–11:43: jeden układ na ~40 s przez nawigację = ~2 h na obieg 8 zakresów
+    // przy TTL asteroidy ~1 h; „wysłał tylko jeden lot na asteroidy, a przedziałów jest dużo więcej".
+    const cfg = {
+      autoRescue: true, expo: { enabled: false }, recon: true, reconMs: 1,
+      aster: { enabled: true, minTtlSec: 300, scanGapSec: 0, quietPerTick: 4, quietGapMs: 1 },
+      human: { breaks: false, economyAtNight: true },
+    };
+    const g = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20, BATTLESHIP: 100 } } });
+    g.asteroid = true;
+    let logs = (await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    for (let i = 0; i < 4 && !g.sent.length; i++) { advance(g, 60e3); logs = logs.concat((await run(g, { cfg, loads: 15, ticksPerLoad: 2 })).logs); }
+    const mine = g.sent.find(x => /Asteroid/i.test(x.mission || ""));
+    check("22b: minery poleciały na asteroidę znalezioną w tle", !!mine && /:17$/.test(mine.to || ""), logs.filter(m => /ASTER|LOT/i.test(m)).slice(0, 8).join(" | "));
+    check("22b: ZERO nawigacji na strony galaktyki (skan szedł fetchem)", !g.navigations.some(u => /^\/galaxy\?x=/.test(u)), JSON.stringify(g.navigations.filter(u => /galaxy/.test(u)).slice(0, 5)));
+    check("22b: strony galaktyki pobierane w tle", (g.fetches || []).some(u => /^\/galaxy\?x=1&y=31$/.test(u)), JSON.stringify((g.fetches || []).filter(u => /galaxy\?x=/.test(u)).slice(0, 4)));
+    check("22b: log mówi, że skan idzie w tle", logs.some(m => /skan układów idzie w tle/.test(m)) || !!mine, "");
+    // fork oddaje stronę bez wierszy → zrzut do logu i powrót do nawigacji (stara droga nadal łapie asteroidę)
+    const g2 = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20, BATTLESHIP: 100 } } });
+    g2.asteroid = true; g2.galaxyFetchNoRows = true;
+    let logs2 = (await run(g2, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    for (let i = 0; i < 4 && !g2.sent.length; i++) { advance(g2, 60e3); logs2 = logs2.concat((await run(g2, { cfg, loads: 15, ticksPerLoad: 2 })).logs); }
+    check("22b-f: pobrana strona bez wierszy → zrzut markupu do logu (raz)", logs2.some(m => /\[ASTER DOM\] strona galaktyki pobrana w tle nie ma wierszy/.test(m)), logs2.filter(m => /ASTER/.test(m)).slice(0, 4).join(" | "));
+    check("22b-f: …i bot wraca do nawigacji — asteroida i tak złapana", g2.sent.some(x => /Asteroid/i.test(x.mission || "")) && g2.navigations.some(u => /^\/galaxy\?x=/.test(u)), `wysyłek=${g2.sent.length} nawig=${JSON.stringify(g2.navigations.filter(u => /galaxy/.test(u)).slice(0, 3))}`);
   }
 
   console.log("\n── 23. ZŁOM: recyklery na własne pole szczątków ──");

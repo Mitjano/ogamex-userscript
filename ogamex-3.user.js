@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.109.0
+// @version      3.110.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.109.0";
+  const VERSION = "3.110.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -408,6 +408,8 @@
       // v3.18.0 (porównanie z 2.x): trzy rzeczy, które Athena miała, a 3.0 nie.
       maxFlightMin: 45,      // za daleki układ pomijamy PRZED skanem, nie dopiero na formularzu
       idleScanMin: 15,       // gdy obieg zakresów nie dał nic nowego — pauza zamiast kręcenia galaktyką
+      quietPerTick: 4,       // v3.110.0: ile układów czyta w tle na jeden przebieg pętli (20 s)
+      quietGapMs: 2500,      // odstęp między pobraniami w tle (+ losowe do 1 s)
       lockMin: 60 },         // te same koordy nie dostają drugiej floty (fork respawnuje asteroidy w tym samym miejscu)
     // v3.13.0: bonus online (zielony przycisk w menu gry) = antymateria + PUNKTY AKADEMII.
     // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
@@ -3641,18 +3643,48 @@
       } catch (e) { log(`[ASTER] zakresy: ${e.message}`, "warn"); return null; }
     },
     // Wiersz 17 aktualnej strony galaktyki → { fleetUrl, ttl } albo null.
-    readRow17() {
-      for (const item of document.querySelectorAll(".galaxy-item")) {
+    // v3.110.0: `root` = dokument do czytania (żywa strona ALBO strona pobrana w tle),
+    // `coords` = układ, gdy adres nie jest w location (cichy skan).
+    readRow17(root = document, coords = null) {
+      for (const item of root.querySelectorAll(".galaxy-item")) {
         const idx = item.querySelector(".planet-index");
         if (!idx || idx.textContent.trim() !== "17") continue;
         const ttlEl = item.querySelector("[data-asteroid-disappear]");
         const ttl = ttlEl ? (parseInt(ttlEl.getAttribute("data-asteroid-disappear") || "0", 10) || 0) : 0;
         const link = item.querySelector("a.btn-asteroid, a[href*='mission=12']");
         if (link) return { fleetUrl: link.getAttribute("href") || "", ttl };
-        if (ttl > 0) { const um = location.href.match(/[?&]x=(\d+)[\s\S]*?[?&]y=(\d+)/); return um ? { fleetUrl: `/fleet?x=${um[1]}&y=${um[2]}&z=17&mission=12`, ttl } : null; }
+        if (ttl > 0) {
+          if (coords) return { fleetUrl: `/fleet?x=${coords.galaxy}&y=${coords.system}&z=17&mission=12`, ttl };
+          const um = location.href.match(/[?&]x=(\d+)[\s\S]*?[?&]y=(\d+)/); return um ? { fleetUrl: `/fleet?x=${um[1]}&y=${um[2]}&z=17&mission=12`, ttl } : null;
+        }
         return null;   // wiersz jest, asteroidy nie ma („Find asteroids")
       }
       return null;
+    },
+    // v3.110.0 (owner 23.09: „wysłał tylko jeden lot na asteroidy, a przedziałów jest
+    // dużo więcej"): skan przez NAWIGACJĘ robił jeden układ na ~40 s (odczyt w jednym
+    // ticku, przejście w następnym, pętla co 20 s) — 8 zakresów × 21 układów = ~2 h na
+    // obieg przy TTL asteroidy ~1 h, więc większość spawnów przepadała. 2.x robił 300
+    // układów w 7–8 min. Teraz: strona galaktyki pobierana W TLE (tak samo jak hangary
+    // „odczytane w tle"), kilka układów na przebieg, bez przeładowań i bez zjadania
+    // sufitu nawigacji ekonomii (ten pilnuje ekspedycji). Fork bywa kapryśny (2.x: strona
+    // pobrana z nagłówkiem XHR nie miała wierszy), więc odpowiedź jest SPRAWDZANA:
+    // brak `.galaxy-item` = zrzut do logu i powrót do nawigacji na 30 min.
+    // Wynik: { ok:true, hit } | { ok:false, why }.
+    async scanQuiet(target) {
+      try {
+        const r = await fetchT(`/galaxy?x=${target.galaxy}&y=${target.system}`, { credentials: "same-origin", headers: { Accept: "text/html" } }, 8000);
+        if (!r.ok) return { ok: false, why: `HTTP ${r.status}` };
+        const html = await r.text();
+        if (looksLoggedOut(r, html)) { Session.lost(); return { ok: false, why: "wylogowany" }; }
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const rows = doc.querySelectorAll(".galaxy-item").length;
+        if (!rows) {
+          if (!Once.said("aster_quiet_dom", 24 * 3600e3)) log(`[ASTER DOM] strona galaktyki pobrana w tle nie ma wierszy (.galaxy-item) — skanuję nawigacją. Markup: ${html.replace(/\s+/g, " ").slice(0, 1200)}`, "warn");
+          return { ok: false, why: "brak wierszy" };
+        }
+        return { ok: true, hit: this.readRow17(doc, target) };
+      } catch (e) { return { ok: false, why: e && e.message || "błąd" }; }
     },
     // Dziennik asteroid (2.x: /home/Partial_AsteroidJournal). Uczymy się, ILE
     // asteroida daje — rozmiar floty liczymy z percentyla próbek, nie ze średniej,
@@ -3839,24 +3871,47 @@
       }
       if (!target) return false;
       if (skipped) this.save(st);
-      const onThat = page() === "galaxy" && new RegExp(`[?&]x=${target.galaxy}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${target.system}(?:&|$)`).test(location.search);
-      if (onThat) {
-        const hit = this.readRow17();
+      // Wspólna obsługa odczytanego wiersza 17 — z żywej strony albo z pobranej w tle.
+      // Zwraca: "sent" (lot ruszył / trasa w karencji — koniec przebiegu), "next" (skanuj dalej).
+      const handle = (hit, tgt) => {
         st = { ...this.advance(st), lastScanAt: now };
-        if (hit && hit.fleetUrl) {
-          const min = Math.max(60, CFG.aster.minTtlSec || 300);
-          if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${target.galaxy}:${target.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return false; }
-          log(`[ASTER] ZNALEZIONA asteroida [${target.galaxy}:${target.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${plan.qty.toLocaleString("pl-PL")} z ${miners.qty.toLocaleString("pl-PL")} minerów (${plan.why}).`, "success");
-          this.save(this.lock({ ...st, sentAt: now, sentTo: `${target.galaxy}:${target.system}:17` }, `${target.galaxy}:${target.system}`));
-          const astKey = `${target.galaxy}:${target.system}:17`;
-          if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return false; }
-          return Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: homeBody,
-            toKey: `${target.galaxy}:${target.system}:17`, toBody: "planet", why: `mining asteroidy [${target.galaxy}:${target.system}:17]`,
-            speed: 100, plan: [{ type: "ASTEROID_MINER", qty: plan.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
-            ttl: hit.ttl || 0, ttlAt: now });
+        if (!(hit && hit.fleetUrl)) { this.save(st); return "next"; }
+        const min = Math.max(60, CFG.aster.minTtlSec || 300);
+        if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${tgt.galaxy}:${tgt.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return "next"; }
+        log(`[ASTER] ZNALEZIONA asteroida [${tgt.galaxy}:${tgt.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${plan.qty.toLocaleString("pl-PL")} z ${miners.qty.toLocaleString("pl-PL")} minerów (${plan.why}).`, "success");
+        this.save(this.lock({ ...st, sentAt: now, sentTo: `${tgt.galaxy}:${tgt.system}:17` }, `${tgt.galaxy}:${tgt.system}`));
+        const astKey = `${tgt.galaxy}:${tgt.system}:17`;
+        if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return "sent"; }
+        Fly.start({ kind: "asteroid", fromKey: homeKey, fromBody: homeBody,
+          toKey: astKey, toBody: "planet", why: `mining asteroidy [${astKey}]`,
+          speed: 100, plan: [{ type: "ASTEROID_MINER", qty: plan.qty }], missionType: "ASTEROID", takeResources: false, missionId: 12, directUrl: hit.fleetUrl,
+          ttl: hit.ttl || 0, ttlAt: now });
+        return "sent";
+      };
+      const onThat = page() === "galaxy" && new RegExp(`[?&]x=${target.galaxy}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${target.system}(?:&|$)`).test(location.search);
+      if (onThat) return handle(this.readRow17(), target) === "sent";
+      // v3.110.0: cichy skan — kilka układów na przebieg, z odstępem między pobraniami.
+      // `quietBrokenAt` = pobrana strona nie miała wierszy → 30 min nawigacją (stara droga).
+      const quietOk = !(st.quietBrokenAt && now - st.quietBrokenAt < 30 * 60e3);
+      if (quietOk) {
+        const perTick = Math.max(1, CFG.aster.quietPerTick || 4);
+        for (let i = 0; i < perTick && target; i++) {
+          if (i) await new Promise(r => setTimeout(r, Math.max(500, (CFG.aster.quietGapMs || 2500) + Math.round(Math.random() * 1000))));
+          if (Fly.mission()) return true;                                            // obrona/ratunek w międzyczasie — nie mieszamy
+          const r = await this.scanQuiet(target);
+          if (!r.ok) {
+            if (r.why === "brak wierszy") { st = { ...st, quietBrokenAt: now }; this.save(st); break; }   // → nawigacja poniżej
+            if (!Once.said("aster|quietfail", 10 * 60e3)) log(`[ASTER] cichy skan [${target.galaxy}:${target.system}] nie wyszedł (${r.why}) — spróbuję za chwilę.`, "info");
+            this.save({ ...st, lastScanAt: now }); return false;
+          }
+          if (handle(r.hit, target) === "sent") return true;
+          if (!Once.said("aster|quiet", 6 * 3600e3)) log(`[ASTER] skan układów idzie w tle (bez przeładowań strony) — ${perTick} układy na przebieg.`, "info");
+          target = this.nextSystem(st);
+          while (target && (this.tooFar(homeKey, target) || this.locked(st, `${target.galaxy}:${target.system}`))) { st = this.advance(st); target = this.nextSystem(st); if (++skipped > 60) { target = null; } }
+          if (skipped) this.save(st);
         }
-        this.save(st);
-        return false;
+        if (!st.quietBrokenAt || now - st.quietBrokenAt >= 30 * 60e3) return false;
+        if (!target) return false;
       }
       this.save({ ...st, lastScanAt: now });
       NavRate.note();
