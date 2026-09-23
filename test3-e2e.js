@@ -1894,12 +1894,25 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("40c: misja zdjęta bez karencji", (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null" && !Object.keys(JSON.parse(g.store.get("genesis.ogamex.net:ogx3_fly_block") || "{}")).length);
     check("40c: log mówi, że odłożył przez ręcznie otwartą stronę", logs.some(m => /odłożony bez karencji: sam otworzyłeś/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 6).join(" | "));
     // po minucie ciszy seria rusza sama
-    g.store.set("genesis.ogamex.net:ogx3_eco_yield_at", JSON.stringify(Date.now() - 61e3));
+    g.store.set("genesis.ogamex.net:ogx3_eco_yield", JSON.stringify({ since: Date.now() - 61e3, last: Date.now() - 21e3 }));
     g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now() - 61e3));
     { const kB = "genesis.ogamex.net:ogx3_burst", b = JSON.parse(g.store.get(kB) || "null"); if (b) { b.lastSendAt -= 5 * 60e3; g.store.set(kB, JSON.stringify(b)); } }   // odstęp między falami też minął
     const r2 = { logs: [] };
     for (let i = 0; i < 4 && g.sent.length === 0; i++) { const rr = await run(g, { cfg, loads: 8, ticksPerLoad: 2 }); r2.logs.push(...rr.logs); }
-    check("40c: po 60 s bez kliknięcia fala leci", g.sent.length === 1, `wysyłek=${g.sent.length} | ${[...new Set(r2.logs.filter(m => /LOT|EXPO/.test(m)))].slice(0, 8).join(" | ")}`);
+    check("40c: 20 s po ostatniej zmianie strony fala leci", g.sent.length === 1, `wysyłek=${g.sent.length} | ${[...new Set(r2.logs.filter(m => /LOT|EXPO/.test(m)))].slice(0, 8).join(" | ")}`);
+  }
+
+  console.log("\n── 40d. Sufit ustępowania: 2 min ciągłego klikania = fala i tak leci (v3.111.1, log 23.09 23:26–23:29) ──");
+  {
+    const cfg = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 } };
+    const g = new Game();
+    g.store.set("genesis.ogamex.net:ogx3_eco_yield", JSON.stringify({ since: Date.now() - 130e3, last: Date.now() }));   // zmiana strony przed chwilą, ale ustępujemy już 130 s
+    for (let i = 0; i < 4 && g.sent.length === 0; i++) await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("40d: po 2 min ustępowania fala leci mimo świeżej zmiany strony", g.sent.length === 1, `wysyłek=${g.sent.length}`);
+    const g2 = new Game();
+    g2.store.set("genesis.ogamex.net:ogx3_eco_yield", JSON.stringify({ since: Date.now() - 30e3, last: Date.now() }));
+    const r = await run(g2, { cfg, loads: 4, ticksPerLoad: 2 });
+    check("40d: w oknie 20 s (i przed sufitem) fala czeka", g2.sent.length === 0 && r.logs.some(m => /grasz — zmieniłeś stronę/.test(m)), `wysyłek=${g2.sent.length}`);
   }
 
   console.log("\n── 41. Pusty księżyc po fali domykającej + OPÓŹNIONY powrót ekspedycji (v3.65.0, log 03.09 08:58) ──");
