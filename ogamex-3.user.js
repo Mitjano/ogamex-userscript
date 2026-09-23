@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.106.0
+// @version      3.107.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.106.0";
+  const VERSION = "3.107.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -393,6 +393,14 @@
       percentile: 85,        // rozmiar liczony z percentyla próbek, nie ze średniej
       sampleSize: 20,
       minMiners: 1,
+      // v3.107.0 (owner 23.09, Athena: „nie ma pola do ustawienia ilości wysyłanych
+      // minerów — pierwszą falę wysłał całą"): TWARDY sufit floty minerów na jeden lot,
+      // ustawiany z panelu. Auto-dobór (`size`) działa tylko, gdy bot zna JEDNO I DRUGIE:
+      // urobek z dziennika ORAZ pojemność ładowni minera — a ładowni na Athenie nie
+      // złapał („[ASTER DOM] nie widzę pojemności ładowni"), więc cofał się do „lecą
+      // wszystkie" i 15 mld minerów poszło po asteroidę wartą 46 tys. surowców.
+      // 0 = bez sufitu (zachowanie sprzed 3.107).
+      maxMiners: 0,
       parallel: true,        // resztą minerów obrabiaj kolejne asteroidy, nie czekaj na powrót
       partialRatio: 0.5,     // lot mniejszy niż połowa docelowego = czekamy na powroty
       slotReserve: 1,        // ile slotów floty zostaje wolnych (ratunek, ręczna gra)
@@ -3659,10 +3667,20 @@
     size(st, available) {
       const cargo = CFG.aster.cargoPerMiner || st.cargo || 0;
       const exp = this.expected(st);
-      if (!cargo || !exp) return { qty: available, why: "brak danych o ładowni/urobku — lecą wszystkie" };
-      const need = Math.ceil(exp * (CFG.aster.buffer || 1.15) / cargo);
+      // v3.107.0: sufit z panelu obowiązuje w OBU gałęziach — także tej „brak danych",
+      // która do 3.106 wysyłała cały hangar. To jedyne miejsce, gdzie operator może
+      // powiedzieć „nigdy więcej niż tyle", więc auto-dobór nie ma prawa go przebić.
+      const cap = Math.max(0, CFG.aster.maxMiners || 0);
+      if (!cargo || !exp) {
+        const qty = cap ? Math.min(available, cap) : available;
+        return { qty, why: cap ? `brak danych o ładowni/urobku — limit z panelu ${cap.toLocaleString("pl-PL")}` : "brak danych o ładowni/urobku — lecą wszystkie" };
+      }
+      let need = Math.ceil(exp * (CFG.aster.buffer || 1.15) / cargo);
+      // Sufit przycina też `need`, bo to on decyduje o progu „czekam na powroty"
+      // (partialRatio) — inaczej bot czekałby na flotę, której i tak nie wyśle.
+      if (cap) need = Math.min(need, cap);
       const qty = Math.max(CFG.aster.minMiners || 1, Math.min(available, need));
-      return { qty, need, why: `urobek ~${exp.toLocaleString("pl-PL")} × zapas ${CFG.aster.buffer} ÷ ${cargo.toLocaleString("pl-PL")}/miner = ${need}` };
+      return { qty, need, why: `urobek ~${exp.toLocaleString("pl-PL")} × zapas ${CFG.aster.buffer} ÷ ${cargo.toLocaleString("pl-PL")}/miner = ${need}${cap ? ` (sufit z panelu ${cap.toLocaleString("pl-PL")})` : ""}` };
     },
     // Ile slotów floty wolno jeszcze zająć (0 = żadnego).
     freeSlots(s) {
@@ -3678,7 +3696,12 @@
       const st0 = Store.get("aster", {}) || {};
       if (st0.cargo) return;
       try {
-        const t = (document.querySelector("#content, .content, form") || document.body).textContent || "";
+        // v3.107.0 (Athena 23.09): log pokazał „Tekst: ” PUSTE — `#content` istnieje,
+        // ale w chwili wywołania jest wyczyszczony pod render kolejnego kroku, a
+        // querySelector z listą bierze pierwszy pasujący w dokumencie, nie pierwszy
+        // NIEPUSTY. Krótki tekst = zjeżdżamy na całą stronę zamiast rezygnować.
+        let t = (document.querySelector("#content, .content, form") || document.body).textContent || "";
+        if (t.replace(/\s+/g, "").length < 50) t = document.body.textContent || t;
         // „Cargo space 0 / 1.000.000" — pojemność jest po UKOŚNIKU; pierwsza liczba to
         // ile już załadowano (zwykle 0), więc czytanie jej dawało cap=0 i cichy powrót.
         const cm = t.match(/cargo\s*space[^\d]{0,20}[\d .,]*\/\s*([\d .,]+)/i)
@@ -6240,6 +6263,8 @@
             <div class="note" id="ogx3-bonus-st"></div>
             <div class="line"><button id="ogx3-moon" class="ogx3-btn"></button> ≤ <input id="ogx3-moon-share" style="width:26px" />% metalu</div>
             <div class="note" id="ogx3-moon-st"></div>
+            <div class="line">minery na lot <input id="ogx3-aster-max" style="width:86px" placeholder="0 = auto" /> szt.</div>
+            <div class="line">ładownia minera <input id="ogx3-aster-cargo" style="width:86px" placeholder="0 = ucz się" /></div>
             <div class="note" id="ogx3-aster-st"></div>
             <div class="line"><button id="ogx3-quiet" class="ogx3-btn"></button> od <input id="ogx3-quiet-a" style="width:24px" />:00 do <input id="ogx3-quiet-b" style="width:24px" />:00</div>
             <div class="line"><button id="ogx3-breaks" class="ogx3-btn"></button></div>
@@ -6312,6 +6337,21 @@
       $("ogx3-deb").onclick = () => { CFG.debris.enabled = !CFG.debris.enabled; saveCfg(); log(`Zbieranie złomu ${CFG.debris.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-quiet").onclick = () => { CFG.stealth.enabled = !CFG.stealth.enabled; saveCfg(); log(CFG.stealth.enabled ? `Tryb cichy ON — kolonie odpytywane raz na ${CFG.stealth.colonyHours || 8} h (mniej śladów aktywności w galaktyce).` : "Tryb cichy OFF — zwiad kolonii co 45 min (świeższe hangary, więcej śladów).", "info"); this.renderStatus(); };
       $("ogx3-aster").onclick = () => { CFG.aster.enabled = !CFG.aster.enabled; saveCfg(); log(`Mining asteroid ${CFG.aster.enabled ? "ON" : "OFF"}`, "info"); this.renderStatus(); };
+      // v3.107.0: dwa pola, których brakowało — sufit floty minerów i ładownia minera.
+      // Oba przyjmują liczby ze spacjami/kropkami (operator kopiuje je z gry), oba
+      // 0 = „rób jak dotąd". Sufit działa od razu; ładownia odblokowuje auto-dobór.
+      $("ogx3-aster-max").value = CFG.aster.maxMiners ? String(CFG.aster.maxMiners) : "";
+      $("ogx3-aster-max").onchange = (e) => {
+        CFG.aster.maxMiners = Math.max(0, parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0); saveCfg();
+        e.target.value = CFG.aster.maxMiners ? String(CFG.aster.maxMiners) : "";
+        log(CFG.aster.maxMiners ? `[ASTER] minery na lot: maks. ${CFG.aster.maxMiners.toLocaleString("pl-PL")} szt.` : "[ASTER] minery na lot: bez sufitu — wielkość floty liczy bot (a bez danych o ładowni leci CAŁY hangar).", CFG.aster.maxMiners ? "info" : "warn");
+      };
+      $("ogx3-aster-cargo").value = CFG.aster.cargoPerMiner ? String(CFG.aster.cargoPerMiner) : "";
+      $("ogx3-aster-cargo").onchange = (e) => {
+        CFG.aster.cargoPerMiner = Math.max(0, parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0); saveCfg();
+        e.target.value = CFG.aster.cargoPerMiner ? String(CFG.aster.cargoPerMiner) : "";
+        log(CFG.aster.cargoPerMiner ? `[ASTER] ładownia minera: ${CFG.aster.cargoPerMiner.toLocaleString("pl-PL")} surowców — auto-dobór floty działa.` : "[ASTER] ładownia minera: ucz się z formularza.", "info");
+      };
       $("ogx3-bonus").onclick = () => { CFG.bonus.enabled = !CFG.bonus.enabled; saveCfg(); log(`Bonus online ${CFG.bonus.enabled ? "ON — bot odbiera antymaterię i punkty Akademii" : "OFF"}`, "info"); this.renderStatus(); };
       $("ogx3-moon").onclick = () => { CFG.moon.enabled = !CFG.moon.enabled; saveCfg(); log(`Stawianie księżyców ${CFG.moon.enabled ? `ON — bot WYDA do ${Math.round(CFG.moon.maxMetalShare * 100)}% metalu na księżyc` : "OFF — nowych księżyców nie stawiam; odbuduję tylko ten ZNISZCZONY przez atak (flota nie może wracać na gołą planetę)"}`, CFG.moon.enabled ? "warn" : "info"); this.renderStatus(); };
       $("ogx3-moon-share").value = String(Math.round((CFG.moon.maxMetalShare || .25) * 100));
@@ -6710,7 +6750,14 @@
 
       { const txt = CFG.aster.enabled ? `zakresy ${(aster.ranges || []).length}${aster.sentTo ? ` · ost. [${aster.sentTo}]` : ""}` : "wyłączony";
         this.setRow("ogx3-r-min", CFG.aster.enabled ? "ok" : "dim", txt);
-        $("ogx3-aster-st").textContent = CFG.aster.enabled ? `zakresy: ${(aster.ranges || []).length}${aster.sentTo ? ` · ostatnio: [${aster.sentTo}]` : ""}` : "";
+        // v3.107.0: panel mówi WPROST, ile minerów poleci — bez tego operator dowiadywał
+        // się o „lecą wszystkie" dopiero z logu po wysyłce całego hangaru.
+        const aCargo = CFG.aster.cargoPerMiner || aster.cargo || 0;
+        const aYield = CFG.aster.expectedRes || ((aster.yields || []).length ? 1 : 0);
+        const aHow = CFG.aster.maxMiners
+          ? `maks. ${CFG.aster.maxMiners.toLocaleString("pl-PL")} szt./lot`
+          : (aCargo && aYield ? "wielkość liczy bot (ładownia znana)" : "UWAGA: leci CAŁY hangar (brak ładowni/urobku)");
+        $("ogx3-aster-st").textContent = CFG.aster.enabled ? `${aHow} · zakresy: ${(aster.ranges || []).length}${aster.sentTo ? ` · ostatnio: [${aster.sentTo}]` : ""}` : "";
         $("ogx3-t-eco").textContent = `${CFG.aster.enabled ? "M ON" : "M OFF"} · ${CFG.debris.enabled ? "Z ON" : "Z OFF"}`; }
 
       // v3.68.0: FS nie ma już okna — status pyta o REALNY stan floty (w drodze na

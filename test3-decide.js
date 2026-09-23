@@ -825,6 +825,24 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   check("asteroida znikająca za chwilę pomijana (minTtlSec)", /hit\.ttl < min/.test(asterMod));
   check("lot minerów nie trafia do flights (nie blokuje obrony)", /m\.kind !== "expedition" && m\.kind !== "asteroid"/.test(src));
   check("misja ASTEROID_MINING wybierana jawnie na kroku 3", /"ASTEROID_MINING", "ASTEROID"/.test(src));
+
+  // v3.107.0 (Athena 23.09: pierwszy lot zabrał wszystkie 15 mld minerów, bo bot nie
+  // złapał pojemności ładowni i nie było pola, żeby go zatrzymać). Sufit `maxMiners`
+  // z panelu musi działać W OBU gałęziach `size` — także tej „brak danych”.
+  const sizeFn = new Function("CFG", "st", "available", bodyOf("size(st, available) {"));
+  const runSize = (aster, st, available, exp) => sizeFn.call({ expected: () => exp }, { aster: Object.assign({ buffer: 1.15, minMiners: 1 }, aster) }, st, available);
+  const noData = runSize({ maxMiners: 0 }, {}, 15e9, 0);
+  check("bez ładowni i bez sufitu leci cały hangar (zachowanie sprzed 3.107)", noData.qty === 15e9, JSON.stringify(noData));
+  const capped = runSize({ maxMiners: 1000 }, {}, 15e9, 0);
+  check("sufit z panelu obowiązuje TAKŻE bez danych o ładowni", capped.qty === 1000 && /limit z panelu/.test(capped.why), JSON.stringify(capped));
+  const capSmall = runSize({ maxMiners: 1000 }, {}, 400, 0);
+  check("sufit nie podbija floty ponad to, co stoi w hangarze", capSmall.qty === 400, JSON.stringify(capSmall));
+  const auto = runSize({ maxMiners: 0, cargoPerMiner: 1000 }, {}, 15e9, 46000);
+  check("z ładownią i urobkiem bot liczy małą flotę zamiast całego hangaru", auto.qty === Math.ceil(46000 * 1.15 / 1000), JSON.stringify(auto));
+  const autoCapped = runSize({ maxMiners: 10, cargoPerMiner: 1000 }, {}, 15e9, 46000);
+  check("sufit przycina też `need` (próg „czekam na powroty” nie żąda floty, której nie wyślemy)", autoCapped.qty === 10 && autoCapped.need === 10, JSON.stringify(autoCapped));
+  check("panel ma pole na minery na lot i na ładownię minera", /ogx3-aster-max/.test(src) && /ogx3-aster-cargo/.test(src));
+  check("odczyt ładowni nie poddaje się na pustym #content (spada na całą stronę)", /t\.replace\(\/\\s\+\/g, ""\)\.length < 50\) t = document\.body\.textContent/.test(src));
 }
 
 console.log("── 24. ZŁOM (v3.6.0) ──");
