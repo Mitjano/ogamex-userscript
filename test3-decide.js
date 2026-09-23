@@ -818,7 +818,15 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   let cur = { ...st, sys: 12 };
   check("po końcu zakresu przechodzimy do następnego", adv(cur).idx === 1 && adv(cur).sys === null);
   check("w środku zakresu idziemy o jeden system dalej", adv({ ...st, sys: 10 }).sys === 11);
+  // v3.110.1 (owner 23.09, Athena: „skanować cały przedział od początku, np. od 3:276, aż znajdzie asteroidę"):
+  // trafienie kończy zakres, a przerwa w skanie zaczyna bieżący zakres od nowa.
   const asterMod = src.slice(src.indexOf("const Aster = {"));
+  const nextR = new Function("st", bodyOf("nextRange(st) {"));
+  const po = nextR({ ranges: [{ galaxy: 3, startSystem: 276, endSystem: 296 }, { galaxy: 3, startSystem: 236, endSystem: 256 }], idx: 0, sys: 284 });
+  check("91m: asteroida w [3:276-296] (trafienie w 283) → następny zakres [3:236-256] OD POCZĄTKU, nie 284", po.idx === 1 && po.sys === null && next(po).system === 236, JSON.stringify(po));
+  check("91m1: po ostatnim zakresie wracamy do pierwszego, od jego początku", (() => { const w = nextR({ ranges: [{ galaxy: 3, startSystem: 276, endSystem: 296 }, { galaxy: 3, startSystem: 236, endSystem: 256 }], idx: 1, sys: 240 }); return w.idx === 0 && next(w).system === 276; })());
+  check("91m2: (źródło) wysłanie minerów przestawia kursor na następny zakres", /\n\s+st = this\.nextRange\(st\);   \/\/ v3\.110\.1[^\n]*\n\s+this\.save\(this\.lock\(\{ \.\.\.st, sentAt: now/.test(asterMod.replace(/\r/g, "")));
+  check("91m3: (źródło) przerwa w skanie > rescanAfterSec = bieżący zakres od początku", /if \(st\.sys && now - \(st\.lastScanAt \|\| 0\) > \(CFG\.aster\.rescanAfterSec \?\? 180\) \* 1000\) st = \{ \.\.\.st, sys: null \};/.test(asterMod));
   check("mining stoi przy ATAKU (ale nie przy samej sondzie)", /threats \|\| \[\]\)\.some\(t => t\.attack && t\.arriveAt > Date\.now\(\)\)\) return false/.test(asterMod));
   check("mining pyta humanizera", /Human\.economyAllowed\(s\)/.test(asterMod));
   check("bez minerów w hangarze nie skanujemy (zero jałowej nawigacji)", /brak minerów w hangarze/.test(asterMod));

@@ -4,7 +4,7 @@
 
 | plik | uni | stan | uwaga |
 |---|---|---|---|
-| `ogamex-3.user.js` | **genesis + athena** (`@match` oba; stan i cfg PER HOST, etykieta uni w pushach = stała `UNI`) | **AKTYWNY ROZWÓJ** (v3.106.0, ~6,9k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09); wejście na Athenę: `AUDYT-ATHENA-2026-09-22.md` (raport startowy Obserwatorem, checklist panelu) |
+| `ogamex-3.user.js` | **genesis + athena** (`@match` oba; stan i cfg PER HOST, etykieta uni w pushach = stała `UNI`) | **AKTYWNY ROZWÓJ** (v3.110.1, ~6,9k linii) | tu idzie cała nowa praca; profil gracza: ODKRYWCA; gra chodzi w **Chrome** (od 09.09); wejście na Athenę: `AUDYT-ATHENA-2026-09-22.md` (raport startowy Obserwatorem, checklist panelu) |
 | `ogamex-bot.user.js` | athena.ogamex.net | **ROZBROJONY** (v2.112.0: early-return po „use strict") | NIE przywracać — dwa boty na jednej stronie to wojna o formularz; kod zostaje jako referencja parserów/lekcji Atheny |
 
 - Genesis ma **fleet speed x3** (Athena x4) — loty są dłuższe. Bot **nigdy nie liczy czasu lotu ze wzoru**, tylko czyta „Duration of flight" z formularza; każda nowa decyzja zależna od czasu lotu ma to robić tak samo.

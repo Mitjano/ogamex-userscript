@@ -269,6 +269,12 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
       : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
       // v3.110.0: strona galaktyki pobrana w tle (cichy skan asteroid) = ten sam render,
       // co przy nawigacji; `galaxyFetchNoRows` odwzorowuje fork oddający stronę bez wierszy.
+      // v3.110.1: `/galaxy/galaxydata?x=&y=` — fragment z wierszami, który doładowuje galaxy.js forka
+      // (tak działa strzałka układu). `galaxyDataNoRows` = fork, który fragmentu nie oddaje.
+      : /^\/galaxy\/galaxydata\?x=/.test(String(u)) ? (game.galaxyDataNoRows ? "" : (() => {
+          const pp = game.page, pq = game.query; game.page = "galaxy"; game.query = String(u).replace(/^\/galaxy\/galaxydata/, "");
+          const html = game.bodyHtml(); game.page = pp; game.query = pq; return html;
+        })())
       : /^\/galaxy\?x=/.test(String(u)) ? (game.galaxyFetchNoRows ? "<html><body><div id='galaxy'>loading…</div></body></html>" : (() => {
           const pp = game.page, pq = game.query; game.page = "galaxy"; game.query = String(u).replace(/^\/galaxy/, "");
           const html = game.bodyHtml(); game.page = pp; game.query = pq; return html;
@@ -1226,14 +1232,23 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     const mine = g.sent.find(x => /Asteroid/i.test(x.mission || ""));
     check("22b: minery poleciały na asteroidę znalezioną w tle", !!mine && /:17$/.test(mine.to || ""), logs.filter(m => /ASTER|LOT/i.test(m)).slice(0, 8).join(" | "));
     check("22b: ZERO nawigacji na strony galaktyki (skan szedł fetchem)", !g.navigations.some(u => /^\/galaxy\?x=/.test(u)), JSON.stringify(g.navigations.filter(u => /galaxy/.test(u)).slice(0, 5)));
-    check("22b: strony galaktyki pobierane w tle", (g.fetches || []).some(u => /^\/galaxy\?x=1&y=31$/.test(u)), JSON.stringify((g.fetches || []).filter(u => /galaxy\?x=/.test(u)).slice(0, 4)));
+    check("22b: układy czytane w tle przez /galaxy/galaxydata (jak strzałka w grze), bez pobierania całej strony", (g.fetches || []).some(u => /^\/galaxy\/galaxydata\?x=1&y=31$/.test(u)) && !(g.fetches || []).some(u => /^\/galaxy\?x=/.test(u)), JSON.stringify((g.fetches || []).filter(u => /galaxy/.test(u)).slice(0, 4)));
     check("22b: log mówi, że skan idzie w tle", logs.some(m => /skan układów idzie w tle/.test(m)) || !!mine, "");
     // fork oddaje stronę bez wierszy → zrzut do logu i powrót do nawigacji (stara droga nadal łapie asteroidę)
     const g2 = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20, BATTLESHIP: 100 } } });
-    g2.asteroid = true; g2.galaxyFetchNoRows = true;
+    g2.asteroid = true; g2.galaxyFetchNoRows = true; g2.galaxyDataNoRows = true;
     let logs2 = (await run(g2, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
     for (let i = 0; i < 4 && !g2.sent.length; i++) { advance(g2, 60e3); logs2 = logs2.concat((await run(g2, { cfg, loads: 15, ticksPerLoad: 2 })).logs); }
     check("22b-f: pobrana strona bez wierszy → zrzut markupu do logu (raz)", logs2.some(m => /\[ASTER DOM\] strona galaktyki pobrana w tle nie ma wierszy/.test(m)), logs2.filter(m => /ASTER/.test(m)).slice(0, 4).join(" | "));
+    // v3.110.1 — ATHENA 23.09 14:02: cała strona /galaxy to pusta ramka, wiersze są TYLKO w galaxydata.
+    // 3.110.0 wracało wtedy do nawigacji (1 układ / ~40 s); teraz skan zostaje w tle.
+    const g3 = new Game({ hangars: { "1:100:5|moon": { ASTEROID_MINER: 20, BATTLESHIP: 100 } } });
+    g3.asteroid = true; g3.galaxyFetchNoRows = true;
+    let logs3 = (await run(g3, { cfg, loads: 15, ticksPerLoad: 2 })).logs;
+    for (let i = 0; i < 4 && !g3.sent.length; i++) { advance(g3, 60e3); logs3 = logs3.concat((await run(g3, { cfg, loads: 15, ticksPerLoad: 2 })).logs); }
+    check("22c: Athena — pusta ramka /galaxy, wiersze z galaxydata → asteroida złapana w tle, ZERO nawigacji na galaktykę",
+      g3.sent.some(x => /Asteroid/i.test(x.mission || "")) && !g3.navigations.some(u => /^\/galaxy\?x=/.test(u)) && !logs3.some(m => /strona galaktyki pobrana w tle nie ma wierszy/.test(m)),
+      `wysyłek=${g3.sent.length} nawig=${JSON.stringify(g3.navigations.filter(u => /galaxy/.test(u)).slice(0, 4))} | ${logs3.filter(m => /ASTER/.test(m)).slice(0, 4).join(" | ")}`);
     check("22b-f: …i bot wraca do nawigacji — asteroida i tak złapana", g2.sent.some(x => /Asteroid/i.test(x.mission || "")) && g2.navigations.some(u => /^\/galaxy\?x=/.test(u)), `wysyłek=${g2.sent.length} nawig=${JSON.stringify(g2.navigations.filter(u => /galaxy/.test(u)).slice(0, 3))}`);
   }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.110.0
+// @version      3.110.1
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.110.0";
+  const VERSION = "3.110.1";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -408,8 +408,8 @@
       // v3.18.0 (porównanie z 2.x): trzy rzeczy, które Athena miała, a 3.0 nie.
       maxFlightMin: 45,      // za daleki układ pomijamy PRZED skanem, nie dopiero na formularzu
       idleScanMin: 15,       // gdy obieg zakresów nie dał nic nowego — pauza zamiast kręcenia galaktyką
-      quietPerTick: 4,       // v3.110.0: ile układów czyta w tle na jeden przebieg pętli (20 s)
-      quietGapMs: 2500,      // odstęp między pobraniami w tle (+ losowe do 1 s)
+      quietPerTick: 8,       // v3.110.0: ile układów czyta w tle na jeden przebieg pętli (20 s); v3.110.1: 4→8 (tempo gracza klikającego strzałkę)
+      quietGapMs: 1200,      // odstęp między pobraniami w tle (+ losowe do 1 s); v3.110.1: 2500→1200
       lockMin: 60 },         // te same koordy nie dostają drugiej floty (fork respawnuje asteroidy w tym samym miejscu)
     // v3.13.0: bonus online (zielony przycisk w menu gry) = antymateria + PUNKTY AKADEMII.
     // Przeniesione z 2.x (moduł OnlineBonus, sprawdzony bojowo na Athenie; właściciel
@@ -531,6 +531,12 @@
   // uderzenia, żeby dało się ją zawrócić (zawrócone stacjonuj jest niewidoczne na falandze).
   // Sam nowy DEFAULT by nie wystarczył: zapisany CFG z panelu ma własne `airSpeedPct` i wygrywa
   // ze zmianą domyślnej. Jeśli fork nie ma 3%, `Fly` weźmie najniższą dostępną (nie 100%).
+  // v3.110.1: tempo skanu asteroid w tle. Panel nie ma tych pól, więc zapisany CFG ze starymi domyślnymi
+  // (4 układy / 2,5 s) jest z definicji nietknięty ręcznie — jednorazowo podnosimy do nowych domyślnych.
+  if (!Store.get("migr_aster_quiet_v3101", false)) {
+    Store.set("migr_aster_quiet_v3101", true);
+    if (CFG.aster && (CFG.aster.quietPerTick || 4) === 4 && (CFG.aster.quietGapMs || 2500) === 2500) { CFG.aster.quietPerTick = DEFAULTS.aster.quietPerTick; CFG.aster.quietGapMs = DEFAULTS.aster.quietGapMs; saveCfg(); }
+  }
   if (!Store.get("migr_air_speed_min_v378", false)) {
     Store.set("migr_air_speed_min_v378", true);
     if ((CFG.airSpeedPct || 0) > 3) { log(`[CFG] prędkość ucieczki ${CFG.airSpeedPct}% → 3% (decyzja właściciela 11.09: możliwie najwolniej, żeby dało się zawrócić).`, "warn"); CFG.airSpeedPct = 3; saveCfg(); }
@@ -3671,8 +3677,23 @@
     // pobrana z nagłówkiem XHR nie miała wierszy), więc odpowiedź jest SPRAWDZANA:
     // brak `.galaxy-item` = zrzut do logu i powrót do nawigacji na 30 min.
     // Wynik: { ok:true, hit } | { ok:false, why }.
+    // v3.110.1 (owner 23.09 Athena: „bardzo wolno przeskakuje przez układy, ręcznie to szybko idzie"; log 14:02:11
+    // „strona galaktyki pobrana w tle nie ma wierszy"): strona /galaxy to pusta ramka — wiersze doładowuje jej
+    // własny skrypt zapytaniem `/galaxy/galaxydata?x=&y=` (galaxy.js forka, `GetGalaxyData`, wołane przy każdym
+    // kliknięciu strzałki układu — dlatego ręcznie jest szybko). Bot pobierał ramkę, nie znajdował wierszy i na
+    // 30 min wracał do przeładowań strony: jeden układ na ~40 s. Teraz czyta to samo, co strzałka w grze;
+    // cała strona zostaje drogą zapasową, a gdy i ona nie ma wierszy — nawigacja jak dotąd.
+    GALAXY_DATA_URL: "/galaxy/galaxydata",
     async scanQuiet(target) {
       try {
+        const rd = await fetchT(`${this.GALAXY_DATA_URL}?x=${target.galaxy}&y=${target.system}`, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest", Accept: "*/*" } }, 8000);
+        if (rd.ok) {
+          const frag = await rd.text();
+          if (looksLoggedOut(rd, frag)) { Session.lost(); return { ok: false, why: "wylogowany" }; }
+          const fdoc = new DOMParser().parseFromString(`<!doctype html><html><body>${frag}</body></html>`, "text/html");
+          if (fdoc.querySelectorAll(".galaxy-item").length) return { ok: true, hit: this.readRow17(fdoc, target), via: "galaxydata" };
+          if (!Once.said("aster_gdata_dom", 24 * 3600e3)) log(`[ASTER DOM] /galaxy/galaxydata bez wierszy (.galaxy-item) — próbuję całej strony. Markup: ${frag.replace(/\s+/g, " ").slice(0, 800)}`, "warn");
+        }
         const r = await fetchT(`/galaxy?x=${target.galaxy}&y=${target.system}`, { credentials: "same-origin", headers: { Accept: "text/html" } }, 8000);
         if (!r.ok) return { ok: false, why: `HTTP ${r.status}` };
         const html = await r.text();
@@ -3800,6 +3821,15 @@
       const sys = (st.sys && st.sys >= r.startSystem && st.sys <= r.endSystem) ? st.sys : r.startSystem;
       return { galaxy: r.galaxy, system: sys, range: r };
     },
+    // v3.110.1 (owner 23.09: „bot powinien skanować cały przedział od początku, np. od 3:276, do momentu aż
+    // znajdzie asteroidę w tym przedziale"): po trafieniu kursor zostawał w środku zakresu (14:00 [3:283] → dalej
+    // 284, 285…), a po przerwie wracał tam, gdzie skończył — początek zakresu nie był już oglądany. Teraz trafienie
+    // kończy zakres (następny od JEGO początku), a przerwa w skanie dłuższa niż `rescanAfterSec` zaczyna bieżący
+    // zakres od nowa.
+    nextRange(st) {
+      const rs = st.ranges || []; if (!rs.length) return st;
+      return { ...st, idx: ((st.idx || 0) + 1) % rs.length, sys: null };
+    },
     advance(st) {
       const rs = st.ranges || []; if (!rs.length) return st;
       const r = rs[(st.idx || 0) % rs.length];
@@ -3854,6 +3884,7 @@
       // pauza po pełnym obiegu bez łupu (2.x: scanIntervalMin) — inaczej bot kręci
       // galaktyką bez końca co kilka sekund
       if (st.idleUntil && now < st.idleUntil) return false;
+      if (st.sys && now - (st.lastScanAt || 0) > (CFG.aster.rescanAfterSec ?? 180) * 1000) st = { ...st, sys: null };   // v3.110.1: przerwa = zakres od początku
       let target = this.nextSystem(st);
       if (!target) return false;
       // pomiń układy za daleko i te, na które już leci flota
@@ -3879,6 +3910,7 @@
         const min = Math.max(60, CFG.aster.minTtlSec || 300);
         if (hit.ttl && hit.ttl < min) { log(`[ASTER] [${tgt.galaxy}:${tgt.system}:17] znika za ${hit.ttl}s — za mało czasu, skanuję dalej.`, "info"); this.save(st); return "next"; }
         log(`[ASTER] ZNALEZIONA asteroida [${tgt.galaxy}:${tgt.system}:17] (TTL ${hit.ttl || "?"}s) — wysyłam ${plan.qty.toLocaleString("pl-PL")} z ${miners.qty.toLocaleString("pl-PL")} minerów (${plan.why}).`, "success");
+        st = this.nextRange(st);   // v3.110.1: zakres ma asteroidę → następny zakres od początku
         this.save(this.lock({ ...st, sentAt: now, sentTo: `${tgt.galaxy}:${tgt.system}:17` }, `${tgt.galaxy}:${tgt.system}`));
         const astKey = `${tgt.galaxy}:${tgt.system}:17`;
         if (Fly.blocked({ fromKey: homeKey, toKey: astKey })) { if (!Once.said(`astblk|${astKey}`, 5 * 60e3)) log(`[ASTER] trasa [${homeKey}]→[${astKey}] w karencji po nieudanym locie — czekam.`, "warn"); return "sent"; }
@@ -3891,8 +3923,8 @@
       const onThat = page() === "galaxy" && new RegExp(`[?&]x=${target.galaxy}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${target.system}(?:&|$)`).test(location.search);
       if (onThat) return handle(this.readRow17(), target) === "sent";
       // v3.110.0: cichy skan — kilka układów na przebieg, z odstępem między pobraniami.
-      // `quietBrokenAt` = pobrana strona nie miała wierszy → 30 min nawigacją (stara droga).
-      const quietOk = !(st.quietBrokenAt && now - st.quietBrokenAt < 30 * 60e3);
+      // `quietBroken2At` = pobrana strona nie miała wierszy → 30 min nawigacją (stara droga).
+      const quietOk = !(st.quietBroken2At && now - st.quietBroken2At < 30 * 60e3);
       if (quietOk) {
         const perTick = Math.max(1, CFG.aster.quietPerTick || 4);
         for (let i = 0; i < perTick && target; i++) {
@@ -3900,7 +3932,7 @@
           if (Fly.mission()) return true;                                            // obrona/ratunek w międzyczasie — nie mieszamy
           const r = await this.scanQuiet(target);
           if (!r.ok) {
-            if (r.why === "brak wierszy") { st = { ...st, quietBrokenAt: now }; this.save(st); break; }   // → nawigacja poniżej
+            if (r.why === "brak wierszy") { st = { ...st, quietBroken2At: now }; this.save(st); break; }   // → nawigacja poniżej
             if (!Once.said("aster|quietfail", 10 * 60e3)) log(`[ASTER] cichy skan [${target.galaxy}:${target.system}] nie wyszedł (${r.why}) — spróbuję za chwilę.`, "info");
             this.save({ ...st, lastScanAt: now }); return false;
           }
@@ -3910,7 +3942,7 @@
           while (target && (this.tooFar(homeKey, target) || this.locked(st, `${target.galaxy}:${target.system}`))) { st = this.advance(st); target = this.nextSystem(st); if (++skipped > 60) { target = null; } }
           if (skipped) this.save(st);
         }
-        if (!st.quietBrokenAt || now - st.quietBrokenAt >= 30 * 60e3) return false;
+        if (!st.quietBroken2At || now - st.quietBroken2At >= 30 * 60e3) return false;
         if (!target) return false;
       }
       this.save({ ...st, lastScanAt: now });
