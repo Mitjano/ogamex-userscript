@@ -841,6 +841,19 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   check("z ładownią i urobkiem bot liczy małą flotę zamiast całego hangaru", auto.qty === Math.ceil(46000 * 1.15 / 1000), JSON.stringify(auto));
   const autoCapped = runSize({ maxMiners: 10, cargoPerMiner: 1000 }, {}, 15e9, 46000);
   check("sufit przycina też `need` (próg „czekam na powroty” nie żąda floty, której nie wyślemy)", autoCapped.qty === 10 && autoCapped.need === 10, JSON.stringify(autoCapped));
+  // v3.108.0 (Athena 23.09, log 10:57: zakresy [3:31-51] … [3:467-487], baza [3:272:7], bot
+  // zaczął od [3:31] na drugim końcu galaktyki). Kolejność skanu = 2.x v2.9.1: najbliżej
+  // bazy najpierw, zakresy zachodzące na siebie scalone.
+  const order = new Function("ranges", "homeKey", bodyOf("orderRanges(ranges, homeKey) {"));
+  const live = [[31, 51], [98, 118], [138, 158], [170, 190], [172, 192], [186, 206], [373, 393], [467, 487]].map(([a, b]) => ({ galaxy: 3, startSystem: a, endSystem: b }));
+  const ord = order(live, "3:272:7");
+  check("zakresy zachodzące na siebie scalone ([170-190]+[172-192]+[186-206] → [170-206])", ord.length === 6 && ord.some(r => r.startSystem === 170 && r.endSystem === 206), JSON.stringify(ord));
+  check("skan zaczyna od zakresu najbliższego bazie [3:272] (170-206, odstęp 66), nie od [3:31]", ord[0].startSystem === 170 && ord[ord.length - 1].startSystem === 31, ord.map(r => `${r.startSystem}-${r.endSystem}`).join(" "));
+  check("kolejność po odstępie: 170-206 · 373-393 (101) · 138-158 (114) · 98-118 (154) · 467-487 (195) · 31-51 (221)", ord.map(r => r.startSystem).join(",") === "170,373,138,98,467,31", ord.map(r => r.startSystem).join(","));
+  const ordIn = order([{ galaxy: 3, startSystem: 260, endSystem: 280 }, { galaxy: 3, startSystem: 273, endSystem: 275 }, { galaxy: 2, startSystem: 272, endSystem: 272 }], "3:272:7");
+  check("baza wewnątrz zakresu = odstęp 0, obca galaktyka na końcu", ordIn.length === 2 && ordIn[0].galaxy === 3 && ordIn[0].startSystem === 260 && ordIn[1].galaxy === 2, JSON.stringify(ordIn));
+  check("bez bazy zakresy wracają w kolejności po numerze układu (nic nie ginie)", order(live, null).length === 6 && order(live, null)[0].startSystem === 31);
+  check("(źródło) zakresy odświeżane od razu po zmianie bazy (rangesHome), nie po 30 min", /st\.rangesHome !== \(homeKey \|\| null\)/.test(src));
   check("panel ma pole na minery na lot i na ładownię minera", /ogx3-aster-max/.test(src) && /ogx3-aster-cargo/.test(src));
   check("odczyt ładowni nie poddaje się na pustym #content (spada na całą stronę)", /t\.replace\(\/\\s\+\/g, ""\)\.length < 50\) t = document\.body\.textContent/.test(src));
 }

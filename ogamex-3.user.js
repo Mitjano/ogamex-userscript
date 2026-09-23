@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.107.0
+// @version      3.108.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.107.0";
+  const VERSION = "3.108.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -3601,15 +3601,42 @@
       }
       return out.sort((x, y) => x.galaxy - y.galaxy || x.startSystem - y.startSystem);
     },
-    async fetchRanges() {
+    // v3.108.0 (owner 23.09, Athena: „dlaczego szuka asteroid tak daleko? 2.x szukał
+    // najpierw najbliższych przedziałów"): kolejność skanu = 2.x v2.9.1. Do 3.107
+    // zakresy szły rosnąco po numerze układu, więc dla bazy [3:272] bot zaczynał od
+    // [3:31-51] na drugim końcu galaktyki, a asteroida obok domu czekała, aż obieg
+    // dojdzie — z TTL liczonym w minutach. Teraz: najpierw scalamy zakresy, które
+    // na siebie zachodzą (gra podaje [170-190], [172-192], [186-206] — trzy wpisy,
+    // te same układy skanowane trzy razy), potem sortujemy po ODSTĘPIE od bazy
+    // (0, gdy baza leży w zakresie), własna galaktyka przed cudzą; wewnątrz zakresu
+    // dalej rosnąco, żeby nie przeplatać układów z dwóch zakresów.
+    orderRanges(ranges, homeKey) {
+      const byStart = (ranges || []).slice().sort((x, y) => x.galaxy - y.galaxy || x.startSystem - y.startSystem);
+      const merged = [];
+      for (const r of byStart) {
+        const last = merged[merged.length - 1];
+        if (last && last.galaxy === r.galaxy && r.startSystem <= last.endSystem + 1) last.endSystem = Math.max(last.endSystem, r.endSystem);
+        else merged.push({ galaxy: r.galaxy, startSystem: r.startSystem, endSystem: r.endSystem });
+      }
+      const [hg, hs] = String(homeKey || "").split(":").map(Number);
+      if (!Number.isFinite(hg) || !Number.isFinite(hs)) return merged;
+      const gap = (r) => r.endSystem < hs ? hs - r.endSystem : (r.startSystem > hs ? r.startSystem - hs : 0);
+      return merged.sort((a, b) => {
+        const aSame = a.galaxy === hg, bSame = b.galaxy === hg;
+        if (aSame !== bSame) return aSame ? -1 : 1;
+        if (a.galaxy !== b.galaxy) return a.galaxy - b.galaxy;
+        return gap(a) - gap(b) || a.startSystem - b.startSystem;
+      });
+    },
+    async fetchRanges(homeKey) {
       try {
         const r = await fetchT(this.RANGES_URL, { headers: { "X-Requested-With": "XMLHttpRequest", Accept: "*/*" }, credentials: "same-origin" });
         if (!r.ok) { log(`[ASTER] zakresy: HTTP ${r.status}`, "warn"); return null; }
         const html = await r.text();
         if (looksLoggedOut(r, html)) { Session.lost(); return null; }
         if (!/galaxy-asteroid-modal|asteroid-modal-desc|playerAste/i.test(html)) { log("[ASTER] odpowiedź to nie modal asteroid — pomijam.", "warn"); return null; }
-        const ranges = this.parseRanges(html);
-        log(ranges.length ? `[ASTER] zakresy: ${ranges.map(x => `[${x.galaxy}:${x.startSystem}-${x.endSystem}]`).join(", ")}` : "[ASTER] brak zakresów (zbadaj technologię / brak wyników).", "info");
+        const ranges = this.orderRanges(this.parseRanges(html), homeKey);
+        log(ranges.length ? `[ASTER] zakresy (od najbliższego bazie${homeKey ? ` [${homeKey}]` : ""}): ${ranges.map(x => `[${x.galaxy}:${x.startSystem}-${x.endSystem}]`).join(", ")}` : "[ASTER] brak zakresów (zbadaj technologię / brak wyników).", "info");
         return ranges;
       } catch (e) { log(`[ASTER] zakresy: ${e.message}`, "warn"); return null; }
     },
@@ -3782,10 +3809,12 @@
         if (!Once.said("aster|partial", 10 * 60e3)) log(`[ASTER] w hangarze ${miners.qty} minerów, a sensowny lot to ${plan.need} — czekam na powroty (próg ${Math.round(CFG.aster.partialRatio * 100)}%).`, "info");
         return false;
       }
-      if (!(st.ranges || []).length || now - (st.rangesAt || 0) > 30 * 60e3) {
-        const r = await this.fetchRanges();
+      // `rangesHome`: zakresy są ułożone pod KONKRETNĄ bazę — zmiana bazy (albo stary
+      // zapis sprzed 3.108 bez tego pola) = odświeżenie od razu, nie za 30 min.
+      if (!(st.ranges || []).length || now - (st.rangesAt || 0) > 30 * 60e3 || st.rangesHome !== (homeKey || null)) {
+        const r = await this.fetchRanges(homeKey);
         if (!r) return false;
-        st = { ...st, ranges: r, rangesAt: now, idx: 0, sys: null };
+        st = { ...st, ranges: r, rangesAt: now, rangesHome: homeKey || null, idx: 0, sys: null };
         this.save(st);
         if (!r.length) return false;
       }
