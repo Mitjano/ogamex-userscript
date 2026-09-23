@@ -1788,6 +1788,40 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("bot mówi wprost, że przerwał przez przełącznik", logs.some(m => /wyłączyłeś ekspedycje w trakcie misji/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 6).join(" | "));
   }
 
+  console.log("\n── 40b. Klik operatora MIĘDZY decyzją o fali a formularzem odkłada misję (v3.109.0, log 23.09 11:21) ──");
+  {
+    // Athena 23.09: 11:21:52 decyzja o fali 12/14, 11:21:56 operator otwiera /messages,
+    // 11:21:57 bot przenosi go na formularz floty. Bramka „grasz" pytana tylko przy decyzji.
+    const planuj = async (cfg) => {
+      const g = new Game();
+      let planned = false;
+      for (let i = 0; i < 12 && !planned && g.sent.length === 0; i++) {
+        const inst = load(g, { cfg });
+        try { await inst.tick(1); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
+        await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
+        planned = (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
+      }
+      return { g, planned };
+    };
+    const cfgGate = { autoRescue: true, expo: { enabled: true, waves: 1 }, recon: true, reconMs: 300000, human: { breaks: false, economyAtNight: true, ecoIdleSec: 60 } };
+    const { g, planned } = await planuj(cfgGate);
+    check("40b (warunek wstępny) misja zaplanowana przy włączonej bramce, fala JESZCZE nie wysłana", planned && g.sent.length === 0, `misja=${String(g.store.get("genesis.ogamex.net:ogx3_mission")).slice(0, 120)}, wysyłek=${g.sent.length}`);
+    g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now()));      // operator kliknął PO decyzji, PRZED formularzem
+    const nawPrzed = g.navigations.length;
+    const { logs } = await run(g, { cfg: cfgGate, loads: 8, ticksPerLoad: 2 });
+    check("40b: fala NIE poszła — operator gra", g.sent.length === 0, JSON.stringify(g.sent));
+    check("40b: misja zdjęta bez karencji (Expo zaplanuje ją od nowa po ciszy)", (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") === "null" && !Object.keys(JSON.parse(g.store.get("genesis.ogamex.net:ogx3_fly_block") || "{}")).length, `misja=${String(g.store.get("genesis.ogamex.net:ogx3_mission"))} block=${g.store.get("genesis.ogamex.net:ogx3_fly_block")}`);
+    check("40b: log mówi wprost, że odłożył przez kliknięcie", logs.some(m => /\[LOT\] odłożony bez karencji: kliknąłeś \d+ s temu/.test(m)), logs.filter(m => /LOT|EXPO/.test(m)).slice(0, 6).join(" | "));
+    check("40b: po kliknięciu bot NIE otworzył operatorowi formularza floty", !g.navigations.slice(nawPrzed).some(u => /\/fleet\?x=/.test(u)), JSON.stringify(g.navigations.slice(nawPrzed)));
+    // kontrola: bramka 0 (decyzja ownera 31.08) — klik NIE zatrzymuje fali, wszystko po staremu
+    const cfg0 = { ...cfgGate, human: { breaks: false, economyAtNight: true, ecoIdleSec: 0 } };
+    const p0 = await planuj(cfg0);
+    check("40b0 (warunek wstępny) misja zaplanowana przy bramce 0", p0.planned && p0.g.sent.length === 0);
+    p0.g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now()));
+    const r0 = await run(p0.g, { cfg: cfg0, loads: 8, ticksPerLoad: 2 });
+    check("40b0: przy bramce 0 klik nie odkłada fali (leci jak dotąd)", p0.g.sent.length === 1 && !r0.logs.some(m => /odłożony bez karencji/.test(m)), `wysyłek=${p0.g.sent.length} | ${r0.logs.filter(m => /odłożony/.test(m)).join(" | ")}`);
+  }
+
   console.log("\n── 41. Pusty księżyc po fali domykającej + OPÓŹNIONY powrót ekspedycji (v3.65.0, log 03.09 08:58) ──");
   {
     // Na żywo: fala domykająca zostawiła na księżycu 0, bot odświeżał odtąd PLANETĘ

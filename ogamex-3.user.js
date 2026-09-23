@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.108.0
+// @version      3.109.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.108.0";
+  const VERSION = "3.109.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -4232,6 +4232,24 @@
           if (!sent) {
             Store.del("mission");
             log(`[LOT] przerwany bez karencji: wyłączyłeś ${m.kind === "expedition" ? "ekspedycje" : m.kind === "asteroid" ? "minery" : "zbieranie złomu"} w trakcie misji (krok „${m.step}").`, "warn");
+            return;
+          }
+        }
+        // v3.109.0 (owner 23.09 11:21, Athena: „nie mogę wejść w wiadomości, bot od razu
+        // przełącza mnie do floty"): bramka „grasz" (Human.economyAllowed) jest pytana
+        // przy DECYZJI o fali, a kartę bot przejmuje dopiero tick–dwa później — log:
+        // 11:21:52 decyzja, 11:21:56 operator otwiera /messages, 11:21:57 formularz.
+        // Kliknięcie w tym oknie nie miało żadnego głosu. Teraz, póki formularz nie
+        // jest otwarty (kroki switch/switch_wait), misja ekonomii pyta jeszcze raz:
+        // klik operatora PO starcie misji = odłożenie bez karencji; Expo/Aster/Debris
+        // zaplanują ją od nowa, gdy bramka przepuści. Obowiązuje TYLKO przy włączonej
+        // bramce (ecoIdleSec > 0) — 0 to decyzja ownera z 31.08 („fale lecą od razu,
+        // także w trakcie klikania") i tu nic się nie zmienia. Ratunek nie podlega.
+        if (ecoOn && (CFG.human.ecoIdleSec || 0) > 0 && (m.step === "switch" || m.step === "switch_wait")) {
+          const klik = Store.get("input_at", 0) || 0;
+          if (klik > (m.startedAt || 0)) {
+            Store.del("mission");
+            log(`[LOT] odłożony bez karencji: kliknąłeś ${Math.max(0, Math.round((Date.now() - klik) / 1000))} s temu, zanim bot otworzył formularz — ${m.kind === "expedition" ? "fala ekspedycji" : m.kind === "asteroid" ? "lot minerów" : "lot po złom"} poczeka ${Math.round(CFG.human.ecoIdleSec / 60)} min od Twojego ostatniego kliknięcia.`, "info");
             return;
           }
         }
