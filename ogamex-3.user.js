@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.111.1
+// @version      3.112.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.111.1";
+  const VERSION = "3.112.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -400,6 +400,7 @@
       // złapał („[ASTER DOM] nie widzę pojemności ładowni"), więc cofał się do „lecą
       // wszystkie" i 15 mld minerów poszło po asteroidę wartą 46 tys. surowców.
       // 0 = bez sufitu (zachowanie sprzed 3.107).
+      // v3.112.0: to już DOKŁADNA ilość na lot, nie sufit — auto-dobór jej nie zmniejsza.
       maxMiners: 0,
       parallel: true,        // resztą minerów obrabiaj kolejne asteroidy, nie czekaj na powrót
       partialRatio: 0.5,     // lot mniejszy niż połowa docelowego = czekamy na powroty
@@ -3773,16 +3774,19 @@
       // która do 3.106 wysyłała cały hangar. To jedyne miejsce, gdzie operator może
       // powiedzieć „nigdy więcej niż tyle", więc auto-dobór nie ma prawa go przebić.
       const cap = Math.max(0, CFG.aster.maxMiners || 0);
-      if (!cargo || !exp) {
-        const qty = cap ? Math.min(available, cap) : available;
-        return { qty, why: cap ? `brak danych o ładowni/urobku — limit z panelu ${cap.toLocaleString("pl-PL")}` : "brak danych o ładowni/urobku — lecą wszystkie" };
+      // v3.112.0 (owner 24.09: „chcę, żeby zawsze wysyłał ilość, jaką wpisuję w asystencie,
+      // nie chcę, żeby sam dobierał ilość"): liczba z panelu to już nie sufit, tylko DOKŁADNA
+      // ilość na lot — auto-dobór pod urobek jej nie zmniejsza. Mniej w hangarze = leci to,
+      // co stoi (więcej się nie da). Bez `need`, więc próg „czekam na powroty" (partialRatio)
+      // nie wstrzymuje lotu. Auto-dobór działa tylko przy pustym polu (0).
+      if (cap) {
+        const qty = Math.min(available, cap);
+        return { qty, why: qty < cap ? `ilość z panelu ${cap.toLocaleString("pl-PL")}, w hangarze tylko ${available.toLocaleString("pl-PL")} — lecą wszystkie` : `ilość z panelu ${cap.toLocaleString("pl-PL")}` };
       }
-      let need = Math.ceil(exp * (CFG.aster.buffer || 1.15) / cargo);
-      // Sufit przycina też `need`, bo to on decyduje o progu „czekam na powroty"
-      // (partialRatio) — inaczej bot czekałby na flotę, której i tak nie wyśle.
-      if (cap) need = Math.min(need, cap);
+      if (!cargo || !exp) return { qty: available, why: "brak danych o ładowni/urobku — lecą wszystkie" };
+      const need = Math.ceil(exp * (CFG.aster.buffer || 1.15) / cargo);
       const qty = Math.max(CFG.aster.minMiners || 1, Math.min(available, need));
-      return { qty, need, why: `urobek ~${exp.toLocaleString("pl-PL")} × zapas ${CFG.aster.buffer} ÷ ${cargo.toLocaleString("pl-PL")}/miner = ${need}${cap ? ` (sufit z panelu ${cap.toLocaleString("pl-PL")})` : ""}` };
+      return { qty, need, why: `urobek ~${exp.toLocaleString("pl-PL")} × zapas ${CFG.aster.buffer} ÷ ${cargo.toLocaleString("pl-PL")}/miner = ${need}` };
     },
     // Ile slotów floty wolno jeszcze zająć (0 = żadnego).
     freeSlots(s) {
@@ -6433,7 +6437,7 @@
             <div class="note" id="ogx3-bonus-st"></div>
             <div class="line"><button id="ogx3-moon" class="ogx3-btn"></button> ≤ <input id="ogx3-moon-share" style="width:26px" />% metalu</div>
             <div class="note" id="ogx3-moon-st"></div>
-            <div class="line">minery na lot <input id="ogx3-aster-max" style="width:86px" placeholder="0 = auto" /> szt.</div>
+            <div class="line">minery na lot <input id="ogx3-aster-max" style="width:86px" placeholder="puste = auto" /> szt.</div>
             <div class="line">ładownia minera <input id="ogx3-aster-cargo" style="width:86px" placeholder="0 = ucz się" /></div>
             <div class="note" id="ogx3-aster-st"></div>
             <div class="line"><button id="ogx3-quiet" class="ogx3-btn"></button> od <input id="ogx3-quiet-a" style="width:24px" />:00 do <input id="ogx3-quiet-b" style="width:24px" />:00</div>
@@ -6514,7 +6518,7 @@
       $("ogx3-aster-max").onchange = (e) => {
         CFG.aster.maxMiners = Math.max(0, parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0); saveCfg();
         e.target.value = CFG.aster.maxMiners ? String(CFG.aster.maxMiners) : "";
-        log(CFG.aster.maxMiners ? `[ASTER] minery na lot: maks. ${CFG.aster.maxMiners.toLocaleString("pl-PL")} szt.` : "[ASTER] minery na lot: bez sufitu — wielkość floty liczy bot (a bez danych o ładowni leci CAŁY hangar).", CFG.aster.maxMiners ? "info" : "warn");
+        log(CFG.aster.maxMiners ? `[ASTER] minery na lot: zawsze ${CFG.aster.maxMiners.toLocaleString("pl-PL")} szt. (bot nie dobiera ilości sam)` : "[ASTER] minery na lot: bez sufitu — wielkość floty liczy bot (a bez danych o ładowni leci CAŁY hangar).", CFG.aster.maxMiners ? "info" : "warn");
       };
       $("ogx3-aster-cargo").value = CFG.aster.cargoPerMiner ? String(CFG.aster.cargoPerMiner) : "";
       $("ogx3-aster-cargo").onchange = (e) => {
@@ -6925,7 +6929,7 @@
         const aCargo = CFG.aster.cargoPerMiner || aster.cargo || 0;
         const aYield = CFG.aster.expectedRes || ((aster.yields || []).length ? 1 : 0);
         const aHow = CFG.aster.maxMiners
-          ? `maks. ${CFG.aster.maxMiners.toLocaleString("pl-PL")} szt./lot`
+          ? `${CFG.aster.maxMiners.toLocaleString("pl-PL")} szt./lot`
           : (aCargo && aYield ? "wielkość liczy bot (ładownia znana)" : "UWAGA: leci CAŁY hangar (brak ładowni/urobku)");
         $("ogx3-aster-st").textContent = CFG.aster.enabled ? `${aHow} · zakresy: ${(aster.ranges || []).length}${aster.sentTo ? ` · ostatnio: [${aster.sentTo}]` : ""}` : "";
         $("ogx3-t-eco").textContent = `${CFG.aster.enabled ? "M ON" : "M OFF"} · ${CFG.debris.enabled ? "Z ON" : "Z OFF"}`; }

@@ -842,13 +842,19 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   const noData = runSize({ maxMiners: 0 }, {}, 15e9, 0);
   check("bez ładowni i bez sufitu leci cały hangar (zachowanie sprzed 3.107)", noData.qty === 15e9, JSON.stringify(noData));
   const capped = runSize({ maxMiners: 1000 }, {}, 15e9, 0);
-  check("sufit z panelu obowiązuje TAKŻE bez danych o ładowni", capped.qty === 1000 && /limit z panelu/.test(capped.why), JSON.stringify(capped));
+  check("sufit z panelu obowiązuje TAKŻE bez danych o ładowni", capped.qty === 1000 && /ilość z panelu/.test(capped.why), JSON.stringify(capped));
   const capSmall = runSize({ maxMiners: 1000 }, {}, 400, 0);
   check("sufit nie podbija floty ponad to, co stoi w hangarze", capSmall.qty === 400, JSON.stringify(capSmall));
   const auto = runSize({ maxMiners: 0, cargoPerMiner: 1000 }, {}, 15e9, 46000);
   check("z ładownią i urobkiem bot liczy małą flotę zamiast całego hangaru", auto.qty === Math.ceil(46000 * 1.15 / 1000), JSON.stringify(auto));
-  const autoCapped = runSize({ maxMiners: 10, cargoPerMiner: 1000 }, {}, 15e9, 46000);
-  check("sufit przycina też `need` (próg „czekam na powroty” nie żąda floty, której nie wyślemy)", autoCapped.qty === 10 && autoCapped.need === 10, JSON.stringify(autoCapped));
+  // v3.112.0 (owner 24.09): liczba z panelu = DOKŁADNA ilość na lot, auto-dobór jej nie zmniejsza.
+  const exact = runSize({ maxMiners: 5e9, cargoPerMiner: 1000 }, {}, 15e9, 46000);
+  check("z ładownią i urobkiem leci DOKŁADNIE ilość z panelu (5 mld), nie auto-dobór (53)", exact.qty === 5e9 && /ilość z panelu/.test(exact.why), JSON.stringify(exact));
+  check("ilość z panelu nie wystawia `need` — próg „czekam na powroty” nie wstrzymuje lotu", exact.need === undefined, JSON.stringify(exact));
+  const exactSmall = runSize({ maxMiners: 10, cargoPerMiner: 1000 }, {}, 15e9, 46000);
+  check("mała ilość z panelu (10) też dokładnie, nie podbijana do auto-doboru (53)", exactSmall.qty === 10, JSON.stringify(exactSmall));
+  const exactShort = runSize({ maxMiners: 5e9, cargoPerMiner: 1000 }, {}, 2e9, 46000);
+  check("w hangarze mniej niż wpisane → lecą wszystkie, bez czekania", exactShort.qty === 2e9 && exactShort.need === undefined, JSON.stringify(exactShort));
   // v3.108.0 (Athena 23.09, log 10:57: zakresy [3:31-51] … [3:467-487], baza [3:272:7], bot
   // zaczął od [3:31] na drugim końcu galaktyki). Kolejność skanu = 2.x v2.9.1: najbliżej
   // bazy najpierw, zakresy zachodzące na siebie scalone.
