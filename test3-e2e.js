@@ -2920,6 +2920,107 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       JSON.stringify(g2.sent.map(x => x.ships)) + " | " + r2.logs.filter(m => /rezerw/.test(m)).slice(0, 2).join(" | "));
   }
 
+  console.log("\n── 60c. STARY DOM /fleet NIE JEST ŚWIEŻYM HANGAREM (atak 23.09 12:35–12:41, Athena, ~3,1 bln) ──");
+  {
+    // CO SIĘ STAŁO: po ratunku #2 (12:37:03) bot stał na /fleet?fleetSendSuccessfully bez
+    // przeładowania. Hangar.scan() w każdym przebiegu stemplował migawkę (1584 GŚ rezerwy)
+    // chwilą ODCZYTU, więc fale lądujące 12:38:46 / 12:40:09 / 12:40:52 były „starsze" niż
+    // hangar — zero cichych odczytów, `tylkoRezerwa` gasiło drugi lot, uderzenie o 12:41:25.
+    // Tu: strona /fleet wyrenderowana z samą rezerwą, potem fala ląduje BEZ przeładowania
+    // (ticki na tej samej instancji), rejestr powrotów mówi o lądowaniu po renderze.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false },
+      aster: { enabled: false }, debris: { enabled: false }, human: { breaks: false, economyAtNight: true } };
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 1800 }],
+      hangars: { "1:100:5|moon": { DEATH_STAR: 43 } }, active: { key: "1:100:5", body: "moon" } });
+    g.moonLinks = true;
+    await run(g, { cfg, loads: 4, ticksPerLoad: 2 });                       // bot poznaje parę, hangar (sama rezerwa), atak
+    {
+      const st = JSON.parse(g.store.get(K) || "{}");
+      st.flights = [{ kind: "air", fs: false, excludeTypes: null, capTypes: { DEATH_STAR: 1 },
+        fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", id: "test-air-60c",
+        sentAt: Date.now() - 3 * 60e3, flightMs: 60 * 60e3, recallAt: Date.now() + 45 * 60e3, phase: "launched", tries: 0, sentTotal: 25_000_000, leftHome: 43 }];
+      st.hangars["1:100:5|moon"] = { total: 43, at: Date.now() - 2 * 60e3, ships: [{ type: "DEATH_STAR", qty: 43 }] };
+      st.expected = [];
+      g.store.set(K, JSON.stringify(st));
+    }
+    // strona /fleet księżyca WYRENDEROWANA z samą rezerwą — i od tej chwili nie przeładowana
+    g.page = "fleet"; g.query = "";
+    const inst = load(g, { cfg });
+    await inst.tick(2);                                                      // skan strony: 43 GŚ
+    await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
+    const nawPrzed = g.navigations.length, sentPrzed = g.sent.length;
+    // …teraz w GRZE ląduje fala (25 mln), a rejestr powrotów mówi o lądowaniu PO renderze strony
+    g.hangars["1:100:5|moon"] = { BATTLESHIP: 25000000, DEATH_STAR: 43 };
+    {
+      const st = JSON.parse(g.store.get(K) || "{}");
+      st.expected = [{ fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:16", sentAt: Date.now() - 40 * 60e3,
+        returnAt: Date.now() - 100, flightMs: 10 * 60e3, total: 25_000_000, pending: false }];   // PO renderze strony (PAGE_AT), nie przed
+      g.store.set(K, JSON.stringify(st));
+    }
+    // ticki BEZ przeładowania strony — do chwili, gdy bot ZAPLANUJE ratunek (misja w store). Dalej
+    // nie ma sensu: Nav.go bez przeładowania to w atrapie „nawigacja w miejscu", a 6 takich = sufit NAV_MAX.
+    const misja60 = () => (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
+    for (let i = 0; i < 6 && g.sent.length === sentPrzed && !misja60(); i++) {
+      try { await inst.tick(1); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
+      await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
+    }
+    const st60c = JSON.parse(g.store.get(K) || "{}");
+    const h60c = (st60c.hangars || {})["1:100:5|moon"] || {};
+    await new Promise(r => setTimeout(r, 900));                              // log bota ma debounce 800 ms
+    const log60c = rawLog(g);
+    // DOWÓD na błąd 23.09 to a/b/e (bez przeładowania). Sama wysyłka wymaga w atrapie „przeładowania"
+    // (Nav.go bota = nowa instancja) — w grze robi to location.replace; tu dopuszczamy je dopiero teraz.
+    if (g.sent.length === sentPrzed) await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("60c-a: hangar w pamięci NIE jest „świeższy” niż lądowanie fali (stary DOM nie zasłania powrotu)",
+      (h60c.total || 0) >= 25000000 || (h60c.at || 0) < Date.now() - 5e3, JSON.stringify({ total: h60c.total, wiek_s: Math.round((Date.now() - (h60c.at || 0)) / 1000) }));
+    check("60c-b: bot poszedł SPRAWDZIĆ hangar w tle (fetch), mimo że stoi na /fleet", (g.fetches || []).some(u => /^\/fleet\?planet=/.test(u)), JSON.stringify((g.fetches || []).slice(-4)));
+    check("60c-c: fala, która wylądowała po renderze strony, DOSTAJE własny ratunek — bez przeładowania", g.sent.length > sentPrzed, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, Object.values(x.ships || {}).reduce((a, b) => a + b, 0)])));
+    const drugi60c = g.sent[g.sent.length - 1];
+    check("60c-d: …i zabiera realną flotę, nie samą rezerwę", g.sent.length > sentPrzed && (drugi60c.ships.BATTLESHIP || 0) === 25000000, JSON.stringify(drugi60c && drugi60c.ships));
+    check("60c-e: log mówi wprost o DRUGIM locie ratunkowym", log60c.some(m => /wysyłam DRUGI lot ratunkowy/.test(m)), log60c.filter(m => /rezerw|DRUGI|wylądowała/.test(m)).slice(0, 4).join(" | "));
+  }
+
+  console.log("\n── 60d. POD OSTRZAŁEM NIE UFAJ PAMIĘCI: fala, o której rejestr NIE WIE, i tak dostaje ratunek (v3.111.0) ──");
+  {
+    // Rejestr powrotów potrafi zgubić falę (HANDOFF 20e). Tu: pierwszy ratunek w powietrzu, hangar
+    // w pamięci = sama rezerwa sprzed 70 s, rejestr PUSTY, a w grze na księżycu stoi 25 mln.
+    // Bot ma sam sprawdzić hangar (fetch), zobaczyć flotę i wysłać drugi lot — bez przeładowania.
+    const cfg = { autoRescue: true, expo: { enabled: false }, recon: false, bonus: { enabled: false },
+      aster: { enabled: false }, debris: { enabled: false }, human: { breaks: false, economyAtNight: true } };
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const g = new Game({ threats: [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 1800 }],
+      hangars: { "1:100:5|moon": { DEATH_STAR: 43 } }, active: { key: "1:100:5", body: "moon" } });
+    g.moonLinks = true;
+    await run(g, { cfg, loads: 4, ticksPerLoad: 2 });
+    {
+      const st = JSON.parse(g.store.get(K) || "{}");
+      st.flights = [{ kind: "air", fs: false, excludeTypes: null, capTypes: { DEATH_STAR: 1 },
+        fromKey: "1:100:5", fromBody: "moon", toKey: "1:100:9", toBody: "moon", id: "test-air-60d",
+        sentAt: Date.now() - 3 * 60e3, flightMs: 60 * 60e3, recallAt: Date.now() + 45 * 60e3, phase: "launched", tries: 0, sentTotal: 25_000_000, leftHome: 43 }];
+      st.hangars["1:100:5|moon"] = { total: 43, at: Date.now() - 70e3, ships: [{ type: "DEATH_STAR", qty: 43 }] };
+      st.expected = [];                                                    // rejestr NIC nie wie o fali
+      g.store.set(K, JSON.stringify(st));
+    }
+    g.hangars["1:100:5|moon"] = { BATTLESHIP: 25000000, DEATH_STAR: 43 };   // …a w grze fala STOI
+    g.page = "home"; g.query = "";
+    g.store.set("genesis.ogamex.net:ogx3_input_at", JSON.stringify(Date.now()));   // operator właśnie klika — odczyt przy alarmie i tak idzie
+    const inst = load(g, { cfg });
+    const sentPrzed = g.sent.length;
+    const misja60d = () => (g.store.get("genesis.ogamex.net:ogx3_mission") || "null") !== "null";
+    for (let i = 0; i < 6 && g.sent.length === sentPrzed && !misja60d(); i++) {   // jak w 60c: do zaplanowania misji
+      try { await inst.tick(1); } catch (e) { console.log("!! TICK RZUCIŁ:", e && e.message); }
+      await new Promise(r => setTimeout(r, Number(process.env.OGX_SETTLE_MS || 140)));
+    }
+    await new Promise(r => setTimeout(r, 900));
+    const log60d = rawLog(g);
+    if (g.sent.length === sentPrzed) await run(g, { cfg, loads: 8, ticksPerLoad: 2 });   // jak w 60c: wysyłka po „przeładowaniu"
+    check("60d-a: bot sprawdził hangar w tle mimo klikającego operatora (pod ostrzałem nie ufa pamięci)", log60d.some(m => /pod ostrzałem nie ufam pamięci/.test(m)) && (g.fetches || []).some(u => /^\/fleet\?planet=/.test(u)), log60d.filter(m => /OBRONA/.test(m)).slice(0, 3).join(" | "));
+    check("60d-b: fala, o której rejestr NIE wiedział, dostaje własny ratunek", g.sent.length > sentPrzed, JSON.stringify(g.sent.map(x => [x.from, x.fromBody, Object.values(x.ships || {}).reduce((a, b) => a + b, 0)])));
+    const d = g.sent[g.sent.length - 1];
+    check("60d-c: …i zabiera realną flotę, nie rezerwę", g.sent.length > sentPrzed && (d.ships.BATTLESHIP || 0) === 25000000, JSON.stringify(d && d.ships));
+  }
+
   console.log("\n── 61. PRĘDKOŚĆ UCIECZKI 3%: fork ją ma i bot ma w nią trafić (zrzut z gry 11.09) ──");
   {
     // Właściciel 11.09: ucieczka przed DESTROY ma iść „możliwie najmniejszą prędkością,

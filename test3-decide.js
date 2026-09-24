@@ -834,6 +834,18 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   check("lot minerów nie trafia do flights (nie blokuje obrony)", /m\.kind !== "expedition" && m\.kind !== "asteroid"/.test(src));
   check("misja ASTEROID_MINING wybierana jawnie na kroku 3", /"ASTEROID_MINING", "ASTEROID"/.test(src));
 
+  // v3.113.0: bramka noteHangar (v3.111.0) — stara strona nie cofa świeższego odczytu, ALE
+  // wyliczenie po wysyłce (estFrom = start lotu) ustępuje stronie wyrenderowanej po starcie.
+  {
+    const nh = new Function("snap", bodyOf("noteHangar(snap) {"));
+    const run = (cur, snap) => { let st = { hangars: cur ? { "1:1:1|moon": cur } : {} }; nh.call({ load: () => st, save: (x) => { st = x; } }, { key: "1:1:1", body: "moon", ...snap }); return st.hangars["1:1:1|moon"]; };
+    check("nh1: strona starsza niż cichy odczyt NIE nadpisuje hangaru", run({ total: 900, at: 2000 }, { total: 5, at: 1000 }).total === 900);
+    check("nh2: strona świeższa nadpisuje", run({ total: 900, at: 2000 }, { total: 5, at: 3000 }).total === 5);
+    check("nh3: wyliczenie po wysyłce (estFrom 1500) ustępuje stronie sukcesu z 1800", run({ total: 0, at: 2000, estFrom: 1500 }, { total: 1584, at: 1800 }).total === 1584);
+    check("nh4: …ale nie stronie sprzed startu lotu (1400)", run({ total: 0, at: 2000, estFrom: 1500 }, { total: 99999, at: 1400 }).total === 0);
+    check("nh5: (źródło) emptySourceHangar oznacza zapis jako wyliczenie (estFrom)", /s\.hangars\[hk\] = \{ total, ships: left, at: Date\.now\(\), estFrom: lot \? \(lot\.sentAt \|\| 0\) : 0 \};/.test(src));
+    check("nh6: (źródło) rekonesans na starej /fleet nie wraca w kółko do martwego odczytu", /if \(page\(\) === "fleet"\) \{ Hangar\.scan\(\); const h2 = [^\n]*if \(h2 && !stale2\(h2\)\) return false; \}/.test(src));
+  }
   // v3.107.0 (Athena 23.09: pierwszy lot zabrał wszystkie 15 mld minerów, bo bot nie
   // złapał pojemności ładowni i nie było pola, żeby go zatrzymać). Sufit `maxMiners`
   // z panelu musi działać W OBU gałęziach `size` — także tej „brak danych”.
@@ -1361,7 +1373,7 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
     (src.match(/this\.restoreOrShout\(restore, restoreKey, restoreBody\)/g) || []).length === 2 && /\/fleet\?planet=\$\{uuid\}/.test(src));
   check("scanRemote NIE czyta, gdy nie umie przywrócić wyboru operatora", /if \(!ma\) return null;/.test(src));
   check("recon_bg czeka, gdy operator gra", /if \(!Human\.playing\(\)\) \{\s*\n\s*const bg = Store\.get\("recon_bg"/.test(src));
-  check("cichy rekonesans po lądowaniu czeka, gdy operator gra", /if \(Human\.playing\(\)\) continue;/.test(src));
+  check("cichy rekonesans po lądowaniu czeka, gdy operator gra (ale NIE przy alarmie — v3.111.0)", /if \(Human\.playing\(\) && !a\.alarm\) continue;/.test(src));
 }
 
 // ── v3.48.0: fale ekspedycji nie wyrywają operatorowi planety ──
@@ -1449,7 +1461,7 @@ console.log("\n── R5. fala ląduje PO uderzeniu → bez zmiany decyzji (bezp
     expected: [{ kind: "expedition", fromKey: "3:272:7", fromBody: "moon", total: 2_000_000, sentAt: NOW - 10 * 60e3, flightMs: 980e3, holdMs: 40 * 60e3, returnAt: NOW + 30 * 60e3 }],
   });
   const { actions } = decide(s, CFG, NOW);
-  check("fala lądująca po ataku nie wymusza rekonesansu", !actions.some(a => a.kind === "recon"), JSON.stringify(actions));
+  check("fala lądująca po ataku nie wymusza rekonesansu (strażnik v3.111.0 to osobna warstwa)", !actions.some(a => a.kind === "recon" && !a.guard), JSON.stringify(actions));
   check("hold zostaje (flota na planecie = bezpieczna strona)", actions.some(a => a.kind === "hold"), JSON.stringify(actions));
 }
 
@@ -1595,6 +1607,45 @@ console.log("\n── 42. KSIĘŻYC ZNISZCZONY, brak sąsiada w układzie → NA
   const { actions } = decide(s, CFG, NOW);
   const a = actions[0];
   check("wybrał BLIŻSZE refugium [3:280:2] (ta sama galaktyka), nie [9:900:1] mimo kolejności zapisu", a && a.kind === "fly" && a.toKey === "3:280:2" && a.toBody === "planet", JSON.stringify(a));
+}
+
+console.log("\n── 42b. GOŁA PLANETA: ewakuacja PER FALA — trwający lot ewakuacyjny nie blokuje następnej (v3.111.0, owner 23.09) ──");
+{
+  // Po utracie księżyca fale ekspedycji lądują na planecie (falanga). Do 3.110 warunek `!f`
+  // („z pary nic nie leci") przepuszczał tylko PIERWSZĄ ewakuację; kolejne fale stały widoczne,
+  // aż tamten lot się domknie (do 30 min). Na Athenie 14 fal w 6 minut.
+  const mk = (over) => base(Object.assign({
+    pairs: {
+      "3:272:7": { hasMoon: false, galaxy: 3, system: 272, position: 7 },
+      "3:272:2": { hasMoon: true, galaxy: 3, system: 272, position: 2 },
+      "5:100:4": { hasMoon: false, galaxy: 5, system: 100, position: 4 },
+    },
+    hangars: { "3:272:7|planet": { total: 2_812_000, at: NOW - 30e3, ships: [{ type: "BATTLESHIP", qty: 2_812_000 }] } },
+    moonLost: { "3:272:7": NOW - 5 * 60e3 },
+    active: { key: "3:272:7", body: "planet" },
+  }, over));
+  // ewakuacja #1 leci od 3 min, hangar planety odczytany 30 s temu (PO wysyłce) i znów pełny = nowa fala
+  const r1 = decide(mk({ flights: [{ kind: "home", evac: true, fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 3 * 60e3, flightMs: 10 * 60e3, recallAt: 0, phase: "launched", tries: 0 }] }), CFG, NOW);
+  check("42b-a: nowa fala na gołej planecie przy TRWAJĄCEJ ewakuacji dostaje własny lot", r1.actions.some(a => a.kind === "fly" && a.evac && a.fromKey === "3:272:7" && a.toKey === "3:272:2"), JSON.stringify(r1.actions.map(a => [a.kind, a.fromKey, a.toKey, a.why]).slice(0, 3)));
+  // …ale NIE, gdy hangar planety jest sprzed wysyłki ewakuacji (to ta sama flota, którą już wysłano)
+  const r2 = decide(mk({ hangars: { "3:272:7|planet": { total: 2_812_000, at: NOW - 4 * 60e3, ships: [{ type: "BATTLESHIP", qty: 2_812_000 }] } },
+    flights: [{ kind: "home", evac: true, fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 3 * 60e3, flightMs: 10 * 60e3, recallAt: 0, phase: "launched", tries: 0 }] }), CFG, NOW);
+  check("42b-b: hangar sprzed wysyłki ewakuacji = ta sama flota, bez drugiego lotu", !r2.actions.some(a => a.kind === "fly"), JSON.stringify(r2.actions.map(a => [a.kind, a.why]).slice(0, 3)));
+  // …i NIE, gdy z pary leci coś innego niż ewakuacja (ratunek pod ostrzałem / FS) — jak dotąd
+  const r3 = decide(mk({ flights: [{ kind: "air", fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:2", toBody: "moon",
+    sentAt: NOW - 3 * 60e3, flightMs: 10 * 60e3, recallAt: NOW + 20 * 60e3, phase: "launched", tries: 0 }] }), CFG, NOW);
+  check("42b-c: inny lot z pary (ucieczka z zawrotem) blokuje ewakuację jak dotąd", !r3.actions.some(a => a.kind === "fly" && a.evac), JSON.stringify(r3.actions.map(a => [a.kind, a.why]).slice(0, 3)));
+  check("42b-d: (źródło) wpis lotu niesie `evac`, żeby decide umiała odróżnić ewakuację od ratunku", (src.match(/evac: !!m\.evac/g) || []).length === 2);
+  // v3.113.0: resztka, którą poprzednia ewakuacja zostawiła (fork nie zabrał 7 szt.), nie odpala lotu za lotem
+  const r4 = decide(mk({ hangars: { "3:272:7|planet": { total: 7, at: NOW - 30e3, ships: [{ type: "BATTLESHIP", qty: 7 }] } },
+    flights: [{ kind: "home", evac: true, fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:2", toBody: "moon", leftHome: 7,
+    sentAt: NOW - 3 * 60e3, flightMs: 10 * 60e3, recallAt: 0, phase: "launched", tries: 0 }] }), CFG, NOW);
+  check("42b-e: resztka zostawiona przez ewakuację (7 szt. = leftHome) nie odpala kolejnego lotu", !r4.actions.some(a => a.kind === "fly" && a.evac), JSON.stringify(r4.actions.map(a => [a.kind, a.why]).slice(0, 3)));
+  const r5 = decide(mk({ flights: [{ kind: "home", evac: true, fromKey: "3:272:7", fromBody: "planet", toKey: "3:272:2", toBody: "moon", leftHome: 7,
+    sentAt: NOW - 3 * 60e3, flightMs: 10 * 60e3, recallAt: 0, phase: "launched", tries: 0 }] }), CFG, NOW);
+  check("42b-f: …ale nowa fala ponad tę resztkę (2,8 mln) dostaje lot", r5.actions.some(a => a.kind === "fly" && a.evac), JSON.stringify(r5.actions.map(a => [a.kind, a.why]).slice(0, 3)));
 }
 
 console.log("\n── 43. Para BEZ KSIĘŻYCA OD ZAWSZE (nigdy go nie miała) → BEZ automatycznej ewakuacji — moonLost pilnuje TYLKO świeżej utraty ──");
@@ -3099,6 +3150,30 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
     /wysyłam DRUGI lot ratunkowy/.test(realnaFala), realnaFala.slice(0, 200));
   check("73d: …i wtedy nie ma mowy o zostawianiu rezerwy", !/TYLKO rezerwa spowalniająca/.test(realnaFala), realnaFala.slice(0, 200));
 
+  // v3.111.0 (atak 23.09 12:35–12:41, Athena) — WARSTWA BEZ ZAŁOŻEŃ: pod potwierdzonym atakiem
+  // hangar atakowanego ciała starszy niż 45 s dostaje cichy odczyt, choćby rejestr powrotów
+  // NIC nie wiedział o fali (rejestr gubi fale — HANDOFF 20e; stempel kłamał — 23.09).
+  {
+    const stary = zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]);
+    stary.hangars["3:272:7|moon"].at = NOW - 70e3; stary.expected = [];
+    const rS = decide(stary, CFG, NOW);
+    check("73m: pod atakiem hangar sprzed 70 s → cichy odczyt w tle, choć rejestr nie zna żadnej fali",
+      rS.actions.some(a => a.kind === "recon" && a.quiet && a.alarm && a.guard && a.key === "3:272:7" && a.body === "moon"),
+      JSON.stringify(rS.actions.map(a => [a.kind, a.quiet, a.alarm, a.guard, a.body])).slice(0, 250));
+    check("73m1: …a sam odczyt NIE wysyła rezerwy (żadnego lotu w tym przebiegu)", !rS.actions.some(a => a.kind === "fly"), JSON.stringify(rS.actions.map(a => a.kind)));
+    const swiezy = zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]);
+    swiezy.hangars["3:272:7|moon"].at = NOW - 10e3; swiezy.expected = [];
+    check("73m2: hangar sprzed 10 s → bez dodatkowego odczytu (nie spamujemy fetchem)", !decide(swiezy, CFG, NOW).actions.some(a => a.guard), "");
+    const bezAtaku = zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]);
+    bezAtaku.hangars["3:272:7|moon"].at = NOW - 70e3; bezAtaku.threats = []; bezAtaku.expected = [];
+    check("73m3: bez ataku warstwa nie działa (zwykły rekonesans rządzi się swoimi regułami)", !decide(bezAtaku, CFG, NOW).actions.some(a => a.guard), "");
+    const daleki = zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]);
+    daleki.hangars["3:272:7|moon"].at = NOW - 70e3; daleki.expected = [];
+    for (const t of daleki.threats) t.arriveAt = NOW + 2 * 3600e3;
+    check("73m6: uderzenie za 2 h → strażnik jeszcze nie odpytuje co 20 s (v3.113.0, okno 30 min)", !decide(daleki, CFG, NOW).actions.some(a => a.guard), "");
+    check("73m4: (źródło) cichy odczyt PRZY ALARMIE nie czeka na operatora", /if \(Human\.playing\(\) && !a\.alarm\) continue;/.test(src));
+    check("73m5: (źródło) dławik cichego odczytu przy alarmie = 20 s (jeden przebieg), nie 60", /a\.alarm \? 20e3 : 5 \* 60e3/.test(src));
+  }
   const akcje = decide(zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]), CFG, NOW).actions;
   check("73e: zawrót lotu, który JUŻ leci, jest dalej przesuwany za uderzenie (flota nie wraca pod ostrzał)",
     akcje.some(a => a.kind === "extend"), JSON.stringify(akcje));
@@ -3114,7 +3189,7 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
     && /const tylkoRezerwa = !swiezoWyladowalo &&/.test(src));
   check("73i: (źródło) przy alarmie bot dopytuje o hangar, zamiast ufać starej migawce",
     /kind: "recon", key: k, body: hitRef\.body, quiet: true, alarm: true/.test(src)
-    && /a\.alarm \? 60e3 : 5 \* 60e3/.test(src));
+    && /a\.alarm \? 20e3 : 5 \* 60e3/.test(src));   // v3.111.0: 20 s
 }
 
 console.log("");

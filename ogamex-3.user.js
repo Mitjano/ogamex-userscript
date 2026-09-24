@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.112.0
+// @version      3.113.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.112.0";
+  const VERSION = "3.113.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -323,6 +323,8 @@
     barFromList: false,
     // ── LIMITY TEMPA (bezpieczeństwo konta) ──
     maxNavPerHour: 240,     // sufit nawigacji/h dla EKONOMII (obrona nigdy nie liczona)
+    attackHangarMaxAgeMs: 45e3,   // v3.111.0: pod atakiem hangar atakowanego ciała nie może być starszy (cichy odczyt)
+    attackGuardWindowMs: 30 * 60e3,   // v3.113.0: …ale tylko, gdy uderzenie jest bliżej niż 30 min
     quietHours: { enabled: true, startHour: 23, endHour: 5 },   // cisza ekonomii, niezależna od FS
     // v3.25.0: Athena NIE MIAŁA cyklicznego rekonesansu — FleetRecon.scan() odpalał
     // się wyłącznie wtedy, gdy bot i tak był na stronie floty (przy wysyłce, ratunku,
@@ -1041,7 +1043,18 @@
       const fm = txt.match(/Fleets:\s*(\d+)\s*\/\s*(\d+)/);
       const em = txt.match(/Expeditions?:\s*(\d+)\s*\/\s*(\d+)/);
       if (fm || em) { const s0 = Situation.load(); s0.slots = { fleet: fm ? { used: +fm[1], total: +fm[2] } : (s0.slots?.fleet || null), expo: em ? { used: +em[1], total: +em[2] } : (s0.slots?.expo || null), at: Date.now() }; Situation.save(s0); }
-      const snap = { key: a.key, body: a.body, total, ships, at: Date.now(), slots: fm ? { used: +fm[1], total: +fm[2] } : null };
+      // v3.111.0 (ATAK 23.09 12:35–12:41, Athena, strata ~3,1 bln) — CO SIĘ PSUŁO: po ratunku #2
+      // (12:37:03) bot stał na /fleet?fleetSendSuccessfully bez przeładowania, a ten skan
+      // jest wołany W KAŻDYM przebiegu (defenceTick: `if (page()==="fleet") Hangar.scan()`)
+      // i stemplował migawkę hangaru chwilą PARSOWANIA — z DOM-u wyrenderowanego o 12:37:03,
+      // gdy w hangarze stały 1584 GŚ rezerwy. Fale ekspedycji lądowały 12:38:46, 12:40:09,
+      // 12:40:52 — a `landedSince(k, body, h.at)` porównywał lądowanie ze stemplem sprzed
+      // 20 s: „nic nie wylądowało po odczycie" → brak cichego odczytu, `tylkoRezerwa`
+      // gasiło `drugiLot`, zero ratunków. Uderzenie 12:41:25 zastało ~18 mld statków.
+      // Ta sama choroba, którą pasek misji przeszedł w v3.68.9: stempel = wiek RENDERU
+      // strony (PAGE_AT), nie chwila odczytu. Świeższy odczyt (fetch w tle, zapis po
+      // wysyłce) ma pierwszeństwo — patrz `noteHangar`.
+      const snap = { key: a.key, body: a.body, total, ships, at: PAGE_AT, readAt: Date.now(), slots: fm ? { used: +fm[1], total: +fm[2] } : null };
       Situation.noteHangar(snap);
       return snap;
     },
@@ -1076,7 +1089,18 @@
   const Situation = {
     load() { return Store.get("situation", null) || { pairs: {}, hangars: {}, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: 0 }; },
     save(s) { s.updatedAt = Date.now(); Store.set("situation", s); return s; },
-    noteHangar(snap) { const s = this.load(); s.hangars[`${snap.key}|${snap.body}`] = { total: snap.total, ships: snap.ships, at: snap.at }; this.save(s); },
+    // v3.111.0: migawka ze strony (wiek = PAGE_AT) nie może cofnąć ŚWIEŻSZEGO odczytu —
+    // cichego fetcha (`scanRemote`, at = chwila pobrania) ani zapisu po wysyłce
+    // (`emptySourceHangar`). Bez tej bramki każdy przebieg na /fleet przywracałby stary DOM.
+    noteHangar(snap) {
+      const s = this.load(); const hk = `${snap.key}|${snap.body}`; const cur = s.hangars[hk];
+      // v3.113.0: wyjątek — WYLICZENIE po wysyłce (`emptySourceHangar`, pole `estFrom` = start
+      // lotu) ustępuje stronie wyrenderowanej PO starcie lotu. Strona sukcesu wysyłki to
+      // prawdziwy hangar po wysyłce (także fala, która wylądowała w tej sekundzie); do 3.111
+      // poprawiała wyliczenie przy następnym przebiegu i bramka nie może tego zabrać.
+      if (cur && (cur.at || 0) > (snap.at || 0) && !(cur.estFrom && (snap.at || 0) > cur.estFrom)) return;
+      s.hangars[hk] = { total: snap.total, ships: snap.ships, at: snap.at }; this.save(s);
+    },
     // Zbiera odczyty z DOM + AJAX i buduje nową sytuację (bez decyzji).
     async refresh() {
       const s = this.load();
@@ -1701,6 +1725,9 @@
   //         { kind:"hold", key, why }
   function decide(s, cfg, now) {
     const actions = [], alerts = [];
+    // v3.111.0: odczyty-strażnicy (pod ostrzałem nie ufaj pamięci) idą na KONIEC listy akcji —
+    // nie zmieniają kolejności ratunku ani `actions[0]`, na których polega macierz bojowa.
+    const guardRecon = [];
     const pairs = s.pairs || {};
     // v3.79.0 (właściciel 11.09: „mam Gwiazdę Śmierci, ale w małej ilości; jak uciekamy przed
     // obcą flotą, bot zawsze może wziąć JEDNĄ sztukę GS — wtedy flota leci wolno. Mam 30 GS na
@@ -1864,6 +1891,28 @@
         return true;
       };
       const hangarNiepewny = bodiesReal.some(b => !hangarPewny(b));
+      // v3.111.0 — WARSTWA BEZ ZAŁOŻEŃ (atak 23.09 12:35–12:41, Athena). Ścieżka „fala
+      // wylądowała → rejestr powrotów o tym wie → stempel hangaru jest starszy → cichy
+      // odczyt → ratunek" ma trzy ogniwa i każde już raz zawiodło (rejestr gubi fale —
+      // HANDOFF 20e; stempel — dziś). Pod POTWIERDZONYM atakiem bot nie ufa pamięci:
+      // hangar każdego ciała pod uderzeniem starszy niż `attackHangarMaxAgeMs` (45 s)
+      // dostaje cichy odczyt w tle, niezależnie od tego, co twierdzi rejestr. Sam odczyt
+      // niczego nie wysyła — ale gdy pokaże flotę ponad rezerwą, zwykła ścieżka `drugiLot`
+      // dostaje prawdę zamiast migawki. Koszt: jeden fetch na ≤45 s przez kilka minut.
+      // Nie rusza `hangarPewny` (to zmieniałoby decyzje o locie) — tylko dokłada odczyt.
+      // v3.113.0: tylko przy uderzeniu bliżej niż `attackGuardWindowMs` (30 min) — atak wykryty
+      // 2 h wcześniej nie może oznaczać fetcha co 20 s przez dwie godziny; fala, która wyląduje
+      // wcześniej, i tak zostanie odczytana, gdy uderzenie wejdzie w okno.
+      if (th.some(t => t.attack && t.arriveAt > now && t.arriveAt - now <= (cfg.attackGuardWindowMs || 30 * 60e3))) {
+        const maxAge = cfg.attackHangarMaxAgeMs || 45e3;
+        for (const b of bodiesReal) {
+          const h = (s.hangars || {})[`${k}|${b}`];
+          if (!h || !h.at) continue;                       // ciało nigdy nie czytane = zwykle nigdy nic nie miało (zasada z hangarPewny)
+          const wiek = now - h.at;
+          if (wiek > maxAge) guardRecon.push({ kind: "recon", key: k, body: b, quiet: true, alarm: true, guard: true,
+            why: `ATAK na [${k}] — hangar ${b === "moon" ? "księżyca" : "planety"} sprzed ${Math.round(wiek / 1000)} s, sprawdzam w tle (pod ostrzałem nie ufam pamięci)` });
+        }
+      }
       if (!th.length) {
         // cisza: lot ucieczki z tej pary → zawrót po recallAt; brak zagrożeń i flota na planecie z księżycem → wróć na księżyc
         // v3.10.2: do ZAWROTU bierzemy lot niezaleznie od `flightStale` — porzucenie
@@ -1991,7 +2040,19 @@
         // Domyślny typ misji (Deploy/„stacjonuj") i domyślne branie surowców (nie
         // ustawiamy takeResources:false) — najtańsza fizycznie opcja, z deuterem na
         // pokładzie na wypadek kolejnego skoku.
-        if (!f && !pairs[k].hasMoon && (s.moonLost || {})[k] && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) {
+        // v3.111.0 (owner 23.09: „obrona floty w każdym przypadku"): ewakuacja z gołej planety
+        // szła TYLKO przy `!f` — „z tej pary nic nie leci". Po utracie księżyca fale ekspedycji
+        // lądują na PLANECIE (widocznej dla falangi) — na Athenie 14 fal w 6 minut — a druga
+        // i kolejne czekały, aż pierwszy lot ewakuacyjny się domknie (lądowanie w refugium,
+        // do 30 min). Ten sam argument co przy „jeden ratunek na parę" (v3.75.0): `s.flights`
+        // jest tablicą. Trwający lot EWAKUACJI nie blokuje następnej, jeśli hangar planety
+        // został odczytany PO jego wysyłce i znów coś tam stoi (nowa fala). Inny lot z pary
+        // (ratunek pod ostrzałem, FS, powrót) blokuje jak dotąd.
+        const lotyPary = (s.flights || []).filter(x => x.fromKey === k && x.phase !== "done" && !flightBlind(x));
+        // v3.113.0: …i tylko wtedy, gdy stoi tam WIĘCEJ niż poprzednia ewakuacja zostawiła
+        // (`leftHome`) — resztka, której fork nie zabrał, nie może odpalać lotu za lotem.
+        const evacWolna = !lotyPary.some(x => !x.evac) && lotyPary.every(x => hp && (hp.at || 0) > (x.sentAt || 0) + 20e3 && (hp.total || 0) > (x.leftHome || 0));
+        if ((!f || evacWolna) && !pairs[k].hasMoon && (s.moonLost || {})[k] && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) {
           const nbLost = neighbourMoon(k);
           const refLost = nbLost ? { key: nbLost, body: "moon" } : anyRefuge(k);
           if (refLost) {
@@ -2593,6 +2654,8 @@
       if (!t.attack || t.arriveAt <= now || known.has(t.dst)) continue;
       alerts.push({ key: t.dst, level: "error", unknownPair: true, msg: `ATAK na [${t.dst}] ${t.dstBody || "?"} za ${Math.round((t.arriveAt - now) / 1000)}s, a tej kolonii NIE MA na pasku planet — reaguj ręcznie` });
     }
+    // v3.111.0: strażnik odczytu tylko tam, gdzie ten sam przebieg nie zamówił już odczytu tego ciała
+    for (const g of guardRecon) if (!actions.some(a => a.kind === "recon" && a.key === g.key && a.body === g.body)) actions.push(g);
     return { actions, alerts };
   }
 
@@ -4243,7 +4306,7 @@
         const sentReal = info.sentReal > 0 ? info.sentReal : sentTotal;
         if (f0) { delete f0.pending; if (sentReal) f0.sentTotal = sentReal; if (m.flightMs) { f0.flightMs = m.flightMs; f0.recallAt = this.recallOf({ ...m, flightMs: m.flightMs }); } }
         else if (!(s.flights || []).some(f => f.fromKey === m.fromKey && (f.sentAt || 0) >= (m.startedAt || 0))) {
-          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, sentTotal: sentReal, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
+          s.flights = [...(s.flights || []), { kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, evac: !!m.evac, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, sentTotal: sentReal, recallAt: this.recallOf(m), phase: "launched", tries: 0 }];
         }
       }
       // rejestr powrotów (v3.52.0): wpis przestaje być `pending`, powrót raz do logu
@@ -5094,7 +5157,7 @@
         // Kasowanie śladu po flocie, która jest w powietrzu, nie może być CICHE — to jest
         // dokładnie ten moment, w którym bot traci zdolność zawrócenia tamtego lotu.
         for (const f of zdjete) Journal.add("BŁĄD", `Nadpisuję wpis lotu [${f.fromKey}] ${f.fromBody} → [${f.toKey}] (${f.kind}/${f.phase}) nowym lotem z tego samego ciała — zawrotu tamtej floty bot już NIE kliknie. Sprowadź ją ręcznie.`);
-        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
+        sPre.flights.push({ kind: m.air ? "air" : (m.home ? "home" : "swap"), fs: !!m.fs, evac: !!m.evac, excludeTypes: m.excludeTypes || null, capTypes: m.capTypes || null, fromKey: m.fromKey, fromBody: m.fromBody, toKey: m.toKey, toBody: m.toBody, id: Fly.newId(), sentAt: Date.now(), flightMs: m.flightMs || 0, recallAt: this.recallOf(m), phase: "launched", tries: 0, pending: true });
         Situation.save(sPre);
       }
       // v3.62.0: skład floty w stemplu — po przeładowaniu to jedyne źródło dla logu „fala wysłana"
@@ -5480,11 +5543,11 @@
         if (!Once.said("recon_manual", 5 * 60e3)) log("[REKONESANS] grasz — nie przełączam Ci planety. Wrócę, gdy przestaniesz klikać (najdalej za 5 min).", "info");
         return false;
       }
+      const stale2 = (h) => now - h.at > ((h.total > 0) ? CFG.reconMs : (CFG.reconEmptyMs || CFG.reconMs));
       const stale = (k, b) => {
         const h = s.hangars[`${k}|${b}`];
         if (!h) return true;                                        // nigdy nie widziane
-        const ttl = (h.total > 0) ? CFG.reconMs : (CFG.reconEmptyMs || CFG.reconMs);
-        return now - h.at > ttl;
+        return stale2(h);
       };
       // v3.23.0 (zgłoszenie 29.08 12:08: „ciągle przeskakuje na inne planety w zakładce
       // flota"): ta gałąź odświeżała hangar ciała, na którym AKURAT JESTEŚ — więc gdy
@@ -5495,7 +5558,10 @@
       const allowed = new Set(this.bodiesOf(s).map(([k, b]) => `${k}|${b}`));
       const a = s.active;
       if (a && stale(a.key, a.body)) {
-        if (page() === "fleet") { Hangar.scan(); return false; }                // już jesteśmy — darmowy odczyt
+        // v3.113.0: migawka strony ma wiek RENDERU (v3.111.0), więc strona starsza niż TTL
+        // odczytu zostawia hangar „starym" — bez tego warunku bot wracał tu co przebieg
+        // i blokował rekonesans reszty, póki operator siedział na /fleet. Stara strona = cichy odczyt niżej.
+        if (page() === "fleet") { Hangar.scan(); const h2 = (Situation.load().hangars || {})[`${a.key}|${a.body}`]; if (h2 && !stale2(h2)) return false; }
         // Wyjątek na rozruch: gdy nie ma jeszcze CZEGO pilnować (nic nie przypięte
         // i żadnego hangaru z flotą), bot musi raz odczytać ciało, na którym stoisz —
         // inaczej nigdy nie dowie się, gdzie jest flota, i obrona zostaje ślepa.
@@ -5505,6 +5571,7 @@
           // strony, na której siedzi operator.
           const quiet = await Hangar.scanRemote(a.key, a.body);
           if (quiet) { log(`[REKONESANS] hangar ${a.body} [${a.key}] odczytany w tle (${quiet.total.toLocaleString("pl-PL")} szt.) — bez przełączania strony.`, "info"); return false; }
+          if (page() === "fleet") return false;   // v3.113.0: stoisz na /fleet — nie przeładowuję Ci jej, gdy cichy odczyt nie wyszedł (jak do 3.112)
           log(`[REKONESANS] sprawdzam hangar ${a.body} [${a.key}] — bez tego nie wiem, gdzie stoi flota.`, "info");
           const [g, sy, po] = a.key.split(":");
           Nav.go(`/fleet?x=${g}&y=${sy}&z=${po}`, `rekonesans hangaru ${a.body} [${a.key}]`);
@@ -5577,7 +5644,7 @@
         return null;
       }).filter(Boolean) : [];
       const total = left.reduce((x, sh) => x + (sh.qty || 0), 0);
-      s.hangars[hk] = { total, ships: left, at: Date.now() };
+      s.hangars[hk] = { total, ships: left, at: Date.now(), estFrom: lot ? (lot.sentAt || 0) : 0 };   // v3.113.0: to wyliczenie, nie odczyt — patrz noteHangar
       // v3.68.8 (audyt 04.09, obrona-stan-lotu#2 P0): ile statków zostało w domu CELOWO.
       // Bez tego pola pierwszy odczyt hangaru źródła po Fleet Save („20 983 recyklery")
       // wyglądał jak POWRÓT floty i domykał wpis lotu — razem z jedyną drogą do zawrotu.
@@ -5826,11 +5893,11 @@
           if (a.quiet) {
             // v3.47.0: gdy operator gra, nawet cichy odczyt czeka (fetch `?planet=`
             // przestawia sesję po stronie serwera — Error „Planet change" 31.08 10:12).
-            if (Human.playing()) continue;
+            // v3.111.0: przy ALARMIE odczyt NIE czeka na operatora (obrona nie podlega bramce „grasz").
+            if (Human.playing() && !a.alarm) continue;
             const bq = a.body || "planet";
-            // v3.91.0: przy trwającym ALARMIE dławik 5 min jest za wolny — fale z ekspedycji
-            // wracają co 1–2 minuty, a każda taka fala to miliony statków pod uderzeniem.
-            if (!Once.said(`qrecon|${a.key}|${bq}`, a.alarm ? 60e3 : 5 * 60e3)) {
+            // v3.91.0: przy ALARMIE dławik 5 min za wolny; v3.111.0: 20 s (fale co 20–40 s).
+            if (!Once.said(`qrecon|${a.key}|${bq}`, a.alarm ? 20e3 : 5 * 60e3)) {
               const got = await Hangar.scanRemote(a.key, bq);
               log(`[OBRONA] ${a.why} — ${got ? `odczytany w tle (${got.total.toLocaleString("pl-PL")} szt.), bez przełączania planety` : "cichy odczyt nie wyszedł, poczekam na naturalny odczyt hangaru"}.`, "info");
             }
