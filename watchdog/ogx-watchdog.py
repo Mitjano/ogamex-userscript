@@ -78,7 +78,11 @@ state = {"last_hb": 0.0, "hb_count": 0, "restarts": [], "started": time.time(),
          # per-uni: ostatni puls i licznik nieudanych ożywień (uni, które nie
          # wstaje po 3 restartach, najpewniej ZAMKNĄŁ owner — przestajemy je
          # pilnować, wraca pod ochronę przy pierwszym pulsie)
-         "unis": {}, "uni_strikes": {}}
+         # last_restart: puls tuż po NASZYM restarcie nie kasuje strikes — inaczej
+         # pętla (24.09: zamrożona karta genesis → restart → puls → strike skasowany →
+         # znów zamrożona → restart, co ~25 min przez cały wieczór; karta wracała,
+         # bo restart sam ją otwierał z listy unis)
+         "unis": {}, "uni_strikes": {}, "last_restart": 0.0}
 lock = threading.Lock()
 
 
@@ -203,7 +207,10 @@ class HB(http.server.BaseHTTPRequestHandler):
                 state["hb_count"] += 1
                 if uni:
                     state["unis"][uni] = now
-                    state["uni_strikes"].pop(uni, None)
+                    # strike kasuje dopiero puls, którego NIE wywołał nasz restart
+                    # (karta żyje > 20 min od restartu = naprawdę wstała)
+                    if now - state["last_restart"] > 1200:
+                        state["uni_strikes"].pop(uni, None)
                 if app:
                     state["browser"] = app
                     state["seen_browsers"][app] = now
@@ -302,6 +309,7 @@ def monitor():
                      "Wraca pod ochronę przy pierwszym pulsie (otwórz grę).", "high")
                 continue
             state["restarts"].append(now)
+            state["last_restart"] = now
             state["last_hb"] = max(state["last_hb"], now + 300)  # 5 min łaski na wstanie przeglądarki
             for u in state["unis"]:
                 state["unis"][u] = max(state["unis"][u], now + 300)
