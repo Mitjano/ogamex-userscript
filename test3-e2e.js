@@ -68,6 +68,10 @@ class Game {
     this.shipsNotFound = 0;            // ile razy gra odpowie na Next kroku 1 oknem „Error — Ships not found."
     this.dialogClosed = 0;
     this.bonus = false;       // zielony „Online bonus" w menu (antymateria + punkty Akademii)
+    // v3.114.0: formularz z PRAWDZIWYMI polami surowców (Athena, kolejność forka metal/kryształ/deuter
+    // potwierdzona w 2.x). { metal, crystal, deut, cap } — ile leży na ciele startu i ładowność floty.
+    // „Wszystkie surowce” wypełnia jak gra: metal, potem kryształ, deuter na końcu, do ładowności.
+    this.res = null;
     this.bonusClaims = 0;
     this.fleetUrlHijack = false;  // /fleet?x=..&y=..&z=.. przestawia AKTYWNA planete (realne zachowanie forka)
     this.errorPage = false;   // gra oddaje strone bledu
@@ -176,11 +180,12 @@ class Game {
       <a class="mission-item DEPLOY">Deploy</a><a class="mission-item EXPEDITION">Expedition</a><a class="mission-item ATTACK">Attack</a>
       <a class="mission-item ASTEROID_MINING">Asteroid mining</a><a class="mission-item COLLECT" data-mission-type="13">Collect</a><a class="mission-item RECYCLE" data-mission-type="8">Recycle</a>
       <a class="btn-all-res">Wszystkie surowce</a>
-      <a class="btn-res-full">max</a><a class="btn-res-full">max</a><div><a class="btn-res-full">max deuter</a><input name="deuterium" value="500000"></div>
+      ${this.res ? `<div class="res-row"><span>Metal</span><a class="btn-res-full">max</a><input name="metal" value="0"></div><div class="res-row"><span>Crystal</span><a class="btn-res-full">max</a><input name="crystal" value="0"></div><div class="res-row"><span>Deuterium</span><a class="btn-res-full">max</a><input name="deuterium" value="0"></div>`
+        : '<a class="btn-res-full">max</a><a class="btn-res-full">max</a><div><a class="btn-res-full">max deuter</a><input name="deuterium" value="500000"></div>'}
       <a class="btn-continue" id="btn-submit-fleet">Send fleet</a>
     </div>`;
   }
-  metalHtml() { return `<div class="resource-item-metal">${this.metal.toLocaleString("de-DE")}</div>`; }
+  metalHtml() { return `<div class="resource-item-metal">${this.metal.toLocaleString("de-DE")}</div>${this.res ? `<div class="resource-item-deuterium">Deuterium ${this.res.deut.toLocaleString("de-DE")}</div>` : ""}`; }
   moonFormHtml() {
     const km = this.formKm || 8944;
     return `<div id="content"><input id="diameter" type="text" value="${km}" />
@@ -436,6 +441,15 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
       w.document.body.innerHTML = game.bodyHtml();
       return;
     }
+    if (cls.includes("btn-all-res") && game.res) {
+      const r = game.res, v = (n) => w.document.querySelector(`input[name='${n}']`);
+      const mm = Math.min(r.metal, r.cap), cc = Math.min(r.crystal, r.cap - mm), dd = Math.min(r.deut, r.cap - mm - cc);
+      if (v("metal")) v("metal").value = String(mm);
+      if (v("crystal")) v("crystal").value = String(cc);
+      if (v("deuterium")) v("deuterium").value = String(dd);
+      game.allResClicks = (game.allResClicks || 0) + 1;
+      return;
+    }
     if (id === "btn-submit-fleet") {
       // v3.68.11: gra ODMAWIA wysyłki (brak wolnego slotu, brak deuteru) — przycisk klika
       // się, ale nic nie leci i nie ma przekierowania na stronę sukcesu (obrona-wykonanie#4).
@@ -446,7 +460,9 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
       const wyslane = game.serverShips ? game.serverShips({ ...game.formShips }) : game.formShips;
       for (const [t, q] of Object.entries(wyslane)) { h[t] = Math.max(0, (h[t] || 0) - q); if (!h[t]) delete h[t]; }
       game.hangars[src] = h;
-      game.sent.push({ from: game.active.key, fromBody: game.active.body, to: game.formTarget, toBody: game.formBody, mission: game.formMission, ships: { ...wyslane }, typed: { ...game.formShips }, inFlight: true });
+      const rv = (n) => parseInt((w.document.querySelector(`input[name='${n}']`)?.value || "0").replace(/[^\d]/g, "")) || 0;
+      const zaladunek = game.res ? { metal: rv("metal"), crystal: rv("crystal"), deut: rv("deuterium") } : null;
+      game.sent.push({ from: game.active.key, fromBody: game.active.body, to: game.formTarget, toBody: game.formBody, mission: game.formMission, ships: { ...wyslane }, typed: { ...game.formShips }, inFlight: true, res: zaladunek });
       game.slots.fleet.used++;
       // v3.99.0: jak fork 16.09 — flota poszła, a karta stoi na kroku 3 ze starym hangarem w DOM.
       // Następne załadowanie strony to już zwykły krok 1 (formularz forka jest renderowany od nowa).
@@ -996,7 +1012,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("(warunek wstępny) w spokoju, bez stempla ratunku, bot nie rusza flotą", g.sent.length === 0, JSON.stringify(g.sent));
     const K = "genesis.ogamex.net:ogx3_situation";
     const st = JSON.parse(g.store.get(K) || "{}");
-    st.rescues = { "1:100:5": Date.now() - 30 * 60e3 };        // pół godziny temu bot stąd uciekał
+    st.rescues = { "1:100:5": { at: Date.now() - 30 * 60e3, ships: null } };        // pół godziny temu bot przerzucił stąd flotę księżyc→planeta
     g.store.set(K, JSON.stringify(st));
     check("(warunek wstępny) bot zna hangar PLANETY cichej pary", ((st.hangars || {})["1:100:5|planet"] || {}).total > 0, JSON.stringify(st.hangars));
     g.threats.push({ src: "9:9:9", dst: "9:300:2", dstBody: "moon", eta: 300 });
@@ -3973,6 +3989,99 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     check("78f: po karencji następna próba kończy się WYSYŁKĄ (odmowa nie zabija trasy)",
       g.sent.some(x => /16$/.test(String(x.to || "")) && x.ships && x.ships.BATTLESHIP === 600),
       `${JSON.stringify(g.sent.map(x => [x.to, x.ships]))} | ${logs.filter(m => /LOT]|EXPO\]/.test(m)).slice(-5).join(" | ")}`);
+  }
+
+  console.log("\n── 79. v3.114.0 — Athena 25.09: transportery z planet NIE lądują na księżycach, ucieczka wiezie deuter ──");
+  {
+    // 08:16 ślepy alarm ewakuował planety z transporterami (1 typ statków, „wszystkie surowce”),
+    // zawroty odstawiły je na planety, a 08:32–12:17 „powrót po ratunku” przewiózł je na księżyce
+    // z metalem i kryształem, bo stempel dostawała KAŻDA ucieczka. Deuter nie zmieścił się w ładowni.
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "1:100:9", name: "Kolonia", moon: true }],
+      hangars: { "1:100:9|planet": { HEAVY_CARGO: 1000 } },
+      active: { key: "1:100:9", body: "planet" },
+    });
+    g.res = { metal: 9_000_000, crystal: 9_000_000, deut: 5_000_000, cap: 10_000_000 };
+    g.store.set(K, JSON.stringify({ pairs: {}, hangars: {
+      "1:100:9|planet": { total: 1000, at: Date.now(), ships: [{ type: "HEAVY_CARGO", qty: 1000 }] },
+    }, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: Date.now() }));
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("79 (warunek wstępny) w spokoju nic nie leci", g.sent.length === 0, JSON.stringify(g.sent));
+    g.ghosts = 1;                                             // obcy lot widoczny tylko na pasku
+    await run(g, { cfg, loads: 6, ticksPerLoad: 2 });
+    advance(g, 3 * 60e3);                                     // nadwyżka trwa ponad próg
+    const r1 = await run(g, { cfg, loads: 14, ticksPerLoad: 3 });
+    const ucieczka = g.sent.find(x => x.from === "1:100:9" && x.fromBody === "planet");
+    check("79a: ślepy alarm ewakuuje transportery z planety (obrona nietknięta)", !!ucieczka && (ucieczka.ships.HEAVY_CARGO || 0) === 1000,
+      JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])) + " | " + r1.logs.filter(m => /LOT|OBRONA|ŚLEPY/.test(m)).slice(0, 6).join(" | "));
+    check("79b: ucieczka wiezie CAŁY deuter, metal ustąpił miejsca (ładunek w granicy ładowni)",
+      !!ucieczka && !!ucieczka.res && ucieczka.res.deut === 5_000_000 && ucieczka.res.metal === 4_000_000 && ucieczka.res.crystal === 1_000_000,
+      JSON.stringify(ucieczka && ucieczka.res) + " | " + r1.logs.filter(m => /deuter najpierw/.test(m)).join(" | "));
+    const st1 = JSON.parse(g.store.get(K) || "{}");
+    check("79c: ucieczka Z PLANETY nie zostawia stempla „powrotu po ratunku”", !(st1.rescues || {})["1:100:9"], JSON.stringify(st1.rescues));
+    const dz = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_journal") || "[]");
+    check("79d: dziennik ma zrzut paska z chwili ślepego alarmu (PASEK)", dz.some(e => e.kind === "PASEK" && /^pasek: \d+ obcych/.test(e.msg)), JSON.stringify(dz.slice(0, 4)));
+    // zawrót: transportery wracają na swoją planetę, alarm gaśnie
+    g.ghosts = 0;
+    for (const x of g.sent) x.inFlight = false;
+    g.sent.length = 0; g.slots.fleet.used = 0;
+    g.hangars["1:100:9|planet"] = { HEAVY_CARGO: 1000 };
+    const st2 = JSON.parse(g.store.get(K) || "{}");
+    st2.flights = []; g.store.set(K, JSON.stringify(st2));
+    advance(g, 12 * 60e3);
+    const r2 = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    check("79e: po alarmie transportery ZOSTAJĄ na planecie (25.09 lądowały na księżycu)",
+      !g.sent.some(x => x.from === "1:100:9" && x.fromBody === "planet" && x.toBody === "moon"),
+      JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])) + " | " + r2.logs.filter(m => /LOT|powrót/.test(m)).slice(0, 5).join(" | "));
+  }
+
+  console.log("\n── 79f. v3.114.0 — przerzut księżyc → planeta wraca na księżyc, ale TYLKO to, co przyleciało ──");
+  {
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const cfg = { autoRescue: true, expo: { enabled: false }, aster: { enabled: false },
+      debris: { enabled: false }, bonus: { enabled: false }, recon: true, reconMs: 1,
+      human: { breaks: false, economyAtNight: true } };
+    const g = new Game({
+      pairs: [{ key: "1:100:5", name: "Baza", moon: true }, { key: "2:50:3", name: "Daleka", moon: false }],
+      hangars: { "1:100:5|moon": { BATTLESHIP: 500 }, "1:100:5|planet": { HEAVY_CARGO: 1000 } },
+      active: { key: "1:100:5", body: "moon" },
+    });
+    g.store.set(K, JSON.stringify({ pairs: {}, hangars: {
+      "1:100:5|moon": { total: 500, at: Date.now(), ships: [{ type: "BATTLESHIP", qty: 500 }] },
+      "1:100:5|planet": { total: 1000, at: Date.now(), ships: [{ type: "HEAVY_CARGO", qty: 1000 }] },
+    }, threats: [], own: [], flights: [], bar: null, active: null, updatedAt: Date.now() }));
+    await run(g, { cfg, loads: 8, ticksPerLoad: 2 });
+    check("79f (warunek wstępny) w spokoju nic nie leci", g.sent.length === 0, JSON.stringify(g.sent));
+    g.threats.push({ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 });
+    const r1 = await run(g, { cfg, loads: 25, ticksPerLoad: 3 });
+    const swap = g.sent.find(x => x.from === "1:100:5" && x.fromBody === "moon");
+    check("79g: atak w księżyc bez sąsiada → flota zeszła na planetę pary", !!swap && swap.to === "1:100:5" && swap.toBody === "planet" && swap.ships.BATTLESHIP === 500,
+      JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])) + " | " + r1.logs.filter(m => /LOT|OBRONA/.test(m)).slice(0, 6).join(" | "));
+    const st1 = JSON.parse(g.store.get(K) || "{}");
+    const rs = (st1.rescues || {})["1:100:5"];
+    check("79h: stempel pamięta skład przerzutu", !!rs && rs.ships && rs.ships.BATTLESHIP === 500 && !rs.ships.HEAVY_CARGO, JSON.stringify(st1.rescues));
+    // atak minął: pancerniki stoją na planecie obok transporterów
+    g.threats = [];
+    g.sent.length = 0; g.slots.fleet.used = 0;
+    g.hangars["1:100:5|planet"] = { HEAVY_CARGO: 1000, BATTLESHIP: 500 };
+    g.hangars["1:100:5|moon"] = {};
+    advance(g, 5 * 60e3);
+    const r2 = await run(g, { cfg, loads: 30, ticksPerLoad: 3 });
+    const back = g.sent.find(x => x.from === "1:100:5" && x.fromBody === "planet" && x.toBody === "moon");
+    check("79i: pancerniki wracają na księżyc", !!back && back.ships.BATTLESHIP === 500,
+      JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])) + " | " + r2.logs.filter(m => /LOT|powrót|OBRONA/.test(m)).slice(0, 8).join(" | "));
+    check("79j: transportery zostają na planecie", !!back && !back.ships.HEAVY_CARGO, JSON.stringify(back && back.ships));
+    const st2 = JSON.parse(g.store.get(K) || "{}");
+    check("79k: po powrocie stempel skasowany (koniec woženia)", !(st2.rescues || {})["1:100:5"], JSON.stringify(st2.rescues));
+    const ile = g.sent.filter(x => x.from === "1:100:5" && x.fromBody === "planet").length;
+    advance(g, 31 * 60e3);
+    await run(g, { cfg, loads: 20, ticksPerLoad: 3 });
+    check("79l: po pół godzinie transporterów dalej nikt nie wozi", g.sent.filter(x => x.from === "1:100:5" && x.fromBody === "planet").length === ile,
+      JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])));
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);

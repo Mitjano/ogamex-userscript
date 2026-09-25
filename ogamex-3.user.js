@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.113.0
+// @version      3.114.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.113.0";
+  const VERSION = "3.114.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -2015,15 +2015,28 @@
         // v3.41.0: rutynowe zwożenie na księżyc jest teraz OPCJĄ (domyślnie OFF, decyzja
         // ownera 30.08). Bez niej bot rusza flotą wyłącznie przy ataku — a powrót po
         // ratunku zostaje, bo skoro sam wywiózł flotę na drugie ciało, ma ją odstawić.
-        const rescuedAt = (s.rescues || {})[k] || 0;
+        // v3.114.0: stempel to obiekt { at, ships } i powstaje tylko po przerzucie księżyc → planeta
+        // tej pary. Stary stempel-liczba nie mówi, z którego ciała flota uciekała (tak 25.09 bot
+        // przewiózł na księżyce transportery, które zawsze stoją na planetach) — nie uprawnia do niczego.
+        const rs = (s.rescues || {})[k];
+        const rescuedAt = rs && typeof rs === "object" ? (rs.at || 0) : 0;
         const backFromRescue = rescuedAt > 0 && now - rescuedAt < 6 * 3600e3;
+        const backPlan = backFromRescue && !cfg.homeToMoon && rs.ships ? Object.entries(rs.ships).filter(([, q]) => q > 0).map(([type, qty]) => ({ type, qty })) : null;
+        // Z planem odstawiamy tylko wtedy, gdy na planecie stoi coś z przerzuconych typów.
+        // Operator mógł je już zabrać ręcznie; wtedy każda próba kończyłaby się w formularzu
+        // na „plan nieaktualny”, co 3 minuty przez 6 godzin. Odczyt sprzed lądowania przerzutu
+        // NIE jest dowodem, że floty tam nie ma (na planecie stały same transportery, a lot
+        // domyka się ich widokiem) — wtedy lecimy, a formularz sam odświeży hangar.
+        const backMa = !backPlan || !(hp && Array.isArray(hp.ships) && hp.ships.length)
+          || (hp.at || 0) < (rs.landAt || rs.at || 0)
+          || hp.ships.some(x => x.qty > 0 && backPlan.some(p => String(p.type).toUpperCase() === String(x.type).toUpperCase()));
         // v3.68.5 (audyt 04.09, obrona-decide#2 P0): `!anyAttack` — zwożenie floty na
         // księżyc jest wygodą, nie obroną; przy ataku gdziekolwiek na koncie jedyny slot
         // lotu należy do ratunku (także w oknie potwierdzania, gdy akcji ratunku jeszcze
         // nie ma). Bez tego warunku „powrót po ratunku" wygrywał wyścig o slot i blokował
         // obronę na czas całej swojej misji (`if (Fly.mission()) return`, sufit 5 min).
-        if (!f && !anyAttack && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (cfg.homeToMoon || backFromRescue)) {
-          actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: backFromRescue ? "powrót po ratunku: planeta → księżyc" : "dom = księżyc", speed: 100, recall: false, home: true, backHome: backFromRescue });
+        if (!f && !anyAttack && pairs[k].hasMoon && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (cfg.homeToMoon || (backFromRescue && backMa))) {
+          actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", why: backFromRescue ? "powrót po ratunku: planeta → księżyc" : "dom = księżyc", speed: 100, recall: false, home: true, backHome: backFromRescue, ...(backPlan && backPlan.length ? { plan: backPlan } : {}) });
           continue;
         }
         // v3.67.0 (owner 04.09, po nocy z dwoma zniszczonymi księżycami: „ewakuuj od
@@ -2618,7 +2631,12 @@
           : `pasek widzi ${s.barExcess.count} obcych lotów bez celu, ale lista ruchów (świeża, z własnym wierszem tej pary) nie pokazuje przy [${x.k}] żadnego obcego lotu — nadwyżka dotyczy innej kolonii, flota (${x.f.total.toLocaleString("pl-PL")} szt.) zostaje w domu` });
       if (withFleet.length) {
         const t = withFleet[0];
-        alerts.push({ key: t.k, level: "error", blind: true, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });
+        // v3.114.0 (Athena 25.09 08:16): po ślepym alarmie nie było czym sprawdzić, czym była
+        // nadwyżka — log trzyma kilkadziesiąt wpisów i nadpisał się przed analizą. Dziennik
+        // żyje dłużej, więc dostaje zrzut: co pokazywał pasek i co znała lista ruchów.
+        const znane = (s.threats || []).filter(x => x.arriveAt > now);
+        const detail = `pasek: ${s.bar ? `${s.bar.foreign} obcych z ${s.bar.total} (własne ${s.bar.own}), najbliższy typ: ${s.bar.barType || "?"}${s.bar.attackType ? ", bojowy" : ""}${s.bar.spyType ? ", sonda" : ""}, odczyt ${s.bar.src || "strona"} sprzed ${Math.round((now - (s.bar.at || now)) / 1000)}s` : "brak"}; lista zna ${znane.length}: ${znane.map(x => `${x.type || "?"} → [${x.dst}] ${x.dstBody || "?"} za ${Math.round((x.arriveAt - now) / 1000)}s`).join(", ") || "nic"}`;
+        alerts.push({ key: t.k, level: "error", blind: true, detail, msg: `ŚLEPY ALARM: pasek widzi ${s.barExcess.count} obcych lotów bez rozpoznanego celu od ${Math.round((now - s.barExcess.since) / 1000)}s — bronię [${t.k}] ${t.f.body} (${t.f.total.toLocaleString("pl-PL")} statków)` });
         const nb = neighbourMoon(t.k);
         const dest = nb ? { key: nb, body: "moon" } : anyRefuge(t.k);
         // v3.68.5: `saveTotal` bez `etaMs` — ślepy alarm nie zna zegara uderzenia, więc
@@ -4350,7 +4368,16 @@
       // stało na planecie tej pary. Powstały wtedy wpis lotu `home` ma recallAt=0 i przez
       // 30 min zaślepia CAŁĄ parę na ratunek — a stoi na niej wtedy cała flota. FS nie jest
       // ratunkiem: wraca ZAWROTEM na to samo ciało, więc nie ma czego „odstawiać z powrotem".
-      if (!m.home && !eco && !m.fs) { try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = Date.now(); Situation.save(sR); } catch {} }
+      // v3.114.0 (Athena 25.09 08:16–12:17): stempel dostawała KAŻDA ucieczka, także z planety
+      // i także lot zawrócony, który sam wraca na swoje ciało. Ślepy alarm ewakuował 14 planet
+      // z transporterami, zawroty odstawiły je na planety, a potem „powrót po ratunku” przewiózł
+      // je na księżyce razem z metalem i kryształem (deuter został na planetach). Odstawiać
+      // jest co wyłącznie po przerzucie KSIĘŻYC → PLANETA tej samej pary, i tylko to, co
+      // przyleciało (`ships`) — transportery, które na planecie stały od zawsze, zostają.
+      if (m.fromBody === "moon" && m.toBody === "planet" && m.toKey === m.fromKey && !m.home && !eco && !m.fs) { try { const sR = Situation.load(); sR.rescues = sR.rescues || {}; sR.rescues[m.fromKey] = { at: Date.now(), landAt: Date.now() + (m.flightMs || 0), ships: (sentTotal && lsT && lsT.ships && Object.keys(lsT.ships).length) ? { ...lsT.ships } : null }; Situation.save(sR); } catch {} }
+      // Odstawienie wykonane — stempel spełnił swoje. Bez tego zostające na planecie transportery
+      // tego samego typu co przerzucona flota byłyby wożone na księżyc co 30 min przez 6 h.
+      if (m.backHome) { try { const sB = Situation.load(); if (sB.rescues) { delete sB.rescues[m.fromKey]; Situation.save(sB); } } catch {} }
       Store.del("mission");
       const what = info.loaded || "(skład nieznany)";
       const types = info.loaded ? info.loaded.split(", ").length : 0;
@@ -5102,6 +5129,7 @@
         const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
         if (allRes) allRes.click(); else [...document.querySelectorAll("a.btn-res-full, .btn-res-full")].forEach(b => b.click());
         await sleep(jitter(400, 700));
+        await this.deutFirst(m);
         await this.applyReserve();
       }
       const send = this.findButton("Send fleet") || [...document.querySelectorAll("a, button, input[type='submit']")].find(el => /send fleet/i.test(el.value || el.textContent || "") && el.offsetParent !== null);
@@ -5249,6 +5277,53 @@
       // to „domyka serię" i zmiana opisu w expoPlan po cichu zabiła odprowadzanie (E2E sc. 36).
       if (okUrl && /cały hangar/.test(m.why || "") && !m.splitOnForm && Expo.maybeReturnOperator("czekam na powroty")) return;
       if (okUrl) Nav.go("/", "po wysyłce floty — powrót na stronę główną");
+    },
+    // v3.114.0 (Athena 25.09): „wszystkie surowce” ładuje w kolejności gry: metal, kryształ,
+    // deuter. Przy pełnych magazynach ładownię zapełniają metal i kryształ, deuter zostaje na
+    // ciele startu, a flota ląduje bez paliwa na następną ucieczkę. Bez zgadywania, jak
+    // działa przycisk „max” forka: zabieramy z metalu (potem kryształu) dokładnie tyle, ile
+    // deuteru się nie zmieściło, i dopisujemy to do deuteru. Suma ładunku się nie zmienia,
+    // więc ładowności nie przekraczamy. Każda niepewność = zostaje to, co wpisała gra.
+    async deutFirst(m) {
+      const tag = `[LOT] deuter najpierw [${m.fromKey}] ${m.fromBody}`;
+      try {
+        const fulls = [...document.querySelectorAll("a.btn-res-full, .btn-res-full")];
+        if (fulls.length < 3) { if (!Once.said("deut_first_dom", 6 * 3600e3)) log(`${tag}: nie widzę 3 wierszy surowców (${fulls.length}), zostawiam ładunek gry.`, "warn"); return; }
+        const rowOf = (f) => { let r = f.parentElement; while (r && r.parentElement && r.parentElement.querySelectorAll("a.btn-res-full, .btn-res-full").length === 1) r = r.parentElement; return r || f.parentElement; };
+        const rows = fulls.map(rowOf);
+        const byName = (re) => { for (const r of rows) { const i = r && [...r.querySelectorAll("input")].find(x => re.test(x.name || "") || re.test(x.id || "")); if (i) return i; } return null; };
+        const inRow = (i) => rows[i] && rows[i].querySelector("input");
+        const iM = byName(/metal/i) || inRow(0), iC = byName(/cryst|kryszt/i) || inRow(1), iD = byName(/deut/i) || inRow(2);
+        if (!iM || !iC || !iD || new Set([iM, iC, iD]).size < 3) { if (!Once.said("deut_first_dom", 6 * 3600e3)) log(`${tag}: nie rozpoznaję pól metal/kryształ/deuter, zostawiam ładunek gry.`, "warn"); return; }
+        const val = (i) => parseInt(String(i.value || "0").replace(/[^\d]/g, ""), 10) || 0;
+        const m0 = val(iM), c0 = val(iC), d0 = val(iD), razem = m0 + c0 + d0;
+        const el = document.querySelector(".resource-item-deuterium, #resources_deuterium");
+        const dTxt = el ? (el.textContent || "") : "";
+        const dm = dTxt.match(/\d[\d .,']*/);
+        // skrót („1,2T”, „5 mld”) nie jest liczbą, na której wolno przestawiać ładunek
+        const skrot = /\d\s?(k|m|b|t|tys|mln|mld|bln)\b/i.test(dTxt);
+        const naCiele = dm && !skrot ? parseInt(dm[0].replace(/[^\d]/g, ""), 10) : NaN;
+        if (!Number.isFinite(naCiele)) { if (!Once.said("deut_first_bar", 6 * 3600e3)) log(`${tag}: nie widzę stanu deuteru na pasku surowców, zostawiam ładunek gry.`, "warn"); return; }
+        if (naCiele < d0) { log(`${tag}: pasek pokazuje ${naCiele.toLocaleString("pl-PL")} deuteru, a w polu jest ${d0.toLocaleString("pl-PL")} — odczyt niespójny, zostawiam ładunek gry.`, "warn"); return; }
+        const cel = Math.min(naCiele, razem);
+        if (cel <= d0) return;
+        let brak = cel - d0;
+        const zM = Math.min(m0, brak); brak -= zM;
+        const zC = Math.min(c0, brak); brak -= zC;
+        const dN = d0 + zM + zC;
+        // najpierw zwalniamy miejsce, potem dopisujemy deuter — formularz ani na chwilę nie widzi nadmiaru
+        const ustaw = async () => { setInput(iM, m0 - zM); await sleep(150); setInput(iC, c0 - zC); await sleep(150); setInput(iD, dN); await sleep(300); };
+        await ustaw();
+        if (val(iM) !== m0 - zM || val(iC) !== c0 - zC || val(iD) !== dN) await ustaw();
+        if (val(iM) !== m0 - zM || val(iC) !== c0 - zC || val(iD) !== dN) {
+          log(`${tag}: formularz nie przyjął zmian (metal ${val(iM)}, kryształ ${val(iC)}, deuter ${val(iD)}) — przywracam ładunek gry.`, "warn");
+          const allRes = document.querySelector("a.btn-all-res, .btn-all-res");
+          if (allRes) { allRes.click(); await sleep(jitter(400, 700)); }
+          else { setInput(iD, d0); setInput(iC, c0); setInput(iM, m0); await sleep(300); }
+          return;
+        }
+        log(`${tag}: deuter ${d0.toLocaleString("pl-PL")} → ${dN.toLocaleString("pl-PL")} (na ciele ${naCiele.toLocaleString("pl-PL")}), metal −${zM.toLocaleString("pl-PL")}, kryształ −${zC.toLocaleString("pl-PL")}; ładunek razem bez zmian ${razem.toLocaleString("pl-PL")}.`, "info");
+      } catch (e) { log(`${tag}: ${e.message}`, "warn"); }
     },
     async applyReserve() {
       const reserve = Number(CFG.deutReserve) || 0; if (!reserve) return;
@@ -5764,6 +5839,8 @@
           // i współrzędnych, więc wspólny rodzaj sprawiał, że ostrzeżenie o ślepocie
           // WYPYCHAŁO z telefonu ważniejszy komunikat o ataku (np. że celem jest księżyc).
           Journal.add(a.pushKey === "slepota" ? "BŁĄD" : a.pushKey === "sonda" ? "SONDA" : "ATAK", a.msg);
+          // osobny wpis bez pusha: zrzut dowodów nie może zmieniać treści ani dławika alarmu
+          if (a.detail) Journal.add("PASEK", a.detail);
         }
       }
       // Samokontrola to przegląd okresowy, nie sprawdzian na każdym przebiegu: raz na 5 minut.

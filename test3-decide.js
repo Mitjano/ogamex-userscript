@@ -634,13 +634,13 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
   // ...ale powrót po RATUNKU ma działać nawet przy wyłączonej opcji: skoro bot sam
   // wywiózł flotę na drugie ciało, ma ją odstawić z powrotem.
   const poRatunku = base({ hangars: { "3:272:7|planet": { total: 12341, at: NOW - 60e3, ships: [] } },
-    threats: [], flights: [], rescues: { "3:272:7": NOW - 5 * 60e3 } });
+    threats: [], flights: [], rescues: { "3:272:7": { at: NOW - 5 * 60e3, ships: null } } });
   const back = decide(poRatunku, { ...CFG, homeToMoon: false }, NOW);
   check("powrót po ratunku działa mimo wyłączonego zwożenia",
     (back.actions || []).some(a => a.kind === "fly" && a.toBody === "moon" && a.backHome === true), JSON.stringify(back.actions));
 
   const stary = base({ hangars: { "3:272:7|planet": { total: 12341, at: NOW - 60e3, ships: [] } },
-    threats: [], flights: [], rescues: { "3:272:7": NOW - 8 * 3600e3 } });
+    threats: [], flights: [], rescues: { "3:272:7": { at: NOW - 8 * 3600e3, ships: null } } });
   check("stempel ratunku sprzed 8 h już nie uprawnia do zwożenia",
     !(decide(stary, { ...CFG, homeToMoon: false }, NOW).actions || []).some(a => a.kind === "fly"));
 
@@ -655,10 +655,15 @@ console.log("\n── 19d. FLOTA RUSZA SIĘ TYLKO PRZY ATAKU (decyzja ownera 30.
   check("warunek stempla `rescues` da się wyciąć z produkcji", !!stampCond, String(stampCond));
   if (stampCond) {
     const stamps = new Function("m", "eco", `return !!(${stampCond});`);
-    check("ucieczka przed atakiem STEMPLUJE rescues (potem wolno odstawić flotę na księżyc)", stamps({ kind: "fly", rescue: true, air: true }, false));
-    check("lot domowy NIE stempluje", !stamps({ kind: "home", home: true }, false));
-    check("ekonomia NIE stempluje", !stamps({ kind: "expedition" }, true));
-    check("FLEET SAVE nie stempluje rescues — wraca ZAWROTEM na to samo ciało, nie ma czego odstawiać", !stamps({ kind: "fly", fs: true, air: true, recall: true }, false));
+    check("przerzut KSIĘŻYC → PLANETA tej pary STEMPLUJE rescues (potem wolno odstawić flotę na księżyc)", stamps({ kind: "fly", rescue: true, fromKey: "1:1:1", fromBody: "moon", toKey: "1:1:1", toBody: "planet" }, false));
+    // v3.114.0 (Athena 25.09): ucieczki, które wracają zawrotem na własne ciało, nie mają czego odstawiać
+    check("ucieczka Z PLANETY nie stempluje (zawrót odstawia flotę na planetę)", !stamps({ kind: "fly", rescue: true, air: true, blind: true, fromKey: "1:1:1", fromBody: "planet", toKey: "1:1:2", toBody: "moon" }, false));
+    check("ucieczka z księżyca na sąsiedni księżyc nie stempluje (wraca zawrotem na księżyc)", !stamps({ kind: "fly", rescue: true, air: true, fromKey: "1:1:1", fromBody: "moon", toKey: "1:1:2", toBody: "moon" }, false));
+    check("ucieczka z księżyca na planetę INNEJ pary nie stempluje", !stamps({ kind: "fly", rescue: true, air: true, fromKey: "1:1:1", fromBody: "moon", toKey: "1:1:2", toBody: "planet" }, false));
+    const swap = { fromKey: "1:1:1", fromBody: "moon", toKey: "1:1:1", toBody: "planet" };
+    check("lot domowy NIE stempluje", !stamps({ kind: "home", home: true, ...swap }, false));
+    check("ekonomia NIE stempluje", !stamps({ kind: "expedition", ...swap }, true));
+    check("FLEET SAVE nie stempluje rescues — wraca ZAWROTEM na to samo ciało, nie ma czego odstawiać", !stamps({ kind: "fly", fs: true, air: true, recall: true, ...swap }, false));
   }
   check("panel ma przełącznik „flota rusza się tylko przy ataku”",
     /Flota rusza się TYLKO przy ataku/.test(src) && /CFG\.homeToMoon = !CFG\.homeToMoon/.test(src));
@@ -2080,7 +2085,7 @@ console.log("\n── 54. AUDYT 04.09 (partia kolejka-akcji): lot DOBROWOLNY nig
   const rut = (over = {}) => Object.assign({
     pairs: PAIRS2,
     hangars: { "1:1:1|planet": H(500), "3:272:7|moon": H(5_000_000) },
-    rescues: { "1:1:1": NOW - 30 * 60e3 },     // ucieczka pół godziny temu → powrót po ratunku
+    rescues: { "1:1:1": { at: NOW - 30 * 60e3, ships: null } },     // przerzut księżyc→planeta pół godziny temu → powrót po ratunku
     threats: [], flights: [], active: { key: "1:1:1", body: "planet" },
   }, over);
 
@@ -3882,6 +3887,43 @@ console.log("\n── 91. v3.101.0: rozmiar fali z CAŁEJ floty ekspedycyjnej (o
     && /const udzial = \(stoi \+ \(m\.shareCtx\.wPowietrzu \|\| 0\)\) \/ m\.shareCtx\.cap;/.test(src) && /if \(udzial > 0 && stoi >= 1\.5 \* udzial\) \{/.test(src));
   check("91f: (źródło) udział liczony z hangaru PLUS floty w powietrzu, dzielone przez cap",
     /const docelowa = \(doma \+ wPowietrzu\) \/ cap;/.test(src) && /x\.kind === "expedition" && x\.fromKey === homeKey && \(x\.returnAt \|\| 0\) > now && \(x\.total \|\| 0\) > 0/.test(src));
+}
+
+console.log("\n── 92. v3.114.0: powrót po ratunku tylko po przerzucie księżyc→planeta i tylko to, co przyleciało (Athena 25.09) ──");
+{
+  const hPl = (ships) => ({ total: ships.reduce((a, x) => a + x.qty, 0), at: NOW - 60e3, ships });
+  const TRANSPORTERY = [{ type: "HEAVY_CARGO", qty: 999_999_999 }];
+  const sytuacja = (rescues, ships) => base({ hangars: { "3:272:7|planet": hPl(ships) }, threats: [], flights: [], rescues });
+  const loty = (r) => (r.actions || []).filter(a => a.kind === "fly");
+  // 25.09: ślepy alarm ewakuował planety z transporterami, zawroty je odstawiły, a stempel-liczba
+  // (sprzed wersji) uruchamiał „powrót po ratunku” i przewoził je na księżyc
+  const stary = decide(sytuacja({ "3:272:7": NOW - 30 * 60e3 }, TRANSPORTERY), CFG, NOW);
+  check("92a: stary stempel-liczba (nie wiadomo, skąd uciekała flota) NIE przewozi transporterów na księżyc", loty(stary).length === 0, JSON.stringify(stary.actions));
+  const swap = decide(sytuacja({ "3:272:7": { at: NOW - 30 * 60e3, ships: { BATTLESHIP: 500 } } },
+    [...TRANSPORTERY, { type: "BATTLESHIP", qty: 500 }]), CFG, NOW);
+  const s0 = loty(swap)[0];
+  check("92b: po przerzucie księżyc→planeta flota wraca na księżyc", !!s0 && s0.backHome === true && s0.fromBody === "planet" && s0.toBody === "moon", JSON.stringify(swap.actions));
+  check("92c: … z planem: TYLKO przerzucone pancerniki, transportery zostają na planecie",
+    !!s0 && Array.isArray(s0.plan) && s0.plan.length === 1 && s0.plan[0].type === "BATTLESHIP" && s0.plan[0].qty === 500, JSON.stringify(s0 && s0.plan));
+  const zabrane = decide(sytuacja({ "3:272:7": { at: NOW - 30 * 60e3, landAt: NOW - 29 * 60e3, ships: { BATTLESHIP: 500 } } }, TRANSPORTERY), CFG, NOW);
+  check("92d: przerzuconej floty już nie ma na planecie (operator zabrał) → nic nie leci", loty(zabrane).length === 0, JSON.stringify(zabrane.actions));
+  const przedLadowaniem = decide(sytuacja({ "3:272:7": { at: NOW - 2 * 60e3, landAt: NOW - 30e3, ships: { BATTLESHIP: 500 } } }, TRANSPORTERY), CFG, NOW);
+  check("92d2: hangar planety czytany PRZED lądowaniem przerzutu (same transportery) nie zatrzymuje powrotu floty z księżyca",
+    loty(przedLadowaniem).length === 1 && loty(przedLadowaniem)[0].plan && loty(przedLadowaniem)[0].plan[0].type === "BATTLESHIP", JSON.stringify(przedLadowaniem.actions));
+  const nieznany = decide(sytuacja({ "3:272:7": { at: NOW - 30 * 60e3, ships: null } }, TRANSPORTERY), CFG, NOW);
+  check("92e: przerzut bez znanego składu → odstawia całą planetę (flota z księżyca nie może zostać pod falangą)",
+    loty(nieznany).length === 1 && !loty(nieznany)[0].plan, JSON.stringify(nieznany.actions));
+  const h2m = decide(sytuacja({ "3:272:7": { at: NOW - 30 * 60e3, ships: { BATTLESHIP: 500 } } }, [...TRANSPORTERY, { type: "BATTLESHIP", qty: 500 }]), CFG_H2M, NOW);
+  check("92f: przy włączonym „dom = księżyc” właściciel chce wszystko na księżycu → bez planu", loty(h2m).length === 1 && !loty(h2m)[0].plan, JSON.stringify(h2m.actions));
+  check("92g: (źródło) wykonany powrót kasuje stempel, inaczej transportery tego typu jeździłyby co 30 min przez 6 h",
+    /if \(m\.backHome\) \{ try \{ const sB = Situation\.load\(\); if \(sB\.rescues\) \{ delete sB\.rescues\[m\.fromKey\]/.test(src));
+  // zrzut dowodów przy ślepym alarmie
+  const slepy = decide(base({ bar: { foreign: 3, total: 5, own: 2, barType: "Attack", attackType: true, at: NOW - 5e3, src: "fetch" },
+    barExcess: { active: true, count: 1, since: NOW - 70e3 }, threats: [threat("9:9:9", "moon", 300)] }), CFG, NOW);
+  const al = (slepy.alerts || []).find(a => a.blind);
+  check("92h: ślepy alarm niesie zrzut paska i listy (dowód na później)",
+    !!al && /pasek: 3 obcych z 5 \(własne 2\), najbliższy typ: Attack, bojowy/.test(al.detail || "") && /lista zna 1: ATTACK → \[9:9:9\] moon za 300s/.test(al.detail || ""), JSON.stringify(al));
+  check("92i: (źródło) zrzut idzie do dziennika osobnym wpisem PASEK, bez pusha", /if \(a\.detail\) Journal\.add\("PASEK", a\.detail\);/.test(src));
 }
 
 console.log(fails ? fails + " FAIL — NIE WYPYCHAJ" : "TESTY 3.0: wszystko OK");
