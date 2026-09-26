@@ -1359,7 +1359,7 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   // Owner 31.08: „nie podoba mi się, że bot sam przeskakuje z planety na planetę" —
   // rekonesans po lądowaniu własnego lotu (09:06:16 wejście na Fleet) to rutyna,
   // nie alarm: idzie WYŁĄCZNIE cichym fetchem, bez nawigacji i przełączania planety.
-  check("rekonesans po lądowaniu jest QUIET (scanRemote w tle, zakaz nawigacji)", /quiet: true, why: `wróciła własna flota/.test(src) && /if \(a\.quiet\) \{(?:(?!Nav\.|location\.)[\s\S]){0,900}?continue;\s*\}/.test(src));
+  check("rekonesans po lądowaniu jest QUIET (scanRemote w tle, zakaz nawigacji)", /quiet: true, lost: [^,]+, why: `wróciła własna flota/.test(src) && /if \(a\.quiet\) \{(?:(?!Nav\.|location\.)[\s\S]){0,900}?continue;\s*\}/.test(src));
 }
 
 // ── v3.47.0: fetch `?planet=UUID` przestawia sesję po stronie serwera ──
@@ -3178,7 +3178,7 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
     for (const t of daleki.threats) t.arriveAt = NOW + 2 * 3600e3;
     check("73m6: uderzenie za 2 h → strażnik jeszcze nie odpytuje co 20 s (v3.113.0, okno 30 min)", !decide(daleki, CFG, NOW).actions.some(a => a.guard), "");
     check("73m4: (źródło) cichy odczyt PRZY ALARMIE nie czeka na operatora", /if \(Human\.playing\(\) && !a\.alarm\) continue;/.test(src));
-    check("73m5: (źródło) dławik cichego odczytu przy alarmie = 20 s (jeden przebieg), nie 60", /a\.alarm \? 20e3 : 5 \* 60e3/.test(src));
+    check("73m5: (źródło) dławik cichego odczytu przy alarmie = 20 s (jeden przebieg), nie 60", /\(a\.alarm \|\| a\.lost\) \? 20e3 : 5 \* 60e3/.test(src));
   }
   const akcje = decide(zZagrozeniem([{ type: "DEATH_STAR", qty: 42 }]), CFG, NOW).actions;
   check("73e: zawrót lotu, który JUŻ leci, jest dalej przesuwany za uderzenie (flota nie wraca pod ostrzał)",
@@ -3195,7 +3195,7 @@ console.log("\n── 73. ALARM NIE OBIECUJE LOTU, KTÓREGO BOT NIE WYŚLE (pró
     && /const tylkoRezerwa = !swiezoWyladowalo &&/.test(src));
   check("73i: (źródło) przy alarmie bot dopytuje o hangar, zamiast ufać starej migawce",
     /kind: "recon", key: k, body: hitRef\.body, quiet: true, alarm: true/.test(src)
-    && /a\.alarm \? 20e3 : 5 \* 60e3/.test(src));   // v3.111.0: 20 s
+    && /\(a\.alarm \|\| a\.lost\) \? 20e3 : 5 \* 60e3/.test(src));   // v3.111.0: 20 s
 }
 
 console.log("");

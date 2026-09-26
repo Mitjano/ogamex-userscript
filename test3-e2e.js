@@ -253,6 +253,10 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
   const url = `https://genesis.ogamex.net/${game.page}${game.query}`;
   const dom = new JSDOM(`<!doctype html><html><body>${game.bodyHtml()}</body></html>`, { url, pretendToBeVisual: true, runScripts: "outside-only" });
   const w = dom.window;
+  // v3.116.0: zegar gry dla scenariuszy z upływem czasu (fale co 30 s). `advance()` przesuwa tylko część
+  // znaczników, a dławiki (Once) i karencje liczą realnym zegarem — przy falach „co 30 s” w teście mijały
+  // realnie 2–3 s i każdy 20-sekundowy bezpiecznik blokował. `clockOffset` przesuwa Date.now() całego bota.
+  if (game.clockOffset) { const rn = w.Date.now.bind(w.Date); w.Date.now = () => rn() + game.clockOffset; }
   // GM storage + magazyny przeglądarki (trwałe między załadowaniami)
   w.GM_getValue = (k, d) => (game.store.has(k) ? game.store.get(k) : d);
   w.GM_setValue = (k, v) => game.store.set(k, v);
@@ -4210,6 +4214,55 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       const g = nowa();
       const { logs } = await run(g, { cfg: cfgF({ launchFrom: null }), loads: 10, ticksPerLoad: 2 });
       check("80i1: bez „start z” zero ataków i jasny komunikat", !g.sent.length && logs.some(m => /FARMA\] brak „start z”/.test(m)), JSON.stringify(g.sent) + " | " + logs.filter(m => /FARMA/.test(m)).slice(0, 3).join(" | "));
+    }
+  }
+
+  console.log("\n── 81. KSIĘŻYC ZNISZCZONY, 14 FAL WRACA NA PLANETĘ: każda wyjeżdża z planety, po odbudowie na NOWY księżyc (v3.116.0) ──");
+  {
+    const K = "genesis.ogamex.net:ogx3_situation";
+    const scen = async ({ rebuild, attack }) => {
+      const g = new Game({
+        pairs: [{ key: "1:100:5", name: "Baza", moon: false }, { key: "1:100:9", name: "Sąsiad", moon: true }],
+        hangars: { "1:100:5|planet": { HEAVY_CARGO: 300 } }, active: { key: "1:100:5", body: "planet" },
+      });
+      if (!rebuild) g.refuseMoon = true;
+      g.slots = { fleet: { used: 14, total: 30 }, expo: { used: 14, total: 14 } };
+      g.clockOffset = 0;
+      const now = Date.now();
+      const expected = [];
+      for (let i = 0; i < 14; i++) expected.push({ kind: "expedition", fromKey: "1:100:5", fromBody: "moon", total: 1000 + i, sentAt: now - 3600e3, flightMs: 600e3, holdMs: 2400e3, returnAt: now + 3600e3 + i * 1000 });
+      g.store.set(K, JSON.stringify({ pairs: { "1:100:5": { hasMoon: true, galaxy: 1, system: 100, position: 5 }, "1:100:9": { hasMoon: true, galaxy: 1, system: 100, position: 9 } },
+        hangars: { "1:100:5|moon": { total: 0, ships: [], at: now - 60e3 }, "1:100:5|planet": { total: 300, ships: [{ type: "HEAVY_CARGO", qty: 300 }], at: now - 60e3 } },
+        threats: [], own: [], flights: [], expected, bar: null, active: { key: "1:100:5", body: "planet" }, updatedAt: now, slots: { fleet: { used: 14, total: 30 }, expo: { used: 14, total: 14 }, at: now } }));
+      const cfg = { autoRescue: true, recon: false, expo: { enabled: true, waves: 14, launchFrom: { galaxy: 1, system: 100, position: 5 } }, human: { breaks: false, economyAtNight: true } };
+      for (let i = 0; i < 14; i++) {
+        g.hangars["1:100:5|planet"].BATTLESHIP = (g.hangars["1:100:5|planet"].BATTLESHIP || 0) + 1000 + i;
+        g.slots.fleet.used--; g.slots.expo.used--;
+        if (attack && i === 3) g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "planet", eta: 900 }];
+        if (g.threats.length) for (const t of g.threats) t.eta = Math.max(200, 900 - (i - 3) * 30);
+        g.clockOffset += 30e3;
+        const st0 = JSON.parse(g.store.get(K)); const e = (st0.expected || []).find(x => x.total === 1000 + i); if (e) e.returnAt = Date.now() + g.clockOffset - 1500; g.store.set(K, JSON.stringify(st0));
+        await run(g, { cfg, loads: 12, ticksPerLoad: 2 });
+      }
+      for (let j = 0; j < 6; j++) { g.clockOffset += 60e3; await run(g, { cfg, loads: 10, ticksPerLoad: 2 }); }
+      return g;
+    };
+    const opis = (g) => JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])).slice(0, 700) + " | " + rawLog(g).filter(m => /KSIĘŻYC|ewakuac|zwożę|OBRONA\] wróciła/.test(m)).slice(0, 6).join(" | ").slice(0, 700);
+    {
+      const g = await scen({ rebuild: true });
+      const zPlanety = g.sent.filter(x => x.from === "1:100:5" && x.fromBody === "planet");
+      check("81a: księżyc odbudowany — ŻADNA z 14 fal nie została na planecie", !(g.hangars["1:100:5|planet"].BATTLESHIP > 0), `na planecie ${g.hangars["1:100:5|planet"].BATTLESHIP} OW | ` + opis(g));
+      check("81b: fale jadą na NOWY księżyc tej pary (nie na sąsiada)", zPlanety.filter(x => x.to === "1:100:5" && x.toBody === "moon").length >= 10, opis(g));
+      check("81c: transportery mieszkające na planecie ZOSTAJĄ (decyzja ownera 17.09)", !zPlanety.some(x => x.ships.HEAVY_CARGO > 0) && g.hangars["1:100:5|planet"].HEAVY_CARGO === 300, opis(g));
+      check("81d: po lądowaniu fali bot czyta hangar PLANETY (fala nie wraca na zniszczony księżyc)", rawLog(g).some(m => /wróciła własna flota na planetę \[1:100:5\].*odczytany w tle/.test(m)), rawLog(g).filter(m => /wróciła własna flota/.test(m)).slice(0, 3).join(" | "));
+    }
+    {
+      const g = await scen({ rebuild: false });
+      check("81e: odbudowa NIE wychodzi — wszystkie fale ewakuowane z gołej planety na sąsiedni księżyc", !(g.hangars["1:100:5|planet"].BATTLESHIP > 0) && g.sent.some(x => x.to === "1:100:9"), `na planecie ${g.hangars["1:100:5|planet"].BATTLESHIP} OW | ` + opis(g));
+    }
+    {
+      const g = await scen({ rebuild: false, attack: true });
+      check("81f: …i pod atakiem na planetę też żadna fala nie zostaje", !(g.hangars["1:100:5|planet"].BATTLESHIP > 0), `na planecie ${g.hangars["1:100:5|planet"].BATTLESHIP} OW | ` + opis(g));
     }
   }
 

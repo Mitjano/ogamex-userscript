@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.115.0
+// @version      3.116.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.115.0";
+  const VERSION = "3.116.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -1125,6 +1125,25 @@
       s.hangars[hk] = { total: snap.total, ships: snap.ships, at: snap.at }; this.save(s);
     },
     // Zbiera odczyty z DOM + AJAX i buduje nową sytuację (bez decyzji).
+    // v3.116.0 (owner 26.09: „floty będą wracały na planetę, ale później powinny przenieść się ze
+    // wszystkimi surowcami na nowego moona i dalej po staremu FS"). Fala wysłana z księżyca, który
+    // w trakcie jej lotu zniknął, LĄDUJE NA PLANECIE — także wtedy, gdy bot zdążył postawić nowy
+    // księżyc (nowe ciało = nowe id, fala go nie zna). Rejestr powrotów pamiętał `fromBody: "moon"`,
+    // więc po lądowaniu bot czytał hangar NIEISTNIEJĄCEGO księżyca (log: „wróciła własna flota na
+    // księżyc … cichy odczyt nie wyszedł") i nigdy nie widział floty na planecie — ewakuacja
+    // z gołej planety nie odpalała ani razu (symulacja 14 fal: 0/14). Przepisujemy więc wpisy
+    // u źródła, a `moonGone` zapamiętuje, co stało na planecie PRZED stratą: zwozimy tylko to,
+    // co doleciało (transportery z planet zostają — decyzja ownera 17.09, incydent 25.09).
+    moonGone(s, k, at) {
+      let n = 0;
+      for (const e of (s.expected || [])) if (e.fromKey === k && e.fromBody === "moon" && (e.sentAt || 0) < at && (e.returnAt || 0) > at - 60e3) { e.fromBody = "planet"; e.orphan = true; n++; }
+      const hp = (s.hangars || {})[`${k}|planet`];
+      const baza = {};
+      if (hp && Array.isArray(hp.ships)) for (const x of hp.ships) baza[String(x.type).toUpperCase()] = (baza[String(x.type).toUpperCase()] || 0) + (x.qty || 0);
+      s.moonGone = s.moonGone || {};
+      s.moonGone[k] = { lostAt: at, baseline: hp && Array.isArray(hp.ships) ? baza : null, baselineAt: hp ? (hp.at || 0) : 0 };
+      if (n) log(`[KSIĘŻYC] [${k}] ${n} fal(e) wysłanych ze zniszczonego księżyca wyląduje na PLANECIE — pilnuję ich lądowań tam.`, "warn");
+    },
     async refresh() {
       const s = this.load();
       const now = Date.now();
@@ -1141,10 +1160,12 @@
         const had = s.pairs[p.key] && s.pairs[p.key].hasMoon;
         if (had && !p.hasMoon && !s.moonLost[p.key]) {
           s.moonLost[p.key] = now;
+          Situation.moonGone(s, p.key, now);
           Journal.add("BŁĄD", `KSIĘŻYC ZNISZCZONY: [${p.key}] ${p.name || ""} — flota wracająca na tę parę wyląduje na gołej planecie (widoczna dla falangi). Ewakuuję automatycznie.`);
         } else if (!had && p.hasMoon && s.moonLost[p.key]) {
           delete s.moonLost[p.key];
-          log(`[KSIĘŻYC] [${p.key}] ${p.name || ""} znów ma księżyc — kończę tryb awaryjny (ewakuacja z gołej planety) dla tej pary.`, "success");
+          if (s.moonGone && s.moonGone[p.key]) s.moonGone[p.key].backAt = now;
+          log(`[KSIĘŻYC] [${p.key}] ${p.name || ""} znów ma księżyc — kończę tryb awaryjny (ewakuacja z gołej planety); fale wysłane ze zniszczonego księżyca lądują na planecie i zwożę je na nowy księżyc razem z surowcami.`, "success");
         }
         s.pairs[p.key] = { hasMoon: p.hasMoon, name: p.name, galaxy: p.galaxy, system: p.system, position: p.position };
       }
@@ -1294,6 +1315,7 @@
             const had = s.pairs[p.key] && s.pairs[p.key].hasMoon;
             if (had && !p.hasMoon && !s.moonLost[p.key]) {
               s.moonLost[p.key] = tk;
+              Situation.moonGone(s, p.key, tk);
               s.pairs[p.key] = { ...s.pairs[p.key], hasMoon: false };
               log(`[KSIĘŻYC] [${p.key}] stracił księżyc — zobaczyłem to w tle, bez przeładowania strony.`, "warn");
               Journal.add("BŁĄD", `KSIĘŻYC ZNISZCZONY: [${p.key}] — flota wracająca na tę parę wyląduje na gołej planecie (widoczna dla falangi). Ewakuuję automatycznie.`);
@@ -1486,6 +1508,20 @@
           if (best) best.returnAt = o.arriveAt;
         }
         s.expected = exp;
+      }
+      // v3.116.0: `moonGone` — stan planety sprzed lądowań (gdy przy stracie hangar planety był nieznany,
+      // bierzemy pierwszy odczyt, przed którym nie wylądowała jeszcze żadna osierocona fala) i termin ważności:
+      // doba od straty albo godzina po lądowaniu ostatniej fali ze zniszczonego księżyca.
+      for (const k of Object.keys(s.moonGone || {})) {
+        const mg = s.moonGone[k];
+        const sieroty = (s.expected || []).filter(e => e.fromKey === k && e.orphan);
+        const hpG = (s.hangars || {})[`${k}|planet`];
+        if (!mg.baseline && hpG && Array.isArray(hpG.ships) && !sieroty.some(e => (e.returnAt || 0) <= (hpG.at || 0))) {
+          mg.baseline = {}; for (const x of hpG.ships) mg.baseline[String(x.type).toUpperCase()] = (mg.baseline[String(x.type).toUpperCase()] || 0) + (x.qty || 0);
+          mg.baselineAt = hpG.at || 0;
+        }
+        const ostatnia = Math.max(0, ...sieroty.map(e => e.returnAt || 0));
+        if (now - (mg.lostAt || 0) > 24 * 3600e3 || (now - (mg.lostAt || 0) > 10 * 60e3 && now - ostatnia > 60 * 60e3)) delete s.moonGone[k];
       }
       // v3.65.0 (log 03.09 08:58): wiersz WŁASNEJ ekspedycji z listy ruchów — BEZ klasy
       // „return" — miał data-remaining-seconds=874 z dolotem 09:13:02, a o 09:13 sloty
@@ -1746,6 +1782,21 @@
   // action: { kind:"fly", fromKey, fromBody, toKey, toBody, why, recall:bool, speed }
   //         { kind:"recall", flightId|fromKey/toKey, why }
   //         { kind:"hold", key, why }
+  // v3.116.0: co wywieźć z planety po utracie księżyca (ewakuacja albo zwóz na odbudowany). Stan
+  // sprzed straty (`moonGone.baseline`) odejmujemy WYŁĄCZNIE dla transporterów — to one mieszkają na
+  // planetach (decyzja ownera 17.09). Okręty jadą zawsze: flota, która stała na planecie już w chwili
+  // straty (fale wylądowały przed wykryciem, przerzut ratunkowy), też jest w baseline, a zostawienie
+  // jej na widocznej planecie to dokładnie ta strata, przed którą ta ścieżka broni (E2E sc. 56).
+  const PLANET_CARGO = ["HEAVY_CARGO", "LIGHT_CARGO"];
+  function zwozPlan(hp, mg) {
+    const out = [];
+    for (const x of ((hp && hp.ships) || [])) {
+      const t = String(x.type).toUpperCase();
+      const q = (x.qty || 0) - ((mg && mg.baseline && PLANET_CARGO.includes(t)) ? (mg.baseline[t] || 0) : 0);
+      if (q > 0) out.push({ type: x.type, qty: q });
+    }
+    return out;
+  }
   function decide(s, cfg, now) {
     const actions = [], alerts = [];
     // v3.111.0: odczyty-strażnicy (pod ostrzałem nie ufaj pamięci) idą na KONIEC listy akcji —
@@ -2031,10 +2082,32 @@
           const lf58 = cfg.expo && cfg.expo.launchFrom;
           const guarded58 = lf58 ? `${lf58.galaxy}:${lf58.system}:${lf58.position}` : null;
           if (cfg.stealth && cfg.stealth.enabled && !f && guarded58 && k !== guarded58) continue;
-          actions.push({ kind: "recon", key: k, body: lbody, quiet: true, why: `wróciła własna flota na ${lbody === "moon" ? "księżyc" : "planetę"} [${k}] — sprawdzam hangar` });
+          // v3.116.0: para po utracie księżyca — fale lądują co kilkadziesiąt sekund na widocznej planecie,
+          // więc odczyt ma dławik 20 s (jak alarm), nie rutynowe 5 min (`lost`).
+          actions.push({ kind: "recon", key: k, body: lbody, quiet: true, lost: !!((s.moonGone || {})[k] || (s.moonLost || {})[k]), why: `wróciła własna flota na ${lbody === "moon" ? "księżyc" : "planetę"} [${k}] — sprawdzam hangar` });
           break;
         }
         const hp = (s.hangars || {})[`${k}|planet`];
+        // v3.116.0 (owner 26.09): księżyc zniszczony i ODBUDOWANY, a fale wysłane ze starego lądują na
+        // planecie — każda z nich jedzie na nowy księżyc ze wszystkimi surowcami (potem FS jak dotąd).
+        // Działa niezależnie od wyłączonego `homeToMoon`: to nie jest rutynowe zwożenie, tylko powrót
+        // floty, która mieszkała na księżycu. Kolejna fala nie czeka na domknięcie poprzedniego zwozu
+        // (ta sama lekcja co ewakuacja v3.111.0: 14 fal w 6 minut), o ile hangar planety przeczytano
+        // PO jego wysyłce. Przy ataku gdziekolwiek zwozu nie ma — slot należy do ratunku.
+        {
+          const mg = (s.moonGone || {})[k];
+          if (mg && pairs[k].hasMoon && !anyAttack && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (hp.at || 0) > (mg.lostAt || 0)) {
+            const plan = zwozPlan(hp, mg);
+            const lotyZ = (s.flights || []).filter(x => x.fromKey === k && x.phase !== "done" && !flightBlind(x));
+            const wolny = lotyZ.every(x => x.kind === "home" && (hp.at || 0) > (x.sentAt || 0) + 20e3 && (hp.total || 0) > (x.leftHome || 0));
+            if (plan.length && wolny) {
+              const ile = plan.reduce((a, x) => a + x.qty, 0);
+              actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", speed: 100, recall: false, home: true, plan,
+                why: `księżyc [${k}] odbudowany — fala ze zniszczonego księżyca wylądowała na planecie (${ile.toLocaleString("pl-PL")} szt.${mg.baseline ? "" : ", stan planety sprzed straty nieznany — biorę cały hangar"}), zwożę ją na nowy księżyc z surowcami` });
+              continue;
+            }
+          }
+        }
         // v3.41.0: rutynowe zwożenie na księżyc jest teraz OPCJĄ (domyślnie OFF, decyzja
         // ownera 30.08). Bez niej bot rusza flotą wyłącznie przy ataku — a powrót po
         // ratunku zostaje, bo skoro sam wywiózł flotę na drugie ciało, ma ją odstawić.
@@ -2088,7 +2161,10 @@
         // v3.113.0: …i tylko wtedy, gdy stoi tam WIĘCEJ niż poprzednia ewakuacja zostawiła
         // (`leftHome`) — resztka, której fork nie zabrał, nie może odpalać lotu za lotem.
         const evacWolna = !lotyPary.some(x => !x.evac) && lotyPary.every(x => hp && (hp.at || 0) > (x.sentAt || 0) + 20e3 && (hp.total || 0) > (x.leftHome || 0));
-        if ((!f || evacWolna) && !pairs[k].hasMoon && (s.moonLost || {})[k] && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3) {
+        // v3.116.0: ewakuacja bierze to samo co zwóz — to, co przyleciało po stracie; transportery
+        // mieszkające na planecie zostają (decyzja ownera 17.09). Bez stanu sprzed straty: wszystko.
+        const planEv = (s.moonGone || {})[k] && (s.moonGone || {})[k].baseline ? zwozPlan(hp, s.moonGone[k]) : null;
+        if ((!f || evacWolna) && !pairs[k].hasMoon && (s.moonLost || {})[k] && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && !(planEv && !planEv.length)) {
           const nbLost = neighbourMoon(k);
           const refLost = nbLost ? { key: nbLost, body: "moon" } : anyRefuge(k);
           if (refLost) {
@@ -2098,7 +2174,7 @@
             // ją przy każdym przebiegu, dopóki flota stoi na gołej planecie — więc odmowa
             // gry zamieniała ją w wielogodzinną pętlę przeładowań. Flaga włącza dwa sufity:
             // pełną karencję trasy (Fly.blocked) i budżet 3 prób na godzinę (pętla akcji).
-            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, evac: true, home: true, saveTotal: hp.total });
+            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, evac: true, home: true, saveTotal: hp.total, ...(planEv ? { plan: planEv } : {}) });
           } else {
             alerts.push({ key: k, level: "error", throttleMs: 15 * 60e3, msg: `księżyc [${k}] zniszczony, flota stoi na planecie (widoczna dla falangi), a nie mam dokąd jej ewakuować — reaguj ręcznie` });
           }
@@ -2951,7 +3027,10 @@
         const hp2 = (s.hangars || {})[`${z.key}|planet`];
         if (hp2 && (hp2.total || 0) > 0 && !Fly.mission()) {
           log(`[KSIĘŻYC] księżyc [${z.key}] odbudowany, na planecie stoi flota (${hp2.total.toLocaleString("pl-PL")} szt.) — zwożę na nowy księżyc.`, "warn");
-          Fly.start({ kind: "home", fromKey: z.key, fromBody: "planet", toKey: z.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true });
+          // v3.116.0: przy znanym stanie planety sprzed straty zwozimy tylko to, co przyleciało
+          const mgZ = (s.moonGone || {})[z.key], planZ = mgZ && mgZ.baseline ? zwozPlan(hp2, mgZ) : null;
+          if (planZ && !planZ.length) return false;
+          Fly.start({ kind: "home", fromKey: z.key, fromBody: "planet", toKey: z.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true, ...(planZ ? { plan: planZ } : {}) });
         }
       } catch (e) { log(`[KSIĘŻYC] zwóz po odbudowie nie wyszedł: ${e.message}`, "warn"); }
       return false;
@@ -6411,7 +6490,7 @@
             if (Human.playing() && !a.alarm) continue;
             const bq = a.body || "planet";
             // v3.91.0: przy ALARMIE dławik 5 min za wolny; v3.111.0: 20 s (fale co 20–40 s).
-            if (!Once.said(`qrecon|${a.key}|${bq}`, a.alarm ? 20e3 : 5 * 60e3)) {
+            if (!Once.said(`qrecon|${a.key}|${bq}`, (a.alarm || a.lost) ? 20e3 : 5 * 60e3)) {
               const got = await Hangar.scanRemote(a.key, bq);
               log(`[OBRONA] ${a.why} — ${got ? `odczytany w tle (${got.total.toLocaleString("pl-PL")} szt.), bez przełączania planety` : "cichy odczyt nie wyszedł, poczekam na naturalny odczyt hangaru"}.`, "info");
             }
