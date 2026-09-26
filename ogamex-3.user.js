@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.114.0
+// @version      3.115.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.114.0";
+  const VERSION = "3.115.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -99,7 +99,10 @@
   // v3.77.0: JEDNA lista rodzajów misji, które są EKONOMIĄ, a nie obroną. Używa jej i start
   // lotu (nie dopisuje „RATUNEK"), i przerwanie lotu (dopisuje „EKO", nie „BŁĄD") — dopisanie
   // kolejnego modułu zarobkowego w jednym miejscu zamiast w dwóch rozjeżdżających się listach.
-  const ECO_KIND = (k) => k === "expedition" || k === "asteroid" || k === "debris";
+  // v3.115.0: farma nieaktywnych (atak) też jest ekonomią — bez tego jej lot szedłby jak ratunek
+  // (wpis w `flights`, zawrót, push „Flota ewakuowana").
+  const ECO_KIND = (k) => k === "expedition" || k === "asteroid" || k === "debris" || k === "farm";
+  const ECO_LABEL = (k) => ({ expedition: "fala ekspedycji", asteroid: "lot minerów", debris: "lot po złom", farm: "atak farmy" })[k] || "lot ekonomii";
   const Journal = {
     add(kind, msg) {
       const j = Store.get("journal", []) || [];
@@ -456,6 +459,26 @@
       excludeTypes: ["ASTEROID_MINER", "COLONY_SHIP", "DEATH_STAR", "RECYCLER", "AVATAR", "SPY_PROBE"],
       launchFrom: null,     // {galaxy,system,position} — null = aktywna para
     },
+    // ── FARMA NIEAKTYWNYCH (v3.115.0, port z 2.x v2.11–v2.98, AUDYT-FARMA-2026-09-26) ──
+    // Decyzje ownera 26.09: gra tylko Athena; start RĘCZNY (pole „start z", bez niego farma
+    // stoi — owner przenosi się między galaktykami); statek OW (BATTLESHIP) albo DT
+    // (HEAVY_CARGO) i ilość sztuk na atak; farma ZA miningiem; ludzki rytm jak w 2.x
+    // (galaktyka → atak → galaktyka, nawigacją); bez limitów ataków; lata także przy FS,
+    // w godzinach ciszy i w przerwach. Jedyny twardy sufit to rezerwa slotów dla ratunku.
+    farm: {
+      enabled: false,
+      shipType: "BATTLESHIP",   // BATTLESHIP (OW) | HEAVY_CARGO (DT) | LIGHT_CARGO (MT) — nazwy data-ship-type forka
+      perAttack: 0,             // sztuk na atak; 0 = farma stoi (trzeba wpisać)
+      ranges: "",               // np. "2:1-499" albo "3:100-200, 3:250-300"
+      launchFrom: null,         // {galaxy,system,position} — WYMAGANE
+      maxTargetRank: 800,       // atakuj tylko nieaktywnych z rankingiem ≤ N (0 = bez filtra, nieznany = atakuj)
+      dbRefreshHours: 12,       // pełny skan zakresów co tyle godzin; między nimi okrążenia po znanych celach
+      minTargetProfit: 0,       // znany średni łup poniżej progu = pomijam (0 = bez progu)
+      sequential: false,        // true = każdy przebieg po kolei 1→koniec, bez priorytetu łupu (2.x v2.98.0)
+      repeatEachSweep: true,    // nowe okrążenie zwalnia wszystkie cele (2.x v2.81.0)
+      targetCooldownMin: 180,   // przy repeatEachSweep=false: ten sam cel nie wcześniej niż po N min
+      slotReserve: 2,           // ile slotów floty ZAWSZE zostaje wolnych — ratunek potrzebuje slotu (min. 1)
+    },
   };
   // v3.69.0: `expo.excludeTypes` jest własnością KODU. `saveCfg` zapisuje CAŁY obiekt CFG,
   // a zarówno budowa CFG przy starcie (Object.assign po podobiektach), jak i `syncCfg`
@@ -514,10 +537,10 @@
       if (at <= cfgSavedAt) return false;
       const st = Store.get("cfg", null);
       if (!st) { cfgSavedAt = at; return false; }
-      const before = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
+      const before = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, farm: !!CFG.farm?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
       cfgMerge(CFG, st); pinCodeOwned(CFG); cfgSavedAt = at;
-      const after = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
-      const diff = Object.keys(before).filter(k => before[k] !== after[k]).map(k => `${{ expo: "ekspedycje", aster: "minery", debris: "złom", bot: "bot", auto: "auto-ratunek" }[k]} ${after[k] ? "ON" : "OFF"}`);
+      const after = { expo: !!CFG.expo?.enabled, aster: !!CFG.aster?.enabled, debris: !!CFG.debris?.enabled, farm: !!CFG.farm?.enabled, bot: !!CFG.enabled, auto: !!CFG.autoRescue };
+      const diff = Object.keys(before).filter(k => before[k] !== after[k]).map(k => `${{ expo: "ekspedycje", aster: "minery", debris: "złom", farm: "farma", bot: "bot", auto: "auto-ratunek" }[k]} ${after[k] ? "ON" : "OFF"}`);
       log(`[CFG] ustawienia zmienione w innej karcie (${new Date(at).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}) — przeładowane${diff.length ? ": " + diff.join(", ") : ""}.`, diff.length ? "warn" : "info");
       try { if (typeof UI !== "undefined" && UI && UI.renderStatus) UI.renderStatus(); } catch {}
       return true;
@@ -2725,7 +2748,7 @@
     // floty, czyli godzinami. Recyklery (Debris) FS wyklucza z lotu dokładnie po to, żeby
     // zbierały złom — a potem sam im tego zabraniał. Tu jest ta lista, wąska i jawna:
     // wszystko inne (ekspedycje, mining, bonus) czeka na powrót floty jak dotąd.
-    FS_MIMO: ["moon", "debris"],
+    FS_MIMO: ["moon", "debris", "farm"],
     // v3.111.0/1: po RĘCZNEJ zmianie strony w trakcie serii ekonomia czeka MANUAL_YIELD_MS
     // od ostatniej zmiany strony, ale łącznie najwyżej MANUAL_YIELD_CAP_MS.
     MANUAL_YIELD_MS: 20e3,
@@ -2737,8 +2760,12 @@
     // Jedyne pytanie, jakie zadaje ekonomia. Obrona NIGDY tego nie pyta.
     // `who` = nazwa modułu; puste (domyślne) znaczy „pełna pauza", czyli zachowanie 3.68.9.
     economyAllowed(s, who = "") {
-      if (this.onBreak()) return `przerwa (~${this.breakLeftMin()} min)`;
-      if (this.maybeStart()) return "przerwa właśnie się zaczęła";
+      // v3.115.0 (owner 26.09: „gdy farming jest ON, bot cały czas powinien wysyłać floty"):
+      // farma nie zna przerw, godzin ciszy ani sufitu nawigacji ekonomii. Ustępuje tylko
+      // operatorowi, który właśnie zmienił stronę (`yielding`) — i oczywiście obronie.
+      const farma = who === "farm";
+      if (!farma && this.onBreak()) return `przerwa (~${this.breakLeftMin()} min)`;
+      if (!farma && this.maybeStart()) return "przerwa właśnie się zaczęła";
       // v3.68.0: FS stracił okno nocne (Athena: leci o dowolnej porze) — ekonomia
       // pauzuje, gdy flota NAPRAWDĘ jest na FS (s.flights, fs:true, w locie), nie
       // gdy zegar akurat mieści się w jakimś przedziale godzin.
@@ -2750,7 +2777,7 @@
       // v3.9.1 (audyt): okno nocne było podpięte pod Fleet Save — przy FS OFF
       // (domyślnie!) ekonomia chodziła 24/7, co jest głośniejsze niż cokolwiek
       // w arytmetyce floty. Cisza ma własne, niezależne okno z jitterem granic.
-      if (!CFG.human.economyAtNight && this.quiet()) return "godziny ciszy (konto ma wyglądać na śpiące)";
+      if (!CFG.human.economyAtNight && !farma && this.quiet()) return "godziny ciszy (konto ma wyglądać na śpiące)";
       // v3.43.0 (owner 30.08 20:31: „dlaczego bot przeskakuje na jakieś inne planety/moony?
       // bez sensu, bardzo mnie to denerwuje"): KAŻDA fala ekspedycji zaczyna się od
       // `[LOT] przełączam na moon [1:217:6]` — czyli wyrywa operatorowi aktywne ciało
@@ -2800,7 +2827,7 @@
         const y = Store.get("eco_yield", null);
         return `grasz — zmieniłeś stronę, fala ruszy za ${Math.ceil((this.MANUAL_YIELD_MS - (Date.now() - y.last)) / 1000)} s`;
       }
-      if (NavRate.over()) return `sufit ${CFG.maxNavPerHour} nawigacji/h — ekonomia czeka`;
+      if (!farma && NavRate.over()) return `sufit ${CFG.maxNavPerHour} nawigacji/h — ekonomia czeka`;
       return null;
     },
     quiet() {
@@ -4186,6 +4213,400 @@
     },
   };
 
+  // ═══ FARMA NIEAKTYWNYCH (v3.115.0) ══════════════════════════════════════
+  // Port z 2.x (InactiveFarmer v2.11–v2.98, sprawdzony na Athenie 13–17.08: ~4,5 bln/dobę).
+  // Rytm jak w 2.x: bot otwiera galaktykę układu, czyta wiersze (i)/(I), atakuje z NIEJ
+  // (galaktyka → formularz → galaktyka), układ po układzie. Pełny skan zakresów buduje bazę
+  // celów; między pełnymi skanami okrążenia odwiedzają tylko układy ze znanymi celami,
+  // najtłustsze (EMA łupu z Dziennika Grabieży) pierwsze. Czarna lista z raportów bojowych:
+  // własne straty > 0 = planeta ma obronę = ban 14 dni.
+  // Różnice względem 2.x wynikają z architektury 3.x: lot idzie przez `Fly` (kind "farm",
+  // misja ATTACK klikana jawnie), atak trafia do rejestru powrotów (`s.expected`), więc
+  // obrona widzi floty farmy lądujące na bazie; slotu ratunku farma nie zajmie nigdy.
+  // Stan w Store: farm (okrążenie), farm_db (baza celów), farm_done (cele z tego okrążenia),
+  // farm_ban (czarna lista), farm_yield (łup), farm_stats (licznik dnia).
+  const Farm = {
+    DB_TTL_MS: 7 * 86400e3,
+    BAN_TTL_MS: 14 * 86400e3,
+    YIELD_TTL_MS: 30 * 86400e3,
+    SWEEP_REST_MS: 15 * 60e3,          // przerwa między pełnymi przebiegami (2.x SWEEP_COOLDOWN_MIN)
+    RANK_RX: /rank(?:ing)?\s*:?\s*(\d{1,3}(?:[.,  ]\d{3})+|\d+)/i,
+    st() { return Store.get("farm", null) || {}; },
+    save(v) { Store.set("farm", v); },
+    // ── czyste pomocnicze (testowane w test3-decide) ──
+    parseRanges(str) {
+      const out = [];
+      String(str || "").split(/[,;]/).forEach(part => {
+        const m = part.trim().match(/^(\d+)\s*:\s*(\d+)\s*-\s*(\d+)$/);
+        if (!m) return;
+        const g = +m[1], a = Math.min(+m[2], +m[3]), b = Math.max(+m[2], +m[3]);
+        if (b - a <= 500) out.push({ galaxy: g, start: a, end: b });
+      });
+      return out;
+    },
+    parseRank(raw) {
+      const m = this.RANK_RX.exec(String(raw || ""));
+      if (!m) return null;
+      const n = parseInt(m[1].replace(/\D/g, ""), 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    },
+    rankOk(rank, maxRank) { if (!maxRank) return true; if (rank == null) return true; return rank <= maxRank; },
+    // Wiersze galaktyki → nieaktywni. Statusy z legendy forka: (i) 7 dni, (I) 28 dni; (v) urlop,
+    // (p) ochrona, (b) ban = nie do ataku. Pozycje 16/17 to ekspedycje/asteroidy.
+    readSystem(doc, galaxy, system, own) {
+      const rows = [...doc.querySelectorAll(".galaxy-item")];
+      const all = [];
+      for (const item of rows) {
+        const pos = parseInt((item.querySelector(".planet-index")?.textContent || "").trim(), 10);
+        if (!Number.isFinite(pos) || pos < 1 || pos > 15) continue;
+        const text = (item.textContent || "").replace(/\s+/g, " ");
+        const statuses = [...text.matchAll(/\(\s*([sinvpbI])\s*\)/g)].map(x => x[1]);
+        if (!(statuses.includes("i") || statuses.includes("I"))) continue;
+        if (statuses.includes("v") || statuses.includes("p") || statuses.includes("b")) continue;
+        const coord = `${galaxy}:${system}:${pos}`;
+        if (own && own.has(coord)) continue;
+        const attrText = [item, ...item.querySelectorAll("[data-tooltip-content],[title],[data-title]")]
+          .map(el => `${el.getAttribute?.("data-tooltip-content") || ""} ${el.getAttribute?.("title") || ""} ${el.getAttribute?.("data-title") || ""}`)
+          .join(" ").replace(/<[^>]*>/g, " ");
+        const rank = this.parseRank(text) ?? this.parseRank(attrText);
+        const nameM = text.match(/([^()]{2,32}?)\s*\(\s*[iI]\s*\)/);
+        all.push({ coord, galaxy, system, position: pos, rank, name: nameM ? nameM[1].trim().slice(0, 24) : "?", html: item.innerHTML });
+      }
+      return { rows: rows.length, all };
+    },
+    // ── bazy ──
+    db() { return Store.get("farm_db", {}) || {}; },
+    dbUpdate(galaxy, system, entries) {
+      const db = this.db(), before = JSON.stringify(db), prefix = `${galaxy}:${system}:`, now = Date.now();
+      for (const c of Object.keys(db)) if (c.startsWith(prefix)) delete db[c];
+      for (const e of entries) db[e.coord] = { name: e.name || "?", rank: e.rank ?? null, seenAt: now };
+      for (const c of Object.keys(db)) if ((db[c].seenAt || 0) < now - this.DB_TTL_MS) delete db[c];
+      if (JSON.stringify(db) !== before) Store.set("farm_db", db);
+    },
+    done() {
+      const ttl = Math.max(1, CFG.farm.targetCooldownMin || 180) * 60e3;
+      return (Store.get("farm_done", []) || []).filter(e => Date.now() - (e.at || 0) < (CFG.farm.repeatEachSweep !== false ? 24 * 3600e3 : ttl));
+    },
+    isDone(coord) { return this.done().some(e => e.coord === coord); },
+    markDone(coord) { const d = this.done(); d.push({ coord, at: Date.now() }); Store.set("farm_done", d.slice(-3000)); },
+    unmark(coord) { Store.set("farm_done", this.done().filter(e => e.coord !== coord)); },
+    bans() { const b = Store.get("farm_ban", {}) || {}; const cut = Date.now() - this.BAN_TTL_MS; for (const c of Object.keys(b)) if ((b[c].at || 0) < cut) delete b[c]; return b; },
+    banned(coord) { return !!this.bans()[coord]; },
+    yields() { const y = Store.get("farm_yield", {}) || {}; const cut = Date.now() - this.YIELD_TTL_MS; for (const c of Object.keys(y)) if ((y[c].at || 0) < cut) delete y[c]; return y; },
+    median(y) { const v = Object.values(y).map(e => e.p).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; },
+    // Kolejność ataków: najtłustsze pierwsze (nieznany cel = mediana, żeby eksploracja nie lądowała
+    // na końcu); próg łupu wycina ZNANĄ drobnicę. Tryb sekwencyjny = kolejność napotkania.
+    order(targets) {
+      const y = this.yields(), floor = CFG.farm.minTargetProfit || 0;
+      let t = targets.filter(x => !(floor > 0 && y[x.coord] && y[x.coord].p < floor));
+      if (CFG.farm.sequential !== true) {
+        const med = this.median(y);
+        if (med != null) t = t.slice().sort((a, b) => ((y[b.coord] || {}).p ?? med) - ((y[a.coord] || {}).p ?? med));
+      }
+      return t;
+    },
+    eligibleSystems(ranges) {
+      const db = this.db(), y = this.yields(), maxRank = CFG.farm.maxTargetRank || 0;
+      const seen = new Set(), out = [];
+      for (const c of Object.keys(db)) {
+        if (!this.rankOk(db[c].rank, maxRank) || this.banned(c)) continue;
+        const [g, sy] = c.split(":").map(Number);
+        if (!ranges.some(r => r.galaxy === g && sy >= r.start && sy <= r.end)) continue;
+        const k = `${g}:${sy}`; if (seen.has(k)) continue; seen.add(k); out.push({ galaxy: g, system: sy });
+      }
+      const sum = {}; for (const c of Object.keys(y)) { const k = c.split(":").slice(0, 2).join(":"); sum[k] = (sum[k] || 0) + y[c].p; }
+      out.sort((a, b) => (sum[`${b.galaxy}:${b.system}`] || 0) - (sum[`${a.galaxy}:${a.system}`] || 0) || a.galaxy - b.galaxy || a.system - b.system);
+      return out;
+    },
+    // ── czarna lista z raportów bojowych (2.x CombatWatch) ──
+    COMBAT_CANDIDATES: [
+      "/messages/messagedata?MessageCategoryType=FLEET_BATTLE_REPORT&page=1",   // potwierdzony na Athenie (STAN-I-PLAN, lista endpointów)
+      "/messages/messagedata?MessageCategoryType=FLEET_COMBAT&page=1",
+      "/messages/messagedata?MessageCategoryType=COMBAT&page=1",
+      "/messages/messagedata?MessageCategoryType=COMBAT_REPORTS&page=1",
+    ],
+    parseCombat(text) {
+      const out = [], marks = [], re = /Combat report:[^\[]{0,80}\[(\d+):(\d+):(\d+)\]/g;
+      const num = (x) => { const n = parseInt(String(x).replace(/[^0-9]/g, ""), 10); return Number.isFinite(n) ? n : null; };
+      let m;
+      while ((m = re.exec(text))) marks.push({ start: m.index + m[0].length, idx: m.index, coord: `${m[1]}:${m[2]}:${m[3]}` });
+      for (let i = 0; i < marks.length; i++) {
+        let chunk = text.slice(marks[i].start, marks[i + 1] ? marks[i + 1].idx : marks[i].start + 1600);
+        chunk = chunk.replace(/\d{1,2}\.\d{2}\.\d{4}[\s ]+\d{1,2}:\d{2}(:\d{2})?/g, " ");
+        const resM = chunk.match(/Resources\s*:\s*([0-9][0-9.,\s ]*)/i);
+        let losses = null; const pairRe = /([^:\n]{2,40}?)\s*:\s*([0-9][0-9.,\s ]*)/g; let pm;
+        while ((pm = pairRe.exec(chunk))) { if (/resources|debris/i.test(pm[1].trim())) continue; losses = num(pm[2]); break; }
+        out.push({ coord: marks[i].coord, losses, resources: resM ? num(resM[1]) : null });
+      }
+      return out;
+    },
+    applyCombat(reports, label) {
+      const b = Store.get("farm_ban", {}) || {}; let n = 0;
+      for (const r of reports) {
+        if (r.losses == null || r.losses <= 0) continue;
+        if (!b[r.coord]) { n++; log(`[FARMA BAN] [${r.coord}] — obrona rozbiła flotę (straty ${r.losses.toLocaleString("pl-PL")}, łup ${r.resources ?? "?"}). Ban 14 dni.`, "warn"); }
+        b[r.coord] = { at: Date.now(), losses: r.losses };
+      }
+      if (n) { Store.set("farm_ban", b); log(`[FARMA BAN] ${label}: +${n}, czarna lista ${Object.keys(this.bans()).length}.`, "warn"); }
+      return n;
+    },
+    // ── łup (2.x PlunderWatch, /home/Partial_PlunderJournal potwierdzony na Athenie 15.08) ──
+    parsePlunder(text) {
+      const out = [], re = /(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2})[\s ]+([^\[\]()]{2,32}?)\s*\(\s*[a-zA-Z]\s*\)\s*\[(\d+):(\d+):(\d+)\][\s ]*\+[\s ]*([0-9]{1,3}(?:[.,\s ][0-9]{3})*)/g;
+      let m;
+      while ((m = re.exec(text))) out.push({ when: m[1], player: m[2].trim(), coord: `${m[3]}:${m[4]}:${m[5]}`, profit: parseInt(m[6].replace(/[^0-9]/g, ""), 10) });
+      return out;
+    },
+    learnPlunder(rows, label) {
+      const seenArr = Store.get("farm_yield_seen", []) || [], seen = new Set(seenArr), y = this.yields(); let n = 0;
+      for (const r of rows) {
+        if (!Number.isFinite(r.profit) || r.profit < 0) continue;
+        const k = `${r.coord}|${r.when}`; if (seen.has(k)) continue;
+        seen.add(k); seenArr.unshift(k);
+        const e = y[r.coord];
+        y[r.coord] = { p: e ? Math.round(e.p * 0.5 + r.profit * 0.5) : r.profit, n: (e?.n || 0) + 1, at: Date.now(), player: r.player || e?.player || "?" };
+        n++;
+      }
+      if (n) { Store.set("farm_yield", y); Store.set("farm_yield_seen", seenArr.slice(0, 4000)); log(`[FARMA ŁUP] ${label}: +${n} wpisów łupu (baza ${Object.keys(y).length} celów).`, "info"); }
+      return n;
+    },
+    // Zbiór z OTWARTEJ strony (działa zawsze: to ten sam tekst, który widać na ekranie).
+    harvest() {
+      try {
+        // bez panelu bota: jego log cytuje „Combat report:” (lekcja Bar.read v3.92.0 — własny tekst czytany jak gra)
+        const panel = document.getElementById("ogx3-panel");
+        let t = "";
+        for (const n of (document.body ? document.body.childNodes : [])) { if (n === panel || (n.nodeType === 1 && panel && n.contains(panel))) continue; t += " " + (n.textContent || ""); }
+        t = t.replace(/\s+/g, " ");
+        if (/^\/messages/.test(location.pathname) && /Combat report:/i.test(t)) this.applyCombat(this.parseCombat(t), "strona wiadomości");
+        if (/Plunder Journal/i.test(t)) this.learnPlunder(this.parsePlunder(t), "strona profilu");
+      } catch {}
+    },
+    async watch() {
+      const now = Date.now();
+      if (now - (Store.get("farm_combat_at", 0) || 0) >= 10 * 60e3) {
+        Store.set("farm_combat_at", now);
+        const known = Store.get("farm_combat_url", "");
+        let ok = false;
+        for (const url of (known ? [known] : this.COMBAT_CANDIDATES)) {
+          try {
+            const r = await fetchT(url, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+            if (!r.ok) continue;
+            const html = await r.text();
+            if (looksLoggedOut(r, html)) { Session.lost(); return; }
+            const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+            if (!/Combat report:/i.test(text)) continue;
+            if (!known) { Store.set("farm_combat_url", url); log(`[FARMA BAN] endpoint raportów bojowych potwierdzony: ${url}`, "info"); }
+            this.applyCombat(this.parseCombat(text), "raporty (fetch)"); ok = true; break;
+          } catch {}
+        }
+        if (!ok && !Once.said("farm_combat_probe", 24 * 3600e3)) log("[FARMA BAN] żaden adres raportów bojowych nie dał „Combat report:” — bany zbieram ze strony wiadomości (wejdź czasem w Combat reports).", "warn");
+      }
+      if (now - (Store.get("farm_plunder_at", 0) || 0) >= 15 * 60e3) {
+        Store.set("farm_plunder_at", now);
+        try {
+          const r = await fetchT("/home/Partial_PlunderJournal", { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
+          if (r.ok) {
+            const html = await r.text();
+            const rows = this.parsePlunder(html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " "));
+            if (rows.length) this.learnPlunder(rows, "dziennik (fetch)");
+            else if (!Once.said("farm_plunder_dom", 24 * 3600e3)) log(`[FARMA ŁUP DOM] dziennik grabieży bez wierszy — zrzut: ${html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").slice(0, 600)}`, "warn");
+          }
+        } catch {}
+      }
+    },
+    // ── sloty, statki, przerwy ──
+    reserve() { return Math.max(1, CFG.farm.slotReserve ?? 2); },
+    // Wolne sloty wg odczytu z formularza floty minus loty wysłane PO tym odczycie (odczyt żyje
+    // tylko na /fleet, a farma bywa tam co atak). Nieznane sloty = jeden atak naraz.
+    freeSlots(s, now) {
+      const f = s.slots && s.slots.fleet;
+      if (!f || !f.total || now - (s.slots.at || 0) > 30 * 60e3) return (s.expected || []).some(e => e.kind === "farm" && e.pending) ? 0 : 1;
+      const poOdczycie = (s.expected || []).filter(e => (e.sentAt || 0) > (s.slots.at || 0) && (e.returnAt || 0) > now).length;
+      return f.total - f.used - poOdczycie - this.reserve();
+    },
+    nextReturn(s, fromKey, now) {
+      const r = (s.expected || []).filter(e => e.kind === "farm" && e.fromKey === fromKey && (e.returnAt || 0) > now).map(e => e.returnAt).sort((a, b) => a - b);
+      return r[0] || 0;
+    },
+    pause(ms, why, unmarkCoord) {
+      const st = this.st(); st.pauseUntil = Date.now() + ms; st.pauseWhy = why; this.save(st);
+      if (unmarkCoord) this.unmark(unmarkCoord);
+      if (!Once.said("farm_pause|" + String(why).slice(0, 20), 10 * 60e3)) log(`[FARMA] pauza ${Math.max(1, Math.round(ms / 60e3))} min: ${why}.`, "warn");
+    },
+    // Wołane z Fly.form na ŻYWYM formularzu (hangar i sloty właśnie odczytane).
+    formOk(m, els) {
+      const typ = String(CFG.farm.shipType || "").toUpperCase();
+      const el = els.find(e => String(e.dataset.shipType || "").toUpperCase() === typ);
+      const have = el ? (parseInt(el.dataset.shipQuantity || "0") || 0) : 0;
+      const need = (m.plan && m.plan[0] && m.plan[0].qty) || 0;
+      if (have < need) { this.noShips(m, have); return false; }
+      const s = Situation.load();
+      const f = s.slots && s.slots.fleet;
+      if (f && f.total && Date.now() - (s.slots.at || 0) < 60e3 && f.total - f.used - this.reserve() <= 0) {
+        const s2 = Situation.load(), nr = this.nextReturn(s2, m.fromKey, Date.now());
+        this.pause(Math.min(10 * 60e3, Math.max(30e3, (nr || Date.now() + 60e3) - Date.now() + 5e3)), `sloty floty ${f.used}/${f.total}, rezerwa ${this.reserve()} dla ratunku — czekam na powrót ataku`, m.toKey);
+        return false;
+      }
+      return true;
+    },
+    noShips(m, have) {
+      const s = Situation.load(), nr = this.nextReturn(s, m.fromKey, Date.now());
+      const typ = CFG.farm.shipType;
+      this.pause(Math.min(15 * 60e3, Math.max(30e3, (nr || Date.now() + 10 * 60e3) - Date.now() + 5e3)),
+        `na [${m.fromKey}] ${m.fromBody} stoi ${have.toLocaleString("pl-PL")} ${typ}, a atak to ${(CFG.farm.perAttack || 0).toLocaleString("pl-PL")} — ${nr ? "czekam na powrót floty farmy" : "brak floty farmy w drodze"}`, m.toKey);
+    },
+    sent(m, what) {
+      const d = new Date().toISOString().slice(0, 10), st = Store.get("farm_stats", null);
+      Store.set("farm_stats", { day: d, n: (st && st.day === d ? st.n : 0) + 1, last: m.toKey, at: Date.now() });
+      log(`[FARMA] atak wysłany: ${what} → [${m.toKey}]`, "success");
+    },
+    launch(s) {
+      const lf = CFG.farm.launchFrom; if (!lf) return null;
+      const k = key(lf), p = (s.pairs || {})[k];
+      if (!p) return { missing: k };
+      return { key: k, body: p.hasMoon ? "moon" : "planet" };
+    },
+    onGalaxy(g, sy) { return page() === "galaxy" && new RegExp(`[?&]x=${g}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${sy}(?:&|$)`).test(location.search); },
+    go(g, sy, why) { Nav.go(`/galaxy?x=${g}&y=${sy}`, `farma: ${why} [${g}:${sy}]`); },
+    finish(st, why) {
+      if (st.mode !== "lap") { Store.set("farm_last_full", Date.now()); Store.set("farm_stale_lap", false); }
+      const db = this.db(), maxRank = CFG.farm.maxTargetRank || 0;
+      const w = Object.keys(db).filter(c => this.rankOk(db[c].rank, maxRank)).length;
+      log(`[FARMA] ${st.mode === "lap" ? "okrążenie po bazie" : "pełny skan"} zakończony (${why}): ${st.scanned || 0} układów, baza ${Object.keys(db).length} nieaktywnych (${w} w limicie rankingu), czarna lista ${Object.keys(this.bans()).length}. Następny przebieg za ${Math.round(this.SWEEP_REST_MS / 60e3)} min.`, "info");
+      if (st.unknownRank) log(`[FARMA] ${st.unknownRank} cel(ów) bez odczytanego rankingu — filtr ich nie ogranicza. Zrzut wiersza: [FARMA RANK DOM].`, "warn");
+      this.save({ restUntil: Date.now() + this.SWEEP_REST_MS });
+    },
+    attack(s, lp, t, st) {
+      const qty = Math.max(1, parseInt(CFG.farm.perAttack, 10) || 0);
+      const toKey = t.coord;
+      if (Fly.blocked({ fromKey: lp.key, toKey })) { if (!Once.said(`farmblk|${toKey}`, 5 * 60e3)) log(`[FARMA] trasa [${lp.key}]→[${toKey}] w karencji po nieudanym locie — biorę następny cel.`, "info"); this.markDone(toKey); return false; }
+      this.markDone(toKey);   // stempel przy starcie, jak w 2.x (nieudany start zdejmuje go w pause/noShips)
+      const y = this.yields()[toKey];
+      const ok = Fly.start({ kind: "farm", fromKey: lp.key, fromBody: lp.body, toKey, toBody: "planet",
+        why: `farma: atak na [${toKey}]${t.rank ? ` (rank ${t.rank})` : ""}${y ? `, średni łup ${y.p.toLocaleString("pl-PL")}` : ""}`,
+        speed: 100, plan: [{ type: CFG.farm.shipType, qty }], missionType: "ATTACK", takeResources: false });
+      if (!ok) { this.unmark(toKey); return false; }
+      if (!Once.said("farm_row_dom", 24 * 3600e3) && t.html) log(`[FARMA DOM] pierwszy wiersz celu: ${String(t.html).replace(/\s+/g, " ").slice(0, 500)}`, "info");
+      return true;
+    },
+    status(now = Date.now()) {
+      const c = CFG.farm; if (!c.enabled) return "wyłączona";
+      if (!c.launchFrom) return "ustaw „start z” (g:s:p)";
+      if (!(c.perAttack > 0)) return "wpisz sztuk na atak";
+      if (!this.parseRanges(c.ranges).length) return "wpisz zakresy (np. 2:1-499)";
+      const st = this.st(), stats = Store.get("farm_stats", null), d = new Date().toISOString().slice(0, 10);
+      const dzis = stats && stats.day === d ? stats.n : 0;
+      const bits = [`dziś ${dzis} ataków`];
+      if (st.pauseUntil > now) bits.unshift(`pauza ${Math.ceil((st.pauseUntil - now) / 60e3)} min: ${st.pauseWhy || ""}`);
+      else if (st.active) bits.unshift(`${st.mode === "lap" ? "okrążenie" : "pełny skan"} ${st.scanned || 0}/${st.total || 0} · w kolejce ${(st.targets || []).length}`);
+      else if (st.restUntil > now) bits.unshift(`przerwa ${Math.ceil((st.restUntil - now) / 60e3)} min`);
+      bits.push(`baza ${Object.keys(this.db()).length}`, `ban ${Object.keys(this.bans()).length}`);
+      return bits.join(" · ");
+    },
+    async tick(s) {
+      const c = CFG.farm;
+      if (!c || !c.enabled || Fly.mission()) return false;
+      this.harvest();
+      const why = Human.economyAllowed(s, "farm");
+      if (why) { if (!Once.said("farm|" + why.slice(0, 12), 10 * 60e3)) log(`[FARMA] wstrzymana: ${why}`, "info"); return false; }
+      if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
+      const now = Date.now();
+      const lp = this.launch(s);
+      if (!lp) { if (!Once.said("farm|nofrom", 30 * 60e3)) log("[FARMA] brak „start z” w panelu — nie zgaduję, skąd lecą ataki (decyzja ownera: start ustawiany ręcznie).", "warn"); return false; }
+      if (lp.missing) { if (!Once.said("farm|nopair", 30 * 60e3)) log(`[FARMA] [${lp.missing}] nie ma na pasku planet — popraw „start z”.`, "warn"); return false; }
+      if (!(c.perAttack > 0)) { if (!Once.said("farm|noqty", 30 * 60e3)) log("[FARMA] wpisz w panelu, ile statków leci na jeden atak.", "warn"); return false; }
+      // AUDYT-FARMA 4.7: fala ekspedycji na ostatni slot bierze CAŁY hangar (v3.105.0), a OW/DT nie są wykluczone
+      if (CFG.expo.enabled && CFG.expo.launchFrom && key(CFG.expo.launchFrom) === lp.key && !(CFG.expo.excludeTypes || []).includes(String(c.shipType).toUpperCase()) && !Once.said("farm|expo", 6 * 3600e3))
+        log(`[FARMA] start farmy [${lp.key}] = baza ekspedycji — fale ekspedycji zabierają też ${c.shipType}, więc atakom zabraknie statków. Lepiej ustaw „start z” na innym księżycu.`, "warn");
+      const ranges = this.parseRanges(c.ranges);
+      if (!ranges.length) { if (!Once.said("farm|norange", 30 * 60e3)) log(`[FARMA] brak poprawnych zakresów („${c.ranges || ""}”) — wpisz np. 2:1-499.`, "warn"); return false; }
+      let st = this.st();
+      if (st.pauseUntil && now < st.pauseUntil) return false;
+      await this.watch();
+      if (Fly.mission()) return true;
+      const own = new Set(Object.keys(s.pairs || {}));
+      const wolne = this.freeSlots(s, now);
+      // 1. cele z przeczytanego układu — atak z jego galaktyki (ludzki rytm 2.x v2.11.2)
+      if (st.active) {
+        const czeka = (st.targets || []).filter(t => !this.isDone(t.coord) && !this.banned(t.coord));
+        if (czeka.length) {
+          if (wolne <= 0) {
+            const nr = this.nextReturn(s, lp.key, now);
+            if (!Once.said("farm|slots", 10 * 60e3)) log(`[FARMA] sloty floty zajęte (rezerwa ${this.reserve()} dla ratunku) — ${czeka.length} cel(e) czekają${nr ? `, najbliższy powrót ~${new Date(nr).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}.`, "info");
+            return false;
+          }
+          const t = this.order(czeka)[0];
+          if (!t) { st.targets = []; this.save(st); return false; }
+          if (!this.onGalaxy(t.galaxy, t.system)) { this.go(t.galaxy, t.system, "wracam do układu celu"); return true; }
+          if (this.attack(s, lp, t, st)) { await Fly.tick(); return true; }
+          return false;
+        }
+        if ((st.targets || []).length) { st.targets = []; this.save(st); }
+        const next = (st.queue || [])[0];
+        if (!next) { this.finish(st, "kolejka pusta"); return false; }
+        if (!this.onGalaxy(next.galaxy, next.system)) { await sleep(jitter(800, 2500)); this.go(next.galaxy, next.system, st.scanned ? "następny układ" : "start przebiegu"); return true; }
+        // wiersze galaktyki dociąga skrypt gry — chwilę na nie czekamy, pusty DOM ≠ pusty układ
+        let rd = this.readSystem(document, next.galaxy, next.system, own);
+        for (let i = 0; i < 10 && !rd.rows; i++) { await sleep(500); rd = this.readSystem(document, next.galaxy, next.system, own); }
+        if (!rd.rows) {
+          st.galWait = (st.galWait || 0) + 1;
+          if (st.galWait < 3) { this.save(st); return false; }
+          if (!Once.said("farm_gal_dom", 6 * 3600e3)) log(`[FARMA DOM] galaktyka [${next.galaxy}:${next.system}] bez wierszy .galaxy-item po 3 próbach — pomijam układ. Fragment: ${((document.querySelector("#content, .content") || document.body).innerHTML || "").replace(/\s+/g, " ").slice(0, 600)}`, "warn");
+        }
+        st.galWait = 0;
+        const maxRank = c.maxTargetRank || 0;
+        let pomRank = 0, nieznany = 0, ban = 0;
+        const cele = [];
+        for (const e of rd.all) {
+          if (maxRank > 0 && e.rank == null) { nieznany++; if (!Once.said("farm_rank_dom", 24 * 3600e3)) log(`[FARMA RANK DOM] wiersz bez rankingu: ${String(e.html).replace(/\s+/g, " ").slice(0, 600)}`, "warn"); }
+          if (!this.rankOk(e.rank, maxRank)) { pomRank++; continue; }
+          if (this.banned(e.coord)) { ban++; continue; }
+          if (this.isDone(e.coord)) continue;
+          cele.push({ coord: e.coord, galaxy: e.galaxy, system: e.system, position: e.position, rank: e.rank, html: e.html });
+        }
+        if (rd.rows) this.dbUpdate(next.galaxy, next.system, rd.all);
+        st.queue = st.queue.slice(1);
+        st.scanned = (st.scanned || 0) + 1;
+        st.unknownRank = (st.unknownRank || 0) + nieznany;
+        st.targets = cele;
+        this.save(st);
+        if (cele.length) log(`[FARMA] [${next.galaxy}:${next.system}] ${cele.length} cel(e): ${cele.map(x => x.coord + (x.rank ? ` (rank ${x.rank})` : "")).join(", ")}${pomRank ? ` · ${pomRank} powyżej limitu rankingu` : ""}${ban ? ` · ${ban} na czarnej liście` : ""}`, "success");
+        if (cele.length && wolne > 0) {
+          const t = this.order(cele)[0];
+          if (t && this.attack(s, lp, t, st)) { await Fly.tick(); return true; }
+        }
+        if (cele.length) {   // sloty zajęte — cele czekają w kolejce
+          if (!Once.said("farm|slots", 10 * 60e3)) log(`[FARMA] sloty floty zajęte (rezerwa ${this.reserve()} dla ratunku) — ${cele.length} cel(e) czekają na powrót ataku.`, "info");
+          return false;
+        }
+        const nx = st.queue[0];
+        if (!nx) { this.finish(st, "koniec zakresów"); return false; }
+        await sleep(jitter(800, 2500));
+        this.go(nx.galaxy, nx.system, "następny układ");
+        return true;
+      }
+      // 2. nowy przebieg
+      if (st.restUntil && now < st.restUntil) return false;
+      const lastFull = Store.get("farm_last_full", 0) || 0;
+      const dbFresh = now - lastFull < Math.max(1, c.dbRefreshHours || 12) * 3600e3;
+      let queue = null, mode = "full";
+      if (c.sequential !== true && (dbFresh || !Store.get("farm_stale_lap", false))) {
+        const sys = this.eligibleSystems(ranges);
+        if (sys.length) { queue = sys; mode = "lap"; if (!dbFresh) { Store.set("farm_stale_lap", true); log("[FARMA] pełny skan zaległy, ale baza zna cele — najpierw okrążenie po nich, pełny skan zaraz po.", "info"); } }
+      }
+      if (!queue) { queue = []; for (const r of ranges) for (let sy = r.start; sy <= r.end; sy++) queue.push({ galaxy: r.galaxy, system: sy }); }
+      if (c.repeatEachSweep !== false) Store.set("farm_done", []);
+      st = { active: true, mode, queue, scanned: 0, total: queue.length, targets: [], unknownRank: 0, startedAt: now };
+      this.save(st);
+      log(mode === "lap"
+        ? `[FARMA] okrążenie PO BAZIE: ${queue.length} układ(ów) ze znanymi celami${c.maxTargetRank ? ` (rank ≤ ${c.maxTargetRank})` : ""}; start z [${lp.key}] ${lp.body}, ${c.perAttack.toLocaleString("pl-PL")} × ${c.shipType} na atak.`
+        : `[FARMA] pełny skan: ${queue.length} układów (${c.ranges}); start z [${lp.key}] ${lp.body}, ${c.perAttack.toLocaleString("pl-PL")} × ${c.shipType} na atak.`, "success");
+      this.go(queue[0].galaxy, queue[0].system, "start przebiegu");
+      return true;
+    },
+  };
+
   // ═══ Fly — jeden wykonawca lotu ════════════════════════════════════════
   // Misja w Store "mission": { kind:"fly", fromKey, fromBody, toKey, toBody, speed, step, startedAt, air, recallAt, why }
   const Fly = {
@@ -4309,7 +4730,7 @@
     // z wpisów, więc niczego nie dopisujemy drugi raz; skład floty przychodzi ze
     // stempla `last_send`, bo po przeładowaniu formularza już nie ma.
     confirmed(m, info = {}) {
-      const eco = ["expedition", "asteroid", "debris"].includes(m.kind);
+      const eco = ECO_KIND(m.kind);
       const s = Situation.load();
       // TYLKO loty obronne trafiają do `flights` (v3.2.0): ekspedycja tam wpisana
       // znaczyłaby dla decide() „ta para jest już w locie" i zablokowałaby ratunek.
@@ -4384,6 +4805,7 @@
       if (m.kind === "expedition") log(`[EXPO] fala wysłana: ${what} → [${m.toKey}]`, "success");
       else if (m.kind === "debris") log(`[ZŁOM] recyklery wysłane: ${what} → [${m.toKey}]`, "success");
       else if (m.kind === "asteroid") log(`[ASTER] minery wysłane: ${what} → [${m.toKey}]`, "success");
+      else if (m.kind === "farm") Farm.sent(m, what);
       else Journal.add(m.fs ? "FS" : (m.home ? "POWRÓT" : "RATUNEK"), `WYSŁANO: [${m.fromKey}] ${m.fromBody} → [${m.toKey}] ${m.toBody} (${types} typów statków)${m.air ? `, zawrót ~${new Date(m.recallAt).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}`);
     },
     // v3.10.2 (audyt E2E): 3-minutowa karencja po nieudanej próbie lotu była dłuższa
@@ -4428,13 +4850,13 @@
       // operatora, nie porażka trasy). Wyjątek: wysyłka już POSZŁA (stempel `last_send`
       // tej misji) — wtedy normalna ścieżka musi ją zaksięgować w rejestrze powrotów.
       {
-        const ecoOn = { expedition: () => CFG.expo.enabled, asteroid: () => CFG.aster.enabled, debris: () => CFG.debris.enabled }[m.kind];
+        const ecoOn = { expedition: () => CFG.expo.enabled, asteroid: () => CFG.aster.enabled, debris: () => CFG.debris.enabled, farm: () => CFG.farm.enabled }[m.kind];
         if (ecoOn && !ecoOn()) {
           const ls0 = Store.get("last_send", null);
           const sent = ls0 && ls0.toKey === m.toKey && ls0.from === m.fromKey && ls0.kind === m.kind && (ls0.at || 0) >= (m.startedAt || 0);
           if (!sent) {
             Store.del("mission");
-            log(`[LOT] przerwany bez karencji: wyłączyłeś ${m.kind === "expedition" ? "ekspedycje" : m.kind === "asteroid" ? "minery" : "zbieranie złomu"} w trakcie misji (krok „${m.step}").`, "warn");
+            log(`[LOT] przerwany bez karencji: wyłączyłeś ${m.kind === "expedition" ? "ekspedycje" : m.kind === "asteroid" ? "minery" : m.kind === "farm" ? "farmę" : "zbieranie złomu"} w trakcie misji (krok „${m.step}").`, "warn");
             return;
           }
         }
@@ -4452,7 +4874,8 @@
           const klik = Store.get("input_at", 0) || 0;
           if (klik > (m.startedAt || 0)) {
             Store.del("mission");
-            log(`[LOT] odłożony bez karencji: kliknąłeś ${Math.max(0, Math.round((Date.now() - klik) / 1000))} s temu, zanim bot otworzył formularz — ${m.kind === "expedition" ? "fala ekspedycji" : m.kind === "asteroid" ? "lot minerów" : "lot po złom"} poczeka ${Math.round(CFG.human.ecoIdleSec / 60)} min od Twojego ostatniego kliknięcia.`, "info");
+            if (m.kind === "farm") Farm.unmark(m.toKey);
+            log(`[LOT] odłożony bez karencji: kliknąłeś ${Math.max(0, Math.round((Date.now() - klik) / 1000))} s temu, zanim bot otworzył formularz — ${ECO_LABEL(m.kind)} poczeka ${Math.round(CFG.human.ecoIdleSec / 60)} min od Twojego ostatniego kliknięcia.`, "info");
             return;
           }
         }
@@ -4462,12 +4885,13 @@
       // tick nowej strony wracał na formularz floty. Teraz misja schodzi bez karencji,
       // a Expo/Aster/Debris zaplanują ją od nowa, gdy Human.economyAllowed przepuści.
       // Wysyłka, która już poszła, idzie normalną ścieżką (rejestr powrotów).
-      if (["expedition", "asteroid", "debris"].includes(m.kind) && Human.yielding() && ((Store.get("eco_yield", null) || {}).last || 0) > (m.startedAt || 0)) {
+      if (ECO_KIND(m.kind) && Human.yielding() && ((Store.get("eco_yield", null) || {}).last || 0) > (m.startedAt || 0)) {
         const ls1 = Store.get("last_send", null);
         const sent1 = ls1 && ls1.toKey === m.toKey && ls1.from === m.fromKey && ls1.kind === m.kind && (ls1.at || 0) >= (m.startedAt || 0);
         if (!sent1) {
           Store.del("mission");
-          log(`[LOT] odłożony bez karencji: sam otworzyłeś ${location.pathname} — nie zabieram Ci karty, ${m.kind === "expedition" ? "fala ekspedycji" : m.kind === "asteroid" ? "lot minerów" : "lot po złom"} ruszy ${Math.round(Human.MANUAL_YIELD_MS / 1000)} s po Twojej ostatniej zmianie strony (najdłużej ${Math.round(Human.MANUAL_YIELD_CAP_MS / 60e3)} min).`, "info");
+          if (m.kind === "farm") Farm.unmark(m.toKey);
+          log(`[LOT] odłożony bez karencji: sam otworzyłeś ${location.pathname} — nie zabieram Ci karty, ${ECO_LABEL(m.kind)} ruszy ${Math.round(Human.MANUAL_YIELD_MS / 1000)} s po Twojej ostatniej zmianie strony (najdłużej ${Math.round(Human.MANUAL_YIELD_CAP_MS / 60e3)} min).`, "info");
           return;
         }
       }
@@ -4481,7 +4905,7 @@
           // zabierze operatorowi aktywne ciało pod formularz floty, zapamiętujemy,
           // GDZIE był — po domknięciu serii Expo.maybeReturnOperator() odprowadzi go
           // z powrotem, o ile w międzyczasie sam nie kliknął. Ratunek tego nie robi.
-          if (["expedition", "asteroid", "debris"].includes(m.kind) && !Store.get("eco_return", null)) {
+          if (ECO_KIND(m.kind) && !Store.get("eco_return", null)) {
             // Sam adres strony może nie nieść planety (menu gry daje np. /building/resource
             // bez ?planet=) — bierzemy też UUID aktywnego ciała, żeby powrót przywrócił
             // nie tylko stronę, ale i planetę operatora.
@@ -4528,15 +4952,15 @@
               } catch {}
               // lot obronny zostaje przy stemplu: bez `leftHome` z tego samego odczytu mniejsza liczba mogłaby
               // przedwcześnie domknąć jego wpis w `flightAlive` (utrata zawrotu)
-              this.confirmed(m, { loaded: lsOk.loaded || "", sentReal: ["expedition", "asteroid", "debris"].includes(m.kind) ? sentReal : 0 });
+              this.confirmed(m, { loaded: lsOk.loaded || "", sentReal: ECO_KIND(m.kind) ? sentReal : 0 });
               return;
             }
           }
-          const ECO_KINDS = ["expedition", "asteroid", "debris"];
+          const ECO_KINDS = ["expedition", "asteroid", "debris", "farm"];
           // v3.61.0 (podwójna wysyłka złomu 05:19+05:20): okno 20 s jest dla FAL
           // ekspedycji (ta sama trasa co 60–90 s); złom nigdy nie powtarza trasy
           // w minutach — dostaje pełne 3 minuty jak loty obronne.
-          const guardMs = m.kind === "debris" ? 3 * 60e3 : ECO_KINDS.includes(m.kind) ? 20e3 : 3 * 60e3;
+          const guardMs = (m.kind === "debris" || m.kind === "farm") ? 3 * 60e3 : ECO_KINDS.includes(m.kind) ? 20e3 : 3 * 60e3;
           const ls = Store.get("last_send", null);
           // v3.68.6 (audyt 04.09, obrona-stan-lotu#1 P0 + expo-wykonanie#4 P2): bramka
           // porównywała SAMĄ TRASĘ (klucz→klucz) i czas — nie rodzaj lotu i nie ciała.
@@ -4797,7 +5221,10 @@
         Nav.go(this.url(m), `lot: formularz nieczytelny, ponawiam [${m.fromKey}]→[${m.toKey}]`);
         return;
       }
-      if (snap.total === 0) { log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
+      if (snap.total === 0) { if (m.kind === "farm") Farm.noShips(m, 0); log(`[LOT] hangar ${m.fromBody} [${m.fromKey}] pusty — nic do wysłania.`, "warn"); Store.del("mission"); return; }
+      // v3.115.0: atak farmy sprawdza na ŻYWYM formularzu to, czego migawka nie wie: czy stoi tu pełny
+      // skład ataku (flota farmy wraca falami) i czy po wysyłce zostanie rezerwa slotów dla ratunku.
+      if (m.kind === "farm" && !Farm.formOk(m, els)) { Store.del("mission"); return; }
       const loaded = [];
       let loadedTotal = 0;   // v3.52.0: rejestr powrotów chce wiedzieć, ILE statków wraca
       const loadedMap = {};  // v3.99.0: skład wpisany w formularz, per typ (porównanie z hangarem po wysyłce)
@@ -5094,9 +5521,16 @@
       // osobny kafel „Recycle". COLLECT był pierwszy na liście i bot dusił złą
       // misję → „Invalid mission type". Klik w kafel DZIAŁA (klasa `selected`
       // w zrzucie), więc wystarczy właściwa kolejność: RECYCL, nigdy COLLECT.
-      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : m.missionType === "ASTEROID" ? ["ASTEROID_MINING", "ASTEROID"] : m.missionType === "COLLECT" ? ["RECYCL", "HARVEST"] : this.MISSIONS;
-      let picked = null; for (const w of wanted) { picked = missions.find(x => nameOf(x).includes(w)); if (picked) break; }
-      if (!picked) { log(`[LOT DOM] brak misji ${wanted[0]}. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error"); return this.abort(`brak misji ${wanted[0]}`); }
+      // v3.115.0: ATAK farmy — jawny kafel Attack bez ataku łączonego/rakiet/niszczenia (wzór 2.x v2.72.0).
+      // Bez tej gałęzi nieznany typ misji spadał na listę DEPLOY: flota poleciałaby STACJONOWAĆ u celu.
+      const wanted = m.missionType === "EXPEDITION" ? ["EXPEDITION", "EKSPEDYCJ"] : m.missionType === "ASTEROID" ? ["ASTEROID_MINING", "ASTEROID"] : m.missionType === "COLLECT" ? ["RECYCL", "HARVEST"] : m.missionType === "ATTACK" ? ["ATTACK", "ATAK"] : this.MISSIONS;
+      const zakazane = m.missionType === "ATTACK" ? /ACS|ALLIANCE|UNION|FEDERA|MISSILE|DESTR|GROUP/ : null;
+      let picked = null; for (const w of wanted) { picked = missions.find(x => nameOf(x).includes(w) && !(zakazane && zakazane.test(nameOf(x)))); if (picked) break; }
+      if (!picked) {
+        log(`[LOT DOM] brak misji ${wanted[0]}. Dostępne: ${missions.map(x => `${(x.textContent || "").trim().slice(0, 20)}[${x.className}]`).join(", ") || "NONE"}`, "error");
+        if (m.kind === "farm") Farm.pause(30 * 60e3, "brak kafla misji Attack na kroku 3 formularza (zrzut dostępnych misji w logu)", m.toKey);
+        return this.abort(`brak misji ${wanted[0]}`);
+      }
       // v3.59.0 (incydent 22:32 „Invalid mission type" — owner: „chyba zabrakło
       // naduszenia w button Recycle"): klik w kontener misji mógł nie trafić
       // w element z handlerem. Duszenie idzie w najbardziej klikalny element
@@ -5147,13 +5581,17 @@
       // z czasu lotu ODCZYTANEGO z formularza (lot tam + postój + lot z powrotem),
       // nie ze wzoru; bez odczytu czasu lotu wpisu nie ma. Zapis PRZED klikiem
       // (Send potrafi nawigować natychmiast), potwierdzenie po — jak `flights`.
-      if ((m.kind === "expedition" || m.kind === "asteroid" || m.kind === "debris") && m.flightMs) {
+      if (ECO_KIND(m.kind) && m.flightMs) {
         const sE = Situation.load();
-        sE.expected = [...(sE.expected || []), { kind: m.kind, fromKey: m.fromKey, fromBody: m.fromBody, total: loadedTotal, sentAt: Date.now(), flightMs: m.flightMs, holdMs: m.holdMs || 0, returnAt: Date.now() + 2 * m.flightMs + (m.holdMs || 0), pending: true }].slice(-40);
+        // v3.115.0: sufit rejestru liczony OSOBNO dla farmy — kilkadziesiąt ataków w powietrzu wypchnęłoby
+        // z listy 40 wpisów fale ekspedycji, a na nich stoi udział fali (expoPlan) i widok lądowań w obronie.
+        const nowy = { kind: m.kind, fromKey: m.fromKey, fromBody: m.fromBody, total: loadedTotal, sentAt: Date.now(), flightMs: m.flightMs, holdMs: m.holdMs || 0, returnAt: Date.now() + 2 * m.flightMs + (m.holdMs || 0), pending: true };
+        const wszystkie = [...(sE.expected || []), nowy];
+        sE.expected = [...wszystkie.filter(e => e.kind !== "farm").slice(-40), ...wszystkie.filter(e => e.kind === "farm").slice(-160)].sort((x, y) => (x.sentAt || 0) - (y.sentAt || 0));
         if (m.kind === "expedition") sE.expoHome = { key: m.fromKey, body: m.fromBody, at: Date.now() };   // v3.65.0: tu wróci flota
         Situation.save(sE);
       }
-      if (m.kind !== "expedition" && m.kind !== "asteroid" && m.kind !== "debris") {
+      if (!ECO_KIND(m.kind)) {
         const sPre = Situation.load();
         // v3.68.8 (audyt 04.09, obrona-stan-lotu#3 P1): filtr patrzył na SAM KLUCZ pary,
         // więc nowy lot obronny z PLANETY kasował wpis lotu wciąż lecącego z KSIĘŻYCA tej
@@ -5212,7 +5650,7 @@
       // dwa razy); lot obronny nie czeka dłużej, bo odmowa i tak kończy się ponowieniem formularza.
       let after = null, fresh = false;
       if (!okUrl) {
-        const prob = ["expedition", "asteroid", "debris"].includes(m.kind) ? 3 : 2;
+        const prob = ECO_KIND(m.kind) ? 3 : 2;
         for (let p = 0; p < prob; p++) {
           if (p) await sleep(jitter(2500, 4000));
           if (location.href.includes("fleetSendSuccessfully")) { okUrl = true; break; }
@@ -5263,7 +5701,7 @@
         if (wyladowala) {
           log(`[LOT] wysyłka potwierdzona świeżym odczytem hangaru; w tym czasie wylądowała flota, więc nie oceniam, ile dokładnie poleciało (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
         } else if (partial || brak.length) {
-          log(`[LOT] po wysyłce w hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak) || "(różnica bez wskazania typu)"} (odjęcie hangaru dałoby ~${sentReal.toLocaleString("pl-PL")} z ${loadedTotal.toLocaleString("pl-PL")} szt.). To lądowanie fali w sekundzie wysyłki (22.09: „737 mln” wróciło jako 3,7 mld) — rejestr powrotów trzyma to, co wpisano w formularz. ${["expedition", "asteroid", "debris"].includes(m.kind) ? "Reszta poleci z następną falą." : "Obrona widzi resztę w hangarze."}`, "info");
+          log(`[LOT] po wysyłce w hangarze ${m.fromBody} [${m.fromKey}] zostało ponad plan: ${this.shortfallTxt(brak) || "(różnica bez wskazania typu)"} (odjęcie hangaru dałoby ~${sentReal.toLocaleString("pl-PL")} z ${loadedTotal.toLocaleString("pl-PL")} szt.). To lądowanie fali w sekundzie wysyłki (22.09: „737 mln” wróciło jako 3,7 mld) — rejestr powrotów trzyma to, co wpisano w formularz. ${ECO_KIND(m.kind) ? "Reszta poleci z następną falą." : "Obrona widzi resztę w hangarze."}`, "info");
         } else {
           log(`[LOT] strona nie przeładowała się po „Send fleet”, ale świeży odczyt hangaru potwierdza wysyłkę (zostało ${after.total.toLocaleString("pl-PL")} szt.).`, "info");
         }
@@ -5872,9 +6310,8 @@
       // (`if (Fly.mission()) return`) aż do timeoutu 5 min — tyle, ile trwa typowy
       // dolot ataku. Ekonomia nigdy nie może stać na drodze ratunku: przy realnym
       // zagrożeniu albo gotowej akcji obronnej przerywamy ją natychmiast.
-      const ECO = ["expedition", "asteroid", "debris"];
       const mNow = Fly.mission();
-      if (mNow && ECO.includes(mNow.kind)) {
+      if (mNow && ECO_KIND(mNow.kind)) {
         // v3.68.1: Fleet Save NIE jest powodem do przerwania ekspedycji — to lot
         // dobrowolny, a nie ratunek. Bez tego wyjątku FS (od 3.68 aktywny o każdej
         // porze) kasowałby każdą trwającą falę ekonomii.
@@ -6164,7 +6601,7 @@
         try { moonRuszyl = await Moon.tick(s); } catch (e) { log(`[KSIĘŻYC] odbudowa nie wyszła: ${e.message}`, "warn"); }
       }
       if (!moonRuszyl && !Fly.mission() && ekoWolne) {
-        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s))) await Debris.tick(s); }
+        try { if (!(await Recon.tick(s)) && !(await Bonus.tick(s)) && !(await Expo.tick(s)) && !(await Aster.tick(s)) && !(await Debris.tick(s))) await Farm.tick(s); }
         catch (e) { log(`[EKONOMIA] błąd modułu: ${e.message} — obrona działa dalej.`, "warn"); }
       }
       Store.set("tick_fails", 0);
@@ -6589,6 +7026,15 @@
             <div class="line">gdy klikasz: fala czeka <input id="ogx3-idle" style="width:26px" /> min ciszy (0 = leci od razu)</div>
             <div class="note" id="ogx3-human-st"></div>
           </div></div>
+          <div class="sec" data-sec="farm"><div class="sec-t"><span><span class="arr">▸</span> Ustawienia: Farma</span><span class="tail" id="ogx3-t-farm"></span></div><div class="sec-b">
+            <div class="line"><button id="ogx3-farm" class="ogx3-btn"></button><button id="ogx3-farm-seq" class="ogx3-btn"></button></div>
+            <div class="line">statek <select id="ogx3-farm-ship" style="background:rgba(0,0,0,.35);border:1px solid #2b4a66;color:#e0e0e0;border-radius:3px;font-size:11px"><option value="BATTLESHIP">OW (okręt wojenny)</option><option value="HEAVY_CARGO">DT (duży transporter)</option><option value="LIGHT_CARGO">MT (mały transporter)</option></select></div>
+            <div class="line">sztuk na atak <input id="ogx3-farm-qty" style="width:86px" placeholder="np. 5000" /></div>
+            <div class="line">start z <input id="ogx3-farm-from" style="width:70px" placeholder="g:s:p" /> · rezerwa slotów <input id="ogx3-farm-res" style="width:26px" /></div>
+            <div class="line">zakresy <input id="ogx3-farm-ranges" style="width:130px" placeholder="2:1-499" /></div>
+            <div class="line">rank ≤ <input id="ogx3-farm-rank" style="width:50px" placeholder="0 = bez" /> · min. łup <input id="ogx3-farm-minp" style="width:70px" placeholder="0" /></div>
+            <div class="note" id="ogx3-farm-st"></div>
+          </div></div>
           <div class="sec" data-sec="imp"><div class="sec-t"><span><span class="arr">▸</span> Zegar dolotu</span><span class="tail" id="ogx3-t-imp"></span></div><div class="sec-b">
             <div id="ogx3-imp-list"></div>
             <div class="line">recki <input id="ogx3-imp-off" style="width:26px" /> s po uderzeniu · alarm <input id="ogx3-imp-lead" style="width:26px" /> s przed</div>
@@ -6685,6 +7131,35 @@
         CFG.expo.launchFrom = { galaxy: +m[1], system: +m[2], position: +m[3] }; saveCfg();
         log(`[EXPO] ekspedycje startują odtąd z [${m[1]}:${m[2]}:${m[3]}] — niezależnie od tego, gdzie klikasz.`, "info");
       };
+      // v3.115.0: FARMA — pola jak w 2.x (statek OW/DT, sztuk na atak, start, zakresy, ranking, próg łupu).
+      $("ogx3-farm").onclick = () => { CFG.farm.enabled = !CFG.farm.enabled; saveCfg(); log(`Farma nieaktywnych ${CFG.farm.enabled ? `ON — ${Farm.status()}` : "OFF"}`, CFG.farm.enabled ? "warn" : "info"); this.renderStatus(); };
+      $("ogx3-farm-seq").onclick = () => { CFG.farm.sequential = !CFG.farm.sequential; saveCfg(); Farm.save({}); log(CFG.farm.sequential ? "[FARMA] tryb SEKWENCYJNY: każdy przebieg po kolei przez cały zakres, cele w kolejności napotkania." : "[FARMA] priorytet łupu: okrążenia po znanych celach, najtłustsze pierwsze.", "info"); this.renderStatus(); };
+      $("ogx3-farm-ship").value = CFG.farm.shipType || "BATTLESHIP";
+      $("ogx3-farm-ship").onchange = (e) => { CFG.farm.shipType = e.target.value; saveCfg(); log(`[FARMA] statek: ${CFG.farm.shipType}`, "info"); this.renderStatus(); };
+      $("ogx3-farm-qty").value = CFG.farm.perAttack ? String(CFG.farm.perAttack) : "";
+      $("ogx3-farm-qty").onchange = (e) => { CFG.farm.perAttack = Math.max(0, parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0); saveCfg(); e.target.value = CFG.farm.perAttack ? String(CFG.farm.perAttack) : ""; log(`[FARMA] na atak: ${CFG.farm.perAttack.toLocaleString("pl-PL")} × ${CFG.farm.shipType}`, "info"); this.renderStatus(); };
+      { const lf = CFG.farm.launchFrom; $("ogx3-farm-from").value = lf ? `${lf.galaxy}:${lf.system}:${lf.position}` : ""; }
+      $("ogx3-farm-from").onchange = (e) => {
+        const v = String(e.target.value || "").trim();
+        if (!v) { CFG.farm.launchFrom = null; saveCfg(); log("[FARMA] brak „start z” — farma stoi, dopóki go nie wpiszesz.", "warn"); this.renderStatus(); return; }
+        const m = v.match(/^(\d+)\s*[:.]\s*(\d+)\s*[:.]\s*(\d+)$/);
+        if (!m) { alert("Wpisz koordynaty w formacie g:s:p, np. 2:184:1"); e.target.value = ""; return; }
+        CFG.farm.launchFrom = { galaxy: +m[1], system: +m[2], position: +m[3] }; saveCfg();
+        log(`[FARMA] ataki startują z [${m[1]}:${m[2]}:${m[3]}] (księżyc, jeśli para go ma).`, "info"); this.renderStatus();
+      };
+      $("ogx3-farm-res").value = String(Farm.reserve());
+      $("ogx3-farm-res").onchange = (e) => { CFG.farm.slotReserve = Math.max(1, parseInt(e.target.value) || 2); saveCfg(); e.target.value = String(CFG.farm.slotReserve); this.renderStatus(); };
+      $("ogx3-farm-ranges").value = CFG.farm.ranges || "";
+      $("ogx3-farm-ranges").onchange = (e) => {
+        const v = String(e.target.value || "").trim(), r = Farm.parseRanges(v);
+        CFG.farm.ranges = v; saveCfg(); Farm.save({});
+        log(r.length ? `[FARMA] zakresy: ${r.map(x => `${x.galaxy}:${x.start}-${x.end}`).join(", ")} — nowy przebieg od początku.` : `[FARMA] zakresy „${v}” nieczytelne — wpisz np. 2:1-499 (maks. 500 układów na zakres).`, r.length ? "info" : "warn");
+        this.renderStatus();
+      };
+      $("ogx3-farm-rank").value = String(CFG.farm.maxTargetRank ?? 800);
+      $("ogx3-farm-rank").onchange = (e) => { CFG.farm.maxTargetRank = Math.max(0, parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0); saveCfg(); e.target.value = String(CFG.farm.maxTargetRank); this.renderStatus(); };
+      $("ogx3-farm-minp").value = String(CFG.farm.minTargetProfit || 0);
+      $("ogx3-farm-minp").onchange = (e) => { CFG.farm.minTargetProfit = Math.max(0, parseInt(String(e.target.value).replace(/[^\d]/g, "")) || 0); saveCfg(); e.target.value = String(CFG.farm.minTargetProfit); this.renderStatus(); };
       // v3.32.0 (pytanie właściciela 29.08: „jak wyłączyć nocną przerwę?"):
       // cisza nocna i przerwy kawowe siedziały wyłącznie w kodzie — jedyną drogą
       // do ich zdjęcia było grzebanie w GM storage. Teraz obie są w panelu.
@@ -6965,6 +7440,9 @@
       $("ogx3-quiet").textContent = CFG.stealth && CFG.stealth.enabled ? `Tryb cichy ON (kolonie co ${CFG.stealth.colonyHours || 8} h)` : "Tryb cichy OFF (kolonie co 45 min)";
       $("ogx3-quiet").style.background = CFG.stealth && CFG.stealth.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       $("ogx3-aster").textContent = `Mining ${CFG.aster.enabled ? "ON" : "OFF"}`; $("ogx3-aster").style.background = CFG.aster.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-farm").textContent = `Farma ${CFG.farm.enabled ? "ON" : "OFF"}`; $("ogx3-farm").style.background = CFG.farm.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
+      $("ogx3-farm-seq").textContent = CFG.farm.sequential ? "Po kolei 1→koniec" : "Priorytet łupu";
+      { const fst = Farm.status(); $("ogx3-farm-st").textContent = fst; $("ogx3-t-farm").textContent = CFG.farm.enabled ? `ON · ${CFG.farm.shipType === "BATTLESHIP" ? "OW" : CFG.farm.shipType === "HEAVY_CARGO" ? "DT" : "MT"}` : "OFF"; }
       $("ogx3-bonus").textContent = `Bonus ${CFG.bonus.enabled ? "ON" : "OFF"}`; $("ogx3-bonus").style.background = CFG.bonus.enabled ? "#1e6b3a" : "rgba(255,255,255,.1)";
       { const b0 = Bonus.st(); $("ogx3-bonus-st").textContent = CFG.bonus.enabled ? `bonus online: dziś ${Bonus.today(b0)}${b0.claims && b0.claims.length ? ` · ostatni ${new Date(b0.claims[b0.claims.length - 1]).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}` : ""}` : ""; }
       $("ogx3-moon").textContent = `Księżyce ${CFG.moon.enabled ? "ON" : "OFF"}`; $("ogx3-moon").style.background = CFG.moon.enabled ? "#5a4a1e" : "rgba(255,255,255,.1)";
@@ -7128,7 +7606,7 @@
   // eksport do testu E2E (test3-e2e.js uruchamia TEN kod na sztucznej grze w jsdom)
   // busy(): czy defenceTick WŁAŚNIE trwa — startowy tick odpala się bez await, więc
   // harness E2E musi umieć poczekać, aż bot skończy krok, zamiast zgadywać stałym sleepem.
-  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, CFG, Store, defenceTick, expoPlan, expoHomeBody, syncCfg, saveCfg, barExcessState, PlanetBar, Hangar, UI, Recon, Human, Impact, Clock, busy: () => running }; } catch {}
+  try { window.__OGX3 = { decide, Situation, Bar, Rows, Fly, Farm, CFG, Store, defenceTick, expoPlan, expoHomeBody, syncCfg, saveCfg, barExcessState, PlanetBar, Hangar, UI, Recon, Human, Impact, Clock, busy: () => running }; } catch {}
   Store.set("last_load", Date.now());
   // v3.40.0: flaga „nie umiem rozwinąć listy lotów" nie może przeżyć aktualizacji —
   // każda nowa wersja przynosi nowych kandydatów do kliknięcia i musi dostać czystą kartę.
@@ -7177,8 +7655,7 @@
     if (!fresh && Date.now() - (Store.get("input_at", 0) || 0) < 15e3) {
       try {
         const mi = Store.get("mission", null), ls = Store.get("last_send", null);
-        const eco = ["expedition", "asteroid", "debris"];
-        if ((mi && eco.includes(mi.kind)) || (ls && eco.includes(ls.kind) && Date.now() - (ls.at || 0) < 5 * 60e3)) {
+        if ((mi && ECO_KIND(mi.kind)) || (ls && ECO_KIND(ls.kind) && Date.now() - (ls.at || 0) < 5 * 60e3)) {
           const now4 = Date.now(), y = Store.get("eco_yield", null);
           // nowe okno ustępowania dopiero po minucie spokoju — inaczej ciągłe klikanie odnawiałoby sufit bez końca
           Store.set("eco_yield", (y && now4 - y.last < 60e3) ? { since: y.since, last: now4 } : { since: now4, last: now4 });

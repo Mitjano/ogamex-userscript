@@ -495,8 +495,8 @@ console.log("\n── 18. EKSPEDYCJE: flota za mała ──");
 
 console.log("\n── 19. EKSPEDYCJA NIE BLOKUJE OBRONY (regresja 2.x) ──");
 {
-  check("lot ekspedycji nie trafia do flights", /if \(m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"\) \{[\s\S]{0,500}?flights/.test(src), "brak wyłączenia expedition z flights");
-  check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  check("lot ekspedycji nie trafia do flights", /if \(!ECO_KIND\(m\.kind\)\) \{[\s\S]{0,500}?flights/.test(src), "brak wyłączenia expedition z flights");
+  check("ekonomia (ekspedycje→mining) po obronie i rekonesansie", /!\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\) && !\(await Debris\.tick\(s\)\)\) await Farm\.tick\(s\)/.test(src));
   check("expoPlan jest czysta (bez DOM/GM/Date.now)", !/document\.|window\.|GM_(set|get)Value|Store\.|Date\.now\(\)/.test(expoBody));
   // v3.38.0: hangar z samymi wykluczeniami = nieaktualny plan, nie awaria markupu.
   // Musi iść cichym abortem (bez Journal.add "BŁĄD" → bez pusha "⚠️ Obrona: BŁĄD").
@@ -836,7 +836,7 @@ console.log("── 23. MINING ASTEROID (v3.5.0) ──");
   check("mining pyta humanizera", /Human\.economyAllowed\(s\)/.test(asterMod));
   check("bez minerów w hangarze nie skanujemy (zero jałowej nawigacji)", /brak minerów w hangarze/.test(asterMod));
   check("asteroida znikająca za chwilę pomijana (minTtlSec)", /hit\.ttl < min/.test(asterMod));
-  check("lot minerów nie trafia do flights (nie blokuje obrony)", /m\.kind !== "expedition" && m\.kind !== "asteroid"/.test(src));
+  check("lot minerów nie trafia do flights (nie blokuje obrony)", /if \(!ECO_KIND\(m\.kind\)\) \{\s*\n\s*const sPre/.test(src) && /const ECO_KIND = \(k\) => [^;]*"asteroid"/.test(src));
   check("misja ASTEROID_MINING wybierana jawnie na kroku 3", /"ASTEROID_MINING", "ASTEROID"/.test(src));
 
   // v3.113.0: bramka noteHangar (v3.111.0) — stara strona nie cofa świeższego odczytu, ALE
@@ -908,12 +908,12 @@ console.log("── 24. ZŁOM (v3.6.0) ──");
   check("złom: ikona własnej floty w kolumnie DF ≠ złom (dowodem tylko dymek/link)", /sawTip/.test(dm) && /if \(!sawTip\) continue/.test(dm));
   check("złom: zbieracze w drodze blokują kolejną wysyłkę (rejestr powrotów)", /e\.kind === "debris" && now < \(e\.sentAt \|\| 0\) \+ \(e\.flightMs \|\| 0\)/.test(dm));
   check("złom: dymek bez ilości (pole puste) = nie wysyłamy w ciemno", /hit\.viaTip && !\(hit\.amount > 0\)/.test(dm));
-  check("złom: okno anty-duplikat 3 min, nie 20 s fal ekspedycji", /m\.kind === "debris" \? 3 \* 60e3/.test(src));
-  check("lot po złom nie blokuje obrony", /m\.kind !== "expedition" && m\.kind !== "asteroid" && m\.kind !== "debris"/.test(src));
+  check("złom: okno anty-duplikat 3 min, nie 20 s fal ekspedycji", /\(m\.kind === "debris" \|\| m\.kind === "farm"\) \? 3 \* 60e3/.test(src));
+  check("lot po złom nie blokuje obrony", /if \(!ECO_KIND\(m\.kind\)\) \{\s*\n\s*const sPre/.test(src) && /const ECO_KIND = \(k\) => [^;]*"debris"/.test(src));
   // v3.95.0: KSIĘŻYCE wyjęte z łańcucha ekonomii — odbudowa utraconego księżyca idzie także
   // pod ostrzałem (to obrona: flota wraca na gołą planetę), a stawianie nowych czeka na ciszę
   // jak dotąd. Moon wołany DOKŁADNIE RAZ na przebieg, przed resztą ekonomii.
-  check("kolejność ekonomii: rekonesans → bonus → ekspedycje → mining → złom", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\)\) await Debris\.tick\(s\)/.test(src));
+  check("kolejność ekonomii: rekonesans → bonus → ekspedycje → mining → złom → farma", /!\(await Recon\.tick\(s\)\) && !\(await Bonus\.tick\(s\)\) && !\(await Expo\.tick\(s\)\) && !\(await Aster\.tick\(s\)\) && !\(await Debris\.tick\(s\)\)\) await Farm\.tick\(s\)/.test(src));
   check("księżyce: jedno wywołanie na przebieg, odbudowa nie czeka na ciszę obrony",
     /let moonRuszyl = false;/.test(src)
     && /if \(!Fly\.mission\(\) && \(Object\.keys\(s\.moonLost \|\| \{\}\)\.length \|\| ekoWolne \|\| Moon\.pending\(\)\)\)/.test(src)   // v3.96.0: + czekająca weryfikacja/zwóz
@@ -1388,7 +1388,7 @@ console.log("\n── 37. POWROTY WLASNEJ FLOTY (sciezka A5 z Ateny) (v3.35.0) �
   // v3.51.0 (owner 15:07: „nie musi czekać aż przestanę klikać"): bramka „grasz" jest
   // konfigurowalna, DOMYŚLNIE 0 = fale lecą od razu; migracja starego 300→0 przy bumpie.
   check("bramka „grasz\" konfigurowalna, domyślnie WYŁĄCZONA (0), stare 300 migrowane", /ecoIdleSec: 0 \}/.test(src) && /CFG\.human\.ecoIdleSec \?\? 0/.test(src) && /idleMin > 0 && cisza </.test(src) && /ecoIdleSec === 300\) \{ CFG\.human\.ecoIdleSec = 0; saveCfg\(\); \}/.test(src) && /ogx3-idle/.test(src) && !/ruszy minutę po ostatnim kliknięciu/.test(src));
-  check("przełączenie pod misję ekonomii zapamiętuje stronę operatora", /Store\.set\("eco_return", \{ url: location\.pathname \+ location\.search/.test(src) && /\["expedition", "asteroid", "debris"\]\.includes\(m\.kind\)/.test(src));
+  check("przełączenie pod misję ekonomii zapamiętuje stronę operatora", /Store\.set\("eco_return", \{ url: location\.pathname \+ location\.search/.test(src) && /if \(ECO_KIND\(m\.kind\) && !Store\.get\("eco_return", null\)\)/.test(src));
   check("po domkniętej serii bot odprowadza operatora (chyba że sam kliknął)", /maybeReturnOperator\(reason\)/.test(src) && /czekam na powroty\|brak statków/.test(src) && /!== \(r\.input \|\| 0\)\) return false;/.test(src) && /powrót na stronę operatora po serii ekspedycji/.test(src) && /cały hangar\/\.test\(m\.why \|\| ""\) && !m\.splitOnForm && Expo\.maybeReturnOperator/.test(src));   // v3.103.0: po fali podzielonej na formularzu zaraz leci następna — operatora nie odprowadzamy
 }
 
@@ -1546,10 +1546,10 @@ console.log("\n── R7. WCZEŚNIEJSZY ZAWRÓT (v3.53.0): napastnik zawrócił 
   // reguła musi żyć w wyciętej funkcji, a refresh() musi z niej korzystać.
   check("reguła życia wpisu lotu jest osobną funkcją, a refresh() jej UŻYWA (da się ją wykonać w teście)",
     /function flightAlive\(f, s, now\) \{/.test(src) && /s\.flights = \(s\.flights \|\| \[\]\)\.filter\(f => flightAlive\(f, s, now\)\);/.test(src) && /wpis ZOSTAJE/.test(src));
-  check("rejestr zapisywany PRZED klikiem Send fleet, tylko z czasem lotu z formularza", /m\.flightMs\) \{\s*\n\s*const sE = Situation\.load\(\);\s*\n\s*sE\.expected/.test(src));
+  check("rejestr zapisywany PRZED klikiem Send fleet, tylko z czasem lotu z formularza", /if \(ECO_KIND\(m\.kind\) && m\.flightMs\) \{\s*\n\s*const sE = Situation\.load\(\);[\s\S]{0,700}?sE\.expected = /.test(src));
   check("wpis rejestru potwierdzany po wysyłce i po przeładowaniu (confirmPendingSend)", /e0\.pending/.test(src) && /\(s\.expected \|\| \[\]\)\.find\(x => x\.pending && x\.fromKey === ls\.from/.test(src));
   check("rejestr wygaszany: pending>10 min, godzinę po lądowaniu; korekta zegarem z listy", /e\.pending && now - \(e\.sentAt \|\| 0\) > 10 \* 60e3/.test(src) && /best\.returnAt = o\.arriveAt/.test(src));
-  check("ekspedycja nadal NIE trafia do flights (rejestr jest osobny)", /sE\.expected = \[\.\.\.\(sE\.expected \|\| \[\]\)/.test(src) && !/flights.*expedition.*push/.test(src.slice(src.indexOf("REJESTR POWROTÓW"), src.indexOf("REJESTR POWROTÓW") + 900)));
+  check("ekspedycja nadal NIE trafia do flights (rejestr jest osobny)", /const wszystkie = \[\.\.\.\(sE\.expected \|\| \[\]\), nowy\];/.test(src) && !/flights.*expedition.*push/.test(src.slice(src.indexOf("REJESTR POWROTÓW"), src.indexOf("REJESTR POWROTÓW") + 900)));
 }
 
 console.log("\n── 40. TRYB CICHY (v3.58.0): mniej śladów aktywności na koloniach ──");
@@ -2816,6 +2816,7 @@ console.log("\n── 65. KANAŁ ALARMOWY: stały temat ntfy + ekonomia poza rod
     (src.match(/Journal\.add\([^\n]{0,120}przerwany/) || [""])[0]);
   const eco = new Function("k", "return (" + (src.match(/const ECO_KIND = (\(k\) => [^;]+);/) || [])[1] + ")(k);");
   check("65l: ECO_KIND zna ekspedycję, miner i złom", eco("expedition") && eco("asteroid") && eco("debris"));
+  check("65l2: ECO_KIND zna farmę (v3.115.0) — bez tego atak farmy szedłby jak ratunek", eco("farm"));
   check("65m: ECO_KIND NIE obejmuje ratunku ani Fleet Save (te muszą krzyczeć)",
     !eco("rescue") && !eco("fs") && !eco(undefined),
     JSON.stringify([eco("rescue"), eco("fs"), eco(undefined)]));

@@ -85,6 +85,18 @@ class Game {
     this.refuseMoon = false;         // v3.96.0: „Form a moon” klika się, ale gra go nie przyjmuje (strona stoi, księżyca nie ma)
     this.staleSend = false;          // v3.99.0: serwer WYSYŁA flotę, ale strona NIE przeładowuje się i DOM kroku 3 zostaje stary (log 16.09 09:40)
     this.serverShips = null;         // v3.99.0: (skład z pól) → skład, który serwer NAPRAWDĘ wysyła (fork wysłał mniej, niż wpisano)
+    // v3.115.0 (farma): gracze w galaktyce — [{ key:"1:101:3", name, status:"i", rank }]. Status w nawiasie
+    // w tekście wiersza, ranking w dymku gracza („Ranking: 2.881”) — tak czytał je 2.x na Athenie.
+    this.players = [];
+    this.acsFirst = false;           // krok 3: kafel „ACS Attack” PRZED zwykłym „Attack”
+    this.combatText = "";            // odpowiedź /messages/messagedata (raporty bojowe)
+  }
+  playerRowsHtml(gx, sy) {
+    return this.players.filter(p => p.key.startsWith(`${gx}:${sy}:`)).map(p => {
+      const pos = p.key.split(":")[2];
+      return `<div class="galaxy-item"><span class="planet-index">${pos}</span><div class="col-planet">Planeta ${pos}</div>
+        <div class="col-player"><span class="tooltip" data-tooltip-content="&lt;b&gt;${p.name}&lt;/b&gt;&lt;br&gt;Ranking: ${p.rank != null ? p.rank.toLocaleString("de-DE") : "-"}">${p.name} (${p.status})</span></div></div>`;
+    }).join("");
   }
   // wlasne loty w liscie ruchow — z przyciskiem zawracania (fork: a.x_btn_fleet_return)
   ownRowsHtml(onlyActive) {
@@ -177,7 +189,7 @@ class Game {
   }
   step3Html() {
     return `<div id="content">
-      <a class="mission-item DEPLOY">Deploy</a><a class="mission-item EXPEDITION">Expedition</a><a class="mission-item ATTACK">Attack</a>
+      ${this.acsFirst ? '<a class="mission-item ACS_ATTACK">ACS Attack</a>' : ""}<a class="mission-item DEPLOY">Deploy</a><a class="mission-item EXPEDITION">Expedition</a><a class="mission-item ATTACK">Attack</a>
       <a class="mission-item ASTEROID_MINING">Asteroid mining</a><a class="mission-item COLLECT" data-mission-type="13">Collect</a><a class="mission-item RECYCLE" data-mission-type="8">Recycle</a>
       <a class="btn-all-res">Wszystkie surowce</a>
       ${this.res ? `<div class="res-row"><span>Metal</span><a class="btn-res-full">max</a><input name="metal" value="0"></div><div class="res-row"><span>Crystal</span><a class="btn-res-full">max</a><input name="crystal" value="0"></div><div class="res-row"><span>Deuterium</span><a class="btn-res-full">max</a><input name="deuterium" value="0"></div>`
@@ -211,7 +223,7 @@ class Game {
     else if (this.page === "galaxy") {
       const q = new URLSearchParams((this.query || "").replace(/^\?/, ""));
       const gx = q.get("x") || "1", sy = q.get("y") || "100";
-      main = `
+      main = `${this.playerRowsHtml(gx, sy)}
         <div class="galaxy-item"><span class="planet-index">5</span>
           <div class="galaxy-col col-debris">${this.debris ? `<a href="/fleet?x=${gx}&y=${sy}&z=5&mission=8">Debris 120.000</a>` : ""}</div>
         </div>
@@ -271,6 +283,7 @@ function load(game, { cfg = {}, ticks = 1, onApi = null } = {}) {
           const html = game.fleetPageHtml(); game.active = prev; return html;
         })()
       : /^\/home(\?|$)/.test(String(u)) ? (game.homeFetchFail ? (() => { throw new Error("NetworkError when attempting to fetch resource."); })() : game.planetBarHtml() + (game.bonus ? game.bonusMenu() : "<div id='overview'>Overview</div>") + game.missionBarHtml(true))
+      : /\/messages\/messagedata/.test(String(u)) ? (game.combatText || "<div>No messages</div>")
       : /AsteroidJournal/i.test(u) ? `<table><tbody>${Array.from({ length: 6 }, () => `<tr><td>Asteroid</td><td>${game.asteroidYield.toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table>`
       // v3.110.0: strona galaktyki pobrana w tle (cichy skan asteroid) = ten sam render,
       // co przy nawigacji; `galaxyFetchNoRows` odwzorowuje fork oddający stronę bez wierszy.
@@ -4082,6 +4095,122 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     await run(g, { cfg, loads: 20, ticksPerLoad: 3 });
     check("79l: po pół godzinie transporterów dalej nikt nie wozi", g.sent.filter(x => x.from === "1:100:5" && x.fromBody === "planet").length === ile,
       JSON.stringify(g.sent.map(x => [x.from, x.fromBody, x.to, x.toBody, x.ships])));
+  }
+
+  console.log("\n── 80. FARMA NIEAKTYWNYCH (v3.115.0, port z 2.x): parsery, atak z galaktyki, rezerwa slotu dla ratunku ──");
+  {
+    const K = "genesis.ogamex.net:ogx3_situation";
+    // 80a: parsery na tekstach z ŻYWEJ gry (Athena, 2.x: raport ownera 15.08, dziennik grabieży 15.08)
+    {
+      const g = new Game();
+      const { api } = load(g, { cfg: { recon: false } });
+      const F = api.Farm;
+      check("80a1: zakresy „2:1-499, 3:100-200” czytane, zakres > 500 układów odrzucony",
+        JSON.stringify(F.parseRanges("2:1-499, 3:100-200, 4:1-600")) === JSON.stringify([{ galaxy: 2, start: 1, end: 499 }, { galaxy: 3, start: 100, end: 200 }]), JSON.stringify(F.parseRanges("2:1-499, 3:100-200, 4:1-600")));
+      check("80a2: ranking „Ranking: 2.881” = 2881 (kropka to separator tysięcy)", F.parseRank("Royal Zion / Ranking: 2.881 / Write message") === 2881, String(F.parseRank("Ranking: 2.881")));
+      const rep = F.parseCombat("Combat report: Delta 11 [4:37:11] 15.08.2026 09:36:11 MCH : 360.000.000 Sith Campeador : 0 Resources : 0 Debris field : 288.000.000.000 Combat report: Beta [4:38:2] 15.08.2026 09:40:00 MCH : 0 Foo : 12 Resources : 5.000.000");
+      check("80a3: raport bojowy — straty atakującego i koordy celu (nie liczby z daty)", rep.length === 2 && rep[0].coord === "4:37:11" && rep[0].losses === 360000000 && rep[1].losses === 0 && rep[1].resources === 5000000, JSON.stringify(rep));
+      const pl = F.parsePlunder("15.08.2026 18:02:11 Abutre (i) [4:372:3] + 5.100.000.000.000 15.08.2026 18:03:40 Ratatosk (I) [4:378:9] + 240.000.000.000");
+      check("80a4: dziennik grabieży — kwota nie połyka daty następnego wiersza", pl.length === 2 && pl[0].coord === "4:372:3" && pl[0].profit === 5100000000000 && pl[1].profit === 240000000000, JSON.stringify(pl));
+    }
+
+    const players = [
+      { key: "1:101:3", name: "Stary", status: "i", rank: 500 },
+      { key: "1:101:7", name: "Porzucony", status: "I", rank: 700 },
+      { key: "1:101:8", name: "Urlopowicz", status: "i) (v", rank: 300 },
+      { key: "1:101:9", name: "Aktywny", status: "s", rank: 10 },
+      { key: "1:101:11", name: "Biedak", status: "i", rank: 2500 },
+    ];
+    const cfgF = (extra = {}) => ({ autoRescue: true, recon: false, expo: { enabled: false }, debris: { enabled: false }, moon: { enabled: false }, human: { breaks: false, economyAtNight: true },
+      farm: Object.assign({ enabled: true, shipType: "BATTLESHIP", perAttack: 100, ranges: "1:101-102", launchFrom: { galaxy: 1, system: 100, position: 5 }, maxTargetRank: 800, slotReserve: 2 }, extra) });
+    const nowa = (hang) => {
+      const g = new Game({ hangars: { "1:100:5|moon": hang || { BATTLESHIP: 1000, HEAVY_CARGO: 50 } }, active: { key: "1:100:5", body: "moon" } });
+      g.players = players.map(p => ({ ...p }));
+      return g;
+    };
+
+    // 80b: pełny przebieg ataku
+    {
+      const g = nowa();
+      const { logs } = await run(g, { cfg: cfgF(), loads: 40, ticksPerLoad: 2 });
+      const ataki = g.sent.filter(x => /Attack/i.test(x.mission || ""));
+      check("80b1: bot zaatakował nieaktywnych (i) i (I) w limicie rankingu", ataki.some(x => x.to === "1:101:3") && ataki.some(x => x.to === "1:101:7"),
+        JSON.stringify(g.sent.map(x => [x.to, x.mission, x.ships])) + " | " + logs.filter(m => /FARMA|LOT/.test(m)).slice(0, 10).join(" | "));
+      check("80b2: NIE atakował urlopowicza, aktywnego gracza ani rankingu powyżej limitu", !g.sent.some(x => ["1:101:8", "1:101:9", "1:101:11"].includes(x.to)), JSON.stringify(g.sent.map(x => x.to)));
+      check("80b3: misja ATTACK (nie Deploy), cel PLANETA", ataki.length > 0 && ataki.every(x => x.mission === "Attack" && x.toBody === "planet"), JSON.stringify(ataki.map(x => [x.mission, x.toBody])));
+      check("80b4: start z księżyca [1:100:5], leci DOKŁADNIE 100 OW i nic więcej", ataki.length > 0 && ataki.every(x => x.from === "1:100:5" && x.fromBody === "moon" && x.ships.BATTLESHIP === 100 && Object.keys(x.ships).length === 1), JSON.stringify(ataki.map(x => [x.from, x.fromBody, x.ships])));
+      check("80b5: ładownie PUSTE (bez „wszystkie surowce”) — łup wraca w tych samych ładowniach", !g.allResClicks, String(g.allResClicks));
+      const st = JSON.parse(g.store.get(K) || "{}");
+      check("80b6: atak farmy NIE jest lotem obronnym (brak wpisu w flights)", (st.flights || []).length === 0, JSON.stringify(st.flights));
+      check("80b7: atak farmy jest w rejestrze powrotów (obrona widzi lądowanie)", (st.expected || []).filter(e => e.kind === "farm" && e.fromKey === "1:100:5").length === ataki.length && ataki.length > 0, JSON.stringify(st.expected));
+      check("80b8: zero pushy „Flota ewakuowana” za ataki farmy", !(g.pushes || []).some(p => /ewakuowana/.test(p.title || "")), JSON.stringify((g.pushes || []).map(p => p.title)));
+      check("80b9: między atakami bot wraca na galaktykę układu celu (rytm 2.x)", g.navigations.filter(u => /galaxy\?x=1&y=101/.test(u)).length >= 2, JSON.stringify(g.navigations.slice(0, 20)));
+    }
+
+    // 80c: rezerwa slotów — przy 6/8 i rezerwie 2 farma nie wysyła nic
+    {
+      const g = nowa(); g.slots.fleet.used = 6;
+      g.store.set(K, JSON.stringify({ pairs: {}, hangars: {}, threats: [], own: [], flights: [], slots: { fleet: { used: 6, total: 8 }, expo: { used: 0, total: 6 }, at: Date.now() }, updatedAt: Date.now() }));
+      const { logs } = await run(g, { cfg: cfgF(), loads: 20, ticksPerLoad: 2 });
+      check("80c1: sloty 6/8, rezerwa 2 → ZERO ataków (ostatnie sloty należą do ratunku)", !g.sent.some(x => /Attack/.test(x.mission || "")), JSON.stringify(g.sent.map(x => [x.to, x.mission])) + " | " + logs.filter(m => /FARMA/.test(m)).slice(0, 6).join(" | "));
+      check("80c2: bot mówi, że czeka na sloty", logs.some(m => /FARMA.*slot/i.test(m)), logs.filter(m => /FARMA/.test(m)).slice(0, 6).join(" | "));
+    }
+
+    // 80d: farma zajęła co mogła, przychodzi atak na bazę → ratunek dostaje wolny slot i leci
+    {
+      const g = nowa();
+      await run(g, { cfg: cfgF(), loads: 40, ticksPerLoad: 2 });
+      const przed = g.sent.length;
+      check("80d0: (warunek) farma wysłała ataki i zostawiła rezerwę", przed > 0 && g.slots.fleet.used <= g.slots.fleet.total - 2, `wysłane ${przed}, sloty ${g.slots.fleet.used}/${g.slots.fleet.total}`);
+      g.threats = [{ src: "9:9:9", dst: "1:100:5", dstBody: "moon", eta: 300 }];
+      const { logs } = await run(g, { cfg: cfgF(), loads: 15, ticksPerLoad: 3 });
+      const ratunek = g.sent.slice(przed).find(x => x.from === "1:100:5" && x.fromBody === "moon" && !/Attack/.test(x.mission || ""));
+      check("80d1: ATAK na bazę farmy → ratunek poleciał (slot był wolny)", !!ratunek && ratunek.ships.BATTLESHIP > 0, JSON.stringify(g.sent.slice(przed).map(x => [x.to, x.mission, x.ships])) + " | " + logs.filter(m => /LOT|OBRONA|FARMA/.test(m)).slice(0, 8).join(" | "));
+      check("80d2: pod atakiem farma NIE wysyła kolejnych ataków", !g.sent.slice(przed).some(x => /Attack/.test(x.mission || "")), JSON.stringify(g.sent.slice(przed).map(x => [x.to, x.mission])));
+    }
+
+    // 80e: za mało statków na atak → pauza, cel nie przepada
+    {
+      const g = nowa({ BATTLESHIP: 40 });
+      const { logs } = await run(g, { cfg: cfgF(), loads: 20, ticksPerLoad: 2 });
+      check("80e1: 40 OW przy ataku 100 OW → nic nie leci", !g.sent.some(x => /Attack/.test(x.mission || "")), JSON.stringify(g.sent.map(x => [x.to, x.ships])));
+      check("80e2: bot pauzuje z powodem (za mało statków)", logs.some(m => /FARMA\] pauza.*stoi 40/.test(m)), logs.filter(m => /FARMA/.test(m)).slice(0, 6).join(" | "));
+      const done = JSON.parse(g.store.get("genesis.ogamex.net:ogx3_farm_done") || "[]");
+      check("80e3: cel nie jest oznaczony jako zaatakowany (wróci po pauzie)", !done.some(e => e.coord === "1:101:3" || e.coord === "1:101:7"), JSON.stringify(done));
+    }
+
+    // 80f: farma lata przy godzinach ciszy i w przerwie (decyzja ownera: „gdy ON, ma latać”)
+    {
+      const g = nowa();
+      const h = new Date().getHours();
+      const cfg = cfgF(); cfg.human = { breaks: true, economyAtNight: false }; cfg.quietHours = { enabled: true, startHour: (h + 23) % 24, endHour: (h + 2) % 24 };
+      g.store.set("genesis.ogamex.net:ogx3_break_until", JSON.stringify(Date.now() + 30 * 60e3));
+      await run(g, { cfg, loads: 30, ticksPerLoad: 2 });
+      check("80f1: cisza nocna + przerwa → farma i tak atakuje", g.sent.some(x => /Attack/.test(x.mission || "")), JSON.stringify(g.sent.map(x => [x.to, x.mission])));
+    }
+
+    // 80g: kafel „ACS Attack” przed zwykłym — bot klika zwykły Attack
+    {
+      const g = nowa(); g.acsFirst = true;
+      await run(g, { cfg: cfgF(), loads: 30, ticksPerLoad: 2 });
+      check("80g1: przy kaflu ACS przed Attack leci zwykły Attack", g.sent.length > 0 && g.sent.every(x => x.mission === "Attack"), JSON.stringify(g.sent.map(x => x.mission)));
+    }
+
+    // 80h: czarna lista z raportów bojowych — cel z obroną nie jest atakowany
+    {
+      const g = nowa();
+      g.combatText = "<div>Combat report: Stary [1:101:3] 26.09.2026 10:00:00 MCH : 5.000 Stary : 0 Resources : 0 Debris field : 0</div>";
+      const { logs } = await run(g, { cfg: cfgF(), loads: 40, ticksPerLoad: 2 });
+      check("80h1: [1:101:3] (nasze straty 5000) zbanowany i NIE atakowany", !g.sent.some(x => x.to === "1:101:3") && logs.some(m => /FARMA BAN\] \[1:101:3\]/.test(m)), JSON.stringify(g.sent.map(x => x.to)) + " | " + logs.filter(m => /BAN/.test(m)).slice(0, 3).join(" | "));
+      check("80h2: pozostały cel dalej farmiony", g.sent.some(x => x.to === "1:101:7"), JSON.stringify(g.sent.map(x => x.to)));
+    }
+
+    // 80i: brak „start z” = farma stoi (decyzja ownera: start ustawiany ręcznie)
+    {
+      const g = nowa();
+      const { logs } = await run(g, { cfg: cfgF({ launchFrom: null }), loads: 10, ticksPerLoad: 2 });
+      check("80i1: bez „start z” zero ataków i jasny komunikat", !g.sent.length && logs.some(m => /FARMA\] brak „start z”/.test(m)), JSON.stringify(g.sent) + " | " + logs.filter(m => /FARMA/.test(m)).slice(0, 3).join(" | "));
+    }
   }
 
   console.log(`\n${fails ? fails + " FAIL — NIE WYPYCHAJ" : "E2E: wszystko OK"}  (${checks} sprawdzeń)`);
