@@ -4217,7 +4217,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
     }
   }
 
-  console.log("\n── 81. KSIĘŻYC ZNISZCZONY, 14 FAL WRACA NA PLANETĘ: każda wyjeżdża z planety, po odbudowie na NOWY księżyc (v3.116.0) ──");
+  console.log("\n── 81. KSIĘŻYC ZNISZCZONY, 14 FAL WRACA NA PLANETĘ: każda wyjeżdża z planety, po odbudowie na NOWY księżyc (v3.116.0/v3.117.0) ──");
   {
     const K = "genesis.ogamex.net:ogx3_situation";
     const scen = async ({ rebuild, attack }) => {
@@ -4252,7 +4252,7 @@ function game_store_dump(g) { const o = {}; for (const [k, v] of g.store) if (/a
       const g = await scen({ rebuild: true });
       const zPlanety = g.sent.filter(x => x.from === "1:100:5" && x.fromBody === "planet");
       check("81a: księżyc odbudowany — ŻADNA z 14 fal nie została na planecie", !(g.hangars["1:100:5|planet"].BATTLESHIP > 0), `na planecie ${g.hangars["1:100:5|planet"].BATTLESHIP} OW | ` + opis(g));
-      check("81b: fale jadą na NOWY księżyc tej pary (nie na sąsiada)", zPlanety.filter(x => x.to === "1:100:5" && x.toBody === "moon").length >= 10, opis(g));
+      check("81b: fale jadą na NOWY księżyc tej pary (nie na sąsiada) — co najmniej 10 z 14 fal", zPlanety.filter(x => x.to === "1:100:5" && x.toBody === "moon").reduce((a, x) => a + (x.ships.BATTLESHIP || 0), 0) >= 10000, opis(g));
       check("81c: transportery mieszkające na planecie ZOSTAJĄ (decyzja ownera 17.09)", !zPlanety.some(x => x.ships.HEAVY_CARGO > 0) && g.hangars["1:100:5|planet"].HEAVY_CARGO === 300, opis(g));
       check("81d: po lądowaniu fali bot czyta hangar PLANETY (fala nie wraca na zniszczony księżyc)", rawLog(g).some(m => /wróciła własna flota na planetę \[1:100:5\].*odczytany w tle/.test(m)), rawLog(g).filter(m => /wróciła własna flota/.test(m)).slice(0, 3).join(" | "));
     }

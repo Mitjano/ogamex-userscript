@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OGameX Assistant 3
 // @namespace    https://github.com/Mitjano/ogamex-userscript
-// @version      3.116.0
+// @version      3.117.0
 // @description  Obrona floty dla OGameX (fork .NET) — jedno źródło prawdy (Situation), czysta decyzja (decide), jeden wykonawca (Fly). Parsery przeniesione z 2.x. Genesis + Athena (stan per host).
 // @author       MCH + Claude
 // @match        https://genesis.ogamex.net/*
@@ -35,7 +35,7 @@
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
   "use strict";
-  const VERSION = "3.116.0";
+  const VERSION = "3.117.0";
   const HOST = location.host;
   // v3.106.0 (AUDYT-ATHENA-2026-09-22): bot chodzi na DWÓCH uni z jednym tematem ntfy,
   // więc każdy tytuł pusha MUSI mówić, które uni krzyczy — „ATAK (Genesis)" przy ataku
@@ -257,7 +257,7 @@
     },
     fromJournal(kind, msg) {
       const m = String(msg || "");
-      if (kind === "ATAK") { if (this.throttled("ATAK", m)) return; this.push(`⚔️ ATAK (${UNI})`, m, "urgent", "rotating_light"); this.speak("Uwaga! Atak na bazę!", 3); }
+      if (kind === "ATAK") { if (this.throttled("ATAK", m)) return; this.push(`⚔️ ATAK (${UNI})`, CFG.autoRescue ? m : `OBSERWATOR — bot NIE rusza flotą, ratuj ręcznie! ${m}`, "urgent", "rotating_light"); this.speak("Uwaga! Atak na bazę!", 3); }
       else if (kind === "RATUNEK" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("RATUNEK", m)) return; this.push(`🛟 Flota ewakuowana (${UNI})`, m, "default", "shield"); }
       else if (kind === "FS" && /WYS[ŁL]ANO|wysłan/i.test(m)) { if (this.throttled("FS", m)) return; this.push(`🌙 Fleet Save (${UNI})`, m, "min", "crescent_moon"); }
       else if (kind === "BŁĄD") { if (this.throttled("BŁĄD", m)) return; this.push(`⚠️ Obrona: BŁĄD (${UNI})`, m, "high", "warning"); }
@@ -1141,7 +1141,12 @@
       const baza = {};
       if (hp && Array.isArray(hp.ships)) for (const x of hp.ships) baza[String(x.type).toUpperCase()] = (baza[String(x.type).toUpperCase()] || 0) + (x.qty || 0);
       s.moonGone = s.moonGone || {};
-      s.moonGone[k] = { lostAt: at, baseline: hp && Array.isArray(hp.ships) ? baza : null, baselineAt: hp ? (hp.at || 0) : 0 };
+      // v3.117.0: druga strata (DESTROY na odbudowany księżyc) dziedziczy stan sprzed PIERWSZEJ — inaczej
+      // transportery z fal, które w międzyczasie wylądowały, stałyby się „mieszkańcami planety”.
+      const stary = s.moonGone[k];
+      s.moonGone[k] = stary && stary.baseline
+        ? { ...stary, lostAt: at, backAt: 0 }
+        : { lostAt: at, baseline: hp && Array.isArray(hp.ships) ? baza : null, baselineAt: hp ? (hp.at || 0) : 0 };
       if (n) log(`[KSIĘŻYC] [${k}] ${n} fal(e) wysłanych ze zniszczonego księżyca wyląduje na PLANECIE — pilnuję ich lądowań tam.`, "warn");
     },
     async refresh() {
@@ -1156,7 +1161,11 @@
       // odtworzył księżyc) kończy tryb awaryjny.
       s.moonLost = s.moonLost || {};
       const livePairs = PlanetBar.pairs();
-      for (const p of livePairs) {
+      for (const p0 of livePairs) {
+        // v3.117.0 (audyt 26.09): utratę wykrywa też fetch /home w tle, a strona wyrenderowana PRZED
+        // tą chwilą dalej rysuje księżyc. Bez tej bramki następny przebieg ogłaszał „znów ma księżyc”,
+        // gasił ewakuację i wysyłał zwóz na nieistniejący księżyc, a potem liczył stratę drugi raz.
+        const p = (p0.hasMoon && s.moonLost[p0.key] && PAGE_AT < s.moonLost[p0.key]) ? { ...p0, hasMoon: false } : p0;
         const had = s.pairs[p.key] && s.pairs[p.key].hasMoon;
         if (had && !p.hasMoon && !s.moonLost[p.key]) {
           s.moonLost[p.key] = now;
@@ -1521,7 +1530,9 @@
           mg.baselineAt = hpG.at || 0;
         }
         const ostatnia = Math.max(0, ...sieroty.map(e => e.returnAt || 0));
-        if (now - (mg.lostAt || 0) > 24 * 3600e3 || (now - (mg.lostAt || 0) > 10 * 60e3 && now - ostatnia > 60 * 60e3)) delete s.moonGone[k];
+        // v3.117.0: pełna doba — gra potrafi opóźnić powrót ekspedycji o godziny, a taka fala też ląduje na planecie
+        void ostatnia;
+        if (now - (mg.lostAt || 0) > 24 * 3600e3) delete s.moonGone[k];
       }
       // v3.65.0 (log 03.09 08:58): wiersz WŁASNEJ ekspedycji z listy ruchów — BEZ klasy
       // „return" — miał data-remaining-seconds=874 z dolotem 09:13:02, a o 09:13 sloty
@@ -1788,6 +1799,14 @@
   // straty (fale wylądowały przed wykryciem, przerzut ratunkowy), też jest w baseline, a zostawienie
   // jej na widocznej planecie to dokładnie ta strata, przed którą ta ścieżka broni (E2E sc. 56).
   const PLANET_CARGO = ["HEAVY_CARGO", "LIGHT_CARGO"];
+  // Ile transporterów zostaje na planecie (stan sprzed straty) — `Fly` bierze z formularza WSZYSTKO poza tym,
+  // więc fala, która wylądowała między planem a formularzem, też jedzie (audyt 26.09, pkt 2).
+  function zwozKeep(mg) {
+    if (!mg || !mg.baseline) return null;
+    const out = {};
+    for (const t of PLANET_CARGO) if ((mg.baseline[t] || 0) > 0) out[t] = mg.baseline[t];
+    return Object.keys(out).length ? out : null;
+  }
   function zwozPlan(hp, mg) {
     const out = [];
     for (const x of ((hp && hp.ships) || [])) {
@@ -2040,7 +2059,7 @@
         // Rejestr domyka lukę: fala wraca na nieaktywną parę i bez niego hangar
         // czekał na przypadkowy odczyt.
         const landMap = { ...(s.landings || {}) };
-        for (const e of returnsFrom(k)) if (e.returnAt <= now && now - e.returnAt < 30 * 60e3) { const lk = `${k}|${e.fromBody}`; if (!landMap[lk] || e.returnAt > landMap[lk]) landMap[lk] = e.returnAt; }
+        for (const e of returnsFrom(k)) if (e.returnAt <= now && now - e.returnAt < 30 * 60e3) { const lk = `${k}|${liveFromBody(k, e.fromBody)}`; if (!landMap[lk] || e.returnAt > landMap[lk]) landMap[lk] = e.returnAt; }
         // v3.65.0: lista lądowań z wierszy WŁASNYCH ekspedycji (opóźnione powroty) —
         // bierzemy OSTATNIE minione lądowanie per ciało, osobno od mapy (mapa trzyma
         // max, więc przyszłe lądowanie zasłaniało w niej to, które właśnie było).
@@ -2088,6 +2107,13 @@
           break;
         }
         const hp = (s.hangars || {})[`${k}|planet`];
+        // v3.117.0 (audyt 26.09, pkt 2): po wysyłce ewakuacji/zwozu hangar planety jest zapisany jako „pusty”
+        // z chwilą wysyłki, więc fala, która wylądowała sekundy później, nie wywoływała nowego odczytu
+        // (lądowanie „starsze” niż zapis) i stała na widocznej planecie bez końca (symulacja: 5 055 OW).
+        // W trybie awaryjnym pary czytamy planetę w tle co minutę, dopóki mogą wracać fale ze zniszczonego księżyca.
+        if (((s.moonGone || {})[k] || (s.moonLost || {})[k]) && (!hp || now - (hp.at || 0) > 60e3)
+          && !actions.some(a => a.kind === "recon" && a.key === k && a.body === "planet"))
+          actions.push({ kind: "recon", key: k, body: "planet", quiet: true, lost: true, why: `tryb po utracie księżyca [${k}] — kontrolny odczyt planety (fale mogą lądować w każdej chwili)` });
         // v3.116.0 (owner 26.09): księżyc zniszczony i ODBUDOWANY, a fale wysłane ze starego lądują na
         // planecie — każda z nich jedzie na nowy księżyc ze wszystkimi surowcami (potem FS jak dotąd).
         // Działa niezależnie od wyłączonego `homeToMoon`: to nie jest rutynowe zwożenie, tylko powrót
@@ -2096,13 +2122,16 @@
         // PO jego wysyłce. Przy ataku gdziekolwiek zwozu nie ma — slot należy do ratunku.
         {
           const mg = (s.moonGone || {})[k];
-          if (mg && pairs[k].hasMoon && !anyAttack && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (hp.at || 0) > (mg.lostAt || 0)) {
+          // v3.117.0: nie przy nadwyżce obcych na pasku (niewidoczny DESTROY z własnego układu może lecieć na nowy księżyc)
+          if (mg && pairs[k].hasMoon && !anyAttack && !(s.barExcess && s.barExcess.count > 0) && hp && (hp.total || 0) > 0 && now - (hp.at || 0) < 30 * 60e3 && (hp.at || 0) > (mg.lostAt || 0)) {
             const plan = zwozPlan(hp, mg);
             const lotyZ = (s.flights || []).filter(x => x.fromKey === k && x.phase !== "done" && !flightBlind(x));
-            const wolny = lotyZ.every(x => x.kind === "home" && (hp.at || 0) > (x.sentAt || 0) + 20e3 && (hp.total || 0) > (x.leftHome || 0));
+            // v3.117.0: trwający Fleet Save nie blokuje zwozu — fala jedzie na księżyc, a stamtąd weźmie ją FS dosyłowy
+            const wolny = lotyZ.every(x => (x.fs && x.kind === "air") || (x.kind === "home" && (hp.at || 0) > (x.sentAt || 0) + 20e3 && (hp.total || 0) > (x.leftHome || 0)));
             if (plan.length && wolny) {
               const ile = plan.reduce((a, x) => a + x.qty, 0);
-              actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", speed: 100, recall: false, home: true, plan,
+              const keepZ = zwozKeep(mg);
+              actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: k, toBody: "moon", speed: 100, recall: false, home: true, ...(keepZ ? { keepQty: keepZ } : {}),
                 why: `księżyc [${k}] odbudowany — fala ze zniszczonego księżyca wylądowała na planecie (${ile.toLocaleString("pl-PL")} szt.${mg.baseline ? "" : ", stan planety sprzed straty nieznany — biorę cały hangar"}), zwożę ją na nowy księżyc z surowcami` });
               continue;
             }
@@ -2174,7 +2203,7 @@
             // ją przy każdym przebiegu, dopóki flota stoi na gołej planecie — więc odmowa
             // gry zamieniała ją w wielogodzinną pętlę przeładowań. Flaga włącza dwa sufity:
             // pełną karencję trasy (Fly.blocked) i budżet 3 prób na godzinę (pętla akcji).
-            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, evac: true, home: true, saveTotal: hp.total, ...(planEv ? { plan: planEv } : {}) });
+            actions.push({ kind: "fly", fromKey: k, fromBody: "planet", toKey: refLost.key, toBody: refLost.body, why: `księżyc [${k}] zniszczony, flota goła na planecie (falanga) → ewakuacja do [${refLost.key}] ${refLost.body === "moon" ? "księżyc" : "planeta"}`, speed: 100, recall: false, rescue: true, evac: true, home: true, saveTotal: hp.total, ...(planEv && zwozKeep(s.moonGone[k]) ? { keepQty: zwozKeep(s.moonGone[k]) } : {}) });
           } else {
             alerts.push({ key: k, level: "error", throttleMs: 15 * 60e3, msg: `księżyc [${k}] zniszczony, flota stoi na planecie (widoczna dla falangi), a nie mam dokąd jej ewakuować — reaguj ręcznie` });
           }
@@ -3028,9 +3057,9 @@
         if (hp2 && (hp2.total || 0) > 0 && !Fly.mission()) {
           log(`[KSIĘŻYC] księżyc [${z.key}] odbudowany, na planecie stoi flota (${hp2.total.toLocaleString("pl-PL")} szt.) — zwożę na nowy księżyc.`, "warn");
           // v3.116.0: przy znanym stanie planety sprzed straty zwozimy tylko to, co przyleciało
-          const mgZ = (s.moonGone || {})[z.key], planZ = mgZ && mgZ.baseline ? zwozPlan(hp2, mgZ) : null;
+          const mgZ = (s.moonGone || {})[z.key], planZ = mgZ && mgZ.baseline ? zwozPlan(hp2, mgZ) : null, keepZ2 = zwozKeep(mgZ);
           if (planZ && !planZ.length) return false;
-          Fly.start({ kind: "home", fromKey: z.key, fromBody: "planet", toKey: z.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true, ...(planZ ? { plan: planZ } : {}) });
+          Fly.start({ kind: "home", fromKey: z.key, fromBody: "planet", toKey: z.key, toBody: "moon", why: "księżyc odbudowany — zwożę flotę z planety", speed: 100, recall: false, home: true, ...(keepZ2 ? { keepQty: keepZ2 } : {}) });
         }
       } catch (e) { log(`[KSIĘŻYC] zwóz po odbudowie nie wyszedł: ${e.message}`, "warn"); }
       return false;
@@ -4349,7 +4378,7 @@
           .join(" ").replace(/<[^>]*>/g, " ");
         const rank = this.parseRank(text) ?? this.parseRank(attrText);
         const nameM = text.match(/([^()]{2,32}?)\s*\(\s*[iI]\s*\)/);
-        all.push({ coord, galaxy, system, position: pos, rank, name: nameM ? nameM[1].trim().slice(0, 24) : "?", html: item.innerHTML });
+        all.push({ coord, galaxy, system, position: pos, rank, name: nameM ? nameM[1].trim().slice(0, 24) : "?", html: String(item.innerHTML || "").replace(/\s+/g, " ").slice(0, 400) });
       }
       return { rows: rows.length, all };
     },
@@ -4467,7 +4496,10 @@
         Store.set("farm_combat_at", now);
         const known = Store.get("farm_combat_url", "");
         let ok = false;
-        for (const url of (known ? [known] : this.COMBAT_CANDIDATES)) {
+        // v3.117.0: jeden kandydat na przebieg (4 × 8 s limitu blokowało pętlę obrony do ~40 s)
+        const ci = Store.get("farm_combat_i", 0) || 0;
+        if (!known) Store.set("farm_combat_i", ci + 1);
+        for (const url of (known ? [known] : [this.COMBAT_CANDIDATES[ci % this.COMBAT_CANDIDATES.length]])) {
           try {
             const r = await fetchT(url, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" });
             if (!r.ok) continue;
@@ -4479,7 +4511,7 @@
             this.applyCombat(this.parseCombat(text), "raporty (fetch)"); ok = true; break;
           } catch {}
         }
-        if (!ok && !Once.said("farm_combat_probe", 24 * 3600e3)) log("[FARMA BAN] żaden adres raportów bojowych nie dał „Combat report:” — bany zbieram ze strony wiadomości (wejdź czasem w Combat reports).", "warn");
+        if (!ok && !known && ci >= this.COMBAT_CANDIDATES.length && !Once.said("farm_combat_probe", 24 * 3600e3)) log("[FARMA BAN] żaden adres raportów bojowych nie dał „Combat report:” — bany zbieram ze strony wiadomości (wejdź czasem w Combat reports).", "warn");
       }
       if (now - (Store.get("farm_plunder_at", 0) || 0) >= 15 * 60e3) {
         Store.set("farm_plunder_at", now);
@@ -4495,12 +4527,19 @@
       }
     },
     // ── sloty, statki, przerwy ──
-    reserve() { return Math.max(1, CFG.farm.slotReserve ?? 2); },
+    // v3.117.0 (audyt 26.09): rezerwa farmy liczy też to, co zabiorą moduły PRZED nią w łańcuchu i Fleet Save —
+    // inaczej wolny slot po powrocie zjadała ekspedycja, FS stał, a ratunkowi zostawał jeden slot.
+    reserve() {
+      return Math.max(1, CFG.farm.slotReserve ?? 2)
+        + ((CFG.expo.enabled || CFG.aster.enabled || CFG.debris.enabled) ? 1 : 0)
+        + (CFG.fs.enabled ? Math.max(1, CFG.fs.slotReserve ?? 1) + 1 : 0);
+    },
     // Wolne sloty wg odczytu z formularza floty minus loty wysłane PO tym odczycie (odczyt żyje
     // tylko na /fleet, a farma bywa tam co atak). Nieznane sloty = jeden atak naraz.
     freeSlots(s, now) {
       const f = s.slots && s.slots.fleet;
-      if (!f || !f.total || now - (s.slots.at || 0) > 30 * 60e3) return (s.expected || []).some(e => e.kind === "farm" && e.pending) ? 0 : 1;
+      // nieznane sloty = najwyżej JEDEN atak w powietrzu (jak FS), nie „jeden niepotwierdzony”
+      if (!f || !f.total || now - (s.slots.at || 0) > 30 * 60e3) return (s.expected || []).some(e => e.kind === "farm" && (e.pending || (e.returnAt || 0) > now)) ? 0 : 1;
       const poOdczycie = (s.expected || []).filter(e => (e.sentAt || 0) > (s.slots.at || 0) && (e.returnAt || 0) > now).length;
       return f.total - f.used - poOdczycie - this.reserve();
     },
@@ -4538,6 +4577,9 @@
     sent(m, what) {
       const d = new Date().toISOString().slice(0, 10), st = Store.get("farm_stats", null);
       Store.set("farm_stats", { day: d, n: (st && st.day === d ? st.n : 0) + 1, last: m.toKey, at: Date.now() });
+      Store.set("farm_restore", { from: m.fromKey, at: Date.now() });
+      // od razu, nie w następnym przebiegu farmy — przy alarmie ekonomia stoi i farma by nie ruszyła
+      try { this.restoreSession(Situation.load(), { key: m.fromKey }).catch(() => {}); } catch {}
       log(`[FARMA] atak wysłany: ${what} → [${m.toKey}]`, "success");
     },
     launch(s) {
@@ -4545,6 +4587,27 @@
       const k = key(lf), p = (s.pairs || {})[k];
       if (!p) return { missing: k };
       return { key: k, body: p.hasMoon ? "moon" : "planet" };
+    },
+    // v3.117.0 (audyt 26.09, P0): `/home/fleetmovementlist` pokazuje TYLKO aktywną parę sesji, a każdy atak
+    // przełącza sesję na bazę farmy. Bez tego atak na bazę floty znikał z listy (został sam licznik paska).
+    // Po wysyłce wracamy sesją — cichym fetchem `?planet=` — na parę, na której stoi największa flota.
+    async restoreSession(s, lp) {
+      const r = Store.get("farm_restore", null); if (!r) return;
+      Store.del("farm_restore");
+      const now = Date.now();
+      let best = null;
+      for (const [hk, h] of Object.entries(s.hangars || {})) {
+        const [k, b] = hk.split("|");
+        if (k === lp.key || !h || !(h.total > 0) || now - (h.at || 0) > 6 * 3600e3 || !(s.pairs || {})[k]) continue;
+        if (!best || h.total > best.total) best = { key: k, body: b, total: h.total };
+      }
+      if (!best && CFG.expo.launchFrom && key(CFG.expo.launchFrom) !== lp.key && (s.pairs || {})[key(CFG.expo.launchFrom)]) best = { key: key(CFG.expo.launchFrom), body: s.pairs[key(CFG.expo.launchFrom)].hasMoon ? "moon" : "planet" };
+      if (!best) return;
+      const el = PlanetBar.anchor(best.key, best.body) || PlanetBar.anchor(best.key, "planet");
+      const mm = el && (el.getAttribute("href") || "").match(/[?&]planet=([^&#"']+)/i);
+      if (!mm) { if (!Once.said("farm_restore_nouuid", 6 * 3600e3)) log(`[FARMA] nie umiem przywrócić sesji na [${best.key}] (brak linku na pasku planet) — lista ruchów pokazuje teraz bazę farmy.`, "warn"); return; }
+      const ok = await Hangar.restoreActive(mm[1]);
+      if (!Once.said("farm_restore_log", 30 * 60e3)) log(ok ? `[FARMA] po ataku sesja wraca na [${best.key}] ${best.body} (tam stoi flota) — lista ruchów pilnuje bazy, nie farmy.` : `[FARMA] NIE przywróciłem sesji na [${best.key}] — lista ruchów pokazuje bazę farmy.`, ok ? "info" : "warn");
     },
     onGalaxy(g, sy) { return page() === "galaxy" && new RegExp(`[?&]x=${g}(?:&|$)`).test(location.search) && new RegExp(`[?&]y=${sy}(?:&|$)`).test(location.search); },
     go(g, sy, why) { Nav.go(`/galaxy?x=${g}&y=${sy}`, `farma: ${why} [${g}:${sy}]`); },
@@ -4586,14 +4649,21 @@
     async tick(s) {
       const c = CFG.farm;
       if (!c || !c.enabled || Fly.mission()) return false;
+      { const lp0 = this.launch(s); if (lp0 && !lp0.missing) await this.restoreSession(s, lp0); }   // zapas, gdyby fetch po wysyłce przepadł
       this.harvest();
       const why = Human.economyAllowed(s, "farm");
       if (why) { if (!Once.said("farm|" + why.slice(0, 12), 10 * 60e3)) log(`[FARMA] wstrzymana: ${why}`, "info"); return false; }
       if ((s.threats || []).some(t => t.attack && t.arriveAt > Date.now())) return false;
       const now = Date.now();
+      // v3.117.0 (audyt 26.09): farma zjada sloty ratunku, więc staje przy KAŻDYM stanie alarmu, nie tylko
+      // przy rozpoznanym ataku — nadwyżka obcych na pasku (ślepy alarm), martwa lista ruchów, utracona sesja.
+      if (s.barExcess && s.barExcess.count > 0) { if (!Once.said("farm|bar", 5 * 60e3)) log("[FARMA] wstrzymana: na pasku misji są obce loty, których lista nie tłumaczy (ślepy alarm).", "info"); return false; }
+      if (now - (Store.get("list_ok_at", 0) || 0) > 2 * 60e3) { if (!Once.said("farm|list", 10 * 60e3)) log("[FARMA] wstrzymana: lista ruchów flot nie odpowiada od ponad 2 min — obrona jest częściowo ślepa.", "warn"); return false; }
+      if (Session.lostRecently && Session.lostRecently()) return false;
       const lp = this.launch(s);
       if (!lp) { if (!Once.said("farm|nofrom", 30 * 60e3)) log("[FARMA] brak „start z” w panelu — nie zgaduję, skąd lecą ataki (decyzja ownera: start ustawiany ręcznie).", "warn"); return false; }
       if (lp.missing) { if (!Once.said("farm|nopair", 30 * 60e3)) log(`[FARMA] [${lp.missing}] nie ma na pasku planet — popraw „start z”.`, "warn"); return false; }
+      if ((s.moonLost || {})[lp.key] || ((s.moonGone || {})[lp.key] && !((s.pairs || {})[lp.key] || {}).hasMoon)) { if (!Once.said("farm|moonlost", 30 * 60e3)) log(`[FARMA] wstrzymana: baza farmy [${lp.key}] straciła księżyc — nie latam z widocznej planety.`, "warn"); return false; }
       if (!(c.perAttack > 0)) { if (!Once.said("farm|noqty", 30 * 60e3)) log("[FARMA] wpisz w panelu, ile statków leci na jeden atak.", "warn"); return false; }
       // AUDYT-FARMA 4.7: fala ekspedycji na ostatni slot bierze CAŁY hangar (v3.105.0), a OW/DT nie są wykluczone
       if (CFG.expo.enabled && CFG.expo.launchFrom && key(CFG.expo.launchFrom) === lp.key && !(CFG.expo.excludeTypes || []).includes(String(c.shipType).toUpperCase()) && !Once.said("farm|expo", 6 * 3600e3))
@@ -4642,7 +4712,7 @@
           if (!this.rankOk(e.rank, maxRank)) { pomRank++; continue; }
           if (this.banned(e.coord)) { ban++; continue; }
           if (this.isDone(e.coord)) continue;
-          cele.push({ coord: e.coord, galaxy: e.galaxy, system: e.system, position: e.position, rank: e.rank, html: e.html });
+          cele.push({ coord: e.coord, galaxy: e.galaxy, system: e.system, position: e.position, rank: e.rank, ...(Once.said("farm_row_dom_keep", 24 * 3600e3) ? {} : { html: e.html }) });
         }
         if (rd.rows) this.dbUpdate(next.galaxy, next.system, rd.all);
         st.queue = st.queue.slice(1);
@@ -5354,9 +5424,11 @@
           log(`[LOT] w formularzu stoi ${stoi.toLocaleString("pl-PL")} szt. — to ${dziel.toFixed(2).replace(".", ",")} udziału fali (${Math.round(udzial).toLocaleString("pl-PL")} szt.), czyli od planu wylądowała kolejna fala. Biorę JEDEN udział, reszta poleci następnym lotem.`, "warn");
         }
       }
+      // v3.117.0: `keepQty` = ile sztuk danego typu ZOSTAJE (transportery mieszkające na planecie po utracie księżyca)
+      const keep = new Map(Object.entries(m.keepQty || {}).map(([t, n]) => [String(t).toUpperCase(), Math.max(0, parseInt(n, 10) || 0)]));
       const qtyFor = (type, have) => wszystko ? (wszystko.has(type) ? 0 : (dziel > 1 ? (have < dziel ? have : Math.floor(have / dziel)) : have))
         : want ? Math.min(want.get(type) || 0, have)
-        : (excl.has(type) ? 0 : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
+        : (excl.has(type) ? 0 : keep.has(type) ? Math.max(0, have - keep.get(type)) : (cap.has(type) ? Math.min(have, cap.get(type)) : have));
       if (cap.size && !want) {
         const jestCosPoza = els.some(el => {
           const t = String(el.dataset.shipType || "").toUpperCase();
@@ -5421,6 +5493,10 @@
         if (onlyExcluded) {
           log(`[LOT] w hangarze ${m.fromBody} [${m.fromKey}] zostały tylko wykluczone typy (${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")}) — nic do ewakuacji, zostają na robocie.`, "info");
           return this.abort("tylko wykluczone typy w hangarze (miner/recykler w trakcie pracy)", { quiet: true });
+        }
+        if (keep.size && els.every(el => { const t = String(el.dataset.shipType || "").toUpperCase(); const q = parseInt(el.dataset.shipQuantity || "0") || 0; return q === 0 || (keep.has(t) && q <= keep.get(t)); })) {
+          log(`[LOT] na ${m.fromBody} [${m.fromKey}] stoją tylko transportery mieszkające na planecie — nie ma czego wywozić.`, "info");
+          return this.abort("tylko transportery sprzed utraty księżyca", { quiet: true });
         }
         log(`[LOT DOM] nie znalazłem pól statków. Statki: ${els.map(e => `${e.dataset.shipType}(${e.dataset.shipQuantity})`).join(", ")} | HTML: ${(document.querySelector("#content, .content") || document.body).innerHTML.replace(/\s+/g, " ").slice(0, 1500)}`, "error");
         return this.abort("brak pól statków");
@@ -5696,7 +5772,8 @@
           // ten sam lot miałby dwa wpisy i drugi nigdy by się nie domknął
           if (f.pending && f.fromBody === m.fromBody) return false;
           if (inAir(f)) return true;
-          if (!f.pending) zdjete.push(f);
+          if (!f.pending && !(f.kind === "home" && !f.recallAt)) zdjete.push(f);   // v3.117.0: kolejny zwóz nadpisuje poprzedni bez alarmu
+
           return false;
         });
         // Kasowanie śladu po flocie, która jest w powietrzu, nie może być CICHE — to jest
@@ -7783,6 +7860,23 @@
   // patrz komentarz przy `Heartbeat`. Własny zegar, bez bramek obrony.
   try { Heartbeat.ping(); } catch {}
   setInterval(() => { try { Heartbeat.ping(); } catch {} }, 30e3);
+  // v3.117.0 (audyt 26.09, P0; znane od 09.09): wyłączony bot i tryb Obserwatora były CICHE — puls leciał
+  // dalej, więc strażnik był spokojny, a przy ataku nikt nie ruszał floty. Po reinstalacji Tampermonkeya
+  // (26.09) cfg wraca do domyślnych, a tam `autoRescue: false`. Oba stany pushują co godzinę.
+  setInterval(() => {
+    try {
+      const now = Date.now();
+      const off = !CFG.enabled, obs = CFG.enabled && !CFG.autoRescue;
+      const st = Store.get("guard_state", null) || {};
+      const stan = off ? "off" : obs ? "obs" : "ok";
+      if (st.stan !== stan) { Store.set("guard_state", { stan, since: now, pushAt: 0 }); return; }
+      if (stan === "ok" || now - (st.since || now) < 10 * 60e3 || now - (st.pushAt || 0) < 3600e3) return;
+      Store.set("guard_state", { ...st, pushAt: now });
+      const min = Math.round((now - st.since) / 60e3);
+      Notifier.push(off ? `⛔ Bot WYŁĄCZONY (${UNI})` : `👀 Bot w trybie OBSERWATOR (${UNI})`,
+        off ? `Od ${min} min bot jest OFF — nie wykrywa ataków i nie rusza flotą. Włącz go w panelu.` : `Od ${min} min auto-ratunek jest wyłączony — przy ataku bot tylko alarmuje, flotą NIE ruszy. Włącz „Auto-ratunek” w panelu.`, "high", "warning");
+    } catch {}
+  }, 60e3);
   // v3.66.0 — zegar dolotu. Dwa tempa: próbnik ekranu 4×/s (łapie przeskok
   // sekundy na liczniku gry, stąd bierze się dokładność poniżej sekundy) i sam
   // zegar raz na sekundę (alarmy, tytuł karty, panel). Oba są NIEZALEŻNE od
@@ -7798,5 +7892,5 @@
   setInterval(keepalive, 60e3);
   setInterval(watchdog, 60e3);
   // aktualizacja z repo
-  setInterval(() => { try { GM_xmlhttpRequest({ method: "GET", url: "https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-3.user.js?t=" + Date.now(), onload: (r) => { const v = (String(r.responseText || "").match(/@version\s+([\d.]+)/) || [])[1]; if (v && v !== VERSION && !Once.said("update|" + v, 3600e3)) log(`[UPDATE] repo ma v${v}, tu chodzi v${VERSION} — Tampermonkey → Sprawdź aktualizacje.`, "error"); } }); } catch {} }, 15 * 60e3);
+  setInterval(() => { try { GM_xmlhttpRequest({ method: "GET", url: "https://raw.githubusercontent.com/Mitjano/ogamex-userscript/main/ogamex-3.user.js?t=" + Date.now(), onload: (r) => { const v = (String(r.responseText || "").match(/@version\s+([\d.]+)/) || [])[1]; if (v && v !== VERSION && !Once.said("update|" + v, 3600e3)) { log(`[UPDATE] repo ma v${v}, tu chodzi v${VERSION} — Tampermonkey → Sprawdź aktualizacje.`, "error"); if (!Once.said("update_push|" + v, 6 * 3600e3)) Notifier.push(`⬆️ Nowa wersja bota (${UNI})`, `W repo jest v${v}, w grze chodzi v${VERSION}. Tampermonkey → Panel → Sprawdź aktualizacje.`, "default", "arrow_up"); } } }); } catch {} }, 15 * 60e3);
 })();

@@ -38,6 +38,9 @@ PORT = int(os.environ.get("OGX_WD_PORT", "8765"))
 THRESHOLD = int(os.environ.get("OGX_WD_THRESHOLD", str(12 * 60)))   # s bez pulsu = zawiecha
 CHECK_EVERY = 30                                                     # s między kontrolami
 SLEEP_GAP = 120                                                      # s luki zegara = Mac spał
+# 26.09: po awarii pamięci padł proces Tampermonkeya — 11 min ciszy bez jednego sygnału, owner
+# przeinstalował rozszerzenie i stracił ustawienia bota. Wczesne ostrzeżenie (bez restartu):
+WARN_AFTER = int(os.environ.get("OGX_WD_WARN", str(4 * 60)))
 # 08.09: 15 min łaski po starcie to było 15 min ślepoty po każdym reboocie i po
 # każdym wskrzeszeniu przez warstwę 2 — 6 min starcza na login + start przeglądarki,
 # a po prostu OTWARCIE gry (to robi restart_browser przy braku pulsu) nie boli.
@@ -45,7 +48,9 @@ STARTUP_GRACE = int(os.environ.get("OGX_WD_GRACE", str(6 * 60)))     # s po star
 MAX_RESTARTS_H = 3
 DRYRUN = os.environ.get("OGX_WD_DRYRUN") == "1"
 NTFY_TOPIC = os.environ.get("OGX_WD_NTFY", "ogx-4wrgtgf1zknuoa")
-GAME_URL = os.environ.get("OGX_WD_URL", "https://genesis.ogamex.net/")
+# 26.09: owner gra tylko na Athenie. Domyślny Genesis znaczył, że po reboocie bez pulsu strażnik
+# otwierał Genesis, jego karta zaczynała pulsować i Athena zostawała bez ochrony i bez alarmu.
+GAME_URL = os.environ.get("OGX_WD_URL", "https://athena.ogamex.net/")
 # Jawna lista kart do otwarcia po restarcie (przecinki). Pusta = wyprowadzana
 # z uni widzianych w pulsie (https://<uni>.ogamex.net/), a bez żadnego uni
 # w pulsie (stary bot) zostaje GAME_URL.
@@ -247,11 +252,13 @@ class HB(http.server.BaseHTTPRequestHandler):
 
 
 def monitor():
-    last_tick = time.monotonic()
+    # 26.09: zegar ŚCIENNY — time.monotonic() na macOS (mach_absolute_time) nie liczy czasu snu,
+    # więc „wykryto sen" nigdy się nie zapalało i po dłuższym śnie strażnik ubijał Chrome zaraz po wybudzeniu.
+    last_tick = time.time()
     while True:
         time.sleep(CHECK_EVERY)
-        gap = time.monotonic() - last_tick
-        last_tick = time.monotonic()
+        gap = time.time() - last_tick
+        last_tick = time.time()
         now = time.time()
         with lock:
             # Mac spał: luka w pętli — bot też spał, to nie zawiecha. Reset zegara.
@@ -266,6 +273,14 @@ def monitor():
             grace = STARTUP_GRACE if not state["last_hb"] else THRESHOLD
             stale = []
             reason = None
+            if state["last_hb"] and silent < WARN_AFTER:
+                state["warned"] = False
+            elif state["last_hb"] and silent < grace and not state.get("warned"):
+                state["warned"] = True
+                log(f"puls zamilkł {round(silent)} s temu — wczesne ostrzeżenie")
+                push("🩺 Bot OGameX zamilkł", f"Brak pulsu od {round(silent / 60)} min — karta gry albo Tampermonkey padł. "
+                     "NIE reinstaluj Tampermonkey (kasuje ustawienia bota i pamięć lotów): zamknij i otwórz Chrome "
+                     f"albo chrome://extensions → Tampermonkey → przeładuj. Sam zrestartuję Chrome za ~{max(1, round((grace - silent) / 60))} min.", "high")
             if silent >= grace:
                 reason = f"Brak pulsu od {round(silent / 60)} min"
             else:

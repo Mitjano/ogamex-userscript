@@ -2882,7 +2882,7 @@ console.log("\n── 67. JEDNA GWIAZDA ŚMIERCI W KAŻDEJ UCIECZCE (właścicie
   check("67g: (źródło) Fleet Save dalej zabiera CAŁĄ flotę — bez sufitu (decyzja z 07.09)",
     !/fs: true[^\n]{0,200}capTypes/.test(src));
   check("67h: (źródło) formularz bierze min(ile mam, sufit), a wykluczenie nadal zeruje typ",
-    /excl\.has\(type\) \? 0 : \(cap\.has\(type\) \? Math\.min\(have, cap\.get\(type\)\) : have\)/.test(src));
+    /excl\.has\(type\) \? 0 : keep\.has\(type\) \? Math\.max\(0, have - keep\.get\(type\)\) : \(cap\.has\(type\) \? Math\.min\(have, cap\.get\(type\)\) : have\)/.test(src));   // v3.117.0: + keepQty
   // Zerowanie hangaru wołają CELOWO trzy ścieżki domknięcia wysyłki. Przy `keepTypes` filtr
   // dawał ten sam wynik za każdym razem, ale SUFIT odejmuje — więc drugie wywołanie zjadało
   // kolejną sztukę rezerwy (E2E sc. 63: 28 GS zamiast 29). Uruchamiamy funkcję DWA RAZY.
